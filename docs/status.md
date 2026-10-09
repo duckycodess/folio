@@ -27,6 +27,15 @@
     - clarifications, unsupported requests and unreadable model output say so.
   - One request runs at a time and can be cancelled. Cancelling and errors keep the request text. Earlier replies stay readable, and replies are kept when leaving Ask & Act until another folder is opened.
   - With a subfolder scope, questions still use the whole folder, and the page says so.
+- Model setup and Model Lab ([#24](https://github.com/duckycodess/folio/issues/24)), on top of #15's model store.
+  - Model Lab lists the pinned models by job: a "Search model" for embeddings and a "Writing model" for generation. Each shows its revision, its exact download size in bytes, the runtime, the license and the source.
+  - A writing model also downloads the llama.cpp runtime for this computer when it's missing, and the size shown includes it.
+  - Downloads start only from a button. They show real progress from `folio://model-progress`/`runtime-progress` and can be cancelled. The first model set up for a job becomes the one in use, and another installed model can be chosen with "Use this model".
+  - Remove asks first, and says the user's documents aren't touched.
+  - A new read-only native command, `model_setup`, returns the saved selections and the host runtime's ID and exact size.
+  - The browser preview says setup works in the desktop app.
+  - The results section groups runs by task, with no overall score. Process RAM is labelled as the model process's, and missing measurements say "Not measured" or "Not graded". There are no recorded results yet (#8).
+  - The installed size on disk isn't measured, and the page says so.
 - Graph entry points ([#40](https://github.com/duckycodess/folio/issues/40)): Graph starts from all files, one file, a folder (including connections that leave it) or a keyword topic. With a file open, it starts from that file, and opening a file from the list makes it the new start, with keyboard focus moved to the list's new title. A topic with no letters or digits matches nothing. Confirmed connections (links, identical copies) are listed apart from suggested ones (similarity, possible shared facts), which only appear when the index has them. A "Where these files are" panel counts the connected files per folder. That count isn't a written summary: the relationship summary needs a local model and isn't built. Arrow keys, Home and End move between the files in the list.
 - Home as the file browser ([#42](https://github.com/duckycodess/folio/issues/42), [#43](https://github.com/duckycodess/folio/issues/43), ADR 0010). The Files tab is gone. Home lists every file, sorted by path, with a count. Each row has a keyboard-accessible ⋯ menu (Open, Rename…, Move to folder…, Show related), and the document panel has the same menu. Rename and Move use the exact preview, Approve and Undo flow from #22, in a dialog. The search field is only on Home, centred, and ⌘K / Ctrl K from any page opens Home and focuses it. Rows take an optional `renderDetail` slot for #19's search evidence. With the sample files, Rename and Move explain that a folder is needed. In practice mode (`?simulate=<code>`), they show the simulated refusal instead.
 - Organize flow ([issue #22](https://github.com/duckycodess/folio/issues/22)), desktop only. Analyze re-indexes the open folder, with live progress and Stop, then lists exact duplicates (by content, never moved or deleted) and filename suggestions to tick. The exact preview shows every from → to path from the native plan. Approve echoes that plan's digest and applies it. The result is worded from the per-file outcomes, so a batch that stopped partway never says nothing changed. It shows what was recorded in history and offers a Preview Undo. A refused apply keeps the preview, with Preview again. The Rename form uses the same native plan with a folder open. With the sample files, Organize explains that a folder is needed. Virtual collections are still not available.
@@ -147,6 +156,8 @@ Not verified: real models (interpretation accuracy and Taglish requests are stil
 
 ### Summary tab (2026-10-10, issue #20)
 
+### Model setup and Model Lab (2026-10-10, issue #24)
+
 Checked on macOS with Node.js 26.10.0, on #48 with #15 (`FOLIO-4`) merged in:
 
 - `npm run format:check`, `npm run check` and `npm run build`: passed.
@@ -167,6 +178,25 @@ Checked on macOS with Node.js 26.10.0, on #48 with #15 (`FOLIO-4`) merged in:
   - nothing scrolls sideways at 700px.
 
 Not verified: a real model's summaries, which #15 still marks "Not reviewed"; cancellation against llama.cpp; Filipino and Taglish output; screen readers.
+- `npm test`: 174 passed, 9 todo. New cases in `src/app/models.test.ts` cover:
+  - exact sizes with byte counts;
+  - model names;
+  - grouping by job with the recommended model first and the selected one marked;
+  - the runtime downloaded first only for a writing model that lacks it, and counted in the size or flagged when unknown;
+  - progress never invented without a total;
+  - results kept per task, including empty tasks;
+  - "Not graded" and "Not measured", with RAM never described as the device's.
+- Browser preview without the native core: "Model setup works in the desktop app".
+- With a **mocked** native core in headless Chromium:
+  - downloading Qwen3-0.6B fetched the runtime first (66%), then the model (38%), and the other download buttons were disabled;
+  - Cancel showed "Download cancelled… wasn't set up";
+  - a second download finished, and the model was marked In use;
+  - a second writing model could be installed and chosen;
+  - Remove asked first and returned the model to Not installed;
+  - nothing scrolls sideways at 700px.
+- `model_setup` (Rust): not compiled locally, because this host has no Rust toolchain. CI's `desktop-check` runs `cargo test` on Windows and macOS.
+
+Not verified: real downloads, the real native model store, Tauri event delivery in the app, and screen readers.
 
 ### Home filters, pins and recent files (2026-10-10, issue #33)
 
