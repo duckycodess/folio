@@ -42,7 +42,8 @@ pub fn slugify(title: &str) -> String {
     slug.trim_end_matches('-').to_owned()
 }
 
-pub fn suggestions(conn: &Connection, root: &ScopedRoot) -> NativeResult<OrganizationSuggestions> {
+/// Filename suggestions, from the index. Cheap enough to run while the index is held.
+pub fn filename_suggestions(conn: &Connection, root: &ScopedRoot) -> NativeResult<Vec<OrganizationSuggestion>> {
     let documents = index::list_documents(conn, &root.id)?;
     let mut taken: HashSet<String> = documents.iter().map(|document| document.relative_path.to_lowercase()).collect();
     let mut filenames = Vec::new();
@@ -68,7 +69,13 @@ pub fn suggestions(conn: &Connection, root: &ScopedRoot) -> NativeResult<Organiz
             },
         });
     }
-    Ok(OrganizationSuggestions { duplicate_groups: index::duplicate_groups(conn, root)?, filenames })
+    Ok(filenames)
+}
+
+#[cfg(test)]
+pub fn suggestions(conn: &Connection, root: &ScopedRoot) -> NativeResult<OrganizationSuggestions> {
+    let filenames = filename_suggestions(conn, root)?;
+    Ok(OrganizationSuggestions { duplicate_groups: index::verify_duplicates(&root.path, index::duplicate_candidates(conn, &root.id)?), filenames })
 }
 
 #[cfg(test)]

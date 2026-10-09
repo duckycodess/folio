@@ -642,11 +642,17 @@ export type ExplicitReference = Extract<
   { type: "explicitReference" }
 >;
 
-/** A chunk without a vector in the given embedding space. */
+/**
+ * A chunk without a vector in the given embedding space. Echo `contentHash`
+ * when storing its vector: chunk ids can be reused after a rescan, and a vector
+ * for text the chunk no longer holds is refused (`evidenceInvalid`,
+ * `details.reason` = `chunkChanged`).
+ */
 export interface PendingChunk {
   chunkId: number;
   documentId: DocumentId;
   text: string;
+  contentHash: ContentHash;
 }
 
 /** Exact cosine match within a single embedding space. */
