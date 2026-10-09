@@ -609,7 +609,7 @@ fn record_failure(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior:
         Some(prior) if prior.status == "indexed" || prior.status == "stale" => {
             tx.execute(
                 "UPDATE documents SET size_bytes = ?1, modified_at = ?2, status = 'stale', status_message = ?3 WHERE id = ?4",
-                params![file.size, file.modified, format!("This file changed, but Folio couldn't read the new version, so search shows the previous version. {reason} {later}"), prior.id],
+                params![file.size, file.modified, format!("Folio couldn't read the current version of this file, so search shows the previous version. {reason} {later}"), prior.id],
             )?;
             (prior.id.clone(), Outcome::Stale)
         }
@@ -666,6 +666,23 @@ pub fn recheck_documents(conn: &mut Connection, root: &ScopedRoot, document_ids:
     Ok(document_ids.iter().filter_map(|id| get_document(conn, &root.id, id).ok()).collect())
 }
 
+fn is_absent(cause: &std::io::Error) -> bool {
+    matches!(cause.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory)
+}
+
+/// A recorded file that can't be reached right now, as a read failure: an indexed document
+/// keeps its chunks as `stale`, and the record backs off like any unreadable file rather
+/// than being treated as deleted. Size and time are the recorded ones, since they can't be
+/// read; the signature names the failure, so a later readable state counts as a change.
+fn unreachable(root: &ScopedRoot, relative: &str, prior: Existing, cause: std::io::Error) -> Option<(Found, Option<Existing>, Prepared)> {
+    let path = root.path.join(relative);
+    let kind = MediaKind::from_path(&path)?;
+    let signature = format!("unreachable:{:?}", cause.kind());
+    let file = Found { relative: relative.to_owned(), path, kind, size: prior.size, modified: prior.modified.clone(), signature };
+    let reason = workspace::read_failure(cause).message;
+    Some((file, Some(prior), Prepared::Failure { hash: None, reason }))
+}
+
 fn refresh(conn: &mut Connection, root: &ScopedRoot, relative_paths: &[String], verify: bool, options: &ScanOptions) -> NativeResult<()> {
     let mut prepared = Vec::new();
     let mut gone = Vec::new();
@@ -674,13 +691,26 @@ fn refresh(conn: &mut Connection, root: &ScopedRoot, relative_paths: &[String], 
         let path = match workspace::resolve_document(&root.path, relative) {
             Ok(path) => path,
             Err(failure) if failure.code == ErrorCode::DocumentUnavailable => {
-                if let Some(prior) = prior { gone.push(prior.id); }
+                // Only a path that is really absent is gone. A file inside a folder that
+                // can't be read right now (permissions, an offline cloud or network folder)
+                // keeps its record and is recorded as a read failure.
+                match (prior, root.path.join(relative).symlink_metadata()) {
+                    (Some(prior), Err(cause)) if !is_absent(&cause) => prepared.extend(unreachable(root, relative, prior, cause)),
+                    (Some(prior), _) => gone.push(prior.id),
+                    (None, _) => {}
+                }
                 continue;
             }
             Err(failure) => return Err(failure),
         };
         let kind = MediaKind::from_path(&path).ok_or_else(|| error(ErrorCode::UnsupportedMediaType, "Folio indexes TXT, Markdown and text-based PDF files."))?;
-        let metadata = std::fs::metadata(&path)?;
+        let metadata = match std::fs::metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(cause) => {
+                if let Some(prior) = prior { prepared.extend(unreachable(root, relative, prior, cause)); }
+                continue;
+            }
+        };
         let file = Found::new(relative.clone(), path, kind, &metadata);
         let result = prepare_file(&file, prior.as_ref(), verify, options);
         prepared.push((file, prior, result));
@@ -1690,6 +1720,42 @@ pub mod tests {
         assert_eq!(status, "stale");
         assert!(message.unwrap().contains("search shows the previous version"));
         assert!(search(&conn, &root.id, "checklist", 20).unwrap().iter().any(|hit| hit.document.relative_path == "notes/paalala.md"));
+    }
+
+    // TJ's repro from the PR #30 review: "Check again" must not treat a document whose
+    // folder can't be read right now as deleted.
+    #[cfg(unix)]
+    #[test]
+    fn check_again_keeps_a_document_whose_folder_is_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = tempfile::tempdir().unwrap();
+        fs::create_dir(folder.path().join("sub")).unwrap();
+        fs::write(folder.path().join("sub/a.md"), "keep me").unwrap();
+        let mut conn = db::open_in_memory().unwrap();
+        let root = authorize(&conn, folder.path());
+        scan(&mut conn, &root);
+        let id = id_of(&root, "sub/a.md");
+        let chunks = chunk_count(&conn, &id);
+        fs::set_permissions(folder.path().join("sub"), fs::Permissions::from_mode(0o000)).unwrap();
+        let checked = recheck_documents(&mut conn, &root, &[id.clone()], T0);
+        fs::set_permissions(folder.path().join("sub"), fs::Permissions::from_mode(0o755)).unwrap();
+        let checked = checked.unwrap();
+        assert_eq!(checked.iter().map(|document| document.status.as_str()).collect::<Vec<_>>(), vec!["stale"]);
+        assert!(checked[0].status_message.as_deref().unwrap().contains("doesn't have permission"));
+        assert_eq!(chunk_count(&conn, &id), chunks, "its index data is kept");
+        assert_eq!(paths(&search(&conn, &root.id, "keep", 5).unwrap()), vec!["sub/a.md"]);
+        let readable = recheck_documents(&mut conn, &root, &[id], T0).unwrap();
+        assert_eq!(readable[0].status, "indexed");
+    }
+
+    #[test]
+    fn check_again_removes_a_document_that_is_really_gone() {
+        let (folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let id = id_of(&root, "personal/grocery-list.md");
+        fs::remove_file(folder.path().join("personal/grocery-list.md")).unwrap();
+        assert!(recheck_documents(&mut conn, &root, &[id.clone()], T0).unwrap().is_empty());
+        assert_eq!(get_document(&conn, &root.id, &id).unwrap_err().code, ErrorCode::DocumentUnavailable);
     }
 
     #[test]

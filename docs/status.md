@@ -86,6 +86,10 @@ Rescan time (`measure_rescan_with_corrupt_pdfs`, ignored in CI). Each folder is 
 
 These are single runs on one VM with a warm file cache, not Windows or macOS figures. Full-folder indexing time and database size remain unmeasured.
 
+After TJ's review of PR #30: "Check again" (and a refresh after a Folio write) now removes a record only when its path is really absent. A file inside a folder that can't be read right now (permissions, an offline cloud or network folder), or whose metadata can't be read, keeps its record and index data, is recorded as a read failure (`stale` if it was indexed) and backs off like any unreadable file. One such file no longer aborts the rest of the re-check. TJ's repro passes on Linux (157 passed, 2 ignored with `main` and #12 merged), along with a test that a deleted file is still removed. [CI run 37949475975](https://github.com/duckycodess/folio/actions/runs/37949475975), before this fix, passed on Windows (146 passed, 2 ignored) and macOS (154 passed, 2 ignored).
+
+Developer note: if you ran this branch before the migration was renumbered to `004_retry_backoff.sql`, your index records the retry columns as version 3 and will fail to open with "duplicate column name: retry_failures". Delete `folio.sqlite` (and its `-wal`/`-shm` files) in Folio's app-data folder; the next scan rebuilds it. Nothing has shipped, so no user database is affected.
+
 ### File table and reader (2026-10-09, issue #17)
 
 Checked on macOS with Node.js 26.10.0:
