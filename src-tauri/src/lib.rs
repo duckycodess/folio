@@ -121,6 +121,49 @@ fn core_passage(passage: &contracts::SourcePassage) -> CoreSourcePassage {
     }
 }
 
+struct SelectedRelationshipSummary {
+    focus_rank: u8,
+    kind_rank: u8,
+    score: f32,
+    relationship_type: &'static str,
+    provenance: &'static str,
+    source_id: String,
+    target_id: String,
+    passages: Vec<CoreSourcePassage>,
+}
+
+fn relationship_passage_is_current(
+    passage: &CoreSourcePassage,
+    current: &DocumentText,
+) -> bool {
+    if passage.document_content_hash != current.content_hash
+        || passage.offset_unit != folio_core::contracts::OffsetUnit::Utf8Byte
+        || passage.start >= passage.end
+        || passage.end > current.content.len()
+        || !current.content.is_char_boundary(passage.start)
+        || !current.content.is_char_boundary(passage.end)
+    {
+        return false;
+    }
+    &current.content.as_bytes()[passage.start..passage.end] == passage.text.as_bytes()
+}
+
+fn relationship_passage_matches_disk(
+    root: &ScopedRoot,
+    workspace_id: &str,
+    passage: &CoreSourcePassage,
+    cache: &mut HashMap<String, Option<DocumentText>>,
+) -> bool {
+    let current = cache.entry(passage.document_id.clone()).or_insert_with(|| {
+        ai_boundary::parse_document_id(workspace_id, &passage.document_id)
+            .ok()
+            .and_then(|relative| workspace::read_text(&root.path, &relative).ok())
+    });
+    current
+        .as_ref()
+        .is_some_and(|current| relationship_passage_is_current(passage, current))
+}
+
 fn impact_relationship_label(candidate: &ImpactCandidate) -> &'static str {
     match candidate.relationship_type {
         Some(RelationshipKind::ExplicitReference) => "document link",
@@ -400,7 +443,7 @@ async fn summarize_relationships(
     focus_document_id: Option<String>,
     space_fingerprint: Option<String>,
 ) -> Result<GroundedResult, FolioError> {
-    state.root(&workspace_id)?;
+    let root = state.root(&workspace_id)?;
     if document_ids.is_empty() || document_ids.len() > 50 {
         return Err(error(
             ErrorCode::EvidenceInvalid,
@@ -440,14 +483,24 @@ async fn summarize_relationships(
                 active_space.as_deref(),
             )?
         };
-        let mut selected = Vec::<(u8, u8, f32, Vec<CoreSourcePassage>)>::new();
+        let mut selected = Vec::<SelectedRelationshipSummary>::new();
         for relationship in relationships {
-            let (source_id, target_id, kind_rank, score, passages) = match relationship {
+            let (
+                source_id,
+                target_id,
+                kind_rank,
+                score,
+                relationship_type,
+                provenance,
+                passages,
+            ) = match relationship {
                 Relationship::ExplicitReference(reference) => (
                     reference.source_id,
                     reference.target_id,
                     0,
                     0.0,
+                    reference.relationship_type,
+                    reference.provenance,
                     reference.evidence.iter().map(core_passage).collect(),
                 ),
                 Relationship::Similarity(similarity) => (
@@ -455,6 +508,8 @@ async fn summarize_relationships(
                     similarity.target_id,
                     2,
                     similarity.score,
+                    similarity.relationship_type,
+                    similarity.provenance,
                     similarity
                         .source_evidence
                         .iter()
@@ -467,6 +522,8 @@ async fn summarize_relationships(
                     shared.target_id,
                     1,
                     shared.confidence.unwrap_or(0.0),
+                    shared.relationship_type,
+                    shared.provenance,
                     shared
                         .source_evidence
                         .iter()
@@ -481,25 +538,48 @@ async fn summarize_relationships(
             let focus_rank = focus_document_id.as_deref().map_or(1, |focus| {
                 if source_id == focus || target_id == focus { 0 } else { 1 }
             });
-            selected.push((focus_rank, kind_rank, score, passages));
+            selected.push(SelectedRelationshipSummary {
+                focus_rank,
+                kind_rank,
+                score,
+                relationship_type,
+                provenance,
+                source_id,
+                target_id,
+                passages,
+            });
         }
         selected.sort_by(|left, right| {
-            left.0
-                .cmp(&right.0)
-                .then(left.1.cmp(&right.1))
-                .then_with(|| right.2.total_cmp(&left.2))
+            left.focus_rank
+                .cmp(&right.focus_rank)
+                .then(left.kind_rank.cmp(&right.kind_rank))
+                .then_with(|| right.score.total_cmp(&left.score))
+                .then_with(|| left.source_id.cmp(&right.source_id))
+                .then_with(|| left.target_id.cmp(&right.target_id))
         });
+        let mut current_documents = HashMap::<String, Option<DocumentText>>::new();
+        for relationship in &mut selected {
+            relationship.passages.retain(|passage| {
+                relationship_passage_matches_disk(
+                    &root,
+                    &workspace_id,
+                    passage,
+                    &mut current_documents,
+                )
+            });
+        }
+        selected.retain(|relationship| !relationship.passages.is_empty());
         let mut seen = HashSet::new();
         let mut passages = Vec::new();
-        for (_, _, _, relationship_passages) in selected {
-            for passage in relationship_passages {
+        for relationship in &selected {
+            for passage in &relationship.passages {
                 let key = (
                     passage.document_id.clone(),
                     passage.start,
                     passage.end,
                 );
                 if seen.insert(key) {
-                    passages.push(passage);
+                    passages.push(passage.clone());
                     if passages.len() >= folio_core::generation::MAX_PASSAGES {
                         break;
                     }
@@ -509,17 +589,51 @@ async fn summarize_relationships(
                 break;
             }
         }
+        let passage_keys = passages
+            .iter()
+            .map(|passage| {
+                (
+                    passage.document_id.clone(),
+                    passage.start,
+                    passage.end,
+                )
+            })
+            .collect::<HashSet<_>>();
+        let entries = selected
+            .into_iter()
+            .filter_map(|relationship| {
+                let passages = relationship
+                    .passages
+                    .into_iter()
+                    .filter(|passage| {
+                        passage_keys.contains(&(
+                            passage.document_id.clone(),
+                            passage.start,
+                            passage.end,
+                        ))
+                    })
+                    .collect::<Vec<_>>();
+                (!passages.is_empty()).then(|| {
+                    folio_core::grounding::RelationshipSummaryEntry {
+                        relationship_type: relationship.relationship_type.into(),
+                        provenance: relationship.provenance.into(),
+                        source_id: relationship.source_id,
+                        target_id: relationship.target_id,
+                        passages,
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
         let language_text = passages
             .iter()
             .map(|passage| passage.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
         let language = grounding::detect_language(&language_text);
-        let instruction = "Explain how the supplied documents connect. Mention only relationships supported by the supplied evidence, and cite every sentence.";
         if passages.is_empty() {
             return Ok(grounding::answer_question(
                 None,
-                instruction,
+                grounding::RELATIONSHIP_SUMMARY_INSTRUCTION,
                 passages,
                 language,
                 &AtomicBool::new(false),
@@ -528,7 +642,7 @@ async fn summarize_relationships(
         let (provider, cancel) = acquire_generation(&app, &generation_state)?;
         let result = grounding::relationship_summary(
             provider.as_ref(),
-            passages,
+            entries,
             language,
             cancel.as_ref(),
         );
@@ -2111,6 +2225,50 @@ mod tests {
         assert_eq!(record.id, "workspace:notes/paalala.md");
         assert_eq!(record.relative_path, "notes/paalala.md");
         assert_eq!(record.content_hash.as_deref(), Some("sha256:observed"));
+    }
+
+    #[test]
+    fn relationship_passages_need_current_hash_utf8_boundaries_and_exact_bytes() {
+        let current = DocumentText {
+            content: "aé b".into(),
+            content_hash: "sha256:current".into(),
+            size_bytes: 5,
+            modified_at_ms: None,
+            pages: Vec::new(),
+            unreadable_pages: Vec::new(),
+        };
+        let valid = CoreSourcePassage {
+            document_id: "workspace:notes.md".into(),
+            document_content_hash: current.content_hash.clone(),
+            offset_unit: folio_core::contracts::OffsetUnit::Utf8Byte,
+            start: 1,
+            end: 3,
+            text: "é".into(),
+            page: None,
+        };
+        assert!(relationship_passage_is_current(&valid, &current));
+        assert!(!relationship_passage_is_current(
+            &CoreSourcePassage {
+                start: 2,
+                end: 3,
+                ..valid.clone()
+            },
+            &current,
+        ));
+        assert!(!relationship_passage_is_current(
+            &CoreSourcePassage {
+                text: "x".into(),
+                ..valid.clone()
+            },
+            &current,
+        ));
+        assert!(!relationship_passage_is_current(
+            &CoreSourcePassage {
+                document_content_hash: "sha256:old".into(),
+                ..valid
+            },
+            &current,
+        ));
     }
 
     #[test]
