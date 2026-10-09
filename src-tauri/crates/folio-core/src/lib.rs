@@ -5,3 +5,5 @@
 //! can run in the Linux CI job without WebKitGTK.
 
 pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+pub mod contracts;

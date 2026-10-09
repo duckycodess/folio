@@ -1,0 +1,39 @@
+{
+  "text": "Ang deadline ay October 20.",
+  "sources": [
+    {
+      "documentId": "projects/project-plan.md",
+      "start": 4,
+      "end": 18,
+      "text": "October 20"
+    }
+  ],
+  "kind": "fileSummary",
+  "sentences": [
+    {
+      "text": "Ang deadline ay October 20.",
+      "citations": [
+        {
+          "documentId": "projects/project-plan.md",
+          "start": 4,
+          "end": 18,
+          "text": "October 20"
+        }
+      ]
+    }
+  ],
+  "coverage": [
+    {
+      "documentId": "projects/project-plan.md",
+      "ranges": [
+        {
+          "start": 0,
+          "end": 20
+        }
+      ],
+      "complete": true
+    }
+  ],
+  "uncitedSentenceCount": 0,
+  "modelId": "qwen3-0.6b-q4"
+}
