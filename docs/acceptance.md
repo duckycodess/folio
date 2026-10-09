@@ -26,6 +26,28 @@ Disconnect internet after setup. On the prepared project corpus, request in Tagl
 | Changed embedding model              | Separate/rebuilt index; no mixed vector comparison                          |
 | Exact duplicate                      | Byte/content-hash identity, not similarity alone                            |
 
+## Where each case stands
+
+Contract and safety checks run today; they prove the agreed boundary, not a
+completed feature. Cases that need the native writer or a local model are
+listed as pending rather than mocked.
+
+| Case                                 | Checked today                                                                             | Still pending                          |
+| ------------------------------------ | ----------------------------------------------------------------------------------------- | -------------------------------------- |
+| Outside root or escaping symlink     | `src-tauri/src/workspace.rs`, `src-tauri/src/plan.rs` against temporary synthetic folders | —                                      |
+| Unapproved plan                      | `src-tauri/src/plan.rs`, `src/domain/approval.test.ts`                                    | Real write refused on disk (#5)        |
+| Expired plan or external target edit | `src-tauri/src/plan.rs`, `src/domain/approval.test.ts`                                    | —                                      |
+| Rename collision                     | Preflight refuses and the existing file is read back unchanged                            | Real rename on disk (#5)               |
+| Ambiguous target                     | Plans carry explicit operations only; evidence cannot become one                          | Assistant target selection (#6, #7)    |
+| Failed save                          | Batch outcomes: `failed` stops the batch, earlier successes stay durable                  | A real failed write (#5)               |
+| Undo after external edit             | Whole-batch preflight refuses and names the blocking file                                 | A real reversal (#5)                   |
+| Changed embedding model              | Embedding-space fingerprints are compared, never mixed                                    | A real second index (#4)               |
+| Exact duplicate                      | Content hashes are produced natively on read                                              | Duplicate grouping (#3)                |
+| English/Filipino/Taglish retrieval   | Keyword retrieval over the synthetic corpus, labelled as keyword                          | Cross-language semantic retrieval (#4) |
+| Individual summary, unknown answer   | Contract shapes only (`GenerationOutcome`)                                                | Local generation (#4)                  |
+| Changed deadline in linked note      | Explicit-reference evidence with both revisions                                           | Ripple over semantic neighbours (#5)   |
+| Model unavailable                    | Provider error codes are frozen                                                           | Real adapter behaviour (#4, #8)        |
+
 ## Model Lab
 
 Use `fixtures/benchmark-cases.json` as an initial labelled suite. Interpretation, retrieval, generation, and editing have separate scores. Compare only supported tasks under the same document/context conditions. No self-graded aggregate quality score.
