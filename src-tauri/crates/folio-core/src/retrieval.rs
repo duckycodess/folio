@@ -1041,7 +1041,9 @@ mod tests {
         assert_eq!(ids, ["a-copy.md", "a.md", "b.md"]);
         let original = results.iter().find(|r| r.document.id == "a.md").unwrap();
         assert_eq!(original.passages[0].page, Some(2));
-        assert!(results.iter().all(|r| r.space_fingerprint.as_deref() == Some("space")));
+        assert!(results
+            .iter()
+            .all(|r| r.space_fingerprint.as_deref() == Some("space")));
     }
 
     #[test]

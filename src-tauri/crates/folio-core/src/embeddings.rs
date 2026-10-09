@@ -1,5 +1,7 @@
 use crate::chunking::{Chunk, INTERIM_CHUNKER_VERSION};
-use crate::contracts::{DocumentRecord, EmbeddingSpace};
+use crate::contracts::{
+    DocumentRecord, EmbeddingSpace, ModelDescriptor, ModelRole, ProviderErrorCode,
+};
 use crate::error::{CoreError, CoreResult};
 use ort::{session::Session, value::Tensor};
 use serde::Serialize;
@@ -15,6 +17,7 @@ use tokenizers::utils::truncation::{TruncationParams, TruncationStrategy};
 
 pub const DEFAULT_MAX_TOKENS: usize = 512;
 pub const DEFAULT_BATCH_SIZE: usize = 16;
+pub const E5_DIMENSIONS: usize = 384;
 pub const EMBEDDING_IDLE_UNLOAD: Duration = Duration::from_secs(5 * 60);
 /// Passages are embedded with their document title and path words, so a
 /// query naming a document ("plano ng proyekto", "project plan") can match
@@ -42,6 +45,85 @@ pub fn stored_chunk_space(provider: &EmbeddingSpace) -> EmbeddingSpace {
         dimensions: provider.dimensions,
         preprocessing_fingerprint: hex::encode(hasher.finalize()),
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct E5SpaceInputs {
+    pub model_id: String,
+    pub revision: String,
+    pub quantization: String,
+    pub dimensions: usize,
+    pub model_sha256: String,
+    pub tokenizer_sha256: String,
+    pub max_tokens: usize,
+}
+
+/// Construct the provider space from the descriptor metadata used by the
+/// native E5 provider. Persisted chunk vectors are derived from this space by
+/// `stored_chunk_space`; keeping this constructor shared prevents a resolver
+/// from accidentally selecting the interim title/path snapshot space.
+pub fn e5_provider_space(inputs: &E5SpaceInputs) -> EmbeddingSpace {
+    EmbeddingSpace {
+        model_id: inputs.model_id.clone(),
+        revision: inputs.revision.clone(),
+        quantization: inputs.quantization.clone(),
+        dimensions: inputs.dimensions,
+        preprocessing_fingerprint: embedding_fingerprint(
+            &inputs.model_sha256,
+            &inputs.tokenizer_sha256,
+            "query: ",
+            "passage: ",
+            inputs.max_tokens,
+            &format!("{INTERIM_CHUNKER_VERSION}+{PASSAGE_CONTEXT_VERSION}"),
+        ),
+    }
+}
+
+/// What the E5 provider needs from a model descriptor: the space inputs plus
+/// the descriptor-relative file paths it loads. The provider construction site
+/// and the persistent-space resolver both call this, so the `.onnx` /
+/// `tokenizer.json` selection rule, the dimensions and the token limit exist
+/// once.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct E5DescriptorFiles {
+    pub inputs: E5SpaceInputs,
+    pub model_file: String,
+    pub tokenizer_file: String,
+}
+
+pub fn e5_inputs_from_descriptor(descriptor: &ModelDescriptor) -> CoreResult<E5DescriptorFiles> {
+    let corrupt = |message: &str| {
+        CoreError::from(
+            crate::error::NativeProviderErrorError::new(ProviderErrorCode::ModelCorrupt, message)
+                .with_detail(descriptor.id.clone()),
+        )
+    };
+    if !matches!(descriptor.role, ModelRole::Embedding) {
+        return Err(corrupt("The selected model is not an embedding model."));
+    }
+    let model_file = descriptor
+        .files
+        .iter()
+        .find(|file| file.path.ends_with(".onnx"))
+        .ok_or_else(|| corrupt("The selected embedding model has no ONNX file."))?;
+    let tokenizer_file = descriptor
+        .files
+        .iter()
+        .find(|file| file.path.ends_with("tokenizer.json"))
+        .ok_or_else(|| corrupt("The selected embedding model has no tokenizer file."))?;
+    Ok(E5DescriptorFiles {
+        inputs: E5SpaceInputs {
+            model_id: descriptor.id.clone(),
+            revision: descriptor.revision.clone(),
+            quantization: descriptor.quantization.clone(),
+            dimensions: E5_DIMENSIONS,
+            model_sha256: model_file.sha256.clone(),
+            tokenizer_sha256: tokenizer_file.sha256.clone(),
+            max_tokens: DEFAULT_MAX_TOKENS,
+        },
+        model_file: model_file.path.clone(),
+        tokenizer_file: tokenizer_file.path.clone(),
+    })
 }
 
 /// The text embedded for one passage: document title, path words, then the
@@ -198,6 +280,15 @@ impl OrtE5Provider {
                 "Embedding limits and dimensions must be positive.".into(),
             ));
         }
+        let space = e5_provider_space(&E5SpaceInputs {
+            model_id: model_id.into(),
+            revision: revision.into(),
+            quantization: quantization.into(),
+            dimensions,
+            model_sha256: model_sha256.into(),
+            tokenizer_sha256: tokenizer_sha256.into(),
+            max_tokens,
+        });
         initialize_ort(threads)?;
         let mut tokenizer = Tokenizer::from_file(tokenizer_path.as_ref())
             .map_err(|error| CoreError::Message(format!("Tokenizer load failed: {error}")))?;
@@ -211,14 +302,6 @@ impl OrtE5Provider {
             .map_err(|error| CoreError::Message(format!("Tokenizer setup failed: {error}")))?;
         let model_path = model_path.as_ref().to_path_buf();
         let session = load_session(&model_path, threads)?;
-        let preprocessing_fingerprint = embedding_fingerprint(
-            model_sha256,
-            tokenizer_sha256,
-            "query: ",
-            "passage: ",
-            max_tokens,
-            &format!("{INTERIM_CHUNKER_VERSION}+{PASSAGE_CONTEXT_VERSION}"),
-        );
         let session = Arc::new(Mutex::new(Some(session)));
         let active = Arc::new(AtomicBool::new(false));
         let last_used = Arc::new(Mutex::new(Instant::now()));
@@ -231,13 +314,7 @@ impl OrtE5Provider {
             idle_unload,
         ));
         Ok(Self {
-            space: EmbeddingSpace {
-                model_id: model_id.into(),
-                revision: revision.into(),
-                quantization: quantization.into(),
-                dimensions,
-                preprocessing_fingerprint,
-            },
+            space,
             tokenizer,
             session,
             model_path,
@@ -603,6 +680,29 @@ mod tests {
     }
 
     #[test]
+    fn e5_provider_space_has_a_pinned_descriptor_derived_fingerprint() {
+        let space = e5_provider_space(&E5SpaceInputs {
+            model_id: "e5-small".into(),
+            revision: "revision".into(),
+            quantization: "int8".into(),
+            dimensions: E5_DIMENSIONS,
+            model_sha256: "sha256:model".into(),
+            tokenizer_sha256: "sha256:tokenizer".into(),
+            max_tokens: DEFAULT_MAX_TOKENS,
+        });
+
+        assert_eq!(
+            space.preprocessing_fingerprint,
+            "cf00c0efc0cc14902f610048e28e2b1c1eb90452e22c85844652cd3a827b30aa"
+        );
+        assert_eq!(
+            stored_chunk_space(&space).preprocessing_fingerprint,
+            // `title-path-chunk-v2` (#108); was e72ccaa8… for `chunk-text-v1`.
+            "998f0d1653c24a86982f29df9342d3592061d3d1468ef64de422504a3b0218f9"
+        );
+    }
+
+    #[test]
     fn stored_chunk_space_is_separate_and_tracks_provider_identity() {
         let provider = EmbeddingSpace {
             model_id: "model".into(),
@@ -616,7 +716,10 @@ mod tests {
         assert_eq!(stored.revision, provider.revision);
         assert_eq!(stored.quantization, provider.quantization);
         assert_eq!(stored.dimensions, provider.dimensions);
-        assert_ne!(stored.preprocessing_fingerprint, provider.preprocessing_fingerprint);
+        assert_ne!(
+            stored.preprocessing_fingerprint,
+            provider.preprocessing_fingerprint
+        );
         assert_eq!(stored, stored_chunk_space(&provider));
 
         let mut changed = provider.clone();
@@ -647,7 +750,11 @@ mod tests {
     #[test]
     fn stored_passage_text_matches_the_snapshot_input() {
         assert_eq!(
-            stored_passage_text(" Plano ng proyekto ", "notes/tala-sa-proyekto.md", "Huling araw"),
+            stored_passage_text(
+                " Plano ng proyekto ",
+                "notes/tala-sa-proyekto.md",
+                "Huling araw"
+            ),
             "Plano ng proyekto\nnotes tala sa proyekto\nHuling araw"
         );
     }

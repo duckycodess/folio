@@ -16,9 +16,11 @@ import type {
   SearchResult,
 } from "../domain/contracts";
 import { toFolioError, type FolioError } from "../domain/errors";
+import { mergeFolderResults } from "../domain/searchEvidence";
 import {
   inScope,
   planAsk,
+  namedFiles,
   summaryTarget,
   type AskOutcome,
   type AskTurn,
@@ -227,11 +229,43 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
     }
   }
 
+  /**
+   * The index's matches, with files the request names by file name first:
+   * the index scores only file text, so it can't find a file by its name.
+   */
   async function search(
     folder: string,
     query: string,
-  ): Promise<SearchResult[]> {
-    return inScope(await semanticSearch(folder, query, RESULT_LIMIT), scope);
+  ): Promise<{ results: SearchResult[]; namesOnly: boolean }> {
+    const { named, partial } = namedFiles(workspace.documents, query);
+    let indexed: SearchResult[];
+    let namesOnly = false;
+    try {
+      indexed = await semanticSearch(folder, query, RESULT_LIMIT);
+    } catch (cause) {
+      // Only "no search model yet" falls back to names, and the turn says
+      // so. Any other failure (I/O, a mismatched space) is reported, never
+      // hidden behind name matches that look like a full search.
+      const error = toFolioError(cause);
+      if (
+        error.code !== "modelNotInstalled" ||
+        (!named.length && !partial.length)
+      )
+        throw cause;
+      indexed = [];
+      namesOnly = true;
+    }
+    return {
+      results: inScope(
+        mergeFolderResults(
+          workspace.documents,
+          [...named, ...indexed],
+          partial,
+        ),
+        scope,
+      ).slice(0, RESULT_LIMIT),
+      namesOnly,
+    };
   }
 
   async function interpret(
@@ -247,18 +281,24 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
           type: "answer",
           result: await answerQuestion(folder, request, step.documentId),
         };
-      case "results":
-        return {
-          type: "results",
-          query: step.query,
-          results: await search(folder, step.query),
-        };
+      case "results": {
+        const { results, namesOnly } = await search(folder, step.query);
+        return { type: "results", query: step.query, results, namesOnly };
+      }
       case "summarize":
         void summarize(folder, step.document.id);
         return { type: "summary", document: step.document };
       case "findSummaryTarget": {
-        const results = await search(folder, step.query);
-        const target = summaryTarget(results);
+        const { results } = await search(folder, step.query);
+        // A request that writes out one file's full name means that file
+        // (#105), among the results the search found.
+        const { exact } = namedFiles(workspace.documents, request);
+        const target = summaryTarget(
+          results,
+          exact.filter((document) =>
+            results.some((result) => result.document.id === document.id),
+          ),
+        );
         if (!target)
           return {
             type: "chooseFile",
@@ -309,7 +349,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
           ? {
               type: "results",
               query: request.trim(),
-              results: await search(folder, request),
+              ...(await search(folder, request)),
             }
           : practiceReply(request, onProgress),
       ),

@@ -12,6 +12,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/004_retry_backoff.sql"),
     include_str!("../migrations/005_delete_history.sql"),
     include_str!("../migrations/006_activity.sql"),
+    include_str!("../migrations/007_ai_relationships.sql"),
+    include_str!("../migrations/008_ai_relationship_coverage.sql"),
 ];
 
 impl From<rusqlite::Error> for FolioError {
@@ -121,6 +123,31 @@ mod tests {
         assert_eq!(indexed, 1);
     }
 
+    fn seed_documents(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, root_path, authorized_at) VALUES ('w', '/w', '0');
+             INSERT INTO documents (id, workspace_id, relative_path, content_hash, media_type, size_bytes, modified_at) VALUES ('a', 'w', 'a.md', 'sha256:a', 'text/markdown', 1, '0');
+             INSERT INTO documents (id, workspace_id, relative_path, content_hash, media_type, size_bytes, modified_at) VALUES ('b', 'w', 'b.md', 'sha256:b', 'text/markdown', 1, '0');
+             INSERT INTO relationships (id, source_document_id, target_document_id, relationship_type, evidence_json, provenance, confidence, source_content_hash, target_content_hash, created_at) VALUES ('link', 'a', 'b', 'explicitReference', '{}', 'documentLink', NULL, 'sha256:a', 'sha256:b', '0');",
+        )
+        .unwrap();
+    }
+
+    fn assert_coverage_schema(conn: &Connection) {
+        for table in ["ai_relationship_seq", "ai_relationship_coverage", "ai_pair_progress", "ai_relationship_schedule"] {
+            let exists: i64 = conn.query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1", [table], |row| row.get(0)).unwrap();
+            assert_eq!(exists, 1, "{table} exists");
+        }
+        let link: (String, Option<String>, Option<f64>, Option<f64>) = conn
+            .query_row("SELECT relationship_type, space_fingerprint, score, discovery_cosine FROM relationships WHERE id = 'link'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+            .unwrap();
+        assert_eq!(link, ("explicitReference".into(), None, None, None), "an existing link keeps its shape");
+        let violations: i64 = conn.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| row.get(0)).unwrap();
+        assert_eq!(violations, 0);
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+        assert_eq!(version as usize, MIGRATIONS.len());
+    }
+
     #[test]
     fn migration_006_keeps_earlier_plans_as_unknown_and_rebuilds_them_from_history() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -156,5 +183,64 @@ mod tests {
         assert_eq!(batch.operations[1].status, None);
         assert_eq!(batch.operations[1].before_relative_path.as_deref(), Some("a.md"));
         assert!(batch.operations[1].error.is_none() && batch.operations[1].history.is_none());
+    }
+
+    #[test]
+    fn migration_008_applies_to_a_populated_version_5_database() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        for sql in &MIGRATIONS[..5] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 5).unwrap();
+        seed_documents(&conn);
+        migrate(&mut conn).unwrap();
+        assert_coverage_schema(&conn);
+    }
+
+    #[test]
+    fn migration_008_applies_to_a_populated_version_7_database_with_ai_rows() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        for sql in &MIGRATIONS[..7] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 7).unwrap();
+        seed_documents(&conn);
+        conn.execute_batch(
+            "INSERT INTO embedding_spaces (id, model_id, revision, quantization, dimensions, preprocessing_fingerprint) VALUES ('s', 'm', 'r', 'q', 2, 'p');
+             INSERT INTO relationships (id, source_document_id, target_document_id, relationship_type, evidence_json, provenance, confidence, source_content_hash, target_content_hash, created_at, space_fingerprint, score) VALUES ('sim', 'a', 'b', 'similarity', '{}', 'embedding', NULL, 'sha256:a', 'sha256:b', '0', 's', 0.9);",
+        )
+        .unwrap();
+        migrate(&mut conn).unwrap();
+        assert_coverage_schema(&conn);
+        let ai: (Option<String>, Option<f64>, Option<f64>) = conn
+            .query_row("SELECT space_fingerprint, score, discovery_cosine FROM relationships WHERE id = 'sim'", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap();
+        assert_eq!(ai, (Some("s".into()), Some(0.9), None), "an existing AI row keeps its space and score");
+    }
+
+    #[test]
+    fn coverage_rows_cascade_with_documents_and_spaces() {
+        let conn = crate::db::open_in_memory().unwrap();
+        seed_documents(&conn);
+        conn.execute_batch(
+            "INSERT INTO embedding_spaces (id, model_id, revision, quantization, dimensions, preprocessing_fingerprint) VALUES ('s', 'm', 'r', 'q', 2, 'p');
+             INSERT INTO ai_relationship_seq (workspace_id, space_id, next_seq) VALUES ('w', 's', 3);
+             INSERT INTO ai_relationship_coverage (workspace_id, space_id, document_id, content_hash, seq, updated_at) VALUES ('w', 's', 'a', 'sha256:a', 1, '0'), ('w', 's', 'b', 'sha256:b', 2, '0');
+             INSERT INTO ai_pair_progress (workspace_id, space_id, document_id, partner_id, document_hash, partner_hash, partner_seq, next_left, next_right, accumulator_json) VALUES ('w', 's', 'b', 'a', 'sha256:b', 'sha256:a', 1, 0, 0, '{}');",
+        )
+        .unwrap();
+        assert!(conn.execute("INSERT INTO ai_relationship_coverage (workspace_id, space_id, document_id, content_hash, seq, updated_at) VALUES ('w', 's', 'a', 'x', 9, '0')", []).is_err(), "one coverage row per document");
+        assert!(conn.execute("INSERT INTO ai_relationship_coverage (workspace_id, space_id, document_id, content_hash, seq, updated_at) VALUES ('w', 's', 'a2', 'x', 2, '0')", []).is_err(), "seq is unique per space");
+        conn.execute("DELETE FROM documents WHERE id = 'a'", []).unwrap();
+        let count = |table: &str| -> i64 { conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| row.get(0)).unwrap() };
+        assert_eq!(count("ai_relationship_coverage"), 1, "the deleted document's coverage left");
+        assert_eq!(count("ai_pair_progress"), 0, "a pair naming the deleted document left");
+        let next: i64 = conn.query_row("SELECT next_seq FROM ai_relationship_seq", [], |row| row.get(0)).unwrap();
+        assert_eq!(next, 3, "deletion never decrements the admission counter");
+        conn.execute("DELETE FROM embedding_spaces WHERE id = 's'", []).unwrap();
+        assert_eq!(count("ai_relationship_coverage"), 0);
+        assert_eq!(count("ai_relationship_seq"), 0);
     }
 }

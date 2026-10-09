@@ -10,10 +10,17 @@ import type {
   SearchResult,
 } from "../domain/contracts";
 import type { FolioError } from "../domain/errors";
+import { fold } from "../domain/searchEvidence";
 
 /** What one Ask & Act request produced. Every kind is read-only. */
 export type AskOutcome =
-  | { type: "results"; query: string; results: SearchResult[] }
+  | {
+      type: "results";
+      query: string;
+      results: SearchResult[];
+      /** Only file names were searched: the index couldn't answer. */
+      namesOnly?: boolean;
+    }
   | { type: "answer"; result: GroundedResult }
   /** The file's summary is running in its Summary tab. */
   | { type: "summary"; document: DocumentRecord }
@@ -119,13 +126,91 @@ export function inScope(results: SearchResult[], folder: string) {
     : results;
 }
 
+/** Words folded like the index: case- and accent-insensitive. */
+function lowerWords(value: string): string[] {
+  return fold(value.normalize("NFKC")).match(WORD) ?? [];
+}
+
 /**
- * Files a summary request could mean. One clear match is used directly;
- * otherwise the user chooses, and nothing runs until they do.
+ * Whether `written` (already folded) spells out `name` as a whole file name,
+ * so naming `old-notes.md` doesn't also name `notes.md`.
+ */
+function writesName(written: string, name: string): boolean {
+  const wanted = fold(name.normalize("NFKC"));
+  const escaped = wanted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `(?<![\\p{L}\\p{N}_.-])${escaped}(?![\\p{L}\\p{N}_-])`,
+    "u",
+  ).test(written);
+}
+
+/**
+ * Files the request names. The index scores only file text, so without this
+ * "find Sample_Resume.pdf" finds nothing unless the resume's text says so.
+ * - `named`: every word of the name (extension aside) is in the request, and
+ *   the name is distinctive (two or more words with one longer than two
+ *   letters) or written out in full. These come before the index's results.
+ * - `partial`: other names that share a longer word with the request,
+ *   including single generic words like `notes.md` or `readme.md`, which
+ *   would otherwise push the index's results out. These come after them.
+ * - `exact`: files whose full name, extension included, the request writes.
+ * Matching folds case and accents, like the index ("nino" finds "Niño").
+ */
+export function namedFiles(
+  documents: DocumentRecord[],
+  request: string,
+): {
+  named: SearchResult[];
+  partial: SearchResult[];
+  exact: DocumentRecord[];
+} {
+  const asked = new Set(lowerWords(request));
+  const written = fold(request.normalize("NFKC"));
+  const named: SearchResult[] = [];
+  const exact: DocumentRecord[] = [];
+  const partial: { result: SearchResult; matched: number }[] = [];
+  for (const document of documents) {
+    const stem = document.name.replace(/\.[^.]+$/, "");
+    const words = [...new Set(lowerWords(stem))];
+    if (!words.length) continue;
+    const matched = words.filter((word) => asked.has(word));
+    const result: SearchResult = {
+      document,
+      score: matched.length / words.length,
+      method: "keyword",
+      passages: [],
+    };
+    const writtenOut = writesName(written, document.name);
+    if (writtenOut) exact.push(document);
+    const distinctive =
+      words.length >= 2 && words.some((word) => word.length > 2);
+    if (matched.length === words.length && (distinctive || writtenOut))
+      named.push(result);
+    else if (matched.some((word) => word.length > 2))
+      partial.push({ result, matched: matched.length });
+  }
+  const byPath = (a: SearchResult, b: SearchResult) =>
+    a.document.relativePath.localeCompare(b.document.relativePath);
+  named.sort(byPath);
+  return {
+    named,
+    exact: exact.sort((a, b) => a.relativePath.localeCompare(b.relativePath)),
+    partial: partial
+      .sort((a, b) => b.matched - a.matched || byPath(a.result, b.result))
+      .map(({ result }) => result),
+  };
+}
+
+/**
+ * Files a summary request could mean. One clear match, or the one file whose
+ * full name the request writes out, is used directly; otherwise the user
+ * chooses, and nothing runs until they do.
  */
 export function summaryTarget(
   candidates: SearchResult[],
+  exact: DocumentRecord[] = [],
 ): DocumentRecord | null {
+  if (exact.length === 1) return exact[0];
   return candidates.length === 1 ? candidates[0].document : null;
 }
 

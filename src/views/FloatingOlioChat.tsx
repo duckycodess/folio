@@ -213,10 +213,11 @@ export function FloatingOlioChat({
   return (
     <div className="olio-chat">
       {!open && (
-        <div className="olio-chat-launcher">
+        <aside className="olio-chat-launcher" aria-label="Olio">
           {greeting && (
             <p className="olio-chat-greeting">
-              <strong>Hey, I&rsquo;m Olio.</strong> Ask about your files.
+              <strong>Hey, I&rsquo;m Olio.</strong> Let&rsquo;s find what you
+              need.
               <button
                 type="button"
                 className="icon-button olio-chat-greeting-dismiss"
@@ -239,7 +240,7 @@ export function FloatingOlioChat({
           >
             <OlioSprite state="idle" size={150} />
           </button>
-        </div>
+        </aside>
       )}
 
       {open && (

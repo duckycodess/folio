@@ -46,7 +46,7 @@ export interface Segment {
 }
 
 /** Case- and accent-insensitive, like the index (e.g. "nino" finds "Niño"). */
-function fold(value: string): string {
+export function fold(value: string): string {
   return value.normalize("NFD").replace(/\p{M}/gu, "").toLocaleLowerCase();
 }
 

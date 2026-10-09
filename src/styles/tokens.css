@@ -6,13 +6,13 @@
   --brand-ivory: #fffcf3;
   --brand-charcoal: #20231f;
 
-  --color-bg: #ffffff;
+  --color-bg: #faf9f5;
   --color-surface: #ffffff;
   --color-surface-muted: #faf7ee;
   --color-selected: #fff6d6;
-  --color-border: #ece8dc;
+  --color-border: #e8e9e2;
   --color-border-strong: #8a8c86;
-  --color-text: #20231f;
+  --color-text: #232620;
   --color-text-secondary: #5c5f59;
   --color-text-tertiary: #6b6e68;
   --color-text-on-gold: #20231f;
@@ -74,9 +74,12 @@
   --radius-xl: 18px;
   --radius-pill: 999px;
 
+  --topbar-height: 68px;
+  --page-gutter: 36px;
+
   --shadow-float: 0 8px 24px rgb(32 35 31 / 0.12);
 
-  --sidebar-width: 240px;
+  --sidebar-width: 222px;
   --sidebar-rail-width: 64px;
   --detail-width: 380px;
 

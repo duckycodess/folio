@@ -1668,6 +1668,37 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
       return explicitReferences();
     },
 
+    // No search model is ever installed in this fake, so the honest answers
+    // are "no active space" and a refused refresh, never invented AI rows.
+    async relationship_coverage(args) {
+      assertWorkspace(String(args.workspaceId));
+      return {
+        state: "noActiveSpace",
+        eligibleDocuments: 0,
+        indexedDocuments: indexedPaths().length,
+        pairsConsidered: 0,
+        pairsRemaining: 0,
+        overflowDocuments: 0,
+      };
+    },
+
+    async refresh_local_ai_index(args) {
+      assertWorkspace(String(args.workspaceId));
+      fail("modelNotInstalled", "No local embedding model is installed.");
+    },
+
+    async cancel_local_ai_refresh() {
+      return undefined;
+    },
+
+    async summarize_relationships() {
+      fail("modelNotInstalled", "No local generation model is installed.");
+    },
+
+    async explain_impact() {
+      fail("modelNotInstalled", "No local generation model is installed.");
+    },
+
     async list_duplicates(args) {
       assertWorkspace(String(args.workspaceId));
       return duplicateGroups();
