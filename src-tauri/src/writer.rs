@@ -10,6 +10,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use crate::collections;
 use crate::contracts::{ActionPlan, ActivityBatch, ActivityOperation, Approval, BatchResult, BatchStopReason, FileOperation, FileOperationKind as Kind, HistoryEntry, OperationStatus, PlanSource, UndoPreflight};
 use crate::db::NativeResult;
 use crate::error::{error, ErrorCode, FolioError};
@@ -404,6 +405,7 @@ pub fn apply_plan(conn: &mut Connection, root: &ScopedRoot, plan: &ActionPlan, a
             match delete_with_history(conn, root, &plan.id, index, document_id, relative_path, expected_content_hash, files, now) {
                 Ok(history_entry_id) => {
                     changed_paths.push(relative_path.clone());
+                    collections::best_effort(collections::follow_deletion(conn, &root.id, relative_path, &history_entry_id), relative_path);
                     attempts.push(AttemptOutcome::Succeeded { history_entry_id, completed_at: now });
                 }
                 Err(failure) => {
@@ -417,6 +419,9 @@ pub fn apply_plan(conn: &mut Connection, root: &ScopedRoot, plan: &ActionPlan, a
             Ok(record) => {
                 changed_paths.extend(record.before_path.iter().cloned());
                 changed_paths.extend(record.after_path.iter().cloned());
+                if let (Kind::Rename | Kind::Move, Some(from), Some(to)) = (&record.kind, &record.before_path, &record.after_path) {
+                    collections::best_effort(collections::follow_relocation(conn, &root.id, from, to), from);
+                }
                 match record_history(conn, &plan.id, index, &record, now) {
                     Ok(history_entry_id) => attempts.push(AttemptOutcome::Succeeded { history_entry_id, completed_at: now }),
                     Err(failure) => {
@@ -468,7 +473,7 @@ pub fn prune_history(conn: &Connection, workspace_id: &str, keep: usize) -> Nati
         "UPDATE history SET before_content = NULL, recoverable = 0 WHERE operation_kind IN ('edit','delete') AND recoverable = 1 AND plan_id IN (SELECT id FROM action_plans WHERE workspace_id = ?1 AND applied_at IS NOT NULL ORDER BY CAST(applied_at AS INTEGER) DESC, rowid DESC LIMIT -1 OFFSET ?2)",
         params![workspace_id, keep as i64],
     )?;
-    Ok(())
+    collections::purge_unrecoverable(conn)
 }
 
 const HISTORY_COLUMNS: &str = "h.id, h.plan_id, h.operation_index, h.applied_at, h.document_ref, h.before_path, h.after_path, h.before_hash, h.after_hash, h.recoverable, h.undone_at, h.operation_kind";
@@ -702,6 +707,13 @@ pub fn undo_plan(conn: &mut Connection, root: &ScopedRoot, plan_id: &str, confir
         match result {
             Ok(()) => {
                 conn.execute("UPDATE history SET undone_at = ?1 WHERE id = ?2", params![now.to_string(), entry.id])?;
+                let followed = match entry.operation_kind {
+                    Kind::Rename | Kind::Move => collections::follow_relocation(conn, &root.id, applied, entry.before_relative_path.as_deref().unwrap_or_default()),
+                    Kind::Delete => collections::follow_restore(conn, &entry.id),
+                    Kind::Create => collections::follow_removal(conn, &root.id, applied),
+                    Kind::Edit => Ok(()),
+                };
+                collections::best_effort(followed, applied);
                 changed_paths.extend(entry.before_relative_path.iter().cloned());
                 changed_paths.push(applied.to_owned());
                 undone.push(entry.id.clone());
@@ -1764,5 +1776,30 @@ mod tests {
         let report = { let operations = vec![create("notes/secret-body.md", "a body that should not be copied into plan storage")]; apply_with(&mut conn, &root, operations, &RealFileSystem) };
         let stored: String = conn.query_row("SELECT plan_json FROM action_plans WHERE id = ?1", [&report.batch.plan_id], |row| row.get(0)).unwrap();
         assert!(!stored.contains("should not be copied"));
+    }
+
+    #[test]
+    fn collections_follow_applied_renames_moves_and_deletions_and_their_undo() {
+        let (_folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let (plan_path, notes, study) = ("projects/project-plan.md", "meetings/meeting-notes.md", "notes/study-session.md");
+        let members = [plan_path, notes, study].map(|path| collections::KeptMember { document_id: id_of(&root, path), expected_content_hash: current(&conn, &root, path) });
+        let kept = collections::keep(&mut conn, &root, "Deadlines", &members, NOW).unwrap();
+        let paths = |conn: &Connection| -> Vec<(String, bool)> {
+            collections::get(conn, &root, &kept.id).unwrap().members.into_iter().map(|member| (member.relative_path, member.missing)).collect()
+        };
+
+        let operations = vec![
+            relocate(&conn, &root, plan_path, "projects/deadline-plan.md", true),
+            relocate(&conn, &root, notes, "archive/meeting-notes.md", false),
+            remove(&conn, &root, study),
+        ];
+        let report = apply_with(&mut conn, &root, operations, &RealFileSystem);
+        assert!(statuses(&report).iter().all(|status| *status == OperationStatus::Succeeded));
+        // The renamed and moved files are still members; the deleted one left until Undo.
+        assert_eq!(paths(&conn), [("archive/meeting-notes.md".to_owned(), false), ("projects/deadline-plan.md".to_owned(), false)]);
+
+        undo_all(&mut conn, &root, &report.batch.plan_id, &RealFileSystem).unwrap();
+        assert_eq!(paths(&conn), [(notes.to_owned(), false), (study.to_owned(), false), (plan_path.to_owned(), false)]);
     }
 }

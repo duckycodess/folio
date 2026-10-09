@@ -14,6 +14,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/006_activity.sql"),
     include_str!("../migrations/007_ai_relationships.sql"),
     include_str!("../migrations/008_ai_relationship_coverage.sql"),
+    // #78's collections, after #101's 007 and 008. `user_version` counts
+    // positions in this list, so a later migration is always appended.
+    include_str!("../migrations/009_collections.sql"),
 ];
 
 impl From<rusqlite::Error> for FolioError {

@@ -59,6 +59,7 @@ import { hasFilters, passesFilters } from "../domain/homeFilters";
 import { useWorkspace, type WorkspaceSourceKind } from "../app/useWorkspace";
 import { simulatedCode } from "../adapters/simulate";
 import { useDrafts } from "../app/drafts";
+import { useCollections } from "../app/useCollections";
 import { useOrganize } from "../app/useOrganize";
 import { RECOVERY } from "../app/recovery";
 import type { DocumentRecord } from "../domain/contracts";
@@ -132,6 +133,8 @@ export function AppShell() {
   const workspace = useWorkspace();
   const drafts = useDrafts();
   const relations = useRelationships(workspace);
+  // Collections follow Folio's own renames, moves and deletions natively.
+  const collections = useCollections(workspace);
   // AI connections: coverage and refresh for the active search model. A
   // refresh starts after Local Sync, an applied change or Undo, only when
   // that model is ready.
@@ -151,11 +154,14 @@ export function AppShell() {
   const afterFilesChanged = () => {
     relations.refresh();
     aiIndex.refresh();
+    collections.reload();
   };
   // Read whenever the folder changes, so Activity is current when opened.
-  // An Undo from Activity changes files too: re-read the index's links.
+  // An Undo from Activity changes files too: re-read the index's links and
+  // the collections.
   const activity = useActivity(workspace, afterFilesChanged);
-  // After Folio changes files: re-read the index's links and the history.
+  // After Folio changes files: re-read the index's links, the collections
+  // and the history.
   const filesChanged = () => {
     afterFilesChanged();
     activity.reload();
@@ -593,6 +599,7 @@ export function AppShell() {
                   {view === "home" && (
                     <HomeView
                       workspace={workspace}
+                      collections={collections}
                       onNavigate={setView}
                       searchRef={searchInput}
                       searchShortcut={searchShortcutLabel(platform)}
@@ -603,7 +610,11 @@ export function AppShell() {
                     />
                   )}
                   {view === "organize" && (
-                    <OrganizeView workspace={workspace} organize={organize} />
+                    <OrganizeView
+                      workspace={workspace}
+                      organize={organize}
+                      collections={collections}
+                    />
                   )}
                   {view === "graph" && (
                     <GraphView workspace={workspace} relations={relations} />

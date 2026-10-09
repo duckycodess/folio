@@ -72,6 +72,16 @@ pub fn filename_suggestions(conn: &Connection, root: &ScopedRoot) -> NativeResul
     Ok(filenames)
 }
 
+/// Analyzing a collection: filename suggestions for its members only, and the
+/// duplicate groups that include one of them (with every copy, wherever it is).
+pub fn limit_to(mut suggestions: OrganizationSuggestions, members: Option<&HashSet<String>>) -> OrganizationSuggestions {
+    if let Some(members) = members {
+        suggestions.filenames.retain(|suggestion| members.contains(&suggestion.document_id));
+        suggestions.duplicate_groups.retain(|group| group.documents.iter().any(|document| members.contains(&document.id)));
+    }
+    suggestions
+}
+
 #[cfg(test)]
 pub fn suggestions(conn: &Connection, root: &ScopedRoot) -> NativeResult<OrganizationSuggestions> {
     let filenames = filename_suggestions(conn, root)?;
@@ -104,5 +114,25 @@ mod tests {
         assert!(matches!(&plan.operation, FileOperation::Rename { expected_content_hash, .. } if expected_content_hash.starts_with("sha256:")));
         assert!(result.filenames.iter().all(|suggestion| !suggestion.suggested_relative_path.ends_with(".pdf")));
         assert_eq!(listing(folder.path()), before);
+    }
+
+    #[test]
+    fn analyzing_a_collection_limits_suggestions_to_its_members() {
+        let (_folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let all = suggestions(&conn, &root).unwrap();
+        assert!(all.filenames.len() > 1);
+        let plan = crate::index::tests::id_of(&root, "projects/project-plan.md");
+        let members = HashSet::from([plan.clone()]);
+        let limited = limit_to(suggestions(&conn, &root).unwrap(), Some(&members));
+        assert!(limited.filenames.iter().all(|suggestion| suggestion.document_id == plan));
+        assert_eq!(limited.filenames.len(), 1);
+        // The plan's identical copy outside the collection is still shown with it.
+        assert_eq!(limited.duplicate_groups.len(), 1);
+        assert_eq!(limited.duplicate_groups[0].documents.len(), 2);
+
+        let elsewhere = HashSet::from([crate::index::tests::id_of(&root, "personal/grocery-list.md")]);
+        assert!(limit_to(suggestions(&conn, &root).unwrap(), Some(&elsewhere)).duplicate_groups.is_empty());
+        assert_eq!(limit_to(suggestions(&conn, &root).unwrap(), None).filenames.len(), all.filenames.len());
     }
 }

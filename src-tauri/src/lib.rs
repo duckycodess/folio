@@ -3,6 +3,7 @@ mod ai_boundary;
 mod ai_discovery;
 #[cfg(test)]
 mod ai_discovery_tests;
+mod collections;
 mod config_guard;
 mod contract_fixtures;
 mod contracts;
@@ -57,6 +58,8 @@ use index::{
     IndexedDocument, PendingChunk, Relationship, ScanOptions, ScanSummary, SearchResult,
     VectorCandidate,
 };
+use collections::{KeptMember, VirtualCollection};
+use folio_core::collections::{NamingOutcome, SuggestedCollection};
 use organize::OrganizationSuggestions;
 use plan::PlanRegistry;
 use identity::media_type_for_path;
@@ -1370,18 +1373,87 @@ async fn prepare_passage_edit(
     writer::passage_edit(&*state.index()?, &root, &document_id, &before, &after)
 }
 
+/// Exact duplicates and filename suggestions for the folder, or only for the
+/// members of one collection when `collection_id` is given.
 #[tauri::command]
 async fn organization_suggestions(
     state: State<'_, Folio>,
     workspace_id: String,
+    collection_id: Option<String>,
 ) -> Result<OrganizationSuggestions, FolioError> {
     let root = state.root(&workspace_id)?;
-    let (filenames, candidates) = {
+    let (filenames, candidates, members) = {
         let index = state.index()?;
-        (organize::filename_suggestions(&index, &root)?, index::duplicate_candidates(&index, &workspace_id)?)
+        let members = collection_id.as_deref().map(|id| collections::present_member_ids(&index, &root, id)).transpose()?;
+        (organize::filename_suggestions(&index, &root)?, index::duplicate_candidates(&index, &workspace_id)?, members)
     };
     // Duplicate candidates are confirmed byte for byte without holding the index.
-    blocking(move || OrganizationSuggestions { duplicate_groups: index::verify_duplicates(&root.path, candidates), filenames }).await
+    blocking(move || {
+        let suggestions = OrganizationSuggestions { duplicate_groups: index::verify_duplicates(&root.path, candidates), filenames };
+        organize::limit_to(suggestions, members.as_ref())
+    })
+    .await
+}
+
+/* ------------------------------------------- virtual collections (#78, ADR 0016) */
+
+#[tauri::command]
+async fn list_collections(state: State<'_, Folio>, workspace_id: String) -> Result<Vec<VirtualCollection>, FolioError> {
+    let root = state.root(&workspace_id)?;
+    collections::list(&*state.index()?, &root)
+}
+
+/// Keeps a suggested collection. No file changes, so there is no plan or approval;
+/// a member whose file changed since the analysis is refused.
+#[tauri::command]
+async fn keep_collection(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    name: String,
+    members: Vec<KeptMember>,
+) -> Result<VirtualCollection, FolioError> {
+    let root = state.root(&workspace_id)?;
+    collections::keep(&mut *state.index()?, &root, &name, &members, now_ms())
+}
+
+#[tauri::command]
+async fn rename_collection(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    collection_id: String,
+    name: String,
+) -> Result<VirtualCollection, FolioError> {
+    let root = state.root(&workspace_id)?;
+    collections::rename(&*state.index()?, &root, &collection_id, &name, now_ms())
+}
+
+/// Removes the collection; its files stay where they are.
+#[tauri::command]
+async fn remove_collection(state: State<'_, Folio>, workspace_id: String, collection_id: String) -> Result<(), FolioError> {
+    state.root(&workspace_id)?;
+    collections::remove(&*state.index()?, &workspace_id, &collection_id)
+}
+
+#[tauri::command]
+async fn add_collection_members(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    collection_id: String,
+    document_ids: Vec<String>,
+) -> Result<VirtualCollection, FolioError> {
+    let root = state.root(&workspace_id)?;
+    collections::add_members(&mut *state.index()?, &root, &collection_id, &document_ids, now_ms())
+}
+
+#[tauri::command]
+async fn remove_collection_members(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    collection_id: String,
+    document_ids: Vec<String>,
+) -> Result<VirtualCollection, FolioError> {
+    let root = state.root(&workspace_id)?;
+    collections::remove_members(&*state.index()?, &root, &collection_id, &document_ids, now_ms())
 }
 
 
@@ -1998,12 +2070,9 @@ fn load_corpus(
     let mut text_documents = Vec::new();
     let mut skipped_documents = Vec::new();
     for row in metadata {
-        let extension = Path::new(&row.relative_path)
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if !matches!(extension.as_str(), "txt" | "md") {
+        // A text-based PDF is read through its extracted text; offsets and the
+        // hash are the ones `read_document` reports, so citations open in the reader.
+        if media_type_for_path(&row.relative_path).is_none() {
             continue;
         }
         let document_text = match workspace::read_text(&root.path, &row.relative_path) {
@@ -2220,19 +2289,13 @@ where
     with_embedding_provider_guarded(app, embedding_state, || Ok(()), work)
 }
 
-/// The text documents the provider snapshot reads, as (path, size, mtime).
+/// The documents the provider snapshot reads (TXT, Markdown and text-based
+/// PDFs), as (path, size, mtime).
 fn corpus_fingerprint(root: &ScopedRoot) -> Result<Vec<(String, u64, Option<u64>)>, FolioError> {
     let mut fingerprint = workspace::list_documents(root)?
         .documents
         .into_iter()
-        .filter(|row| {
-            let extension = Path::new(&row.relative_path)
-                .extension()
-                .and_then(|value| value.to_str())
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            matches!(extension.as_str(), "txt" | "md")
-        })
+        .filter(|row| media_type_for_path(&row.relative_path).is_some())
         .map(|row| (row.relative_path, row.size_bytes, row.modified_at_ms))
         .collect::<Vec<_>>();
     fingerprint.sort();
@@ -2802,6 +2865,192 @@ async fn interpret_request(
     .await?)
 }
 
+/// The running Organize suggestion request (#78). A new request supersedes it
+/// and waits for it to end, and Stop ends it: before it takes the generation
+/// slot, or by cancelling the generation it holds. Stop never cancels another
+/// feature's generation.
+#[derive(Clone, Default)]
+struct SuggestionRuns {
+    current: Arc<Mutex<Option<SuggestionRun>>>,
+    /// Held for a whole request, so one ends before the next starts.
+    serial: Arc<Mutex<()>>,
+}
+
+struct SuggestionRun {
+    stop: Arc<AtomicBool>,
+    /// The generation this run holds, once it has the slot.
+    generation: Option<Arc<AtomicBool>>,
+}
+
+fn stop_suggestion_run(runs: &SuggestionRuns, generation_state: &GenerationState) {
+    let Some(run) = runs.current.lock().ok().and_then(|mut current| current.take()) else { return };
+    run.stop.store(true, Ordering::Release);
+    let Some(generation) = run.generation else { return };
+    if let Ok(guard) = generation_state.lock() {
+        if guard.active_cancel.as_ref().is_some_and(|active| Arc::ptr_eq(active, &generation)) {
+            generation.store(true, Ordering::Release);
+            if let Some(slot) = guard.slot.as_ref() {
+                let _ = slot.provider.cancel_active();
+            }
+        }
+    }
+}
+
+/// Stops the previous run and registers a new one; drop the guard to end it.
+fn begin_suggestion_run<'a>(runs: &'a SuggestionRuns, generation_state: &GenerationState) -> SuggestionRunGuard<'a> {
+    stop_suggestion_run(runs, generation_state);
+    let stop = Arc::new(AtomicBool::new(false));
+    if let Ok(mut current) = runs.current.lock() {
+        *current = Some(SuggestionRun { stop: stop.clone(), generation: None });
+    }
+    SuggestionRunGuard { runs, stop }
+}
+
+struct SuggestionRunGuard<'a> {
+    runs: &'a SuggestionRuns,
+    stop: Arc<AtomicBool>,
+}
+
+impl SuggestionRunGuard<'_> {
+    fn stopped(&self) -> bool {
+        self.stop.load(Ordering::Acquire)
+    }
+
+    /// Records the generation this run now holds. False if the run was stopped
+    /// meanwhile, in which case the caller gives the slot back unused.
+    fn hold(&self, generation: &Arc<AtomicBool>) -> bool {
+        if let Ok(mut current) = self.runs.current.lock() {
+            if let Some(run) = current.as_mut().filter(|run| Arc::ptr_eq(&run.stop, &self.stop)) {
+                run.generation = Some(generation.clone());
+            }
+        }
+        !self.stopped()
+    }
+}
+
+impl Drop for SuggestionRunGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut current) = self.runs.current.lock() {
+            if current.as_ref().is_some_and(|run| Arc::ptr_eq(&run.stop, &self.stop)) {
+                *current = None;
+            }
+        }
+    }
+}
+
+fn suggestion_stopped() -> FolioError {
+    error(ErrorCode::Cancelled, "These suggestions were stopped.")
+}
+
+/// Runs `work` with the generation slot inside a suggestion run. `Ok(None)`
+/// when the run was stopped before the work could start.
+fn generate_in_run<T>(
+    app: &AppHandle,
+    generation_state: &GenerationState,
+    run: &SuggestionRunGuard<'_>,
+    work: impl FnOnce(&dyn GenerationProvider, &AtomicBool) -> T,
+) -> Result<Option<T>, NativeProviderError> {
+    if run.stopped() {
+        return Ok(None);
+    }
+    // The lease gives the slot back when it is dropped, on every path.
+    let lease = acquire_generation(app, generation_state)?;
+    Ok(run.hold(&lease.claim.cancel).then(|| work(lease.provider.as_ref(), lease.claim.cancel.as_ref())))
+}
+
+/// Stops the running Organize suggestions, and only their own generation.
+#[tauri::command]
+fn stop_suggestions(runs: State<'_, SuggestionRuns>, generation_state: State<'_, GenerationState>) {
+    stop_suggestion_run(runs.inner(), generation_state.inner());
+}
+
+/// Organize's suggested collections. Groups need only the embedding model;
+/// names need the generation model too, and are display text the user may edit.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CollectionSuggestions {
+    /// `grouped`, or `embeddingModelMissing` when nothing could be grouped.
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    space_fingerprint: Option<String>,
+    analyzed_document_count: usize,
+    /// More documents than one analysis compares; the rest were not analyzed.
+    truncated: bool,
+    /// `named`, `cancelled`, `generationModelMissing`, `failed`, or `notNeeded` without groups.
+    naming: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    naming_error: Option<FolioError>,
+    groups: Vec<SuggestedCollection>,
+}
+
+#[tauri::command]
+async fn suggest_collections(
+    app: AppHandle,
+    state: State<'_, Folio>,
+    index_state: State<'_, IndexState>,
+    embedding_state: State<'_, EmbeddingState>,
+    generation_state: State<'_, GenerationState>,
+    runs: State<'_, SuggestionRuns>,
+    workspace_id: String,
+) -> Result<CollectionSuggestions, FolioError> {
+    let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
+    let index_state = index_state.inner().clone();
+    let embedding_state = embedding_state.inner().clone();
+    let generation_state = generation_state.inner().clone();
+    let runs = runs.inner().clone();
+    Ok(run_blocking::<_, FolioError, _>(move || {
+        let run = begin_suggestion_run(&runs, &generation_state);
+        let _serial = runs.serial.lock().map_err(|_| unavailable_state())?;
+        if run.stopped() {
+            return Err(suggestion_stopped());
+        }
+        let snapshot = ensure_snapshot(&app, &embedding_state, &root, &index_state)?;
+        let Some(space) = snapshot.embedding_space.as_ref() else {
+            return Ok(CollectionSuggestions {
+                status: "embeddingModelMissing",
+                space_fingerprint: None,
+                analyzed_document_count: 0,
+                truncated: false,
+                naming: "notNeeded",
+                naming_error: None,
+                groups: Vec::new(),
+            });
+        };
+        let (chunks, vectors) = snapshot.retriever.vector_index.indexed(space).ok_or_else(|| NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::EmbeddingSpaceMismatch,
+            message: "The local index has no vectors for the selected embedding model.".into(),
+            detail: None,
+        })?;
+        let (mut groups, analyzed_document_count, truncated) =
+            folio_core::collections::group_documents(&snapshot.documents, chunks, vectors, space).map_err(native_error)?;
+        let (naming, naming_error) = if groups.is_empty() {
+            ("notNeeded", None)
+        } else {
+            match generate_in_run(&app, &generation_state, &run, |provider, cancel| folio_core::collections::name_groups(provider, &mut groups, cancel)) {
+                Err(failure) if failure.code == folio_core::contracts::ProviderErrorCode::ModelNotInstalled => ("generationModelMissing", None),
+                Err(failure) => ("failed", Some(FolioError::from(failure))),
+                Ok(None) => return Err(suggestion_stopped()),
+                Ok(Some(Ok(NamingOutcome::Named))) => ("named", None),
+                Ok(Some(Ok(NamingOutcome::Cancelled))) => ("cancelled", None),
+                Ok(Some(Err(failure))) => ("failed", Some(FolioError::from(native_error(failure)))),
+            }
+        };
+        if run.stopped() {
+            return Err(suggestion_stopped());
+        }
+        Ok(CollectionSuggestions {
+            status: "grouped",
+            space_fingerprint: Some(folio_core::retrieval::space_fingerprint(space)),
+            analyzed_document_count,
+            truncated,
+            naming,
+            naming_error,
+            groups,
+        })
+    })
+    .await?)
+}
+
 /// Signals whoever holds the generation slot (an ordinary request or a
 /// Model Lab run — both set `active_cancel`) to stop, and waits up to 10
 /// seconds (the same bound the exit hook gives a lab run) for them to
@@ -2880,6 +3129,40 @@ fn unload_generation_now_with_limit(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn stopping_suggestions_cancels_only_their_own_generation() {
+        let runs = SuggestionRuns::default();
+        let generation_state = GenerationState::default();
+        let unrelated = Arc::new(AtomicBool::new(false));
+        generation_state.lock().unwrap().active_cancel = Some(unrelated.clone());
+
+        // Stopped before it took the slot: the unrelated generation keeps running.
+        let first = begin_suggestion_run(&runs, &generation_state);
+        stop_suggestion_run(&runs, &generation_state);
+        assert!(first.stopped());
+        assert!(!unrelated.load(Ordering::Acquire));
+        assert!(!first.hold(&Arc::new(AtomicBool::new(false))), "a stopped run gives the slot back unused");
+        drop(first);
+
+        // Holding the slot: Stop cancels exactly that generation.
+        let ours = Arc::new(AtomicBool::new(false));
+        generation_state.lock().unwrap().active_cancel = Some(ours.clone());
+        let second = begin_suggestion_run(&runs, &generation_state);
+        assert!(second.hold(&ours));
+        stop_suggestion_run(&runs, &generation_state);
+        assert!(ours.load(Ordering::Acquire) && second.stopped());
+        drop(second);
+
+        // A new run supersedes the one before it.
+        let third = begin_suggestion_run(&runs, &generation_state);
+        let fourth = begin_suggestion_run(&runs, &generation_state);
+        assert!(third.stopped() && !fourth.stopped());
+        drop(third);
+        assert!(runs.current.lock().unwrap().is_some(), "ending a superseded run leaves the new one registered");
+        drop(fourth);
+        assert!(runs.current.lock().unwrap().is_none());
+    }
 
     #[test]
     fn exit_does_not_wait_forever_for_a_request_that_never_releases_the_slot() {
@@ -3040,6 +3323,34 @@ mod tests {
     }
 
     #[test]
+    fn corpus_loading_reads_text_pdfs_and_markdown_files() {
+        let root = tempfile::tempdir().unwrap();
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/documents");
+        fs::copy(fixtures.join("research/consent-form-guide.pdf"), root.path().join("guide.pdf")).unwrap();
+        fs::write(root.path().join("notes.markdown"), "# Notes\n\nConsent forms are due Friday.").unwrap();
+        fs::write(root.path().join("ignored.docx"), "not a Folio document").unwrap();
+        let scoped_root = ScopedRoot { id: "test-workspace".into(), path: root.path().to_path_buf() };
+
+        let (documents, contents, chunks, skipped) = load_corpus(&scoped_root).unwrap();
+        assert!(skipped.is_empty(), "{:?}", skipped.iter().map(|item| &item.reason).collect::<Vec<_>>());
+        let mut paths = documents.iter().map(|document| (document.relative_path.as_str(), document.media_type.as_str())).collect::<Vec<_>>();
+        paths.sort();
+        assert_eq!(paths, [("guide.pdf", "application/pdf"), ("notes.markdown", "text/markdown")]);
+        let pdf = documents.iter().find(|document| document.relative_path == "guide.pdf").unwrap();
+        let read = workspace::read_text(root.path(), "guide.pdf").unwrap();
+        // The same revision and text the reader shows, so a citation lands in the right place.
+        assert_eq!(pdf.content_hash.as_deref(), Some(read.content_hash.as_str()));
+        assert_eq!(contents[&pdf.id], read.content);
+        for chunk in chunks.iter().filter(|chunk| chunk.document_id == pdf.id) {
+            assert_eq!(&read.content[chunk.start..chunk.end], chunk.text);
+            assert_eq!(chunk.content_hash, read.content_hash);
+        }
+        assert!(chunks.iter().any(|chunk| chunk.document_id == pdf.id));
+        let fingerprint = corpus_fingerprint(&scoped_root).unwrap();
+        assert_eq!(fingerprint.iter().map(|(path, ..)| path.as_str()).collect::<Vec<_>>(), ["guide.pdf", "notes.markdown"]);
+    }
+
+    #[test]
     fn summary_record_preserves_the_native_document_id() {
         let root = ScopedRoot {
             id: "workspace".into(),
@@ -3163,6 +3474,7 @@ mod tests {
             ("IndexState", TypeId::of::<IndexState>()),
             ("EmbeddingState", TypeId::of::<EmbeddingState>()),
             ("GenerationState", TypeId::of::<GenerationState>()),
+            ("SuggestionRuns", TypeId::of::<SuggestionRuns>()),
             ("InstallState", TypeId::of::<InstallState>()),
             ("LabState", TypeId::of::<lab_commands::LabState>()),
             ("Folio", TypeId::of::<Folio>()),
@@ -3222,6 +3534,7 @@ pub fn run() {
         .manage(IndexState::default())
         .manage(EmbeddingState::default())
         .manage(GenerationState::default())
+        .manage(SuggestionRuns::default())
         .manage(InstallState::default())
         // Each managed state must be its own type (see
         // `every_managed_state_has_its_own_type`).
@@ -3269,6 +3582,14 @@ pub fn run() {
             ripple_impacts,
             prepare_passage_edit,
             organization_suggestions,
+            list_collections,
+            keep_collection,
+            rename_collection,
+            remove_collection,
+            add_collection_members,
+            remove_collection_members,
+            suggest_collections,
+            stop_suggestions,
             list_models,
             verify_model,
             install_model,
