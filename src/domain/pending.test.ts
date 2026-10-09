@@ -5,28 +5,13 @@ import { describe, it } from "vitest";
  * mock that returns a successful write would make the suite green without any
  * file ever changing, which is exactly the claim this repository must not make.
  *
- * The native writer is https://github.com/duckycodess/folio/issues/5. The local
- * model adapters are issues #4 and #8.
+ * The local model adapters are issues #4 and #8.
  */
-describe("pending: native write engine (issue #5)", () => {
-  it.todo(
-    "applies an approved edit to a real temporary file and refreshes the index",
-  );
-  it.todo(
-    "leaves the original file untouched when the write fails midway and reports no success",
-  );
-  it.todo(
-    "keeps earlier successful operations durable when a later one fails on disk",
-  );
-  it.todo(
-    "stops before the next operation after cancellation and keeps the finished change",
-  );
-  it.todo(
-    "restores a real batch through Undo only when every file still matches what Folio saved",
-  );
-  it.todo("refuses a rename when the destination exists on disk");
-  it.todo("records recoverable history that survives an application restart");
-});
+// The native write engine (issue #5) is no longer pending: applying an approved
+// edit, keeping earlier successes when a later write fails, cancellation,
+// refusing an existing destination, whole-batch Undo and history that survives
+// a restart are exercised against real temporary folders in
+// `src-tauri/src/writer.rs`.
 
 describe("pending: local providers (issues #4 and #8)", () => {
   it.todo(

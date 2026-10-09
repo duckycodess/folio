@@ -148,6 +148,15 @@ fn extract_pdf(bytes: &[u8], stream_limit: usize) -> NativeResult<Extraction> {
     Ok(Extraction::Text(ExtractedText { text, pages: ranges, skipped_pages }))
 }
 
+/// The line containing `start..end`, without its line ending (LF or CRLF) or
+/// surrounding whitespace. Used for Ripple passages and edit excerpts.
+pub fn line_bounds(text: &str, start: usize, end: usize) -> (usize, usize) {
+    let from = text[..start].rfind('\n').map_or(0, |newline| newline + 1);
+    let to = text[end..].find('\n').map_or(text.len(), |newline| end + newline);
+    let line = &text[from..to];
+    (from + (line.len() - line.trim_start().len()), to - (line.len() - line.trim_end().len()))
+}
+
 /// First Markdown H1, else the first short non-empty line.
 pub fn title_of(text: &str) -> Option<String> {
     let heading = text.lines().find_map(|line| line.strip_prefix("# ").map(str::trim));

@@ -58,7 +58,7 @@ _Avoid_: Authorization of future or changed plans.
 **Folio Ripple**: The impact review produced for a proposed edit, identifying related documents and supporting passages that may need attention.
 _Avoid_: Automatic propagation or a guarantee of comprehensive impact coverage.
 
-**History Entry**: A recoverable record of an applied file change.
+**History Entry**: A record of an applied file change, recoverable until Folio stops keeping the content needed to reverse it.
 _Avoid_: A record of an unsaved preview.
 
 **Undo**: A user-requested reversal of an applied change after checking the current file state.

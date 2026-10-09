@@ -7,8 +7,11 @@ mod error;
 mod extract;
 mod identity;
 mod index;
+mod organize;
 mod plan;
+mod ripple;
 mod workspace;
+mod writer;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -34,14 +37,16 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
-use contracts::{ActionPlan, Approval, FileOperation, ImpactCandidate};
+use contracts::{ActionPlan, Approval, FileOperation, HistoryEntry, ImpactCandidate, UndoPreflight};
 use error::{error, ErrorCode, FolioError};
 use index::{
     ChunkVector, DuplicateGroup, EmbeddingSpace, ExplicitReference, IndexProgress,
     IndexedDocument, PendingChunk, ScanSummary, SearchResult, VectorCandidate,
 };
+use organize::OrganizationSuggestions;
 use plan::PlanRegistry;
 use identity::media_type_for_path;
+use writer::{ApplyReport, RealFileSystem, UndoReport};
 use workspace::{
     DocumentListing, DocumentText, KnownWorkspace, ScopedRoot, WorkspaceInfo, WorkspaceRegistry,
 };
@@ -53,24 +58,27 @@ const PLAN_LIFETIME_MS: i64 = 5 * 60 * 1000;
 
 struct Folio {
     workspaces: Mutex<WorkspaceRegistry>,
-    plans: Mutex<PlanRegistry>,
+    plans: Arc<Mutex<PlanRegistry>>,
     /// The persistent index in the OS application-data directory.
     index: Mutex<Connection>,
     index_path: PathBuf,
     /// One scan at a time; a second request waits and then finds little to do.
     scanning: Arc<Mutex<()>>,
     cancel_indexing: Arc<AtomicBool>,
+    /// Stops an apply before its next operation; the running one finishes.
+    cancel_apply: Arc<AtomicBool>,
 }
 
 impl Folio {
     fn open(index_path: PathBuf) -> Result<Self, FolioError> {
         Ok(Self {
             workspaces: Mutex::new(WorkspaceRegistry::new()),
-            plans: Mutex::new(PlanRegistry::new()),
+            plans: Arc::new(Mutex::new(PlanRegistry::new())),
             index: Mutex::new(db::open(&index_path)?),
             index_path,
             scanning: Arc::new(Mutex::new(())),
             cancel_indexing: Arc::new(AtomicBool::new(false)),
+            cancel_apply: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -309,16 +317,25 @@ async fn prepare_plan(
 ) -> Result<ActionPlan, FolioError> {
     let workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
     let root = workspaces.resolve(&workspace_id)?;
+    // Ripple evidence comes from the index and each edit's diff unless the caller
+    // supplies it (for example with the exact phrase an interpreter replaced).
+    let impacts = match impacts {
+        Some(impacts) => impacts,
+        None => ripple::plan_impacts(&*state.index()?, &root, &operations)?,
+    };
     let mut plans = state.plans.lock().map_err(|_| unavailable_state())?;
     let now = now_ms();
-    let plan = plans.prepare(
-        &workspace_id,
-        operations,
-        impacts.unwrap_or_default(),
-        now,
-        PLAN_LIFETIME_MS,
-    )?;
+    let plan = plans.prepare(&workspace_id, operations, impacts, now, PLAN_LIFETIME_MS)?;
     plan::preflight_plan(&root.path, &plan, now)?;
+    Ok(plan)
+}
+
+/// A plan identity is only honoured in the workspace it was prepared for.
+fn plan_in_workspace(plans: &PlanRegistry, plan_id: &str, workspace_id: &str) -> Result<ActionPlan, FolioError> {
+    let plan = plans.plan(plan_id)?.clone();
+    if plan.workspace_id != workspace_id {
+        return Err(error(ErrorCode::PlanUnknown, "That preview belongs to a different folder.").with_detail("planId", plan_id));
+    }
     Ok(plan)
 }
 
@@ -334,22 +351,131 @@ async fn approve_plan(
     let workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
     workspaces.resolve(&workspace_id)?;
     let mut plans = state.plans.lock().map_err(|_| unavailable_state())?;
+    plan_in_workspace(&plans, &plan_id, &workspace_id)?;
     plans.approve(&plan_id, &plan_digest, now_ms())
 }
 
-/// The native writer is issue #5. Until it exists this refuses, rather than
-/// reporting a save the filesystem never made.
+/// Applies an approved plan through the native writer. The approval, digest, expiry
+/// and every target are checked again first; each operation's outcome is durable, and
+/// the plan is retired so its approval cannot be used twice. It runs off the async
+/// workers on its own index connection: waiting for a running scan, writing files and
+/// re-indexing them can take a while.
 #[tauri::command]
 async fn apply_plan(
     state: State<'_, Folio>,
     workspace_id: String,
     plan_id: String,
-) -> Result<(), FolioError> {
-    let workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
-    let root = workspaces.resolve(&workspace_id)?;
-    let plans = state.plans.lock().map_err(|_| unavailable_state())?;
-    plans.assert_can_apply(&root.path, &plan_id, now_ms())?;
-    Err(plan::apply_not_implemented(&plan_id))
+) -> Result<ApplyReport, FolioError> {
+    let root = state.root(&workspace_id)?;
+    let (plans, scanning, cancel, index_path) = (state.plans.clone(), state.scanning.clone(), state.cancel_apply.clone(), state.index_path.clone());
+    blocking(move || -> Result<ApplyReport, FolioError> {
+        // A scan must not read files halfway through a batch. Waiting for it comes first,
+        // so the plan registry is not held meanwhile and expiry is judged after the wait.
+        let _scanning = scanning.lock().map_err(|_| unavailable_state())?;
+        let (plan, approval, now) = {
+            let plans = plans.lock().map_err(|_| unavailable_state())?;
+            let plan = plan_in_workspace(&plans, &plan_id, &workspace_id)?;
+            let now = now_ms();
+            plans.assert_can_apply(&root.path, &plan_id, now)?;
+            let approval = plans.approval(&plan_id).cloned().ok_or_else(|| {
+                error(ErrorCode::ApprovalRequired, "Approve this exact plan before any file changes.").with_detail("planId", plan_id.as_str())
+            })?;
+            (plan, approval, now)
+        };
+        // Applies are serialized by the scan lock, and an applied plan is refused by its
+        // durable record, so the registry need not stay locked while files are written.
+        cancel.store(false, Ordering::SeqCst);
+        let report = writer::apply_plan(&mut db::open(&index_path)?, &root, &plan, &approval, now, &RealFileSystem, &cancel)?;
+        plans.lock().map_err(|_| unavailable_state())?.finish(&plan_id);
+        Ok(report)
+    })
+    .await?
+}
+
+/// Stops a running apply before its next operation. Finished changes are kept.
+#[tauri::command]
+fn cancel_apply(state: State<'_, Folio>) {
+    state.cancel_apply.store(true, Ordering::SeqCst);
+}
+
+/// The Undo preview: what would be reversed and anything blocking it. Writes nothing.
+#[tauri::command]
+async fn preview_undo(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    plan_id: String,
+) -> Result<UndoPreflight, FolioError> {
+    let root = state.root(&workspace_id)?;
+    writer::preview_undo(&*state.index()?, &root, &plan_id)
+}
+
+/// Reverses an applied plan. `entry_ids` must be exactly those of the preview the user
+/// confirmed; if anything changed since, nothing is undone.
+#[tauri::command]
+async fn undo_plan(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    plan_id: String,
+    entry_ids: Vec<String>,
+) -> Result<UndoReport, FolioError> {
+    let root = state.root(&workspace_id)?;
+    let (scanning, index_path) = (state.scanning.clone(), state.index_path.clone());
+    blocking(move || {
+        let _scanning = scanning.lock().map_err(|_| unavailable_state())?;
+        writer::undo_plan(&mut db::open(&index_path)?, &root, &plan_id, &entry_ids, now_ms(), &RealFileSystem)
+    })
+    .await?
+}
+
+#[tauri::command]
+async fn list_history(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    limit: Option<usize>,
+) -> Result<Vec<HistoryEntry>, FolioError> {
+    state.root(&workspace_id)?;
+    writer::list_history(&*state.index()?, &workspace_id, limit.unwrap_or(100))
+}
+
+/// Ripple for an explicit phrase, e.g. the value an interpreter knows it replaced.
+#[tauri::command]
+async fn ripple_impacts(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    document_id: String,
+    replaced_text: String,
+) -> Result<Vec<ImpactCandidate>, FolioError> {
+    state.root(&workspace_id)?;
+    let index = state.index()?;
+    let document = index::get_document(&index, &workspace_id, &document_id)?;
+    ripple::impacts(&index, &workspace_id, &document, &replaced_text)
+}
+
+/// Builds the edit operation that replaces one exact passage of a document.
+#[tauri::command]
+async fn prepare_passage_edit(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    document_id: String,
+    before: String,
+    after: String,
+) -> Result<FileOperation, FolioError> {
+    let root = state.root(&workspace_id)?;
+    writer::passage_edit(&*state.index()?, &root, &document_id, &before, &after)
+}
+
+#[tauri::command]
+async fn organization_suggestions(
+    state: State<'_, Folio>,
+    workspace_id: String,
+) -> Result<OrganizationSuggestions, FolioError> {
+    let root = state.root(&workspace_id)?;
+    let (filenames, candidates) = {
+        let index = state.index()?;
+        (organize::filename_suggestions(&index, &root)?, index::duplicate_candidates(&index, &workspace_id)?)
+    };
+    // Duplicate candidates are confirmed byte for byte without holding the index.
+    blocking(move || OrganizationSuggestions { duplicate_groups: index::verify_duplicates(&root.path, candidates), filenames }).await
 }
 
 
@@ -1467,6 +1593,13 @@ pub fn run() {
             prepare_plan,
             approve_plan,
             apply_plan,
+            cancel_apply,
+            preview_undo,
+            undo_plan,
+            list_history,
+            ripple_impacts,
+            prepare_passage_edit,
+            organization_suggestions,
             list_models,
             verify_model,
             install_model,
