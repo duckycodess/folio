@@ -1429,6 +1429,28 @@ struct GenerationStateInner {
     /// Set while the llama.cpp runtime is reinstalled, so no request starts a
     /// server from the directory being replaced.
     runtime_installing: bool,
+    /// How many unloads are waiting for the slot's holder. While any is, no
+    /// request or lab run may claim the slot, so an unload never cancels work
+    /// that started after it was asked for.
+    unloading: usize,
+}
+
+/// Marks an unload in progress for as long as it lives, on every exit path.
+struct UnloadingMark(GenerationState);
+
+impl UnloadingMark {
+    fn new(guard: &mut GenerationStateInner, generation_state: &GenerationState) -> Self {
+        guard.unloading += 1;
+        Self(generation_state.clone())
+    }
+}
+
+impl Drop for UnloadingMark {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.0.lock() {
+            guard.unloading = guard.unloading.saturating_sub(1);
+        }
+    }
 }
 
 /// What is using the local generation model.
@@ -2466,6 +2488,13 @@ fn ensure_slot_free(guard: &GenerationStateInner) -> Result<(), NativeProviderEr
             detail: guard.holder.map(|holder| holder.as_str().into()),
         });
     }
+    if guard.unloading > 0 {
+        return Err(NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
+            message: "Folio is stopping the local AI model. Try again in a moment.".into(),
+            detail: None,
+        });
+    }
     if guard.runtime_installing {
         return Err(NativeProviderError {
             code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
@@ -2808,14 +2837,26 @@ fn unload_generation_now_with_limit(
     limit: Duration,
 ) -> Result<(), NativeProviderError> {
     let deadline = Instant::now() + limit;
+    let unavailable = || NativeProviderError {
+        code: folio_core::contracts::ProviderErrorCode::IoError,
+        message: "The local generation state is unavailable.".into(),
+        detail: None,
+    };
+    let _unloading = {
+        let mut guard = generation_state.lock().map_err(|_| unavailable())?;
+        UnloadingMark::new(&mut guard, generation_state)
+    };
     loop {
-        let mut guard = generation_state.lock().map_err(|_| NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::IoError,
-            message: "The local generation state is unavailable.".into(),
-            detail: None,
-        })?;
+        let mut guard = generation_state.lock().map_err(|_| unavailable())?;
         if let Some(cancel) = guard.active_cancel.as_ref() {
+            // As `cancel_generation` does: the flag, then interrupt a holder
+            // blocked waiting on llama-server, which only checks the flag once
+            // a read returns. The slot stays claimed until the holder releases
+            // it, so no second server can start meanwhile.
             cancel.store(true, Ordering::Release);
+            if let Some(slot) = guard.slot.as_ref() {
+                let _ = slot.provider.cancel_active();
+            }
         } else {
             if let Some(slot) = guard.slot.take() {
                 drop(guard);
@@ -2856,12 +2897,14 @@ mod tests {
         let generation = GenerationState::default();
         let claim = claim_free_slot(&generation).unwrap();
         let cancel = claim.cancel.clone();
+        let (release, released) = std::sync::mpsc::channel::<()>();
         let request = std::thread::spawn(move || {
-            // Stand in for a request that notices cancellation and returns.
+            // Stand in for a request that notices cancellation and returns,
+            // only once the test has checked the slot is still held.
             while !claim.cancel.load(Ordering::Acquire) {
                 std::thread::sleep(Duration::from_millis(5));
             }
-            std::thread::sleep(Duration::from_millis(40));
+            released.recv().unwrap();
             drop(claim);
         });
         let generation_for_unload = generation.clone();
@@ -2870,6 +2913,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(claim_free_slot(&generation).is_err());
+        release.send(()).unwrap();
         unloader.join().unwrap().unwrap();
         request.join().unwrap();
         assert!(generation.lock().unwrap().active_cancel.is_none());
@@ -2922,6 +2966,34 @@ mod tests {
         finisher.join().unwrap();
         assert!(next.is_ok());
         assert_eq!(generation.lock().unwrap().holder, Some(GenerationHolder::Answer));
+    }
+
+    #[test]
+    fn no_request_slips_in_between_a_release_and_the_unload() {
+        let generation = GenerationState::default();
+        let claim = claim_free_slot(&generation).unwrap();
+        let cancel = claim.cancel.clone();
+        let generation_for_unload = generation.clone();
+        let unloader = std::thread::spawn(move || unload_generation_now(&generation_for_unload));
+        while !cancel.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // While the unload waits, the slot is marked, and a marked slot is
+        // refused even with no holder, so between the holder's release and
+        // the unload's next look nothing can claim it.
+        assert_eq!(generation.lock().unwrap().unloading, 1);
+        let between = GenerationStateInner {
+            unloading: 1,
+            ..GenerationStateInner::default()
+        };
+        assert_eq!(
+            ensure_slot_free(&between).err().map(|failure| failure.code),
+            Some(folio_core::contracts::ProviderErrorCode::GenerationBusy)
+        );
+        drop(claim);
+        unloader.join().unwrap().unwrap();
+        assert_eq!(generation.lock().unwrap().unloading, 0);
+        assert!(claim_free_slot(&generation).is_ok());
     }
 
     #[test]
@@ -3233,6 +3305,11 @@ pub fn run() {
             event,
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
         ) {
+            // Both events fire; the waiting happens once.
+            static EXIT_UNLOADED: AtomicBool = AtomicBool::new(false);
+            if EXIT_UNLOADED.swap(true, Ordering::SeqCst) {
+                return;
+            }
             if let Some(generation_state) = app_handle.try_state::<GenerationState>() {
                 unload_generation_at_exit(generation_state.inner(), Duration::from_secs(10));
             }

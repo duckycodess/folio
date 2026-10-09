@@ -266,6 +266,9 @@ fn begin_lab_exclusive(
     if guard.active_cancel.is_some() {
         return Err(busy("Another local generation request is active."));
     }
+    if guard.unloading > 0 {
+        return Err(busy("Folio is stopping the local AI model. Try again in a moment."));
+    }
     if guard.runtime_installing {
         return Err(busy(
             "The local AI runtime is being installed. Try again when it finishes.",

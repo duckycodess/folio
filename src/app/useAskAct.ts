@@ -195,21 +195,36 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
   async function search(
     folder: string,
     query: string,
-  ): Promise<SearchResult[]> {
+  ): Promise<{ results: SearchResult[]; namesOnly: boolean }> {
     const { named, partial } = namedFiles(workspace.documents, query);
     let indexed: SearchResult[];
+    let namesOnly = false;
     try {
       indexed = await semanticSearch(folder, query, RESULT_LIMIT);
     } catch (cause) {
-      // A name still finds its file while the index can't answer (not yet
-      // prepared, no embedding model); with no name match, the error stands.
-      if (!named.length && !partial.length) throw cause;
+      // Only "no search model yet" falls back to names, and the turn says
+      // so. Any other failure (I/O, a mismatched space) is reported, never
+      // hidden behind name matches that look like a full search.
+      const error = toFolioError(cause);
+      if (
+        error.code !== "modelNotInstalled" ||
+        (!named.length && !partial.length)
+      )
+        throw cause;
       indexed = [];
+      namesOnly = true;
     }
-    return inScope(
-      mergeFolderResults(workspace.documents, [...named, ...indexed], partial),
-      scope,
-    ).slice(0, RESULT_LIMIT);
+    return {
+      results: inScope(
+        mergeFolderResults(
+          workspace.documents,
+          [...named, ...indexed],
+          partial,
+        ),
+        scope,
+      ).slice(0, RESULT_LIMIT),
+      namesOnly,
+    };
   }
 
   async function interpret(
@@ -229,9 +244,9 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
             // and a file's own passages can be outranked by others' (#88).
             result: await answerQuestion(folder, request, chosen?.id),
           };
-        const results = await search(folder, query);
+        const { results, namesOnly } = await search(folder, query);
         if (meaning.intent === "search")
-          return { type: "results", query, results };
+          return { type: "results", query, results, namesOnly };
         const { exact } = namedFiles(workspace.documents, request);
         const target = summaryTarget(
           results,
@@ -295,7 +310,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
           ? {
               type: "results",
               query: request.trim(),
-              results: await search(folder, request),
+              ...(await search(folder, request)),
             }
           : practiceReply(request, onProgress),
       ),

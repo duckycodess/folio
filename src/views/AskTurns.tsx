@@ -168,6 +168,12 @@ export function TurnBody({
     case "results":
       return outcome.results.length ? (
         <>
+          {outcome.namesOnly && (
+            <Notice tone="info">
+              Searched file names only: the local search model isn't set up yet,
+              so the files' text wasn't searched.
+            </Notice>
+          )}
           <p className="muted">
             {outcome.results.length}{" "}
             {outcome.results.length === 1 ? "file" : "files"} found. Excerpts
