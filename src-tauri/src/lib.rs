@@ -613,6 +613,7 @@ async fn rebuild_index(
         })? = Some(snapshot);
         Ok(status)
     })
+    .await
 }
 
 fn snapshot_status(snapshot: &IndexSnapshot) -> IndexStatus {
@@ -735,6 +736,7 @@ async fn semantic_search(
             )
             .map_err(native_error)
     })
+    .await
 }
 
 fn generation_provider(
@@ -904,6 +906,7 @@ async fn summarize_document(
         finish_generation(&generation_state, &cancel)?;
         result.map_err(native_error)
     })
+    .await
 }
 
 #[tauri::command]
@@ -968,6 +971,7 @@ async fn answer_question(
         finish_generation(&generation_state, &cancel)?;
         result.map_err(native_error)
     })
+    .await
 }
 
 fn search_snapshot(
@@ -1044,6 +1048,7 @@ async fn interpret_request(
         finish_generation(&generation_state, &cancel)?;
         result.map_err(native_error)
     })
+    .await
 }
 
 fn unload_generation_now(generation_state: &GenerationState) -> Result<(), NativeProviderError> {
