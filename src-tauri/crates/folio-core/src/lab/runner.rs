@@ -739,6 +739,11 @@ impl LabRunner<'_> {
             let attempt = self.run_task(case, lab, loaded, workspace, expected);
             let task_duration_ms = started.elapsed().as_millis() as u64;
             let requests_in_task = lab.take_requests();
+            // A summary stopped part way returns the notes it had instead of
+            // an error; a cut-short task is not a measurement.
+            if self.cancelled() {
+                return Ok(Flow::Cancelled);
+            }
             let (evaluation, output) = match attempt {
                 Err(error) if is_cancelled(&error) => return Ok(Flow::Cancelled),
                 Err(error) => Self::failure(task, &error),
@@ -1095,7 +1100,7 @@ mod tests {
             schema: &Value,
             _messages: &[ChatMessage],
             budget: &GenerationBudget,
-            _cancel: &AtomicBool,
+            cancel: &AtomicBool,
         ) -> CoreResult<Value> {
             self.requests.fetch_add(1, Ordering::SeqCst);
             if self.dead.load(Ordering::SeqCst) {
@@ -1117,6 +1122,12 @@ mod tests {
             }
             if budget.cache_prompt == Some(false) {
                 self.saw_cache_prompt_off.store(true, Ordering::SeqCst);
+            }
+            if self.id.starts_with("stopping-") && schema["properties"].get("notes").is_some() {
+                // Stop arrives while a summary's notes are being written; they
+                // still come back, as from a request that finished first.
+                cancel.store(true, Ordering::SeqCst);
+                return Ok(json!({ "notes": [{ "text": "Isang tala.", "citations": ["C1"] }] }));
             }
             if schema["properties"].get("intent").is_some() {
                 Ok(json!({
@@ -1795,6 +1806,23 @@ mod tests {
         let (result, order) = run_with(&harness, &["model-a"], &cancel, &mut sink);
         assert_eq!(result.unwrap(), RunEnd::Cancelled);
         assert!(order.is_empty());
+        assert_eq!(sink.runs.last().unwrap().status, RunStatus::Cancelled);
+    }
+
+    #[test]
+    fn a_summary_stopped_part_way_is_not_recorded_as_a_measurement() {
+        let harness = harness();
+        let mut sink = MemorySink::default();
+        let cancel = AtomicBool::new(false);
+        let (result, _) = run_with(&harness, &["stopping-x"], &cancel, &mut sink);
+        assert_eq!(result.unwrap(), RunEnd::Cancelled);
+        assert!(
+            !sink
+                .records
+                .iter()
+                .any(|r| r.model_id == "stopping-x" && r.task == BenchmarkTask::Summary),
+            "a partial summary from a stopped run must not look like a timing"
+        );
         assert_eq!(sink.runs.last().unwrap().status, RunStatus::Cancelled);
     }
 
