@@ -11,3 +11,4 @@ pub mod contracts;
 pub mod embeddings;
 pub mod error;
 pub mod models;
+pub mod retrieval;
