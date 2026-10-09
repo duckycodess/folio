@@ -259,7 +259,7 @@ impl HybridRetriever {
             by_id,
             combined,
             SearchMethod::Hybrid,
-            Some(embedding_space_id(&query_embedding.space)),
+            Some(space_fingerprint(&query_embedding.space)),
             limit,
         ))
     }
@@ -269,7 +269,7 @@ impl HybridRetriever {
         by_id: HashMap<&'a str, &'a DocumentRecord>,
         scored: Vec<(&'a Chunk, f32, f32)>,
         method: SearchMethod,
-        space_id: Option<String>,
+        space_fingerprint: Option<String>,
         limit: usize,
     ) -> Vec<SearchResult> {
         let mut grouped: HashMap<String, (f32, Vec<SourcePassage>)> = HashMap::new();
@@ -301,7 +301,7 @@ impl HybridRetriever {
                         passages,
                         score,
                         method: method.clone(),
-                        embedding_space_id: space_id.clone(),
+                        space_fingerprint: space_fingerprint.clone(),
                     })
             })
             .collect::<Vec<_>>();
@@ -360,7 +360,7 @@ struct SpaceFingerprint<'a> {
     preprocessing_fingerprint: &'a str,
 }
 
-pub fn embedding_space_id(space: &EmbeddingSpace) -> String {
+fn embedding_space_id(space: &EmbeddingSpace) -> String {
     let fingerprint = SpaceFingerprint {
         model_id: &space.model_id,
         revision: &space.revision,
@@ -373,6 +373,21 @@ pub fn embedding_space_id(space: &EmbeddingSpace) -> String {
     ))
 }
 
+fn escape_fingerprint_field(value: &str) -> String {
+    value.replace('%', "%25").replace('/', "%2F")
+}
+
+pub fn space_fingerprint(space: &EmbeddingSpace) -> String {
+    format!(
+        "folio-space-v1/{}/{}/{}/{}/{}",
+        escape_fingerprint_field(&space.model_id),
+        escape_fingerprint_field(&space.revision),
+        escape_fingerprint_field(&space.quantization),
+        space.dimensions,
+        escape_fingerprint_field(&space.preprocessing_fingerprint),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,11 +398,14 @@ mod tests {
         TextDocument::new(
             DocumentRecord {
                 id: id.into(),
+                workspace_id: "test-workspace".into(),
                 relative_path: id.into(),
                 name: id.rsplit('/').next().unwrap_or(id).into(),
                 title: id.into(),
                 language: Language::Mixed,
+                media_type: "text/markdown".into(),
                 size_bytes: content.len() as u64,
+                modified_at_ms: None,
                 content: None,
                 content_hash: None,
             },
@@ -515,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn space_id_includes_preprocessing_fingerprint() {
+    fn index_key_includes_preprocessing_fingerprint() {
         assert_ne!(
             embedding_space_id(&space("a")),
             embedding_space_id(&EmbeddingSpace {
@@ -524,5 +542,47 @@ mod tests {
             })
         );
         assert!(content_hash("deadline").starts_with("sha256:"));
+    }
+
+    #[test]
+    fn space_fingerprint_matches_the_frozen_identity_shape() {
+        assert_eq!(
+            space_fingerprint(&EmbeddingSpace {
+                model_id: "a%2Fb".into(),
+                revision: "r1".into(),
+                quantization: "q8".into(),
+                dimensions: 384,
+                preprocessing_fingerprint: "raw-text".into(),
+            }),
+            "folio-space-v1/a%252Fb/r1/q8/384/raw-text"
+        );
+    }
+
+    #[test]
+    fn space_fingerprint_matches_contract_fixtures() {
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fixtures/contracts/contract-cases.json");
+        let cases: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("contract fixture exists"))
+                .expect("contract fixture is valid JSON");
+        for entry in cases["identity"]["embeddingSpaceFingerprint"]
+            .as_array()
+            .unwrap()
+        {
+            let space = &entry["space"];
+            assert_eq!(
+                space_fingerprint(&EmbeddingSpace {
+                    model_id: space["modelId"].as_str().unwrap().into(),
+                    revision: space["revision"].as_str().unwrap().into(),
+                    quantization: space["quantization"].as_str().unwrap().into(),
+                    dimensions: space["dimensions"].as_u64().unwrap() as usize,
+                    preprocessing_fingerprint: space["preprocessingFingerprint"]
+                        .as_str()
+                        .unwrap()
+                        .into(),
+                }),
+                entry["expected"].as_str().unwrap()
+            );
+        }
     }
 }

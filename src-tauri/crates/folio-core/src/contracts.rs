@@ -36,11 +36,15 @@ pub struct SourcePassage {
 #[serde(rename_all = "camelCase")]
 pub struct DocumentRecord {
     pub id: DocumentId,
+    pub workspace_id: String,
     pub relative_path: String,
     pub name: String,
     pub title: String,
     pub language: Language,
+    pub media_type: String,
     pub size_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified_at_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -55,7 +59,7 @@ pub struct SearchResult {
     pub score: f32,
     pub method: SearchMethod,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub embedding_space_id: Option<String>,
+    pub space_fingerprint: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

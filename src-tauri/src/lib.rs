@@ -8,7 +8,7 @@ mod workspace;
 
 use contracts::{ActionPlan, Approval, FileOperation, ImpactCandidate};
 use error::{error, ErrorCode, FolioError};
-use folio_core::chunking::{content_hash, Chunk, ChunkSource, InterimTextChunker, TextDocument};
+use folio_core::chunking::{Chunk, ChunkSource, InterimTextChunker, TextDocument};
 use folio_core::contracts::{
     DocumentRecord, EmbeddingSpace, GroundedAnswer, InterpretationResult, Language,
     ModelDescriptor, ModelInstallState, ModelRole, NativeProviderError, SearchResult,
@@ -20,6 +20,7 @@ use folio_core::grounding;
 use folio_core::interpretation;
 use folio_core::models::{DownloadProgress, ModelStore, RuntimeStatus};
 use folio_core::retrieval::HybridRetriever;
+use identity::media_type_for_path;
 use plan::PlanRegistry;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -108,7 +109,7 @@ struct IndexStatus {
     document_count: usize,
     chunk_count: usize,
     method: String,
-    embedding_space_id: Option<String>,
+    space_fingerprint: Option<String>,
     skipped_documents: Vec<SkippedDocument>,
 }
 
@@ -511,8 +512,8 @@ fn load_corpus(
         if !matches!(extension.as_str(), "txt" | "md") {
             continue;
         }
-        let content = match workspace::read_text(&root.path, &row.relative_path) {
-            Ok(content) => content.content,
+        let document_text = match workspace::read_text(&root.path, &row.relative_path) {
+            Ok(content) => content,
             Err(reason) => {
                 skipped_documents.push(SkippedDocument {
                     relative_path: row.relative_path,
@@ -521,15 +522,19 @@ fn load_corpus(
                 continue;
             }
         };
+        let content = document_text.content.clone();
         let record = DocumentRecord {
             id: row.id.clone(),
+            workspace_id: row.workspace_id.clone(),
             relative_path: row.relative_path.clone(),
-            name: row.name,
-            title: row.id.clone(),
+            name: row.name.clone(),
+            title: markdown_title(&row.name, &content),
             language: Language::Unknown,
-            size_bytes: row.size_bytes,
+            media_type: row.media_type.clone(),
+            size_bytes: document_text.size_bytes,
+            modified_at_ms: document_text.modified_at_ms.or(row.modified_at_ms),
             content: Some(content.clone()),
-            content_hash: Some(content_hash(&content)),
+            content_hash: Some(document_text.content_hash),
         };
         contents.insert(record.id.clone(), content.clone());
         text_documents.push(TextDocument::new(record.clone(), content));
@@ -539,6 +544,18 @@ fn load_corpus(
         .all_chunks()
         .map_err(|error| error.to_string())?;
     Ok((documents, contents, chunks, skipped_documents))
+}
+
+fn markdown_title(name: &str, content: &str) -> String {
+    content
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("# ")
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+        })
+        .unwrap_or(name)
+        .to_owned()
 }
 
 fn with_embedding_provider<T, F>(
@@ -718,10 +735,10 @@ fn snapshot_status(snapshot: &IndexSnapshot) -> IndexStatus {
             .embedding_space
             .as_ref()
             .map_or_else(|| "keyword".into(), |_| "semantic".into()),
-        embedding_space_id: snapshot
+        space_fingerprint: snapshot
             .embedding_space
             .as_ref()
-            .map(folio_core::retrieval::embedding_space_id),
+            .map(folio_core::retrieval::space_fingerprint),
         skipped_documents: snapshot.skipped_documents.clone(),
     }
 }
@@ -739,7 +756,7 @@ fn index_status(index_state: State<'_, IndexState>) -> Result<IndexStatus, Nativ
             document_count: 0,
             chunk_count: 0,
             method: "keyword".into(),
-            embedding_space_id: None,
+            space_fingerprint: None,
             skipped_documents: Vec::new(),
         },
         snapshot_status,
@@ -964,26 +981,32 @@ async fn summarize_document(
                 message,
                 detail: None,
             })?;
-        let content = workspace::read_text(&root.path, &document_id)
-            .map_err(|error| NativeProviderError {
+        let document_text = workspace::read_text(&root.path, &document_id).map_err(|error| {
+            NativeProviderError {
                 code: folio_core::contracts::ProviderErrorCode::IoError,
                 message: error.to_string(),
                 detail: None,
-            })?
-            .content;
+            }
+        })?;
+        let content = document_text.content.clone();
         let record = DocumentRecord {
             id: document_id.clone(),
+            workspace_id: workspace_id.clone(),
             relative_path: document_id.clone(),
             name: Path::new(&document_id)
                 .file_name()
                 .and_then(|value| value.to_str())
                 .unwrap_or(&document_id)
                 .into(),
-            title: document_id.clone(),
+            title: markdown_title(&document_id, &content),
             language: grounding::detect_language(&content),
-            size_bytes: content.len() as u64,
+            media_type: media_type_for_path(&document_id)
+                .unwrap_or("text/plain")
+                .into(),
+            size_bytes: document_text.size_bytes,
+            modified_at_ms: document_text.modified_at_ms,
             content: Some(content.clone()),
-            content_hash: Some(content_hash(&content)),
+            content_hash: Some(document_text.content_hash),
         };
         let chunks = InterimTextChunker::new(vec![TextDocument::new(record, content.clone())])
             .chunks(&document_id)

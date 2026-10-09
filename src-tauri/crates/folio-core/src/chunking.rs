@@ -185,11 +185,14 @@ mod tests {
     fn record(id: &str) -> DocumentRecord {
         DocumentRecord {
             id: id.into(),
+            workspace_id: "test-workspace".into(),
             relative_path: id.into(),
             name: id.into(),
             title: id.into(),
             language: Language::Mixed,
+            media_type: "text/markdown".into(),
             size_bytes: 0,
+            modified_at_ms: None,
             content: None,
             content_hash: None,
         }

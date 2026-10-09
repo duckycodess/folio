@@ -706,11 +706,14 @@ mod tests {
     fn semantic_relevance_gate_prevents_generator_call() {
         let document = DocumentRecord {
             id: "project.md".into(),
+            workspace_id: "test-workspace".into(),
             relative_path: "project.md".into(),
             name: "project.md".into(),
             title: "project.md".into(),
             language: Language::En,
+            media_type: "text/markdown".into(),
             size_bytes: 19,
+            modified_at_ms: None,
             content: Some("project deadline".into()),
             content_hash: None,
         };

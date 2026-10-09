@@ -259,8 +259,6 @@ export interface SearchResult {
   method: RetrievalMethod;
   /** Present for `semantic`/`hybrid`; identifies the compared vector space. */
   spaceFingerprint?: EmbeddingSpaceFingerprint;
-  /** Compatibility field emitted by the issue #4 interim provider adapter. */
-  embeddingSpaceId?: string;
 }
 
 /* --------------------------------------------------------- relationships */
@@ -365,6 +363,8 @@ export interface CoverageRange {
 
 export interface CoverageEntry {
   documentId: DocumentId;
+  documentContentHash: ContentHash;
+  offsetUnit: OffsetUnit;
   ranges: CoverageRange[];
   complete: boolean;
 }
@@ -469,7 +469,7 @@ export interface IndexStatus {
   documentCount: number;
   chunkCount: number;
   method: "keyword" | "semantic" | "hybrid";
-  embeddingSpaceId?: string;
+  spaceFingerprint?: EmbeddingSpaceFingerprint;
   skippedDocuments?: SkippedDocument[];
 }
 

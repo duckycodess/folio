@@ -418,7 +418,7 @@ fn candidate_results(
                 .collect(),
             score: 1.0,
             method: SearchMethod::Keyword,
-            embedding_space_id: None,
+            space_fingerprint: None,
         })
         .collect::<Vec<_>>();
     for result in HybridRetriever::default().keyword(documents, chunks, target_description, 5) {
@@ -566,11 +566,14 @@ mod tests {
     fn document(id: &str, name: &str, content: &str) -> (DocumentRecord, Vec<Chunk>) {
         let record = DocumentRecord {
             id: id.into(),
+            workspace_id: "test-workspace".into(),
             relative_path: id.into(),
             name: name.into(),
             title: name.into(),
             language: Language::Mixed,
+            media_type: "text/markdown".into(),
             size_bytes: content.len() as u64,
+            modified_at_ms: None,
             content: Some(content.into()),
             content_hash: Some(content_hash(content)),
         };
