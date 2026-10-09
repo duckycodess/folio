@@ -277,7 +277,8 @@ mod tests {
                 content: document.content.replace('\n', "\r\n"),
             })
             .collect();
-        let json = SUITE_JSON.replace('\n', "\r\n");
+        // A Windows checkout may already hold CRLF; convert from LF either way.
+        let json = SUITE_JSON.replace("\r\n", "\n").replace('\n', "\r\n");
         assert_eq!(
             Suite::from_json(&json).unwrap().sha256,
             Suite::embedded().unwrap().sha256
