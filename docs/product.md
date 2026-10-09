@@ -40,7 +40,7 @@ The independent journeys are:
 
 | Journey                  | Steps                                                                                             |
 | ------------------------ | ------------------------------------------------------------------------------------------------- |
-| A — Explore & Understand | Home → Files or Search → Select File → View Graph & Summary → Explore Related Files               |
+| A — Explore & Understand | Home → Browse or Search Files → Select File → View Graph & Summary → Explore Related Files        |
 | B — Smart Organize       | Organize → Select Collection or Folder → Analyze → Preview Suggested Changes → Approve & Apply    |
 | C — Ask & Act            | AI Assistant → Enter Instruction → Find Target Files → Preview Actions & Impacts → Approve & Save |
 
