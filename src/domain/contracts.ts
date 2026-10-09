@@ -318,6 +318,15 @@ export type Relationship =
       confidence?: number;
     });
 
+/** Result of a bounded refresh over vectors already persisted for one space. */
+export interface AiRelationshipRefresh {
+  workspaceId: WorkspaceId;
+  spaceFingerprint: EmbeddingSpaceFingerprint;
+  documentsCompared: number;
+  relationshipsCreated: number;
+  cancelled: boolean;
+}
+
 /* ------------------------------------------------------------- embeddings */
 
 export interface EmbeddingSpace {
@@ -356,7 +365,12 @@ export interface GenerationRequest {
 }
 
 export type GroundedAnswerKind =
-  "fileSummary" | "partialSummary" | "answer" | "insufficientEvidence";
+  | "fileSummary"
+  | "partialSummary"
+  | "answer"
+  | "relationshipSummary"
+  | "impactExplanation"
+  | "insufficientEvidence";
 
 export interface GroundedSentence {
   text: string;

@@ -116,9 +116,14 @@ function isGroundedResult(value: unknown): value is GroundedResult {
     value.coverage.every((documentId) => typeof documentId === "string") &&
     typeof value.modelId === "string" &&
     typeof value.revision === "string" &&
-    ["fileSummary", "partialSummary", "answer", "insufficientEvidence"].some(
-      (kind) => kind === value.kind,
-    ) &&
+    [
+      "fileSummary",
+      "partialSummary",
+      "answer",
+      "relationshipSummary",
+      "impactExplanation",
+      "insufficientEvidence",
+    ].some((kind) => kind === value.kind) &&
     Array.isArray(value.sentences) &&
     value.sentences.every(isSentence) &&
     Array.isArray(value.coverageRanges) &&

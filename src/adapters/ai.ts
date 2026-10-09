@@ -1,5 +1,8 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
+  AiRelationshipRefresh,
+  DocumentId,
+  EmbeddingSpaceFingerprint,
   GroundedResult,
   ProviderIndexStatus,
   InterpretationResult,
@@ -60,6 +63,40 @@ export function answerQuestion(
   documentId?: string,
 ): Promise<GroundedResult> {
   return call("answer_question", { workspaceId, question, documentId });
+}
+
+/** Runs discovery over vectors already persisted for this exact space. */
+export function refreshAiConnections(
+  workspaceId: string,
+  spaceFingerprint: EmbeddingSpaceFingerprint,
+): Promise<AiRelationshipRefresh> {
+  return call("refresh_ai_connections", { workspaceId, spaceFingerprint });
+}
+
+export function cancelAiConnections(): Promise<void> {
+  return call("cancel_ai_connections");
+}
+
+export function summarizeRelationships(
+  workspaceId: string,
+  documentIds: DocumentId[],
+  focusDocumentId?: DocumentId,
+  spaceFingerprint?: EmbeddingSpaceFingerprint,
+): Promise<GroundedResult> {
+  return call("summarize_relationships", {
+    workspaceId,
+    documentIds,
+    focusDocumentId,
+    spaceFingerprint,
+  });
+}
+
+export function explainImpact(
+  workspaceId: string,
+  planId: string,
+  documentId: DocumentId,
+): Promise<GroundedResult> {
+  return call("explain_impact", { workspaceId, planId, documentId });
 }
 
 export function interpretRequest(
