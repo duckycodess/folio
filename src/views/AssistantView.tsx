@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { folderChoices } from "../app/fileActions";
 import {
   describeProposal,
@@ -7,11 +7,13 @@ import {
   type AskTurn,
 } from "../app/askAct";
 import type { Drafts } from "../app/drafts";
+import { requestForFile } from "../app/proposals";
 import { useAskAct, type AskActController } from "../app/useAskAct";
 import type { RelationshipsState } from "../app/useRelationships";
 import type { WorkspaceState } from "../app/useWorkspace";
 import type {
   DocumentRecord,
+  OperationProposal,
   SearchResult,
   SourcePassage,
 } from "../domain/contracts";
@@ -26,6 +28,7 @@ import { Olio } from "../ui/Olio";
 import { Panel } from "../ui/Panel";
 import { Progress } from "../ui/Progress";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
+import { ChangeDialog } from "./ChangeDialog";
 import { CitedSentences } from "./CitedSentences";
 
 export type OpenFile = (document: DocumentRecord, tab?: "Summary") => void;
@@ -109,9 +112,6 @@ function ResultList({
   );
 }
 
-const NOT_YET =
-  "Changes from Ask & Act can't be previewed yet, so nothing was changed. Rename and Move work from a file's ⋯ menu on Home.";
-
 function TurnBody({
   turn,
   ask,
@@ -120,6 +120,7 @@ function TurnBody({
   onOpen,
   onRetry,
   onNavigate,
+  onPreviewChange,
 }: {
   turn: AskTurn;
   ask: AskActController;
@@ -128,6 +129,7 @@ function TurnBody({
   onOpen: OpenFile;
   onRetry: () => void;
   onNavigate: (view: ViewId) => void;
+  onPreviewChange: (proposal: OperationProposal) => void;
 }) {
   if (turn.status === "running")
     return (
@@ -223,7 +225,10 @@ function TurnBody({
               : "This could mean several files."}
           </p>
           {outcome.purpose === "change" && (
-            <Notice tone="info">{NOT_YET}</Notice>
+            <p className="muted">
+              Choose the file, and Olio will read the request again for it.
+              Nothing changes until you approve the exact preview.
+            </p>
           )}
           <ResultList
             results={outcome.candidates}
@@ -236,7 +241,13 @@ function TurnBody({
                     label: (document) => `Summarize ${document.name}`,
                     run: (document) => ask.chooseForSummary(turn.id, document),
                   }
-                : undefined
+                : {
+                    label: (document) => `Use ${document.name}`,
+                    run: (document) =>
+                      ask.ask(
+                        requestForFile(turn.request, document.relativePath),
+                      ),
+                  }
             }
           />
         </>
@@ -256,10 +267,21 @@ function TurnBody({
             Olio understood:{" "}
             <strong>{describeProposal(outcome.proposal)}</strong>
           </p>
-          <Notice tone="info">{NOT_YET}</Notice>
-          {target && (
-            <Button onClick={() => onOpen(target)}>Open {target.name}</Button>
-          )}
+          <p className="muted">
+            Nothing changes until you approve the exact preview.
+          </p>
+          <div className="ask-result-actions">
+            <Button
+              variant="primary"
+              disabled={ask.busy}
+              onClick={() => onPreviewChange(outcome.proposal)}
+            >
+              Preview change…
+            </Button>
+            {target && (
+              <Button onClick={() => onOpen(target)}>Open {target.name}</Button>
+            )}
+          </div>
         </>
       );
     }
@@ -282,7 +304,7 @@ function TurnBody({
 /**
  * Ask & Act: a full-page workspace for asking Olio about the open folder.
  * Finding files needs no writing model. Answers and summaries cite their
- * sources; change requests never act from here.
+ * sources. A change goes only through the native preview and approval.
  */
 export function AssistantView({
   workspace,
@@ -298,6 +320,7 @@ export function AssistantView({
   onOpenFile: OpenFile;
 }) {
   const ask = useAskAct(workspace);
+  const [changing, setChanging] = useState<OperationProposal | null>(null);
   const announce = useAnnounce();
   const request = drafts.instruction;
   const latest = ask.turns.at(-1);
@@ -503,6 +526,7 @@ export function AssistantView({
                     : ask.ask(turn.request)
                 }
                 onNavigate={onNavigate}
+                onPreviewChange={setChanging}
               />
             </article>
           ))}
@@ -512,6 +536,14 @@ export function AssistantView({
             </Button>
           )}
         </section>
+      )}
+      {changing && (
+        <ChangeDialog
+          proposal={changing}
+          workspace={workspace}
+          relations={relations}
+          onClose={() => setChanging(null)}
+        />
       )}
     </div>
   );
