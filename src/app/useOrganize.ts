@@ -82,6 +82,22 @@ export function renameOperation(
   };
 }
 
+/** A move keeps the file's name; only its folder changes (`""` is the top). */
+export function moveOperation(
+  document: DocumentRecord & { contentHash: string },
+  folder: string,
+): FileOperation {
+  const name = document.relativePath.split("/").at(-1)!;
+  return {
+    kind: "move",
+    documentId: document.id,
+    relativePath: document.relativePath,
+    expectedContentHash: document.contentHash,
+    destinationRelativePath: folder ? `${folder}/${name}` : name,
+    expectedDestination: "absent",
+  };
+}
+
 export function useOrganize(
   workspace: WorkspaceState,
   /** Called after Folio changed files, so other views re-read the index. */
