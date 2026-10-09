@@ -117,6 +117,7 @@ export function ChangeDialog({
   const started = useRef(false);
 
   function prepare() {
+    started.current = true;
     setBefore(null);
     organize.previewFrom(async (folder) => {
       const simple = proposalOperation(proposal);
@@ -152,10 +153,10 @@ export function ChangeDialog({
     });
   }
 
-  // The preview is prepared as soon as the dialog opens.
+  // The preview is prepared as soon as the dialog opens. If effects run
+  // again (React's development checks reset the flow), the newest request
+  // wins, so this runs each time too.
   useEffect(() => {
-    if (started.current) return;
-    started.current = true;
     prepare();
   }, []);
 

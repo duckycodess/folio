@@ -321,6 +321,18 @@ export function AssistantView({
 }) {
   const ask = useAskAct(workspace);
   const [changing, setChanging] = useState<OperationProposal | null>(null);
+  // The dialog unmounts when it closes, so focus goes back to its button here.
+  const changeOpener = useRef<Element | null>(null);
+  function previewChange(proposal: OperationProposal) {
+    changeOpener.current = document.activeElement;
+    setChanging(proposal);
+  }
+  function closeChange() {
+    setChanging(null);
+    const opener = changeOpener.current;
+    if (opener instanceof HTMLElement)
+      requestAnimationFrame(() => opener.isConnected && opener.focus());
+  }
   const announce = useAnnounce();
   const request = drafts.instruction;
   const latest = ask.turns.at(-1);
@@ -526,7 +538,7 @@ export function AssistantView({
                     : ask.ask(turn.request)
                 }
                 onNavigate={onNavigate}
-                onPreviewChange={setChanging}
+                onPreviewChange={previewChange}
               />
             </article>
           ))}
@@ -542,7 +554,7 @@ export function AssistantView({
           proposal={changing}
           workspace={workspace}
           relations={relations}
-          onClose={() => setChanging(null)}
+          onClose={closeChange}
         />
       )}
     </div>
