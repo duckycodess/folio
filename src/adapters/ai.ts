@@ -35,8 +35,10 @@ export function rebuildIndex(
   return call("rebuild_index", { workspaceId });
 }
 
-export function indexStatus(): Promise<ProviderIndexStatus> {
-  return call("index_status");
+export function indexStatus(
+  workspaceId?: string,
+): Promise<ProviderIndexStatus> {
+  return call("index_status", { workspaceId });
 }
 
 export function semanticSearch(

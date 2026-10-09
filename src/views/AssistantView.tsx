@@ -158,7 +158,7 @@ export function AssistantView({
             : index
               ? `${index.documentCount} files prepared for ${
                   index.method === "keyword"
-                    ? "keyword search only (no search model)"
+                    ? "keyword search for now (no search model, or it has not read this folder yet)"
                     : "search by meaning"
                 }.${
                   index.skippedDocuments?.length

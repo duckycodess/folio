@@ -127,7 +127,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
     ensureActiveConversation(folderId);
     setIndex(null);
     if (!folderId) return;
-    indexStatus()
+    indexStatus(folderId)
       .then((status) => mounted.current && setIndex(status))
       .catch(() => undefined);
   }, [folderId]);
@@ -178,7 +178,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
       );
     } finally {
       // The first request prepares the folder; show what it prepared.
-      indexStatus()
+      indexStatus(folderId)
         .then((status) => mounted.current && setIndex(status))
         .catch(() => undefined);
     }

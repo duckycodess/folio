@@ -480,11 +480,17 @@ export interface SkippedDocument {
   reason: string;
 }
 
-/** Status of the issue #4 provider's interim in-memory retrieval snapshot. */
+/**
+ * What the persistent index holds for a folder, as AI requests use it.
+ * `method` is `hybrid` only when chunks have vectors in the loaded embedding
+ * model's space; otherwise search is keyword search. `embeddedChunkCount` is
+ * known once a request has loaded the embedding model.
+ */
 export interface ProviderIndexStatus {
   workspaceId?: string;
   documentCount: number;
   chunkCount: number;
+  embeddedChunkCount?: number;
   method: "keyword" | "semantic" | "hybrid";
   spaceFingerprint?: EmbeddingSpaceFingerprint;
   skippedDocuments?: SkippedDocument[];

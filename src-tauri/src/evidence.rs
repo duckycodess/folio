@@ -93,9 +93,81 @@ pub(crate) struct InterpretationCorpus {
     pub chunks: Vec<Chunk>,
 }
 
+/// A document the index holds but cannot search yet.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SkippedDocument {
+    pub relative_path: String,
+    pub reason: String,
+}
+
+/// What the persistent index holds for a folder, and how much of it a semantic
+/// search can use. `method` is `hybrid` only when vectors exist in the space of
+/// the loaded embedding model; otherwise search is keyword search.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct IndexStatus {
+    pub workspace_id: Option<String>,
+    pub document_count: usize,
+    pub chunk_count: usize,
+    /// Chunks with a vector in the current space; unknown until a request has
+    /// loaded the embedding model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embedded_chunk_count: Option<usize>,
+    pub method: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_fingerprint: Option<String>,
+    pub skipped_documents: Vec<SkippedDocument>,
+}
+
+impl IndexStatus {
+    pub(crate) fn empty() -> Self {
+        Self {
+            workspace_id: None,
+            document_count: 0,
+            chunk_count: 0,
+            embedded_chunk_count: None,
+            method: "keyword",
+            space_fingerprint: None,
+            skipped_documents: Vec::new(),
+        }
+    }
+}
+
+/// Read-only: counts from the persistent index. `space_fingerprint` is the
+/// stored space of the embedding model, when one is loaded.
+pub(crate) fn status(
+    conn: &Connection,
+    workspace_id: &str,
+    space_fingerprint: Option<&str>,
+) -> NativeResult<IndexStatus> {
+    let documents = index::list_documents(conn, workspace_id)?;
+    let indexed = documents.iter().filter(|document| document.status == "indexed");
+    let (embedded, chunks) = index::embedding_coverage(conn, workspace_id, space_fingerprint.unwrap_or(""))?;
+    let hybrid = space_fingerprint.is_some() && embedded > 0;
+    Ok(IndexStatus {
+        workspace_id: Some(workspace_id.to_owned()),
+        document_count: indexed.count(),
+        chunk_count: chunks,
+        embedded_chunk_count: space_fingerprint.map(|_| embedded),
+        method: if hybrid { "hybrid" } else { "keyword" },
+        space_fingerprint: space_fingerprint.map(str::to_owned),
+        skipped_documents: documents
+            .iter()
+            .filter(|document| document.status != "indexed")
+            .map(|document| SkippedDocument {
+                relative_path: document.relative_path.clone(),
+                reason: document
+                    .status_message
+                    .clone()
+                    .unwrap_or_else(|| document.status.clone()),
+            })
+            .collect(),
+    })
+}
+
 #[derive(Clone)]
 struct SpaceInUse {
-    provider: ProviderEmbeddingSpace,
     fingerprint: String,
 }
 
@@ -295,10 +367,17 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
                 return Err(cancelled());
             }
         }
-        Ok(SpaceInUse {
-            provider,
-            fingerprint,
-        })
+        Ok(SpaceInUse { fingerprint })
+    }
+
+    /// "Prepare now": files, then vectors, then what the index holds.
+    pub(crate) fn prepare(&mut self) -> NativeResult<IndexStatus> {
+        let space = self.ensure_embedded()?;
+        status(
+            self.conn,
+            &self.root.id,
+            space.as_ref().map(|space| space.fingerprint.as_str()),
+        )
     }
 
     /// Ranked documents with their passages. Hybrid (cosine over the stored
@@ -812,6 +891,36 @@ mod tests {
             .iter()
             .map(|result| result.document.relative_path.as_str())
             .collect()
+    }
+
+    #[test]
+    fn status_reports_what_is_indexed_and_how_much_of_it_has_vectors() {
+        let mut harness = Harness::fixtures();
+        let mut embedder = ConceptEmbedder::new("r1");
+        let before = status(&harness.conn, &harness.root.id, None).unwrap();
+        assert_eq!(before.document_count, 0, "nothing has been indexed yet");
+
+        let (prepared, _) = harness.request(&mut embedder, |index| index.prepare());
+        let prepared = prepared.unwrap();
+        let total = harness.chunk_total();
+        assert_eq!(prepared.chunk_count, total);
+        assert_eq!(prepared.embedded_chunk_count, Some(total));
+        assert_eq!(prepared.method, "hybrid");
+        assert!(prepared.space_fingerprint.is_some() && prepared.document_count > 10);
+
+        let keyword = status(&harness.conn, &harness.root.id, None).unwrap();
+        assert_eq!((keyword.method, keyword.embedded_chunk_count), ("keyword", None));
+        let other_space =
+            status(&harness.conn, &harness.root.id, Some("folio-space-v1/other/r9/x/2/y")).unwrap();
+        assert_eq!((other_space.method, other_space.embedded_chunk_count), ("keyword", Some(0)));
+
+        fs::write(harness.folder.path().join("notes/broken.md"), [0xff, 0xfe]).unwrap();
+        let (again, _) = harness.request(&mut embedder, |index| index.prepare());
+        let again = again.unwrap();
+        assert!(again
+            .skipped_documents
+            .iter()
+            .any(|skipped| skipped.relative_path == "notes/broken.md"));
     }
 
     #[test]

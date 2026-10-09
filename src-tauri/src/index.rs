@@ -1120,7 +1120,6 @@ pub fn vector_candidates(conn: &Connection, workspace_id: &str, fingerprint: &st
 #[derive(Debug, Clone)]
 pub struct ChunkCosine {
     pub chunk_id: i64,
-    pub document_id: String,
     pub cosine: f32,
 }
 
@@ -1150,18 +1149,18 @@ pub fn vector_scores(conn: &Connection, workspace_id: &str, fingerprint: &str, q
     check_vector(query, space_dimensions(conn, fingerprint)?)?;
     let query_norm = query.iter().map(|value| value * value).sum::<f32>().sqrt();
     let mut statement = conn.prepare(
-        "SELECT e.chunk_id, c.document_id, e.vector FROM embeddings e JOIN chunks c ON c.chunk_id = e.chunk_id JOIN documents d ON d.id = c.document_id WHERE e.space_id = ?1 AND d.workspace_id = ?2 AND d.status = 'indexed' AND (?3 IS NULL OR c.document_id = ?3)",
+        "SELECT e.chunk_id, e.vector FROM embeddings e JOIN chunks c ON c.chunk_id = e.chunk_id JOIN documents d ON d.id = c.document_id WHERE e.space_id = ?1 AND d.workspace_id = ?2 AND d.status = 'indexed' AND (?3 IS NULL OR c.document_id = ?3)",
     )?;
-    let rows = statement.query_map(params![fingerprint, workspace_id, document_id], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Vec<u8>>(2)?)))?;
+    let rows = statement.query_map(params![fingerprint, workspace_id, document_id], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)))?;
     let mut scores = Vec::new();
     for row in rows {
-        let (chunk_id, document_id, blob) = row?;
+        let (chunk_id, blob) = row?;
         let vector: Vec<f32> = blob.chunks_exact(4).map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])).collect();
         if vector.len() != query.len() { continue; }
         let dot: f32 = vector.iter().zip(query).map(|(a, b)| a * b).sum();
         let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
         let cosine = if norm == 0.0 || query_norm == 0.0 { 0.0 } else { dot / (norm * query_norm) };
-        scores.push(ChunkCosine { chunk_id, document_id, cosine });
+        scores.push(ChunkCosine { chunk_id, cosine });
     }
     Ok(scores)
 }
@@ -2024,20 +2023,24 @@ pub mod tests {
         assert!(everything.iter().all(|score| (score.cosine - 1.0).abs() < 1e-6));
 
         let plan = id_of(&root, "projects/project-plan.md");
+        let belongs_to = |conn: &Connection, document_id: &str| -> Vec<i64> { conn.prepare("SELECT chunk_id FROM chunks WHERE document_id = ?1").unwrap().query_map([document_id], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap() };
+        let plan_chunks = belongs_to(&conn, &plan);
         let scoped = vector_scores(&conn, &root.id, &fingerprint, &[1.0, 0.0], Some(&plan)).unwrap();
-        assert!(!scoped.is_empty() && scoped.iter().all(|score| score.document_id == plan));
+        assert!(!scoped.is_empty() && scoped.iter().all(|score| plan_chunks.contains(&score.chunk_id)));
 
         fs::write(folder.path().join("projects/project-plan.md"), [0xff, 0xfe, 0xfd, 0x00]).unwrap();
         scan(&mut conn, &root);
         assert_eq!(status_of(&conn, &root, "projects/project-plan.md").0, "stale");
         let after_stale = vector_scores(&conn, &root.id, &fingerprint, &[1.0, 0.0], None).unwrap();
-        assert!(after_stale.iter().all(|score| score.document_id != plan), "a stale document is never scored");
-        assert_eq!(stored_chunks(&conn, &root.id, &everything.iter().filter(|score| score.document_id == plan).map(|score| score.chunk_id).collect::<Vec<_>>()).unwrap().len(), 0);
+        assert!(after_stale.iter().all(|score| !plan_chunks.contains(&score.chunk_id)), "a stale document is never scored");
+        assert_eq!(stored_chunks(&conn, &root.id, &plan_chunks).unwrap().len(), 0);
 
         fs::remove_file(folder.path().join("notes/paalala.md")).unwrap();
         scan(&mut conn, &root);
-        let paalala = id_of(&root, "notes/paalala.md");
-        assert!(vector_scores(&conn, &root.id, &fingerprint, &[1.0, 0.0], None).unwrap().iter().all(|score| score.document_id != paalala));
+        let paalala_chunks = belongs_to(&conn, &id_of(&root, "notes/paalala.md"));
+        assert!(paalala_chunks.is_empty());
+        let removed: i64 = conn.query_row("SELECT count(*) FROM embeddings e LEFT JOIN chunks c ON c.chunk_id = e.chunk_id WHERE c.chunk_id IS NULL", [], |row| row.get(0)).unwrap();
+        assert_eq!(removed, 0, "a deleted document leaves no orphan vectors");
     }
 
     #[test]

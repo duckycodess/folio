@@ -17,16 +17,14 @@ mod ripple;
 mod workspace;
 mod writer;
 
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use folio_core::chunking::{Chunk, InterimTextChunker, TextDocument};
 use folio_core::contracts::{
-    DocumentRecord, EmbeddingSpace as ProviderEmbeddingSpace, GroundedResult,
-    InterpretationResult, Language, ModelDescriptor, ModelInstallState, ModelInstallStatus,
+    EmbeddingSpace as ProviderEmbeddingSpace, GroundedResult,
+    InterpretationResult, ModelDescriptor, ModelInstallState, ModelInstallStatus,
     ModelRole, NativeProviderError, SearchResult as ProviderSearchResult,
 };
 use folio_core::embeddings::{EmbeddingKind, EmbeddingProvider, OrtE5Provider};
@@ -35,7 +33,6 @@ use folio_core::generation::{GenerationProvider, LlamaServerProvider};
 use folio_core::grounding;
 use folio_core::interpretation;
 use folio_core::models::{DownloadProgress, ModelStore, RuntimeStatus};
-use folio_core::retrieval::HybridRetriever;
 use rusqlite::Connection;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -49,7 +46,6 @@ use index::{
 };
 use organize::OrganizationSuggestions;
 use plan::PlanRegistry;
-use identity::media_type_for_path;
 use writer::{ApplyReport, RealFileSystem, UndoReport};
 use workspace::{
     DocumentListing, DocumentText, KnownWorkspace, ScopedRoot, WorkspaceInfo, WorkspaceRegistry,
@@ -144,7 +140,6 @@ fn unavailable_state() -> FolioError {
 async fn choose_workspace(
     app: AppHandle,
     state: State<'_, Folio>,
-    index_state: State<'_, IndexState>,
 ) -> Result<Option<WorkspaceInfo>, FolioError> {
     // `blocking_pick_folder` blocks its calling thread until the user
     // answers the dialog. Run it on a dedicated thread (like every other
@@ -165,8 +160,6 @@ async fn choose_workspace(
         .map_err(|cause| error(ErrorCode::WorkspaceUnavailable, cause.to_string()))?;
     let info = state.workspaces.lock().map_err(|_| unavailable_state())?.authorize(&path)?;
     remember_best_effort(&state, &info);
-    // The issue #4 provider snapshot is rebuilt from current files on demand.
-    *index_state.lock().map_err(|_| unavailable_state())? = None;
     Ok(Some(info))
 }
 
@@ -774,24 +767,6 @@ async fn organization_suggestions(
 
 /* ------------------------------------------------ issue #4 local AI providers */
 
-#[derive(Clone)]
-struct IndexSnapshot {
-    workspace_id: String,
-    /// Path, size and modification time of every text document the snapshot
-    /// was built from. A different listing means the files changed (an
-    /// approved edit, an undo, a scan or an external change), so the snapshot
-    /// is rebuilt instead of citing old text.
-    source_fingerprint: Vec<(String, u64, Option<u64>)>,
-    documents: Vec<DocumentRecord>,
-    chunks: Vec<Chunk>,
-    retriever: HybridRetriever,
-    embedding_space: Option<ProviderEmbeddingSpace>,
-    skipped_documents: Vec<SkippedDocument>,
-}
-
-/// Shared, not cloned per query.
-type IndexState = Arc<Mutex<Option<Arc<IndexSnapshot>>>>;
-
 struct EmbeddingSlot {
     model_id: String,
     revision: String,
@@ -821,23 +796,6 @@ struct GenerationStateInner {
 type GenerationState = Arc<Mutex<GenerationStateInner>>;
 type InstallState = Arc<Mutex<Option<Arc<AtomicBool>>>>;
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct IndexStatus {
-    workspace_id: Option<String>,
-    document_count: usize,
-    chunk_count: usize,
-    method: String,
-    space_fingerprint: Option<String>,
-    skipped_documents: Vec<SkippedDocument>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SkippedDocument {
-    relative_path: String,
-    reason: String,
-}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -938,15 +896,6 @@ fn finish_install(
     Ok(())
 }
 
-fn invalidate_index(index_state: &IndexState) -> Result<(), NativeProviderError> {
-    *index_state.lock().map_err(|_| NativeProviderError {
-        code: folio_core::contracts::ProviderErrorCode::IoError,
-        message: "The local index state is unavailable.".into(),
-        detail: None,
-    })? = None;
-    Ok(())
-}
-
 fn unload_embedding(embedding_state: &EmbeddingState) -> Result<(), NativeProviderError> {
     let mut guard = embedding_state.lock().map_err(|_| NativeProviderError {
         code: folio_core::contracts::ProviderErrorCode::IoError,
@@ -984,7 +933,6 @@ async fn verify_model(
 #[tauri::command]
 async fn install_model(
     app: AppHandle,
-    index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
     install_state: State<'_, InstallState>,
     model_id: String,
@@ -992,7 +940,6 @@ async fn install_model(
     let cancel = begin_install(install_state.inner())?;
     let worker_cancel = cancel.clone();
     let install_state = install_state.inner().clone();
-    let index_state = index_state.inner().clone();
     let embedding_state = embedding_state.inner().clone();
     let progress_app = app.clone();
     let result = run_blocking(move || {
@@ -1006,20 +953,17 @@ async fn install_model(
     })
     .await;
     finish_install(&install_state, &cancel)?;
-    invalidate_index(&index_state)?;
     Ok(provider_install_state(result?))
 }
 
 #[tauri::command]
 async fn remove_model(
     app: AppHandle,
-    index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
     generation_state: State<'_, GenerationState>,
     install_state: State<'_, InstallState>,
     model_id: String,
 ) -> Result<(), FolioError> {
-    let index_state = index_state.inner().clone();
     let embedding_state = embedding_state.inner().clone();
     let generation_state = generation_state.inner().clone();
     let install_state = install_state.inner().clone();
@@ -1039,7 +983,6 @@ async fn remove_model(
     })
     .await;
     result?;
-    invalidate_index(&index_state)?;
     Ok(())
 }
 
@@ -1063,14 +1006,12 @@ fn unload_generation_for_model(
 #[tauri::command]
 async fn select_model(
     app: AppHandle,
-    index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
     install_state: State<'_, InstallState>,
     role: ModelRole,
     model_id: String,
 ) -> Result<(), FolioError> {
     let embedding_selection = matches!(&role, ModelRole::Embedding);
-    let index_state = index_state.inner().clone();
     let embedding_state = embedding_state.inner().clone();
     let install_state = install_state.inner().clone();
     let result = run_blocking(move || {
@@ -1089,9 +1030,6 @@ async fn select_model(
     })
     .await;
     result?;
-    if embedding_selection {
-        invalidate_index(&index_state)?;
-    }
     Ok(())
 }
 
@@ -1245,91 +1183,6 @@ fn runtime_id_for_host() -> &'static str {
     }
 }
 
-fn load_corpus(
-    root: &ScopedRoot,
-) -> Result<
-    (
-        Vec<DocumentRecord>,
-        HashMap<String, String>,
-        Vec<Chunk>,
-        Vec<SkippedDocument>,
-    ),
-    FolioError,
-> {
-    let metadata = workspace::list_documents(root)?.documents;
-    let mut documents = Vec::new();
-    let mut contents = HashMap::new();
-    let mut text_documents = Vec::new();
-    let mut skipped_documents = Vec::new();
-    for row in metadata {
-        let extension = Path::new(&row.relative_path)
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if !matches!(extension.as_str(), "txt" | "md") {
-            continue;
-        }
-        let document_text = match workspace::read_text(&root.path, &row.relative_path) {
-            Ok(content) => content,
-            Err(reason) => {
-                skipped_documents.push(SkippedDocument {
-                    relative_path: row.relative_path,
-                    reason: reason.to_string(),
-                });
-                continue;
-            }
-        };
-        let content = document_text.content.clone();
-        let record = DocumentRecord {
-            id: row.id.clone(),
-            workspace_id: row.workspace_id.clone(),
-            relative_path: row.relative_path.clone(),
-            name: row.name.clone(),
-            title: folio_core::embeddings::markdown_title(&row.name, &content),
-            language: Language::Unknown,
-            media_type: row.media_type.clone(),
-            size_bytes: document_text.size_bytes,
-            modified_at_ms: document_text.modified_at_ms.or(row.modified_at_ms),
-            content: Some(content.clone()),
-            content_hash: Some(document_text.content_hash),
-        };
-        contents.insert(record.id.clone(), content.clone());
-        text_documents.push(TextDocument::new(record.clone(), content));
-        documents.push(record);
-    }
-    let chunks = InterimTextChunker::new(text_documents).all_chunks()?;
-    Ok((documents, contents, chunks, skipped_documents))
-}
-
-fn document_record(
-    root: &ScopedRoot,
-    document_id: &str,
-    relative_path: &str,
-    document_text: &DocumentText,
-    content: &str,
-) -> DocumentRecord {
-    DocumentRecord {
-        id: document_id.into(),
-        workspace_id: root.id.clone(),
-        relative_path: relative_path.into(),
-        name: Path::new(relative_path)
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or(relative_path)
-            .into(),
-        title: folio_core::embeddings::markdown_title(relative_path, content),
-        language: grounding::detect_language(content),
-        media_type: media_type_for_path(relative_path)
-            .unwrap_or("text/plain")
-            .into(),
-        size_bytes: document_text.size_bytes,
-        modified_at_ms: document_text.modified_at_ms,
-        content: Some(content.into()),
-        content_hash: Some(document_text.content_hash.clone()),
-    }
-}
-
 fn read_ai_document(root: &ScopedRoot, relative_path: &str) -> Result<DocumentText, FolioError> {
     workspace::read_text(&root.path, relative_path)
 }
@@ -1445,179 +1298,46 @@ where
     })
 }
 
-fn with_embedding_provider<T, F>(
-    app: &AppHandle,
-    embedding_state: &EmbeddingState,
-    work: F,
-) -> Result<Option<T>, FolioError>
-where
-    F: FnOnce(&OrtE5Provider) -> Result<T, NativeProviderError>,
-{
-    with_embedding_provider_guarded(app, embedding_state, || Ok(()), work)
+/// What the persistent index holds for a folder, from SQLite alone: nothing is
+/// read from the files and no model is loaded. `embeddedChunkCount` is known
+/// once a request has loaded the embedding model.
+#[tauri::command]
+async fn index_status(
+    state: State<'_, Folio>,
+    embedding_state: State<'_, EmbeddingState>,
+    workspace_id: Option<String>,
+) -> Result<evidence::IndexStatus, FolioError> {
+    let Some(workspace_id) = workspace_id else {
+        return Ok(evidence::IndexStatus::empty());
+    };
+    state.root(&workspace_id)?;
+    let loaded_space = embedding_state
+        .lock()
+        .map_err(|_| unavailable_state())?
+        .as_ref()
+        .map(|slot| embedding_sync::stored_space_fingerprint(slot.provider.space()))
+        .transpose()?;
+    evidence::status(&*state.index()?, &workspace_id, loaded_space.as_deref())
 }
 
-/// The text documents the provider snapshot reads, as (path, size, mtime).
-fn corpus_fingerprint(root: &ScopedRoot) -> Result<Vec<(String, u64, Option<u64>)>, FolioError> {
-    let mut fingerprint = workspace::list_documents(root)?
-        .documents
-        .into_iter()
-        .filter(|row| {
-            let extension = Path::new(&row.relative_path)
-                .extension()
-                .and_then(|value| value.to_str())
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            matches!(extension.as_str(), "txt" | "md")
-        })
-        .map(|row| (row.relative_path, row.size_bytes, row.modified_at_ms))
-        .collect::<Vec<_>>();
-    fingerprint.sort();
-    Ok(fingerprint)
-}
-
-fn build_snapshot(
-    app: &AppHandle,
-    embedding_state: &EmbeddingState,
-    root: &ScopedRoot,
-) -> Result<IndexSnapshot, FolioError> {
-    let source_fingerprint = corpus_fingerprint(root)?;
-    let (documents, _contents, chunks, skipped_documents) = load_corpus(root)?;
-    let mut retriever = HybridRetriever::default();
-    let mut embedding_space = None;
-    if let Some((space, vectors)) = with_embedding_provider(app, embedding_state, |provider| {
-        let texts = folio_core::embeddings::passage_embedding_texts(&documents, &chunks);
-        let vectors = provider
-            .embed(&texts, EmbeddingKind::Passage, None)
-            .map_err(native_error)?;
-        Ok((provider.space().clone(), vectors))
-    })? {
-        retriever
-            .vector_index
-            .replace(space.clone(), chunks.clone(), vectors)?;
-        embedding_space = Some(space);
-    }
-    Ok(IndexSnapshot {
-        workspace_id: root.id.clone(),
-        source_fingerprint,
-        documents,
-        chunks,
-        retriever,
-        embedding_space,
-        skipped_documents,
-    })
-}
-
+/// "Prepare now": brings the index up to date (an incremental scan, then an
+/// embedding fill for the chunks that lack a vector) and reports what it holds.
 #[tauri::command]
 async fn rebuild_index(
     app: AppHandle,
     state: State<'_, Folio>,
-    index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
+    lab_state: State<'_, lab_commands::LabState>,
     workspace_id: String,
-) -> Result<IndexStatus, FolioError> {
-    let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
-    let index_state = index_state.inner().clone();
-    let embedding_state = embedding_state.inner().clone();
-    Ok(run_blocking::<_, FolioError, _>(move || {
-        let snapshot = build_snapshot(&app, &embedding_state, &root)?;
-        let status = snapshot_status(&snapshot);
-        *index_state.lock().map_err(|_| NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::IoError,
-            message: "The local index state is unavailable.".into(),
-            detail: None,
-        })? = Some(Arc::new(snapshot));
-        Ok(status)
-    })
-    .await?)
-}
-
-fn snapshot_status(snapshot: &IndexSnapshot) -> IndexStatus {
-    IndexStatus {
-        workspace_id: Some(snapshot.workspace_id.clone()),
-        document_count: snapshot.documents.len(),
-        chunk_count: snapshot.chunks.len(),
-        method: snapshot
-            .embedding_space
-            .as_ref()
-            .map_or_else(|| "keyword".into(), |_| "hybrid".into()),
-        space_fingerprint: snapshot
-            .embedding_space
-            .as_ref()
-            .map(folio_core::retrieval::space_fingerprint),
-        skipped_documents: snapshot.skipped_documents.clone(),
-    }
-}
-
-fn annotate_embedding_space_failure(
-    failure: CoreError,
-    expected: &ProviderEmbeddingSpace,
-    actual: &ProviderEmbeddingSpace,
-) -> CoreError {
-    match failure {
-        CoreError::Provider(mut provider)
-            if provider.code
-                == folio_core::contracts::ProviderErrorCode::EmbeddingSpaceMismatch =>
-        {
-            provider.detail = Some(format!(
-                "expected={};actual={}",
-                folio_core::retrieval::space_fingerprint(expected),
-                folio_core::retrieval::space_fingerprint(actual),
-            ));
-            CoreError::Provider(provider)
-        }
-        other => other,
-    }
-}
-
-#[tauri::command]
-fn index_status(index_state: State<'_, IndexState>) -> Result<IndexStatus, FolioError> {
-    let guard = index_state.lock().map_err(|_| NativeProviderError {
-        code: folio_core::contracts::ProviderErrorCode::IoError,
-        message: "The local index state is unavailable.".into(),
-        detail: None,
-    })?;
-    Ok(guard.as_ref().map_or(
-        IndexStatus {
-            workspace_id: None,
-            document_count: 0,
-            chunk_count: 0,
-            method: "keyword".into(),
-            space_fingerprint: None,
-            skipped_documents: Vec::new(),
-        },
-        |snapshot| snapshot_status(snapshot),
-    ))
-}
-
-fn ensure_snapshot(
-    app: &AppHandle,
-    embedding_state: &EmbeddingState,
-    root: &ScopedRoot,
-    index_state: &IndexState,
-) -> Result<Arc<IndexSnapshot>, FolioError> {
-    let current = corpus_fingerprint(root)?;
-    if let Some(snapshot) = index_state
-        .lock()
-        .map_err(|_| NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::IoError,
-            message: "The local index state is unavailable.".into(),
-            detail: None,
-        })?
-        .as_ref()
-        .filter(|snapshot| {
-            snapshot.workspace_id == root.id && snapshot.source_fingerprint == current
-        })
-        .cloned()
-    {
-        return Ok(snapshot);
-    }
-    let snapshot = Arc::new(build_snapshot(app, embedding_state, root)?);
-    *index_state.lock().map_err(|_| NativeProviderError {
-        code: folio_core::contracts::ProviderErrorCode::IoError,
-        message: "The local index state is unavailable.".into(),
-        detail: None,
-    })? = Some(snapshot.clone());
-    Ok(snapshot)
+) -> Result<evidence::IndexStatus, FolioError> {
+    let request = AiRequest::new(
+        &app,
+        state.inner(),
+        embedding_state.inner(),
+        lab_state.inner(),
+        &workspace_id,
+    )?;
+    Ok(run_blocking::<_, FolioError, _>(move || request.run(|index| index.prepare())).await?)
 }
 
 /// Hybrid semantic search over the persistent index, or FTS5 keyword search
@@ -2227,51 +1947,6 @@ mod tests {
     }
 
     #[test]
-    fn corpus_loading_skips_and_reports_unreadable_text() {
-        let root = tempfile::tempdir().unwrap();
-        fs::write(root.path().join("valid.md"), "valid content").unwrap();
-        fs::write(root.path().join("invalid.md"), [0xff, 0xfe]).unwrap();
-
-        let scoped_root = ScopedRoot {
-            id: "test-workspace".into(),
-            path: root.path().to_path_buf(),
-        };
-        let (documents, contents, chunks, skipped) = load_corpus(&scoped_root).unwrap();
-        assert_eq!(documents.len(), 1);
-        assert_eq!(contents.len(), 1);
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(skipped.len(), 1);
-        assert_eq!(skipped[0].relative_path, "invalid.md");
-        assert!(skipped[0].reason.contains("valid UTF-8"));
-    }
-
-    #[test]
-    fn summary_record_preserves_the_native_document_id() {
-        let root = ScopedRoot {
-            id: "workspace".into(),
-            path: PathBuf::from("/tmp/workspace"),
-        };
-        let text = DocumentText {
-            content: "# Notes\nPaalala".into(),
-            content_hash: "sha256:observed".into(),
-            size_bytes: 15,
-            modified_at_ms: Some(42),
-            pages: Vec::new(),
-            unreadable_pages: Vec::new(),
-        };
-        let record = document_record(
-            &root,
-            "workspace:notes/paalala.md",
-            "notes/paalala.md",
-            &text,
-            &text.content,
-        );
-        assert_eq!(record.id, "workspace:notes/paalala.md");
-        assert_eq!(record.relative_path, "notes/paalala.md");
-        assert_eq!(record.content_hash.as_deref(), Some("sha256:observed"));
-    }
-
-    #[test]
     fn ai_document_reads_preserve_native_path_escape_errors() {
         let parent = tempfile::tempdir().unwrap();
         let root_path = parent.path().join("workspace");
@@ -2293,7 +1968,6 @@ mod tests {
         // same type panics before any window opens. Keep this list in step
         // with `run()` and its `setup`.
         let managed = [
-            ("IndexState", TypeId::of::<IndexState>()),
             ("EmbeddingState", TypeId::of::<EmbeddingState>()),
             ("GenerationState", TypeId::of::<GenerationState>()),
             ("InstallState", TypeId::of::<InstallState>()),
@@ -2352,7 +2026,6 @@ async fn unload_generation(generation_state: State<'_, GenerationState>) -> Resu
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(IndexState::default())
         .manage(EmbeddingState::default())
         .manage(GenerationState::default())
         .manage(InstallState::default())
