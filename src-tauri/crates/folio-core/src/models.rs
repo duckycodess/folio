@@ -7,18 +7,31 @@ use flate2::read::GzDecoder;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 use tar::Archive;
 use zip::ZipArchive;
 
 const MANIFEST_JSON: &str = include_str!("../../../resources/model-manifest.json");
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct VerificationKey {
+    path: PathBuf,
+    expected_bytes: u64,
+    expected_sha256: String,
+    actual_bytes: u64,
+    modified_nanos: u128,
+}
+
+static VERIFIED_FILES: OnceLock<Mutex<HashMap<VerificationKey, bool>>> = OnceLock::new();
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -121,6 +134,10 @@ impl ModelStore {
     }
 
     pub fn model_state(&self, id: &str) -> CoreResult<ModelInstallState> {
+        self.model_state_with_cache(id, true)
+    }
+
+    fn model_state_with_cache(&self, id: &str, use_cache: bool) -> CoreResult<ModelInstallState> {
         let descriptor = self.model(id)?;
         let root = self.model_root(id)?;
         let mut present = 0;
@@ -135,7 +152,15 @@ impl ModelStore {
                 corrupt = true;
                 continue;
             }
-            match verify_file(&path, file) {
+            if !use_cache {
+                invalidate_verification_cache(&path);
+            }
+            let verification = if use_cache {
+                verify_file_cached(&path, file)
+            } else {
+                verify_file(&path, file)
+            };
+            match verification {
                 Ok(()) => {
                     present += 1;
                     total_bytes += file.bytes;
@@ -164,7 +189,7 @@ impl ModelStore {
     }
 
     pub fn verify_model(&self, id: &str) -> CoreResult<ModelInstallState> {
-        self.model_state(id)
+        self.model_state_with_cache(id, false)
     }
 
     pub fn verified_model_file(&self, id: &str) -> CoreResult<VerifiedModelFile> {
@@ -616,6 +641,50 @@ fn verify_file(path: &Path, descriptor: &ModelFile) -> CoreResult<()> {
     Ok(())
 }
 
+fn verify_file_cached(path: &Path, descriptor: &ModelFile) -> CoreResult<()> {
+    let metadata = fs::metadata(path)?;
+    if metadata.len() != descriptor.bytes {
+        return verify_file(path, descriptor);
+    }
+    let modified_nanos = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |value| value.as_nanos());
+    let key = VerificationKey {
+        path: path.to_path_buf(),
+        expected_bytes: descriptor.bytes,
+        expected_sha256: descriptor.sha256.clone(),
+        actual_bytes: metadata.len(),
+        modified_nanos,
+    };
+    let cache = VERIFIED_FILES.get_or_init(|| Mutex::new(HashMap::new()));
+    if cache
+        .lock()
+        .ok()
+        .and_then(|entries| entries.get(&key).copied())
+        .is_some_and(|verified| verified)
+    {
+        return Ok(());
+    }
+    let result = verify_file(path, descriptor);
+    if result.is_ok() {
+        if let Ok(mut entries) = cache.lock() {
+            entries.insert(key, true);
+        }
+    }
+    result
+}
+
+fn invalidate_verification_cache(path: &Path) {
+    let Some(cache) = VERIFIED_FILES.get() else {
+        return;
+    };
+    if let Ok(mut entries) = cache.lock() {
+        entries.retain(|key, _| key.path != path);
+    }
+}
+
 fn find_runtime_executable(root: &Path) -> Option<PathBuf> {
     if !root.is_dir() || fs::symlink_metadata(root).ok()?.file_type().is_symlink() {
         return None;
@@ -824,6 +893,39 @@ mod tests {
             store.verify_model("test-model").unwrap().status,
             ModelInstallStatus::Corrupt
         );
+    }
+
+    #[test]
+    fn explicit_verification_invalidates_cached_file_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let bytes = b"cached-model";
+        let store = store(temp.path(), descriptor(bytes));
+        let file = temp.path().join("models/test-model/nested/model.bin");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, bytes).unwrap();
+
+        assert_eq!(
+            store.model_state("test-model").unwrap().status,
+            ModelInstallStatus::Installed
+        );
+        assert!(VERIFIED_FILES
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|key| key.path == file));
+        assert_eq!(
+            store.verify_model("test-model").unwrap().status,
+            ModelInstallStatus::Installed
+        );
+        assert!(!VERIFIED_FILES
+            .get()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|key| key.path == file));
     }
 
     #[test]

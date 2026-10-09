@@ -6,13 +6,16 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::thread;
+use std::time::{Duration, Instant};
 use tokenizers::tokenizer::Tokenizer;
 use tokenizers::utils::padding::PaddingParams;
 use tokenizers::utils::truncation::{TruncationParams, TruncationStrategy};
 
 pub const DEFAULT_MAX_TOKENS: usize = 512;
 pub const DEFAULT_BATCH_SIZE: usize = 16;
+pub const EMBEDDING_IDLE_UNLOAD: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EmbeddingKind {
@@ -55,8 +58,12 @@ pub trait EmbeddingProvider: Send {
 pub struct OrtE5Provider {
     space: EmbeddingSpace,
     tokenizer: Tokenizer,
-    session: Mutex<Option<Session>>,
+    session: Arc<Mutex<Option<Session>>>,
     batch_size: usize,
+    active: Arc<AtomicBool>,
+    last_used: Arc<Mutex<Instant>>,
+    reaper_stop: Arc<AtomicBool>,
+    reaper: Option<thread::JoinHandle<()>>,
 }
 
 impl OrtE5Provider {
@@ -73,6 +80,37 @@ impl OrtE5Provider {
         max_tokens: usize,
         batch_size: usize,
         threads: usize,
+    ) -> CoreResult<Self> {
+        Self::from_files_with_idle(
+            model_path,
+            tokenizer_path,
+            model_id,
+            revision,
+            quantization,
+            dimensions,
+            model_sha256,
+            tokenizer_sha256,
+            max_tokens,
+            batch_size,
+            threads,
+            EMBEDDING_IDLE_UNLOAD,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_files_with_idle(
+        model_path: impl AsRef<Path>,
+        tokenizer_path: impl AsRef<Path>,
+        model_id: impl Into<String>,
+        revision: impl Into<String>,
+        quantization: impl Into<String>,
+        dimensions: usize,
+        model_sha256: &str,
+        tokenizer_sha256: &str,
+        max_tokens: usize,
+        batch_size: usize,
+        threads: usize,
+        idle_unload: Duration,
     ) -> CoreResult<Self> {
         if max_tokens == 0 || batch_size == 0 || dimensions == 0 {
             return Err(CoreError::Message(
@@ -104,6 +142,17 @@ impl OrtE5Provider {
             max_tokens,
             INTERIM_CHUNKER_VERSION,
         );
+        let session = Arc::new(Mutex::new(Some(session)));
+        let active = Arc::new(AtomicBool::new(false));
+        let last_used = Arc::new(Mutex::new(Instant::now()));
+        let reaper_stop = Arc::new(AtomicBool::new(false));
+        let reaper = Some(spawn_embedding_reaper(
+            session.clone(),
+            active.clone(),
+            last_used.clone(),
+            reaper_stop.clone(),
+            idle_unload,
+        ));
         Ok(Self {
             space: EmbeddingSpace {
                 model_id: model_id.into(),
@@ -113,8 +162,12 @@ impl OrtE5Provider {
                 preprocessing_fingerprint,
             },
             tokenizer,
-            session: Mutex::new(Some(session)),
+            session,
             batch_size,
+            active,
+            last_used,
+            reaper_stop,
+            reaper,
         })
     }
 
@@ -249,6 +302,11 @@ impl EmbeddingProvider for OrtE5Provider {
         kind: EmbeddingKind,
         cancel: Option<&AtomicBool>,
     ) -> CoreResult<Vec<Vec<f32>>> {
+        self.active.store(true, Ordering::Release);
+        let _active = EmbeddingActiveGuard(&self.active);
+        if let Ok(mut last_used) = self.last_used.lock() {
+            *last_used = Instant::now();
+        }
         let mut output = Vec::with_capacity(texts.len());
         for batch in texts.chunks(self.batch_size) {
             if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
@@ -272,6 +330,53 @@ impl EmbeddingProvider for OrtE5Provider {
             .map_err(|_| CoreError::Message("Embedding session is unavailable.".into()))?;
         session.take();
         Ok(())
+    }
+}
+
+impl Drop for OrtE5Provider {
+    fn drop(&mut self) {
+        self.reaper_stop.store(true, Ordering::Release);
+        if let Some(reaper) = self.reaper.take() {
+            let _ = reaper.join();
+        }
+        let _ = self.unload();
+    }
+}
+
+fn spawn_embedding_reaper(
+    session: Arc<Mutex<Option<Session>>>,
+    active: Arc<AtomicBool>,
+    last_used: Arc<Mutex<Instant>>,
+    stop: Arc<AtomicBool>,
+    idle_unload: Duration,
+) -> thread::JoinHandle<()> {
+    let interval = idle_unload
+        .min(Duration::from_millis(100))
+        .max(Duration::from_millis(10));
+    thread::spawn(move || {
+        while !stop.load(Ordering::Acquire) {
+            thread::sleep(interval);
+            if stop.load(Ordering::Acquire) || active.load(Ordering::Acquire) {
+                continue;
+            }
+            let expired = last_used
+                .lock()
+                .ok()
+                .is_some_and(|last_used| last_used.elapsed() >= idle_unload);
+            if expired {
+                if let Ok(mut session) = session.lock() {
+                    session.take();
+                }
+            }
+        }
+    })
+}
+
+struct EmbeddingActiveGuard<'a>(&'a AtomicBool);
+
+impl Drop for EmbeddingActiveGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 

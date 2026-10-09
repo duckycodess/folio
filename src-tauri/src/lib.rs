@@ -41,6 +41,14 @@ struct IndexSnapshot {
 
 type IndexState = Arc<Mutex<Option<IndexSnapshot>>>;
 
+struct EmbeddingSlot {
+    model_id: String,
+    revision: String,
+    provider: OrtE5Provider,
+}
+
+type EmbeddingState = Arc<Mutex<Option<EmbeddingSlot>>>;
+
 struct GenerationSlot {
     model_id: String,
     revision: String,
@@ -160,6 +168,18 @@ fn invalidate_index(index_state: &IndexState) -> Result<(), NativeProviderError>
     Ok(())
 }
 
+fn unload_embedding(embedding_state: &EmbeddingState) -> Result<(), NativeProviderError> {
+    let mut guard = embedding_state.lock().map_err(|_| NativeProviderError {
+        code: folio_core::contracts::ProviderErrorCode::IoError,
+        message: "The local embedding state is unavailable.".into(),
+        detail: None,
+    })?;
+    if let Some(slot) = guard.take() {
+        slot.provider.unload().map_err(native_error)?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn choose_workspace(
     app: AppHandle,
@@ -229,6 +249,7 @@ async fn verify_model(
 async fn install_model(
     app: AppHandle,
     index_state: State<'_, IndexState>,
+    embedding_state: State<'_, EmbeddingState>,
     install_state: State<'_, InstallState>,
     model_id: String,
 ) -> Result<ModelInstallState, NativeProviderError> {
@@ -236,13 +257,16 @@ async fn install_model(
     let worker_cancel = cancel.clone();
     let install_state = install_state.inner().clone();
     let index_state = index_state.inner().clone();
+    let embedding_state = embedding_state.inner().clone();
     let progress_app = app.clone();
     let result = run_blocking(move || {
-        model_store(&app)?
+        let result = model_store(&app)?
             .install_model(&model_id, &worker_cancel, |progress| {
                 let _ = progress_app.emit("folio://model-progress", progress);
             })
-            .map_err(native_error)
+            .map_err(native_error);
+        unload_embedding(&embedding_state)?;
+        result
     })
     .await;
     finish_install(&install_state, &cancel)?;
@@ -254,13 +278,17 @@ async fn install_model(
 async fn remove_model(
     app: AppHandle,
     index_state: State<'_, IndexState>,
+    embedding_state: State<'_, EmbeddingState>,
     model_id: String,
 ) -> Result<(), NativeProviderError> {
     let index_state = index_state.inner().clone();
+    let embedding_state = embedding_state.inner().clone();
     let result = run_blocking(move || {
-        model_store(&app)?
+        let result = model_store(&app)?
             .remove_model(&model_id)
-            .map_err(native_error)
+            .map_err(native_error);
+        unload_embedding(&embedding_state)?;
+        result
     })
     .await;
     invalidate_index(&index_state)?;
@@ -271,15 +299,21 @@ async fn remove_model(
 async fn select_model(
     app: AppHandle,
     index_state: State<'_, IndexState>,
+    embedding_state: State<'_, EmbeddingState>,
     role: ModelRole,
     model_id: String,
 ) -> Result<(), NativeProviderError> {
     let embedding_selection = matches!(&role, ModelRole::Embedding);
     let index_state = index_state.inner().clone();
+    let embedding_state = embedding_state.inner().clone();
     let result = run_blocking(move || {
-        model_store(&app)?
+        let result = model_store(&app)?
             .select_model(role, &model_id)
-            .map_err(native_error)
+            .map_err(native_error);
+        if embedding_selection {
+            unload_embedding(&embedding_state)?;
+        }
+        result
     })
     .await;
     if result.is_ok() && embedding_selection {
@@ -392,71 +426,104 @@ fn load_corpus(
     Ok((documents, contents, chunks))
 }
 
-fn optional_embedding_provider(
-    store: &ModelStore,
-) -> Result<Option<OrtE5Provider>, NativeProviderError> {
+fn with_embedding_provider<T, F>(
+    app: &AppHandle,
+    embedding_state: &EmbeddingState,
+    work: F,
+) -> Result<Option<T>, NativeProviderError>
+where
+    F: FnOnce(&OrtE5Provider) -> Result<T, NativeProviderError>,
+{
+    let store = model_store(app)?;
+    let mut guard = embedding_state.lock().map_err(|_| NativeProviderError {
+        code: folio_core::contracts::ProviderErrorCode::IoError,
+        message: "The local embedding state is unavailable.".into(),
+        detail: None,
+    })?;
     let Some(model_id) = store
         .selected_model(ModelRole::Embedding)
         .map_err(native_error)?
     else {
+        if let Some(slot) = guard.take() {
+            slot.provider.unload().map_err(native_error)?;
+        }
         return Ok(None);
     };
     let descriptor = store.model(&model_id).map_err(native_error)?.clone();
-    let state = store.verify_model(&model_id).map_err(native_error)?;
+    let state = store.model_state(&model_id).map_err(native_error)?;
     if !matches!(
         state.status,
         folio_core::contracts::ModelInstallStatus::Installed
     ) {
+        if let Some(slot) = guard.take() {
+            slot.provider.unload().map_err(native_error)?;
+        }
         return Ok(None);
     }
-    let model_file = descriptor
-        .files
-        .iter()
-        .find(|file| file.path.ends_with(".onnx"))
-        .ok_or_else(|| NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::ModelCorrupt,
-            message: "The selected embedding model has no ONNX file.".into(),
-            detail: Some(model_id.clone()),
-        })?;
-    let tokenizer_file = descriptor
-        .files
-        .iter()
-        .find(|file| file.path.ends_with("tokenizer.json"))
-        .ok_or_else(|| NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::ModelCorrupt,
-            message: "The selected embedding model has no tokenizer file.".into(),
-            detail: Some(model_id.clone()),
-        })?;
-    let model_path = store
-        .verified_file_path(&model_id, &model_file.path)
+    if guard.as_ref().is_none_or(|slot| {
+        slot.model_id != descriptor.id || slot.revision != descriptor.revision
+    }) {
+        if let Some(slot) = guard.take() {
+            slot.provider.unload().map_err(native_error)?;
+        }
+        let model_file = descriptor
+            .files
+            .iter()
+            .find(|file| file.path.ends_with(".onnx"))
+            .ok_or_else(|| NativeProviderError {
+                code: folio_core::contracts::ProviderErrorCode::ModelCorrupt,
+                message: "The selected embedding model has no ONNX file.".into(),
+                detail: Some(model_id.clone()),
+            })?;
+        let tokenizer_file = descriptor
+            .files
+            .iter()
+            .find(|file| file.path.ends_with("tokenizer.json"))
+            .ok_or_else(|| NativeProviderError {
+                code: folio_core::contracts::ProviderErrorCode::ModelCorrupt,
+                message: "The selected embedding model has no tokenizer file.".into(),
+                detail: Some(model_id.clone()),
+            })?;
+        let model_path = store
+            .verified_file_path(&model_id, &model_file.path)
+            .map_err(native_error)?;
+        let tokenizer_path = store
+            .verified_file_path(&model_id, &tokenizer_file.path)
+            .map_err(native_error)?;
+        let provider = OrtE5Provider::from_files(
+            model_path,
+            tokenizer_path,
+            descriptor.id.clone(),
+            descriptor.revision.clone(),
+            descriptor.quantization.clone(),
+            384,
+            &model_file.sha256,
+            &tokenizer_file.sha256,
+            folio_core::embeddings::DEFAULT_MAX_TOKENS,
+            folio_core::embeddings::DEFAULT_BATCH_SIZE,
+            2,
+        )
         .map_err(native_error)?;
-    let tokenizer_path = store
-        .verified_file_path(&model_id, &tokenizer_file.path)
-        .map_err(native_error)?;
-    let model_id_value = descriptor.id.clone();
-    let revision = descriptor.revision.clone();
-    let quantization = descriptor.quantization.clone();
-    let model_sha256 = model_file.sha256.clone();
-    let tokenizer_sha256 = tokenizer_file.sha256.clone();
-    OrtE5Provider::from_files(
-        model_path,
-        tokenizer_path,
-        model_id_value,
-        revision,
-        quantization,
-        384,
-        &model_sha256,
-        &tokenizer_sha256,
-        folio_core::embeddings::DEFAULT_MAX_TOKENS,
-        folio_core::embeddings::DEFAULT_BATCH_SIZE,
-        2,
-    )
-    .map(Some)
-    .map_err(native_error)
+        *guard = Some(EmbeddingSlot {
+            model_id: descriptor.id.clone(),
+            revision: descriptor.revision.clone(),
+            provider,
+        });
+    }
+    guard
+        .as_ref()
+        .ok_or_else(|| NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::IoError,
+            message: "The local embedding provider is unavailable.".into(),
+            detail: None,
+        })
+        .and_then(|slot| work(&slot.provider))
+        .map(Some)
 }
 
 fn build_snapshot(
     app: &AppHandle,
+    embedding_state: &EmbeddingState,
     workspace_id: &str,
     root: &Path,
 ) -> Result<IndexSnapshot, NativeProviderError> {
@@ -466,10 +533,9 @@ fn build_snapshot(
             message: error,
             detail: None,
         })?;
-    let store = model_store(app)?;
     let mut retriever = HybridRetriever::default();
     let mut embedding_space = None;
-    if let Some(provider) = optional_embedding_provider(&store)? {
+    if let Some((space, vectors)) = with_embedding_provider(app, embedding_state, |provider| {
         let texts = chunks
             .iter()
             .map(|chunk| chunk.text.clone())
@@ -477,12 +543,12 @@ fn build_snapshot(
         let vectors = provider
             .embed(&texts, EmbeddingKind::Passage, None)
             .map_err(native_error)?;
-        let space = provider.space().clone();
+        Ok((provider.space().clone(), vectors))
+    })? {
         retriever
             .vector_index
             .replace(space.clone(), chunks.clone(), vectors)
             .map_err(native_error)?;
-        provider.unload().map_err(native_error)?;
         embedding_space = Some(space);
     }
     Ok(IndexSnapshot {
@@ -499,6 +565,7 @@ async fn rebuild_index(
     app: AppHandle,
     state: State<'_, WorkspaceState>,
     index_state: State<'_, IndexState>,
+    embedding_state: State<'_, EmbeddingState>,
     workspace_id: String,
 ) -> Result<IndexStatus, NativeProviderError> {
     let root = authorized(state.inner(), &workspace_id).map_err(|message| NativeProviderError {
@@ -507,8 +574,9 @@ async fn rebuild_index(
         detail: None,
     })?;
     let index_state = index_state.inner().clone();
+    let embedding_state = embedding_state.inner().clone();
     run_blocking(move || {
-        let snapshot = build_snapshot(&app, &workspace_id, &root.path)?;
+        let snapshot = build_snapshot(&app, &embedding_state, &workspace_id, &root.path)?;
         let status = snapshot_status(&snapshot);
         *index_state.lock().map_err(|_| NativeProviderError {
             code: folio_core::contracts::ProviderErrorCode::IoError,
@@ -556,6 +624,7 @@ fn index_status(index_state: State<'_, IndexState>) -> Result<IndexStatus, Nativ
 
 fn ensure_snapshot(
     app: &AppHandle,
+    embedding_state: &EmbeddingState,
     state: &WorkspaceState,
     index_state: &IndexState,
     workspace_id: &str,
@@ -578,7 +647,7 @@ fn ensure_snapshot(
         message,
         detail: None,
     })?;
-    let snapshot = build_snapshot(app, workspace_id, &root.path)?;
+    let snapshot = build_snapshot(app, embedding_state, workspace_id, &root.path)?;
     *index_state.lock().map_err(|_| NativeProviderError {
         code: folio_core::contracts::ProviderErrorCode::IoError,
         message: "The local index state is unavailable.".into(),
@@ -592,14 +661,22 @@ async fn semantic_search(
     app: AppHandle,
     state: State<'_, WorkspaceState>,
     index_state: State<'_, IndexState>,
+    embedding_state: State<'_, EmbeddingState>,
     workspace_id: String,
     query: String,
     limit: Option<usize>,
 ) -> Result<Vec<SearchResult>, NativeProviderError> {
     let workspace_state = state.inner().clone();
     let index_state = index_state.inner().clone();
+    let embedding_state = embedding_state.inner().clone();
     run_blocking(move || {
-        let snapshot = ensure_snapshot(&app, &workspace_state, &index_state, &workspace_id)?;
+        let snapshot = ensure_snapshot(
+            &app,
+            &embedding_state,
+            &workspace_state,
+            &index_state,
+            &workspace_id,
+        )?;
         let limit = limit.unwrap_or(10).clamp(1, 50);
         if snapshot.embedding_space.is_none() {
             return Ok(snapshot.retriever.keyword(
@@ -609,14 +686,14 @@ async fn semantic_search(
                 limit,
             ));
         }
-        let store = model_store(&app)?;
-        let provider = optional_embedding_provider(&store)?.ok_or_else(|| NativeProviderError {
+        let query_embedding = with_embedding_provider(&app, &embedding_state, |provider| {
+            provider.embed_query(&query, None).map_err(native_error)
+        })?
+        .ok_or_else(|| NativeProviderError {
             code: folio_core::contracts::ProviderErrorCode::ModelNotInstalled,
             message: "The selected embedding model is no longer installed.".into(),
             detail: None,
         })?;
-        let query_embedding = provider.embed_query(&query, None).map_err(native_error)?;
-        provider.unload().map_err(native_error)?;
         snapshot
             .retriever
             .search(
@@ -801,6 +878,7 @@ async fn answer_question(
     app: AppHandle,
     workspace_state: State<'_, WorkspaceState>,
     index_state: State<'_, IndexState>,
+    embedding_state: State<'_, EmbeddingState>,
     generation_state: State<'_, GenerationState>,
     workspace_id: String,
     question: String,
@@ -808,10 +886,17 @@ async fn answer_question(
 ) -> Result<GroundedAnswer, NativeProviderError> {
     let workspace_state = workspace_state.inner().clone();
     let index_state = index_state.inner().clone();
+    let embedding_state = embedding_state.inner().clone();
     let generation_state = generation_state.inner().clone();
     run_blocking(move || {
-        let snapshot = ensure_snapshot(&app, &workspace_state, &index_state, &workspace_id)?;
-        let results = search_snapshot(&app, &snapshot, &question)?;
+        let snapshot = ensure_snapshot(
+            &app,
+            &embedding_state,
+            &workspace_state,
+            &index_state,
+            &workspace_id,
+        )?;
+        let results = search_snapshot(&app, &embedding_state, &snapshot, &question)?;
         let passages = results
             .into_iter()
             .filter(|result| {
@@ -848,6 +933,7 @@ async fn answer_question(
 
 fn search_snapshot(
     app: &AppHandle,
+    embedding_state: &EmbeddingState,
     snapshot: &IndexSnapshot,
     query: &str,
 ) -> Result<Vec<SearchResult>, NativeProviderError> {
@@ -857,14 +943,14 @@ fn search_snapshot(
             .retriever
             .keyword(&snapshot.documents, &snapshot.chunks, query, limit));
     };
-    let store = model_store(app)?;
-    let provider = optional_embedding_provider(&store)?.ok_or_else(|| NativeProviderError {
+    let query_embedding = with_embedding_provider(app, embedding_state, |provider| {
+        provider.embed_query(query, None).map_err(native_error)
+    })?
+    .ok_or_else(|| NativeProviderError {
         code: folio_core::contracts::ProviderErrorCode::ModelNotInstalled,
         message: "The selected embedding model is no longer installed.".into(),
         detail: None,
     })?;
-    let query_embedding = provider.embed_query(query, None).map_err(native_error)?;
-    provider.unload().map_err(native_error)?;
     snapshot
         .retriever
         .search(
@@ -944,6 +1030,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(Mutex::new(None::<ScopedRoot>)))
         .manage(Arc::new(Mutex::new(None::<IndexSnapshot>)))
+        .manage(Arc::new(Mutex::new(None::<EmbeddingSlot>)))
         .manage(Arc::new(Mutex::new(GenerationStateInner::default())))
         .manage(Arc::new(Mutex::new(None::<Arc<AtomicBool>>)))
         .invoke_handler(tauri::generate_handler![
