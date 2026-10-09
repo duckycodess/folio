@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 use folio_core::relationships::{
     AiRelationshipKind, DiscoveredRelationship, RelationshipChunk, RelationshipDocument,
-    MAX_RELATIONSHIP_CHUNKS,
+    MAX_RELATIONSHIP_CHUNKS, MAX_STORED_CANDIDATES_PER_ENDPOINT,
 };
 use crate::contracts::{OffsetUnit, SourcePassage};
 use crate::db::NativeResult;
@@ -884,16 +884,38 @@ pub fn rebuild_explicit_references(tx: &Transaction<'_>, workspace_id: &str) -> 
     Ok(edges.len())
 }
 
-/// Lists explicit links plus AI rows from exactly the requested persistent
-/// embedding space. With no active space, only links are returned.
+/// The AI rows that may be shown or used: stored candidates in one space that
+/// rank within `MAX_AI_EDGES_PER_DOC` per document and kind at **either**
+/// endpoint, ranked by `(discovery cosine desc, other document id asc)`.
+/// Prefix a statement with this CTE (it binds `?2` as the space) and filter
+/// on `id IN (SELECT id FROM displayed)`. Display and Ripple share it, so they
+/// can never disagree about which edges exist.
+pub(crate) fn displayed_ai_cte() -> String {
+    format!(
+        "WITH endpoints AS (\
+           SELECT id, relationship_type AS kind, source_document_id AS doc, target_document_id AS other, COALESCE(discovery_cosine, score, 0.0) AS cosine FROM relationships WHERE space_fingerprint = ?2 AND relationship_type IN ('similarity', 'sharedFactCandidate') \
+           UNION ALL \
+           SELECT id, relationship_type, target_document_id, source_document_id, COALESCE(discovery_cosine, score, 0.0) FROM relationships WHERE space_fingerprint = ?2 AND relationship_type IN ('similarity', 'sharedFactCandidate') \
+         ), ranked AS (\
+           SELECT id, ROW_NUMBER() OVER (PARTITION BY kind, doc ORDER BY cosine DESC, other ASC) AS rank FROM endpoints \
+         ), displayed AS (SELECT DISTINCT id FROM ranked WHERE rank <= {}) ",
+        folio_core::relationships::MAX_AI_EDGES_PER_DOC
+    )
+}
+
+/// Lists explicit links plus the displayed AI rows (see `displayed_ai_cte`) of
+/// exactly the requested persistent embedding space. With no active space,
+/// only links are returned.
 pub fn list_relationships(
     conn: &Connection,
     workspace_id: &str,
     active_space: Option<&str>,
 ) -> NativeResult<Vec<Relationship>> {
-    let mut statement = conn.prepare(
-        "SELECT r.source_document_id, r.target_document_id, r.relationship_type, r.provenance, r.evidence_json, r.source_content_hash, r.target_content_hash, r.space_fingerprint, r.score, r.confidence FROM relationships r JOIN documents d ON d.id = r.source_document_id WHERE d.workspace_id = ?1 AND (r.relationship_type = 'explicitReference' OR (?2 != '' AND r.space_fingerprint = ?2)) ORDER BY d.relative_path, r.target_document_id, r.relationship_type",
-    )?;
+    let sql = format!(
+        "{}SELECT r.source_document_id, r.target_document_id, r.relationship_type, r.provenance, r.evidence_json, r.source_content_hash, r.target_content_hash, r.space_fingerprint, r.score, r.confidence FROM relationships r JOIN documents d ON d.id = r.source_document_id WHERE d.workspace_id = ?1 AND (r.relationship_type = 'explicitReference' OR (?2 != '' AND r.space_fingerprint = ?2 AND r.id IN (SELECT id FROM displayed))) ORDER BY d.relative_path, r.target_document_id, r.relationship_type",
+        displayed_ai_cte()
+    );
+    let mut statement = conn.prepare(&sql)?;
     let rows = statement.query_map(
         params![workspace_id, active_space.unwrap_or("")],
         |row| {
@@ -1513,43 +1535,48 @@ pub fn replace_ai_relationships(
         }
     }
 
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute(
         "DELETE FROM relationships WHERE relationship_type IN ('similarity', 'sharedFactCandidate') AND space_fingerprint = ?2 AND source_document_id IN (SELECT id FROM documents WHERE workspace_id = ?1)",
         params![workspace_id, fingerprint],
     )?;
+    insert_candidate_edges(&tx, workspace_id, fingerprint, edges, now)?;
+    tx.commit()?;
+    Ok(edges.len())
+}
+
+/// Stores candidate edges for one space, bounded per endpoint. Whenever an
+/// endpoint would hold more than `MAX_STORED_CANDIDATES_PER_ENDPOINT` of one
+/// kind, its weakest candidate (lowest discovery cosine, then largest other
+/// document id) is evicted and both documents of the evicted edge are flagged
+/// `candidate_overflow` in the space's coverage. Eviction is processing-order
+/// dependent, which is why it is flagged rather than hidden; what is
+/// displayed is decided at read time (`displayed_ai_cte`).
+pub fn insert_candidate_edges(
+    tx: &Transaction<'_>,
+    workspace_id: &str,
+    fingerprint: &str,
+    edges: &[DiscoveredRelationship],
+    now: u64,
+) -> NativeResult<()> {
     for edge in edges {
         let (relationship_type, provenance, score) = match edge.kind {
             AiRelationshipKind::Similarity => ("similarity", "embedding", edge.score),
-            AiRelationshipKind::SharedFactCandidate => {
-                ("sharedFactCandidate", "embedding", None)
-            }
+            AiRelationshipKind::SharedFactCandidate => ("sharedFactCandidate", "embedding", None),
         };
         let id = content_hash(
             format!(
                 "{relationship_type}\0{}\0{}\0{}\0{}\0{}",
-                edge.source_id,
-                edge.target_id,
-                fingerprint,
-                edge.source_content_hash,
-                edge.target_content_hash,
+                edge.source_id, edge.target_id, fingerprint, edge.source_content_hash, edge.target_content_hash,
             )
             .as_bytes(),
         );
         let evidence = StoredAiEvidence {
-            source_evidence: edge
-                .source_evidence
-                .iter()
-                .map(native_relationship_passage)
-                .collect(),
-            target_evidence: edge
-                .target_evidence
-                .iter()
-                .map(native_relationship_passage)
-                .collect(),
+            source_evidence: edge.source_evidence.iter().map(native_relationship_passage).collect(),
+            target_evidence: edge.target_evidence.iter().map(native_relationship_passage).collect(),
         };
         tx.execute(
-            "INSERT INTO relationships (id, source_document_id, target_document_id, relationship_type, evidence_json, provenance, confidence, source_content_hash, target_content_hash, created_at, space_fingerprint, score) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT OR REPLACE INTO relationships (id, source_document_id, target_document_id, relationship_type, evidence_json, provenance, confidence, source_content_hash, target_content_hash, created_at, space_fingerprint, score, discovery_cosine) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 id,
                 edge.source_id,
@@ -1563,11 +1590,55 @@ pub fn replace_ai_relationships(
                 now.to_string(),
                 fingerprint,
                 score,
+                edge.discovery_cosine,
             ],
         )?;
     }
-    tx.commit()?;
-    Ok(edges.len())
+    let mut endpoints: Vec<(&str, &str)> = edges
+        .iter()
+        .flat_map(|edge| {
+            let kind = match edge.kind {
+                AiRelationshipKind::Similarity => "similarity",
+                AiRelationshipKind::SharedFactCandidate => "sharedFactCandidate",
+            };
+            [(kind, edge.source_id.as_str()), (kind, edge.target_id.as_str())]
+        })
+        .collect();
+    endpoints.sort_unstable();
+    endpoints.dedup();
+    for (kind, document_id) in endpoints {
+        evict_over_cap(tx, workspace_id, fingerprint, kind, document_id)?;
+    }
+    Ok(())
+}
+
+fn evict_over_cap(
+    tx: &Transaction<'_>,
+    workspace_id: &str,
+    fingerprint: &str,
+    kind: &str,
+    document_id: &str,
+) -> NativeResult<()> {
+    loop {
+        let stored: i64 = tx.query_row(
+            "SELECT count(*) FROM relationships WHERE space_fingerprint = ?1 AND relationship_type = ?2 AND (source_document_id = ?3 OR target_document_id = ?3)",
+            params![fingerprint, kind, document_id],
+            |row| row.get(0),
+        )?;
+        if stored as usize <= MAX_STORED_CANDIDATES_PER_ENDPOINT {
+            return Ok(());
+        }
+        let (weakest, source, target): (String, String, String) = tx.query_row(
+            "SELECT id, source_document_id, target_document_id FROM relationships WHERE space_fingerprint = ?1 AND relationship_type = ?2 AND (source_document_id = ?3 OR target_document_id = ?3) ORDER BY COALESCE(discovery_cosine, score, 0.0) ASC, CASE WHEN source_document_id = ?3 THEN target_document_id ELSE source_document_id END DESC LIMIT 1",
+            params![fingerprint, kind, document_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        tx.execute("DELETE FROM relationships WHERE id = ?1", [&weakest])?;
+        tx.execute(
+            "UPDATE ai_relationship_coverage SET candidate_overflow = 1 WHERE workspace_id = ?1 AND space_id = ?2 AND document_id IN (?3, ?4)",
+            params![workspace_id, fingerprint, source, target],
+        )?;
+    }
 }
 
 #[cfg(test)]

@@ -13,6 +13,8 @@ mod lab_commands;
 mod lab_store;
 mod organize;
 mod plan;
+#[cfg(test)]
+mod relationship_edges_tests;
 mod ripple;
 mod workspace;
 mod writer;
@@ -948,18 +950,26 @@ async fn read_document(
 /// current files and stored so that an approval can be bound to it.
 #[tauri::command]
 async fn prepare_plan(
+    app: AppHandle,
     state: State<'_, Folio>,
     workspace_id: String,
     operations: Vec<FileOperation>,
     impacts: Option<Vec<ImpactCandidate>>,
 ) -> Result<ActionPlan, FolioError> {
+    // Read the model store before taking any lock; only AI rows of the active
+    // space reach Ripple.
+    let selected = selected_embedding_descriptor(&app)?;
     let workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
     let root = workspaces.resolve(&workspace_id)?;
     // Ripple evidence comes from the index and each edit's diff unless the caller
     // supplies it (for example with the exact phrase an interpreter replaced).
     let impacts = match impacts {
         Some(impacts) => impacts,
-        None => ripple::plan_impacts(&*state.index()?, &root, &operations)?,
+        None => {
+            let index = state.index()?;
+            let active_space = active_space::resolve_installed_descriptor(&index, selected.as_ref())?;
+            ripple::plan_impacts(&index, &root, &operations, active_space.as_deref())?
+        }
     };
     let mut plans = state.plans.lock().map_err(|_| unavailable_state())?;
     let now = now_ms();
@@ -1078,15 +1088,18 @@ async fn list_history(
 /// Ripple for an explicit phrase, e.g. the value an interpreter knows it replaced.
 #[tauri::command]
 async fn ripple_impacts(
+    app: AppHandle,
     state: State<'_, Folio>,
     workspace_id: String,
     document_id: String,
     replaced_text: String,
 ) -> Result<Vec<ImpactCandidate>, FolioError> {
     state.root(&workspace_id)?;
+    let selected = selected_embedding_descriptor(&app)?;
     let index = state.index()?;
+    let active_space = active_space::resolve_installed_descriptor(&index, selected.as_ref())?;
     let document = index::get_document(&index, &workspace_id, &document_id)?;
-    ripple::impacts(&index, &workspace_id, &document, &replaced_text)
+    ripple::impacts(&index, &workspace_id, &document, &replaced_text, active_space.as_deref())
 }
 
 /// Builds the edit operation that replaces one exact passage of a document.
@@ -1237,18 +1250,7 @@ fn active_relationship_space(
     conn: &Connection,
     requested_space: Option<&str>,
 ) -> Result<Option<String>, FolioError> {
-    let store = model_store(app)?;
-    let selected = match store.selected_model(ModelRole::Embedding)? {
-        Some(model_id) => {
-            let descriptor = store.model(&model_id)?.clone();
-            let installed = matches!(
-                store.model_state(&model_id)?.status,
-                ModelInstallStatus::Installed
-            );
-            installed.then_some(descriptor)
-        }
-        None => None,
-    };
+    let selected = selected_embedding_descriptor(app)?;
     let active = active_space::resolve_installed_descriptor(conn, selected.as_ref())?;
     if let (Some(active), Some(requested)) = (active.as_deref(), requested_space) {
         if active != requested {
@@ -1261,6 +1263,18 @@ fn active_relationship_space(
         }
     }
     Ok(active)
+}
+
+/// The selected embedding model's descriptor when it is installed. Reads the
+/// model store only: no index lock, no embedding mutex, no ONNX load.
+fn selected_embedding_descriptor(app: &AppHandle) -> Result<Option<ModelDescriptor>, FolioError> {
+    let store = model_store(app)?;
+    let Some(model_id) = store.selected_model(ModelRole::Embedding)? else {
+        return Ok(None);
+    };
+    let descriptor = store.model(&model_id)?.clone();
+    let installed = matches!(store.model_state(&model_id)?.status, ModelInstallStatus::Installed);
+    Ok(installed.then_some(descriptor))
 }
 
 async fn run_blocking<T, E, F>(work: F) -> Result<T, E>

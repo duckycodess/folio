@@ -12,7 +12,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub const MIN_SIMILARITY_COSINE: f32 = 0.80;
 pub const MIN_SHARED_FACT_COSINE: f32 = 0.88;
 pub const MAX_EVIDENCE_PER_SIDE: usize = 3;
+/// Displayed (and Ripple-visible) AI edges per document and kind: an edge is
+/// shown when it ranks within this many at either endpoint.
 pub const MAX_AI_EDGES_PER_DOC: usize = 8;
+/// Stored candidates per document and kind. Beyond this the weakest at that
+/// endpoint is evicted and both of its endpoints are flagged as truncated.
+pub const MAX_STORED_CANDIDATES_PER_ENDPOINT: usize = 32;
 /// Keeps the vector payload bounded before pair discovery starts.
 pub const MAX_RELATIONSHIP_CHUNKS: usize = 20_000;
 /// Keeps worst-case CPU bounded; a refresh fails rather than silently dropping
@@ -73,6 +78,8 @@ pub struct DiscoveredRelationship {
     pub space_fingerprint: String,
     pub score: Option<f32>,
     pub confidence: Option<f32>,
+    /// Internal ranking cosine for retained candidates; never on the wire.
+    pub discovery_cosine: f32,
     pub source_evidence: Vec<SourcePassage>,
     pub target_evidence: Vec<SourcePassage>,
 }
@@ -188,6 +195,7 @@ pub fn discover(
                         space_fingerprint: space_fingerprint.to_owned(),
                         score: Some(best.score.clamp(0.0, 1.0)),
                         confidence: None,
+                        discovery_cosine: best.score.clamp(0.0, 1.0),
                         source_evidence,
                         target_evidence,
                     });
@@ -213,6 +221,7 @@ pub fn discover(
                     space_fingerprint: space_fingerprint.to_owned(),
                     score: None,
                     confidence: None,
+                    discovery_cosine: pair.score.clamp(0.0, 1.0),
                     source_evidence,
                     target_evidence,
                 });
