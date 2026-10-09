@@ -1,4 +1,4 @@
-import { ArrowLeft, FileText, Sparkles, X } from "lucide-react";
+import { ArrowLeft, Sparkles, X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import type { WorkspaceState } from "../app/useWorkspace";
 import type { DocumentRecord } from "../domain/contracts";
@@ -6,6 +6,7 @@ import type { ViewId } from "../shell/navigation";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
+import { FileTypeIcon } from "../ui/FileTypeIcon";
 import { Progress } from "../ui/Progress";
 import {
   fileKind,
@@ -74,9 +75,7 @@ export function DocumentPanel({
         >
           <ArrowLeft size={18} aria-hidden="true" />
         </button>
-        <span className="document-icon" aria-hidden="true">
-          <FileText size={24} />
-        </span>
+        <FileTypeIcon mediaType={document.mediaType} />
         <div className="document-heading">
           <h2
             ref={heading}
@@ -152,9 +151,14 @@ export function DocumentPanel({
         {tab === "Details" && (
           <>
             <dl className="details-list">
-              <dt>Location</dt>
-              <dd title={document.relativePath}>
-                {folderOf(document.relativePath)}
+              {/* The full path wraps here; lists truncate it. */}
+              <dt>Path</dt>
+              <dd>{document.relativePath}</dd>
+              <dt>{workspace.workspace ? "In folder" : "Source"}</dt>
+              <dd>
+                {workspace.workspace
+                  ? workspace.workspace.rootPath
+                  : "Sample file bundled with Folio"}
               </dd>
               <dt>Type</dt>
               <dd>{fileKind(document)}</dd>
@@ -162,8 +166,17 @@ export function DocumentPanel({
               <dd>{languageLabel(document.language)}</dd>
               <dt>Size</dt>
               <dd className="tabular">{formatBytes(document.sizeBytes)}</dd>
+              <dt>Modified</dt>
+              <dd className="tabular">
+                {document.modifiedAtMs === undefined
+                  ? "Not recorded"
+                  : formatModified(document.modifiedAtMs)}
+              </dd>
             </dl>
-            <h3 className="subsection-title">Contents</h3>
+            <div className="subsection-header">
+              <h3 className="subsection-title">Contents</h3>
+              <Badge>Read-only</Badge>
+            </div>
             {workspace.busy && document.content === undefined ? (
               <Progress label="Reading file" />
             ) : document.content !== undefined ? (
@@ -188,7 +201,7 @@ export function DocumentPanel({
                     className="related-item"
                     onClick={() => workspace.selectDocument(related)}
                   >
-                    <FileText size={20} aria-hidden="true" />
+                    <FileTypeIcon mediaType={related.mediaType} size={20} />
                     <span className="related-text">
                       <span className="related-name">{related.name}</span>
                       <span className="related-path">

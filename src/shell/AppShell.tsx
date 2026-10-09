@@ -3,12 +3,23 @@ import {
   Folder,
   Folders,
   House,
+  Monitor,
+  Moon,
   Sparkles,
+  Sun,
   Waypoints,
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useWorkspace } from "../app/useWorkspace";
+import {
+  applyTheme,
+  loadTheme,
+  nextTheme,
+  saveTheme,
+  THEME_LABELS,
+  type ThemePreference,
+} from "../app/theme";
+import { useWorkspace, type WorkspaceSourceKind } from "../app/useWorkspace";
 import { AnnouncerProvider } from "../ui/Announcer";
 import { Notice } from "../ui/Notice";
 import { SearchField } from "../ui/SearchField";
@@ -28,6 +39,7 @@ import {
   type NavItem,
   type ViewId,
 } from "./navigation";
+import { readerDocument } from "./reader";
 
 const ICONS: Record<ViewId, LucideIcon> = {
   home: House,
@@ -38,6 +50,18 @@ const ICONS: Record<ViewId, LucideIcon> = {
   modelLab: FlaskConical,
 };
 
+const THEME_ICONS: Record<ThemePreference, LucideIcon> = {
+  system: Monitor,
+  light: Sun,
+  dark: Moon,
+};
+
+const SOURCE_LABELS: Record<WorkspaceSourceKind, string> = {
+  none: "No folder yet",
+  samples: "Sample files",
+  folder: "Your folder",
+};
+
 const TITLES: Record<ViewId, string> = {
   home: "Overview",
   files: "Files",
@@ -46,13 +70,6 @@ const TITLES: Record<ViewId, string> = {
   assistant: "Ask & Act",
   modelLab: "Model Lab",
 };
-
-/**
- * Views whose main content is a document list, so the reader sits beside it
- * (or, in narrow windows, takes its place). Organize is not one: its rename
- * form must stay visible next to the chosen file.
- */
-const DOCUMENT_VIEWS = new Set<ViewId>(["home", "files", "graph"]);
 
 /** Escape in a text field belongs to the field (a search box clears itself). */
 function isEditable(target: EventTarget | null) {
@@ -67,7 +84,9 @@ export function AppShell() {
   const [view, setView] = useState<ViewId>("home");
   const searchInput = useRef<HTMLInputElement>(null);
   const platform = useMemo(currentPlatform, []);
-  const showsDocument = DOCUMENT_VIEWS.has(view) && workspace.selected;
+  const [theme, setTheme] = useState<ThemePreference>(loadTheme);
+  const reading = readerDocument(view, workspace.selected, workspace.results);
+  const showsDocument = reading !== undefined;
 
   // The listener is added once and reads the latest render through this ref.
   const latest = useRef({ showsDocument, closeDocument });
@@ -94,6 +113,16 @@ export function AppShell() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [platform]);
+
+  function cycleTheme() {
+    const next = nextTheme(theme);
+    setTheme(next);
+    saveTheme(next);
+    applyTheme(next, document.documentElement);
+  }
+  const ThemeIcon = THEME_ICONS[theme];
+  const themeLabel = `Theme: ${THEME_LABELS[theme]}`;
+  const themeAction = `${themeLabel}. Switch to ${THEME_LABELS[nextTheme(theme)]}.`;
 
   // Closing the reader returns focus to the list row that opened it.
   function closeDocument() {
@@ -144,6 +173,18 @@ export function AppShell() {
             </nav>
             <button
               type="button"
+              className="nav-item theme-switch"
+              aria-label={themeAction}
+              title={themeAction}
+              onClick={cycleTheme}
+            >
+              <ThemeIcon size={20} aria-hidden="true" />
+              <span className="nav-label" aria-hidden="true">
+                {themeLabel}
+              </span>
+            </button>
+            <button
+              type="button"
               className="status-pill"
               onClick={() => setView("modelLab")}
               aria-label="Local AI not set up. Open Model Lab."
@@ -158,7 +199,7 @@ export function AppShell() {
         <div className="main-column">
           <header className="topbar">
             <nav aria-label="Breadcrumb" className="breadcrumb">
-              <span>{workspace.workspace ? "Workspace" : "Sample files"}</span>
+              <span>{SOURCE_LABELS[workspace.source]}</span>
               <span aria-hidden="true">/</span>
               <span aria-current="page">{TITLES[view]}</span>
             </nav>
@@ -203,10 +244,10 @@ export function AppShell() {
           </main>
         </div>
 
-        {showsDocument && workspace.selected && (
+        {reading && (
           <DocumentPanel
-            key={workspace.selected.id}
-            document={workspace.selected}
+            key={reading.id}
+            document={reading}
             workspace={workspace}
             onClose={closeDocument}
             onNavigate={setView}
