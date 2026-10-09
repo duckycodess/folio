@@ -11,57 +11,77 @@
 
 .olio-chat-launcher {
   display: flex;
-  flex-direction: column;
+  justify-content: flex-end;
+}
+/* One button: the speech bubble on the left, pointing at Olio. */
+.olio-chat-launcher-button {
+  display: flex;
   align-items: flex-end;
-  gap: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: none;
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+}
+.olio-chat-launcher-button .olio-sprite {
+  filter: drop-shadow(0 4px 10px rgb(32 35 31 / 0.18));
+  transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.olio-chat-launcher-button:hover .olio-sprite,
+.olio-chat-launcher-button:focus-visible .olio-sprite {
+  transform: translateY(-4px);
 }
 .olio-chat-greeting {
   position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  margin: 0 -10px var(--space-2);
-  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  margin: 0 -2px 50px 0;
+  padding: 14px 17px;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   background: var(--color-surface);
   box-shadow: var(--shadow-float);
   font: var(--text-small);
+  white-space: nowrap;
+  transition:
+    transform 0.25s,
+    border-color 0.25s;
 }
 .olio-chat-greeting:after {
   content: "";
   position: absolute;
-  right: 18px;
-  bottom: -5px;
+  right: -5px;
+  bottom: 18px;
   width: 8px;
   height: 8px;
+  border-top: 1px solid var(--color-border);
   border-right: 1px solid var(--color-border);
-  border-bottom: 1px solid var(--color-border);
   background: var(--color-surface);
   transform: rotate(45deg);
 }
+.olio-chat-launcher-button:hover .olio-chat-greeting,
+.olio-chat-launcher-button:focus-visible .olio-chat-greeting {
+  transform: translateY(-2px);
+  border-color: var(--brand-honey);
+}
 .olio-chat-greeting strong {
-  font-weight: 700;
+  font: 700 0.8125rem/1.25 var(--font-heading);
 }
-.olio-chat-greeting-dismiss {
-  width: 28px;
-  height: 28px;
+.olio-chat-greeting > span {
+  color: var(--color-text-secondary);
 }
-.olio-chat-launcher-button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: none;
-  cursor: pointer;
-  filter: drop-shadow(0 4px 10px rgb(32 35 31 / 0.18));
-  transition: transform 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
+.olio-chat-greeting b {
+  margin-left: var(--space-2);
+  color: var(--color-text);
 }
-.olio-chat-launcher-button:hover,
-.olio-chat-launcher-button:focus-visible {
-  transform: translateY(-4px);
+@media (prefers-reduced-motion: reduce) {
+  .olio-chat-launcher-button .olio-sprite,
+  .olio-chat-greeting {
+    transition: none;
+  }
 }
 
 .olio-chat-panel {
@@ -115,10 +135,16 @@
 
 .olio-chat-messages {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
+  min-height: 0;
   gap: var(--space-3);
   padding: var(--space-3);
   overflow-y: auto;
+}
+/* A short conversation sits just above the composer, as in a messenger. */
+.olio-chat-messages.has-turns > :first-child {
+  margin-top: auto;
 }
 .olio-chat-welcome {
   padding: var(--space-2) 0;
@@ -284,6 +310,10 @@
   .olio-chat-launcher-button .olio-sprite {
     width: 112px !important;
     height: 112px !important;
+  }
+  .olio-chat-greeting {
+    margin-bottom: 40px;
+    padding: 11px 12px;
   }
 }
 

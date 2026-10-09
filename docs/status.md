@@ -360,7 +360,7 @@ Fixed by passing `chosen?.id` through. Not fixed and not claimed as fixed: wheth
 
 ## Virtual collections (issue #78)
 
-Gab took #78 over from Dann ([ADR 0016](adr/0016-virtual-collections-kept-natively-without-a-plan.md)). This first slice covers suggested and kept collections; model-written filenames and destination suggestions are follow-up PRs.
+Gab took #78 over from Dann ([ADR 0017](adr/0017-virtual-collections-kept-natively-without-a-plan.md)). This first slice covers suggested and kept collections; model-written filenames and destination suggestions are follow-up PRs.
 
 - Grouping (`folio-core/src/collections.rs`): average-linkage clustering of document vectors (the normalized mean of each document's chunk vectors), within the one embedding space of #4's in-memory snapshot (`VectorIndex::indexed`). A vector of another space is refused. Groups need at least two files, and a group made only of byte-identical copies is left to the exact-duplicate list. Each member carries the passage closest to the group's centre, bound to the revision read. At most 400 documents in path order, and 12 groups. The merge threshold (0.86 cosine) is provisional and has **not** been calibrated on real multilingual-E5 vectors.
 - Naming: one bounded request per group (6 passages of at most 600 bytes, 64 output tokens) through the shared generation slot. Passages are delimited as untrusted data. The name is written in the members' language as `detect_language` judges it, must cite a supplied passage, and is at most 60 characters; otherwise the group stays unnamed. Without a generation model, groups come back unnamed (`naming: generationModelMissing`). A stop keeps the names already written.
@@ -387,7 +387,7 @@ PR #87 review follow-up (TJ, 2026-10-10):
 
 - Members hidden by a Folio deletion no longer follow later renames, moves or create-Undos of the same path. `collection_members` has a row id and a partial unique index over visible members only, so a hidden row never blocks or is changed by a new file with that identity. A restore gives way to a member the user added again meanwhile. Tests cover TJ's three sequences (a rename onto a deleted member's name, a new file taking it and being renamed, and an Undo of a create).
 - Stop is native now. `stop_suggestions` stops the running request before it takes the generation slot, or cancels the generation it holds, and never another feature's. A new request stops the previous one and waits for it to end, so the next Analyze or an Olio request doesn't meet `GenerationBusy` from a stopped run. A stopped request rejects with `cancelled`.
-- Migration and ADR renumbered to `009_collections.sql` and ADR 0016, after #101's `007`/`008` and ADR 0015. `user_version` counts positions in the migration list, so whichever PR merges later appends its migrations after the other's.
+- Migration and ADR renumbered to `009_collections.sql` and ADR 0016, after #101's `007`/`008` and ADR 0015. (The ADR became 0017 in #102, after #113 also added a 0016.) `user_version` counts positions in the migration list, so whichever PR merges later appends its migrations after the other's.
 - Analyzing again keeps each returning group's edited name and unticked files, and a group already kept shows as kept. Replies for a folder that is no longer open are ignored. A failed list shows its error instead of "No collections yet". Members are stored under Folio's own document identity (NFC), so a decomposed id from the caller still follows renames. Focus goes to "Grouping stopped" after Stop, and to "Removed …" after removing a collection. Names with invisible formatting characters (bidi overrides, zero-width) are refused, generated or typed.
 - Merged `main` at `ab0e685` (#101's migrations `007`/`008` come before `009_collections.sql`; naming now holds the slot through #104's lease). On the QEMU host: `src-tauri` 301 passed, `folio-core` 215 passed, `npm test` 482 passed (9 todo), `npm run check`, `npm run build` and `npm run check:bundle` passed, Playwright 36 passed. The 4 `viewports` failures (`.resize-handle` outside a landmark, no main landmark or h1) fail the same way on a clean `main` checkout at `ab0e685`.
 - Checked on the QEMU host after merging `main` at `1b8b0e1`: `src-tauri` 257 passed, `folio-core` 182 passed, `npm test` 444 passed (9 todo), `npm run check`, `npm run build` and `npm run check:bundle` passed, Playwright 36 passed with the same 4 `viewports` failures on `.olio-chat-greeting`.
@@ -395,6 +395,8 @@ PR #87 review follow-up (TJ, 2026-10-10):
 Not tested: real embedding or generation models (so grouping and naming quality are unmeasured), the Windows and macOS desktop apps themselves, and native desktop interaction.
 
 ### Names, folders, adding to a collection and PDF pages (issue #78, slices 2 and 3)
+
+After #87 merged, `main` (with #109–#113) was merged in: the collections ADR is now 0017, because #113 also added a 0016 (PDFs can be renamed and moved), and Organize's naming holds the generation slot as `organizeSuggestions`, so a busy error names it. The model's names and folder suggestions still cover only TXT and Markdown.
 
 - Model-written filenames (`folio-core/src/file_suggestions.rs`): `needs_a_name` picks TXT and Markdown files without a title-based name suggestion whose name is only generic words (English and Filipino), numbers or dates, at most 10 per analysis. The index's title is a heading or else a short first line, so most files with text already get a title-based name. One bounded request per file (its first 3 paragraphs, 48 output tokens) asks for 2–6 words in the file's language, citing a supplied passage; an uncited or empty name is dropped, and an added extension is ignored. `organize::model_filenames` keeps the folder and extension, slugifies like title-based names, and drops a name that is unchanged, taken, already a file, or not portable. These arrive as `OrganizationSuggestion`s with `generated` (citations, model, revision); title-based ones have none.
 - Destinations: `suggest_destinations` compares each TXT or Markdown file's vector with each folder's other files (at least two, leaving out the file and its identical copies), within one embedding space. It suggests the closest folder only when it reaches 0.86 and beats the file's own folder by 0.03 (both provisional). Each carries the file's passage and the closest passage in that folder. `organize::destinations` turns them into exact `move` operations into an existing folder, never replacing a file. At most 10.
@@ -501,6 +503,24 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 8-GB measurement is claimed here.
 
 ## Verification
+
+### Floating chat reads top to bottom (2026-10-10)
+
+The floating Olio chat listed the newest turn first. It now reads like a messenger: turns go oldest to newest down the panel, and a short conversation sits just above the composer. Opening the chat or sending a request scrolls to the newest turn, and a growing reply is followed only while you're at the bottom, so scrolling up to read older turns isn't interrupted. The full-page Ask & Act keeps newest-first, because its composer is at the top. `e2e/specs/olio-chat-order.spec.ts` sends three requests and checks their order and that the view ends at the newest. It fails on the old order.
+
+Tested locally on macOS in Chromium only: `npm run check`, `npm test`, `npm run build`, and `npx playwright test` (36 passed; the 4 `viewports.spec.ts` failures already on `main` are unchanged). Not checked in the Tauri window.
+
+### Olio launcher always invites you to talk (2026-10-10)
+
+The floating chat's greeting used to be a separate, dismissible bubble. After one dismissal (remembered in `localStorage`) Olio sat in the corner with no visible prompt. The launcher is now the brandkit's single button: an always-visible speech bubble ("Hey, I'm Olio. Talk to me — let's find what you need ↗") pointing at the animated Olio. The bubble's text is the button's accessible name, which passes axe's `label-content-name-mismatch` rule. The dismiss control and its storage key are gone.
+
+Tested locally on macOS in Chromium only: `npm run check`, `npm test`, `npm run build`, and `npx playwright test` (35 passed; the 4 `viewports.spec.ts` failures already on `main` are unchanged). Screenshots checked at 1400px and 600px widths. Not checked in the Tauri window.
+
+### Window scrolled past the shell on long pages (2026-10-10)
+
+On Model Lab, the window could scroll below the app and show bare background under a short sidebar. The cause was the announcer's visually-hidden live region, which is absolutely positioned at the end of the content but had no positioned ancestor, so it stretched the document to 1663px in an 880px window. `.app` is now `position: relative`, so its `overflow: hidden` clips such regions. `e2e/specs/shell-height.spec.ts` checks that Home, Model Lab, Activity and Organize keep the document exactly one window tall. It fails without the fix (1663 vs 880) and passes with it.
+
+Tested locally on macOS in Chromium only: `npm run check`, `npm test`, `npm run build`, and `npx playwright test` (35 passed). The 4 `viewports.spec.ts` failures already on `main` are unchanged. Not checked in the Tauri window.
 
 ### Brandkit logo, tokens and selected file (2026-10-10)
 
@@ -1607,3 +1627,13 @@ Selecting a model was slow, and other installed models often showed "Checking…
 **Fix:** the `verify_model` command (`src-tauri/src/lib.rs`) now returns the store's cached `model_state`: a full SHA-256 the first time a file is checked in a session, then a size and modified-time check, the same check a launch already uses. The store's uncached `verify_model` is kept for an explicit deep re-check; nothing in the UI calls it now. Trade-off: a file altered in place with the same size and modified time is not caught until the next app start.
 
 **Verified:** `cargo test --manifest-path src-tauri/Cargo.toml --workspace` (all passed), `npm run check`, `npm test` (428 passed). **Not verified:** selection speed in the running desktop app with real model files was not measured.
+
+### Ask & Act renames PDFs, completes destinations, and names busy work (2026-10-10)
+
+**Busy:** "Folio is still working on another request" gave no clue what was running. The generation state now records what holds the slot (summary, answer, request interpretation, Graph connection summary, Ripple explanation, Model Lab), and `providerBusy` carries it as the `holder` detail. Ask & Act names it ("Folio is writing a summary") and offers "Stop it and try again": it cancels the holder, and `acquire_generation` waits up to 5 seconds for a holder that was told to stop. A holder still working is never waited for. Other screens keep their plain Try again.
+
+**Renaming PDFs (ADR 0016):** the interpreter saw only TXT and Markdown, so "rename the VILAR_Resume.pdf to Larvi.pdf" ended in "Which file should I use?". PDFs are now rename and move targets (listed without text; only those whose names share a word with the request are hashed). The plan builder allows a rename or move of a TXT, Markdown or PDF file that keeps its type; edits and deletes stay TXT/Markdown only, and a request to edit a PDF is answered as read-only.
+
+**Destinations:** a rename keeps the file in its own folder and its extension ("rename 201_Barangay Clearance to Police Clearance" → `Police Clearance.pdf` next to it); a move to a bare folder name moves the file into it. Rename targets are also matched by the words of the file name ("my resume" → `VILAR_Resume.pdf`).
+
+**Verified:** `cargo test --manifest-path src-tauri/Cargo.toml --workspace` on macOS (all passed), including new tests for PDF rename proposals, the extension and folder rules, the read-only edit answer, a PDF rename applied with the index following it and Undo restoring the same bytes, a refused type change, the busy holder's message and detail, and the wait for a stopped holder. `npm run check`, `npm test`, `npm run build`. **Not verified:** these flows in the desktop app with a real model; the model's own reading of these requests (it must still return `rename` with the target and destination).

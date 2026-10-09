@@ -1,5 +1,12 @@
 import { History, Maximize2, Paperclip, Send, Trash2, X } from "lucide-react";
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import { PRACTICE_LABEL } from "../adapters/mockChat";
 import { folderChoices } from "../app/fileActions";
 import { matchSlashCommands, parseCommand } from "../app/commands";
@@ -16,25 +23,6 @@ import { trapTabWithin } from "../ui/Modal";
 import { OlioSprite } from "../ui/OlioSprite";
 import { TurnBody, type OpenFile } from "./AskTurns";
 import { ChangeDialog } from "./ChangeDialog";
-
-const GREETING_KEY = "folio.olioChat.greetingDismissed";
-
-// Storage can be missing or throw; the greeting then shows again next time.
-function greetingDismissed(): boolean {
-  try {
-    return window.localStorage.getItem(GREETING_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function rememberDismissed() {
-  try {
-    window.localStorage.setItem(GREETING_KEY, "1");
-  } catch {
-    // Dismissed for this session only.
-  }
-}
 
 function HistoryList({
   history,
@@ -99,13 +87,16 @@ export function FloatingOlioChat({
   const announce = useAnnounce();
   const [open, setOpen] = useState(false);
   const [panel, setPanel] = useState<"chat" | "history">("chat");
-  const [greeting, setGreeting] = useState(() => !greetingDismissed());
   const [text, setText] = useState("");
   const [attached, setAttached] = useState<DocumentRecord | null>(null);
   const [changing, setChanging] = useState<OperationProposal | null>(null);
   const launcherRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
+  // Like a messenger: newest at the bottom, and the view follows it unless
+  // you've scrolled up to read something older.
+  const pinnedToLatest = useRef(true);
   // The running turn this chat saw start; only its end is announced, so
   // stored history and switching conversations announce nothing.
   const watching = useRef<number | null>(null);
@@ -154,6 +145,24 @@ export function FloatingOlioChat({
     if (open) textareaRef.current?.focus();
   }, [open, panel]);
 
+  function scrollToLatest() {
+    const messages = messagesRef.current;
+    if (messages) messages.scrollTop = messages.scrollHeight;
+  }
+
+  // Opening the chat or sending a request always jumps to the newest turn.
+  useLayoutEffect(() => {
+    if (!open || panel !== "chat") return;
+    pinnedToLatest.current = true;
+    scrollToLatest();
+  }, [open, panel, ask.turns.length]);
+
+  // A reply that grows (progress, then results) is followed only while
+  // you're still at the bottom.
+  useLayoutEffect(() => {
+    if (pinnedToLatest.current) scrollToLatest();
+  }, [latest]);
+
   if (view === "assistant") return null;
 
   function close() {
@@ -162,8 +171,6 @@ export function FloatingOlioChat({
   }
 
   function launch() {
-    rememberDismissed();
-    setGreeting(false);
     setOpen(true);
     setPanel("chat");
   }
@@ -210,36 +217,29 @@ export function FloatingOlioChat({
     text.startsWith("/") && !text.includes(" ")
       ? matchSlashCommands(text.slice(1))
       : [];
-  const turns = [...ask.turns].reverse();
+  const turns = ask.turns;
 
   return (
     <div className="olio-chat">
       {!open && (
         <aside className="olio-chat-launcher" aria-label="Olio">
-          {greeting && (
-            <p className="olio-chat-greeting">
-              <strong>Hey, I&rsquo;m Olio.</strong> Let&rsquo;s find what you
-              need.
-              <button
-                type="button"
-                className="icon-button olio-chat-greeting-dismiss"
-                aria-label="Dismiss greeting"
-                onClick={() => {
-                  rememberDismissed();
-                  setGreeting(false);
-                }}
-              >
-                <X size={16} aria-hidden="true" />
-              </button>
-            </p>
-          )}
+          {/* Brandkit launcher: the greeting is part of the button and
+              always shown, so there's always a visible invitation to talk. */}
           <button
             ref={launcherRef}
             type="button"
             className="olio-chat-launcher-button"
-            aria-label="Ask Olio"
             onClick={launch}
           >
+            {/* The bubble's text is the button's name, so what you read is
+                what a screen reader announces. */}
+            <span className="olio-chat-greeting">
+              <strong>Hey, I&rsquo;m Olio.</strong>
+              <span>
+                Talk to me &mdash; let&rsquo;s find what you need
+                <b aria-hidden="true">&#8599;</b>
+              </span>
+            </span>
             <OlioSprite state="idle" size={150} />
           </button>
         </aside>
@@ -300,7 +300,16 @@ export function FloatingOlioChat({
             />
           ) : (
             <>
-              <div className="olio-chat-messages" aria-live="off">
+              <div
+                ref={messagesRef}
+                className={`olio-chat-messages${turns.length > 0 ? " has-turns" : ""}`}
+                aria-live="off"
+                onScroll={(event) => {
+                  const box = event.currentTarget;
+                  pinnedToLatest.current =
+                    box.scrollHeight - box.scrollTop - box.clientHeight < 48;
+                }}
+              >
                 {turns.length === 0 ? (
                   <div className="olio-chat-welcome">
                     <h3 className="olio-chat-welcome-title">

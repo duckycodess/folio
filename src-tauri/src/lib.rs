@@ -691,7 +691,7 @@ async fn summarize_relationships(
                 || coverage.overflow_documents > 0
                 || entries.len() < available_connections,
         };
-        let lease = acquire_generation(&app, &generation_state)?;
+        let lease = acquire_generation(&app, &generation_state, GenerationHolder::RelationshipSummary)?;
         let result = grounding::relationship_summary(
             lease.provider.as_ref(),
             entries,
@@ -789,7 +789,7 @@ async fn explain_impact(
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
-        let lease = acquire_generation(&app, &generation_state)?;
+        let lease = acquire_generation(&app, &generation_state, GenerationHolder::ImpactExplanation)?;
         let result = grounding::impact_explanation(
             lease.provider.as_ref(),
             impact_relationship_label(&candidate),
@@ -1395,7 +1395,7 @@ async fn organization_suggestions(
     .await
 }
 
-/* ------------------------------------------- virtual collections (#78, ADR 0016) */
+/* ------------------------------------------- virtual collections (#78, ADR 0017) */
 
 #[tauri::command]
 async fn list_collections(state: State<'_, Folio>, workspace_id: String) -> Result<Vec<VirtualCollection>, FolioError> {
@@ -1495,9 +1495,74 @@ struct GenerationSlot {
 struct GenerationStateInner {
     slot: Option<GenerationSlot>,
     active_cancel: Option<Arc<AtomicBool>>,
+    /// What holds the slot while `active_cancel` is set, so a request that
+    /// finds it busy can say what is running instead of a bare "busy".
+    holder: Option<GenerationHolder>,
     /// Set while the llama.cpp runtime is reinstalled, so no request starts a
     /// server from the directory being replaced.
     runtime_installing: bool,
+    /// How many unloads are waiting for the slot's holder. While any is, no
+    /// request or lab run may claim the slot, so an unload never cancels work
+    /// that started after it was asked for.
+    unloading: usize,
+}
+
+/// Marks an unload in progress for as long as it lives, on every exit path.
+struct UnloadingMark(GenerationState);
+
+impl UnloadingMark {
+    fn new(guard: &mut GenerationStateInner, generation_state: &GenerationState) -> Self {
+        guard.unloading += 1;
+        Self(generation_state.clone())
+    }
+}
+
+impl Drop for UnloadingMark {
+    fn drop(&mut self) {
+        if let Ok(mut guard) = self.0.lock() {
+            guard.unloading = guard.unloading.saturating_sub(1);
+        }
+    }
+}
+
+/// What is using the local generation model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GenerationHolder {
+    Summary,
+    Answer,
+    Interpretation,
+    RelationshipSummary,
+    ImpactExplanation,
+    /// Organize's collection and file names (#78).
+    OrganizeSuggestions,
+    ModelLab,
+}
+
+impl GenerationHolder {
+    /// Sent to the UI as the busy error's `holder` detail.
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Summary => "summary",
+            Self::Answer => "answer",
+            Self::Interpretation => "interpretation",
+            Self::RelationshipSummary => "relationshipSummary",
+            Self::ImpactExplanation => "impactExplanation",
+            Self::OrganizeSuggestions => "organizeSuggestions",
+            Self::ModelLab => "modelLab",
+        }
+    }
+
+    fn busy_message(self) -> &'static str {
+        match self {
+            Self::Summary => "Folio is writing a summary.",
+            Self::Answer => "Folio is answering another question.",
+            Self::Interpretation => "Folio is reading another request.",
+            Self::RelationshipSummary => "Folio is summarizing connections in Graph.",
+            Self::ImpactExplanation => "Folio is explaining a related file in a preview.",
+            Self::OrganizeSuggestions => "Folio is naming Organize's suggestions.",
+            Self::ModelLab => "Model Lab is measuring models.",
+        }
+    }
 }
 
 type GenerationState = Arc<Mutex<GenerationStateInner>>;
@@ -2069,6 +2134,50 @@ fn pdf_page_chunks(record: &DocumentRecord, content: &str, pages: &[workspace::P
     Ok(chunks)
 }
 
+/// PDFs an Ask request can rename or move (never edit), listed without text.
+/// A proposal must carry the file's current revision, so the PDFs whose name
+/// shares a word with the request are hashed; the rest of a large folder is
+/// not read at all, and a request naming one of those gets a clarification.
+fn read_only_rename_targets(
+    root: &ScopedRoot,
+    request: &str,
+) -> Result<Vec<DocumentRecord>, FolioError> {
+    let words = |value: &str| {
+        value
+            .split(|character: char| !character.is_alphanumeric())
+            .filter(|word| word.chars().count() >= 3)
+            .map(str::to_lowercase)
+            .collect::<HashSet<_>>()
+    };
+    let asked = words(request);
+    let mut records = Vec::new();
+    for row in workspace::list_documents(root)?.documents {
+        if row.media_type != "application/pdf" {
+            continue;
+        }
+        let stem = row.name.rsplit_once('.').map_or(row.name.as_str(), |(stem, _)| stem);
+        let content_hash = if words(stem).is_disjoint(&asked) {
+            None
+        } else {
+            workspace::document_hash(&root.path, &row.relative_path).ok()
+        };
+        records.push(DocumentRecord {
+            id: row.id,
+            workspace_id: row.workspace_id,
+            title: row.name.clone(),
+            relative_path: row.relative_path,
+            name: row.name,
+            language: Language::Unknown,
+            media_type: row.media_type,
+            size_bytes: row.size_bytes,
+            modified_at_ms: row.modified_at_ms,
+            content: None,
+            content_hash,
+        });
+    }
+    Ok(records)
+}
+
 fn document_record(
     root: &ScopedRoot,
     document_id: &str,
@@ -2430,9 +2539,14 @@ struct SlotClaim {
 impl SlotClaim {
     /// Marks the slot active. The caller must already hold the lock and have
     /// checked `ensure_slot_free`.
-    fn new(guard: &mut GenerationStateInner, generation_state: &GenerationState) -> Self {
+    fn new(
+        guard: &mut GenerationStateInner,
+        generation_state: &GenerationState,
+        holder: GenerationHolder,
+    ) -> Self {
         let cancel = Arc::new(AtomicBool::new(false));
         guard.active_cancel = Some(cancel.clone());
+        guard.holder = Some(holder);
         Self {
             generation_state: generation_state.clone(),
             cancel,
@@ -2455,7 +2569,19 @@ fn ensure_slot_free(guard: &GenerationStateInner) -> Result<(), NativeProviderEr
     if guard.active_cancel.is_some() {
         return Err(NativeProviderError {
             code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
-            message: "Another local generation request is active.".into(),
+            message: guard
+                .holder
+                .map_or("Another local generation request is active.", |holder| {
+                    holder.busy_message()
+                })
+                .into(),
+            detail: guard.holder.map(|holder| holder.as_str().into()),
+        });
+    }
+    if guard.unloading > 0 {
+        return Err(NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
+            message: "Folio is stopping the local AI model. Try again in a moment.".into(),
             detail: None,
         });
     }
@@ -2469,13 +2595,53 @@ fn ensure_slot_free(guard: &GenerationStateInner) -> Result<(), NativeProviderEr
     Ok(())
 }
 
+/// How long a request waits for a holder that was told to stop (Cancel, or
+/// "Stop it and try again") to release the slot, instead of failing busy while
+/// it winds down. A holder still working is never waited for.
+const STOPPING_HOLDER_WAIT: Duration = Duration::from_secs(5);
+
+/// The locked state once the slot is free, waiting up to `wait` only while
+/// the current holder has been cancelled and is finishing.
+fn lock_free_slot(
+    generation_state: &GenerationState,
+    wait: Duration,
+) -> Result<std::sync::MutexGuard<'_, GenerationStateInner>, NativeProviderError> {
+    let deadline = Instant::now() + wait;
+    loop {
+        let guard = generation_state.lock().map_err(|_| NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::IoError,
+            message: "The local generation state is unavailable.".into(),
+            detail: None,
+        })?;
+        let stopping = guard
+            .active_cancel
+            .as_ref()
+            .is_some_and(|cancel| cancel.load(Ordering::Acquire));
+        if stopping && Instant::now() < deadline {
+            drop(guard);
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        }
+        ensure_slot_free(&guard)?;
+        return Ok(guard);
+    }
+}
+
 /// `acquire_generation`'s slot handling without the model store or provider
 /// launch, so tests can exercise the busy check and release path directly.
 #[cfg(test)]
+fn claim_free_slot_as(
+    generation_state: &GenerationState,
+    holder: GenerationHolder,
+    wait: Duration,
+) -> Result<SlotClaim, NativeProviderError> {
+    let mut guard = lock_free_slot(generation_state, wait)?;
+    Ok(SlotClaim::new(&mut guard, generation_state, holder))
+}
+
+#[cfg(test)]
 fn claim_free_slot(generation_state: &GenerationState) -> Result<SlotClaim, NativeProviderError> {
-    let mut guard = generation_state.lock().unwrap();
-    ensure_slot_free(&guard)?;
-    Ok(SlotClaim::new(&mut guard, generation_state))
+    claim_free_slot_as(generation_state, GenerationHolder::Answer, Duration::ZERO)
 }
 
 /// The generation provider for the selected model, marked active in the same
@@ -2485,6 +2651,7 @@ fn claim_free_slot(generation_state: &GenerationState) -> Result<SlotClaim, Nati
 fn acquire_generation(
     app: &AppHandle,
     generation_state: &GenerationState,
+    holder: GenerationHolder,
 ) -> Result<GenerationLease, NativeProviderError> {
     let store = model_store(app)?;
     let model_id = store
@@ -2500,17 +2667,12 @@ fn acquire_generation(
     let executable = store
         .verified_runtime_executable(runtime_id_for_host())
         .map_err(native_error)?;
-    let mut guard = generation_state.lock().map_err(|_| NativeProviderError {
-        code: folio_core::contracts::ProviderErrorCode::IoError,
-        message: "The local generation state is unavailable.".into(),
-        detail: None,
-    })?;
-    ensure_slot_free(&guard)?;
+    let mut guard = lock_free_slot(generation_state, STOPPING_HOLDER_WAIT)?;
     if let Some(slot) = guard.slot.as_ref() {
         if slot.model_id == verified.descriptor.id && slot.revision == verified.descriptor.revision
         {
             let provider = slot.provider.clone();
-            let claim = SlotClaim::new(&mut guard, generation_state);
+            let claim = SlotClaim::new(&mut guard, generation_state, holder);
             return Ok(GenerationLease { provider, claim });
         }
     }
@@ -2529,7 +2691,7 @@ fn acquire_generation(
         revision: provider.revision().into(),
         provider: provider.clone(),
     });
-    let claim = SlotClaim::new(&mut guard, generation_state);
+    let claim = SlotClaim::new(&mut guard, generation_state, holder);
     Ok(GenerationLease { provider, claim })
 }
 
@@ -2548,6 +2710,7 @@ fn finish_generation(
         .is_some_and(|active| Arc::ptr_eq(active, cancel))
     {
         guard.active_cancel = None;
+        guard.holder = None;
     }
     Ok(())
 }
@@ -2584,7 +2747,7 @@ async fn summarize_document(
         let content = document_text.content.clone();
         let passages =
             grounding::summary_passages(&document_id, &content, &document_text.content_hash);
-        let lease = acquire_generation(&app, &generation_state)?;
+        let lease = acquire_generation(&app, &generation_state, GenerationHolder::Summary)?;
         let result = grounding::summarize_document(
             lease.provider.as_ref(),
             passages,
@@ -2640,7 +2803,7 @@ async fn answer_question(
                 &AtomicBool::new(false),
             )?);
         }
-        let lease = acquire_generation(&app, &generation_state)?;
+        let lease = acquire_generation(&app, &generation_state, GenerationHolder::Answer)?;
         let result = grounding::answer_question(
             Some(lease.provider.as_ref()),
             &question,
@@ -2713,8 +2876,9 @@ async fn interpret_request(
     let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
     let generation_state = generation_state.inner().clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
-        let (documents, contents, chunks, _skipped_documents) = load_corpus(&root)?;
-        let lease = acquire_generation(&app, &generation_state)?;
+        let (mut documents, contents, chunks, _skipped_documents) = load_corpus(&root)?;
+        documents.extend(read_only_rename_targets(&root, &text)?);
+        let lease = acquire_generation(&app, &generation_state, GenerationHolder::Interpretation)?;
         let result = interpretation::interpret_request(
             lease.provider.as_ref(),
             &text,
@@ -2817,7 +2981,7 @@ fn generate_in_run<T>(
         return Ok(None);
     }
     // The lease gives the slot back when it is dropped, on every path.
-    let lease = acquire_generation(app, generation_state)?;
+    let lease = acquire_generation(app, generation_state, GenerationHolder::OrganizeSuggestions)?;
     Ok(run.hold(&lease.claim.cancel).then(|| work(lease.provider.as_ref(), lease.claim.cancel.as_ref())))
 }
 
@@ -3047,14 +3211,26 @@ fn unload_generation_now_with_limit(
     limit: Duration,
 ) -> Result<(), NativeProviderError> {
     let deadline = Instant::now() + limit;
+    let unavailable = || NativeProviderError {
+        code: folio_core::contracts::ProviderErrorCode::IoError,
+        message: "The local generation state is unavailable.".into(),
+        detail: None,
+    };
+    let _unloading = {
+        let mut guard = generation_state.lock().map_err(|_| unavailable())?;
+        UnloadingMark::new(&mut guard, generation_state)
+    };
     loop {
-        let mut guard = generation_state.lock().map_err(|_| NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::IoError,
-            message: "The local generation state is unavailable.".into(),
-            detail: None,
-        })?;
+        let mut guard = generation_state.lock().map_err(|_| unavailable())?;
         if let Some(cancel) = guard.active_cancel.as_ref() {
+            // As `cancel_generation` does: the flag, then interrupt a holder
+            // blocked waiting on llama-server, which only checks the flag once
+            // a read returns. The slot stays claimed until the holder releases
+            // it, so no second server can start meanwhile.
             cancel.store(true, Ordering::Release);
+            if let Some(slot) = guard.slot.as_ref() {
+                let _ = slot.provider.cancel_active();
+            }
         } else {
             if let Some(slot) = guard.slot.take() {
                 drop(guard);
@@ -3129,12 +3305,14 @@ mod tests {
         let generation = GenerationState::default();
         let claim = claim_free_slot(&generation).unwrap();
         let cancel = claim.cancel.clone();
+        let (release, released) = std::sync::mpsc::channel::<()>();
         let request = std::thread::spawn(move || {
-            // Stand in for a request that notices cancellation and returns.
+            // Stand in for a request that notices cancellation and returns,
+            // only once the test has checked the slot is still held.
             while !claim.cancel.load(Ordering::Acquire) {
                 std::thread::sleep(Duration::from_millis(5));
             }
-            std::thread::sleep(Duration::from_millis(40));
+            released.recv().unwrap();
             drop(claim);
         });
         let generation_for_unload = generation.clone();
@@ -3143,9 +3321,86 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(claim_free_slot(&generation).is_err());
+        release.send(()).unwrap();
         unloader.join().unwrap().unwrap();
         request.join().unwrap();
         assert!(generation.lock().unwrap().active_cancel.is_none());
+        assert!(claim_free_slot(&generation).is_ok());
+    }
+
+    #[test]
+    fn a_busy_slot_says_what_is_running() {
+        let generation = GenerationState::default();
+        let _summary =
+            claim_free_slot_as(&generation, GenerationHolder::Summary, Duration::ZERO).unwrap();
+        let busy = claim_free_slot(&generation).err().unwrap();
+        assert_eq!(busy.message, "Folio is writing a summary.");
+        assert_eq!(busy.detail.as_deref(), Some("summary"));
+        let shown = FolioError::from(busy);
+        assert_eq!(shown.code, ErrorCode::ProviderBusy);
+        assert_eq!(
+            shown.details.unwrap().get("holder").map(String::as_str),
+            Some("summary")
+        );
+    }
+
+    #[test]
+    fn the_holder_is_forgotten_when_it_releases_the_slot() {
+        let generation = GenerationState::default();
+        drop(claim_free_slot_as(&generation, GenerationHolder::Summary, Duration::ZERO).unwrap());
+        assert_eq!(generation.lock().unwrap().holder, None);
+    }
+
+    #[test]
+    fn a_request_waits_for_a_stopped_holder_but_not_a_working_one() {
+        let generation = GenerationState::default();
+        let summary =
+            claim_free_slot_as(&generation, GenerationHolder::Summary, Duration::ZERO).unwrap();
+        // Still working: refused at once, however long the caller would wait.
+        let started = Instant::now();
+        assert!(
+            claim_free_slot_as(&generation, GenerationHolder::Answer, Duration::from_secs(5))
+                .is_err()
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+        // Told to stop: the next request waits for it to finish, then runs.
+        summary.cancel.store(true, Ordering::Release);
+        let finisher = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(80));
+            drop(summary);
+        });
+        let next =
+            claim_free_slot_as(&generation, GenerationHolder::Answer, Duration::from_secs(5));
+        finisher.join().unwrap();
+        assert!(next.is_ok());
+        assert_eq!(generation.lock().unwrap().holder, Some(GenerationHolder::Answer));
+    }
+
+    #[test]
+    fn no_request_slips_in_between_a_release_and_the_unload() {
+        let generation = GenerationState::default();
+        let claim = claim_free_slot(&generation).unwrap();
+        let cancel = claim.cancel.clone();
+        let generation_for_unload = generation.clone();
+        let unloader = std::thread::spawn(move || unload_generation_now(&generation_for_unload));
+        while !cancel.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // While the unload waits, the slot is marked, and a marked slot is
+        // refused even with no holder, so between the holder's release and
+        // the unload's next look nothing can claim it.
+        assert_eq!(generation.lock().unwrap().unloading, 1);
+        let between = GenerationStateInner {
+            unloading: 1,
+            ..GenerationStateInner::default()
+        };
+        assert_eq!(
+            ensure_slot_free(&between).err().map(|failure| failure.code),
+            Some(folio_core::contracts::ProviderErrorCode::GenerationBusy)
+        );
+        drop(claim);
+        unloader.join().unwrap().unwrap();
+        assert_eq!(generation.lock().unwrap().unloading, 0);
         assert!(claim_free_slot(&generation).is_ok());
     }
 
@@ -3503,6 +3758,11 @@ pub fn run() {
             event,
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
         ) {
+            // Both events fire; the waiting happens once.
+            static EXIT_UNLOADED: AtomicBool = AtomicBool::new(false);
+            if EXIT_UNLOADED.swap(true, Ordering::SeqCst) {
+                return;
+            }
             if let Some(generation_state) = app_handle.try_state::<GenerationState>() {
                 unload_generation_at_exit(generation_state.inner(), Duration::from_secs(10));
             }
