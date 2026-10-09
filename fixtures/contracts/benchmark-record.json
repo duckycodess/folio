@@ -1,0 +1,93 @@
+{
+  "caseId": "summary-fil",
+  "task": "summary",
+  "modelId": "contract-example-model",
+  "revision": "contract-example-revision",
+  "quantization": "Q4_K_M",
+  "runtime": "llama.cpp contract-example",
+  "hardware": "contract-example-os contract-example-arch, 4 logical CPUs, 8589934592 B installed RAM",
+  "contextTokens": 4096,
+  "cold": true,
+  "taskDurationMs": 1234,
+  "correctness": null,
+  "peakProcessRamBytes": null,
+  "modelDiskBytes": 1000,
+  "id": "contract-example-record",
+  "runId": "contract-example-run",
+  "createdAt": 1760000000000,
+  "suite": {
+    "id": "benchmark-cases",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "frozen": false
+  },
+  "promptSha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "model": {
+    "id": "contract-example-model",
+    "role": "generation",
+    "repo": "example/contract-example",
+    "revision": "contract-example-revision",
+    "quantization": "Q4_K_M",
+    "files": [
+      {
+        "path": "contract-example.gguf",
+        "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "bytes": 1000
+      }
+    ]
+  },
+  "embeddingModelId": "contract-example-embedding",
+  "runtimeDetail": { "name": "llama.cpp", "version": "contract-example" },
+  "host": {
+    "os": "contract-example-os",
+    "osVersion": null,
+    "arch": "contract-example-arch",
+    "cpuBrand": null,
+    "logicalCpus": 4,
+    "installedRamBytes": 8589934592
+  },
+  "conditions": {
+    "nCtx": 4096,
+    "maxOutputTokens": 512,
+    "maxPassages": 8,
+    "temperature": 0,
+    "seed": 0,
+    "threads": 2,
+    "corpusSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+    "pageCache": "notControlled"
+  },
+  "timing": {
+    "processStartMs": 4321,
+    "requestsInTask": 2,
+    "requestsSinceProcessStart": 0,
+    "requestPosition": "firstRequestAfterServerRestart"
+  },
+  "serverSettings": { "startupWarmup": "default-on", "cachePrompt": false },
+  "observation": "single cold/repeat pair; initial observation, not a stable performance estimate",
+  "memory": [
+    {
+      "process": "llama-server",
+      "pid": null,
+      "peakBytes": null,
+      "scope": "process lifetime since start, read after this request",
+      "method": "contract-example",
+      "unavailableReason": "contract example: no process was measured"
+    }
+  ],
+  "modelFileBytes": 1000,
+  "objectiveChecks": [
+    {
+      "name": "requiredFact:October 20 deadline",
+      "passed": true,
+      "detail": "string match only"
+    },
+    { "name": "uncitedSentenceCount", "passed": null, "detail": "not evaluated" }
+  ],
+  "output": { "text": "contract example output, not a model result" },
+  "outputSha256": "4444444444444444444444444444444444444444444444444444444444444444",
+  "reviews": [],
+  "schemaVersion": 1,
+  "apply": {
+    "status": "notRun",
+    "reason": "proposal-only: an actual apply needs explicit native approval; Model Lab never bypasses approval"
+  }
+}

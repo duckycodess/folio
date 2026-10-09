@@ -713,6 +713,113 @@ export interface BenchmarkResult {
   modelDiskBytes: number;
 }
 
+export type BenchmarkMemoryProcess = "llama-server" | "folio";
+
+/** One measured process. `peakBytes` is null, with a reason, when unavailable. */
+export interface BenchmarkMemory {
+  process: BenchmarkMemoryProcess;
+  pid: number | null;
+  peakBytes: number | null;
+  /** The span the peak covers, e.g. process lifetime since its start. */
+  scope: string;
+  /** How the peak was read, e.g. `PeakWorkingSetSize`. */
+  method: string;
+  unavailableReason?: string;
+}
+
+export interface BenchmarkCheck {
+  name: string;
+  /** Null when the check could not be evaluated; never a guessed pass. */
+  passed: boolean | null;
+  detail: string;
+}
+
+/** A person's judgment of one recorded output. Appended, never overwritten. */
+export interface BenchmarkReview {
+  status: "correct" | "incorrect" | "partiallyCorrect";
+  reviewer: string;
+  reviewedAt: number;
+  notes?: string;
+  /** The `outputSha256` of the output the reviewer actually read. */
+  outputSha256: string;
+}
+
+/**
+ * Issue #8's additive Model Lab record. It extends the frozen
+ * `BenchmarkResult` and stays assignable to it. There is no aggregate or
+ * self-graded score anywhere: `correctness` comes only from deterministic
+ * checks against the labelled suite, and summary records keep it `null`.
+ * `reviews: []` means "Not reviewed".
+ */
+export interface BenchmarkRecord extends BenchmarkResult {
+  id: string;
+  runId: string;
+  /** Unix milliseconds. */
+  createdAt: number;
+  /** `frozen` stays false until a held-out suite is frozen. */
+  suite: { id: string; sha256: string; frozen: boolean };
+  /** Hash of the prompt templates the run used. */
+  promptSha256: string;
+  model: {
+    id: string;
+    role: ModelRole;
+    repo: string;
+    revision: string;
+    quantization: string;
+    files: { path: string; sha256: string; bytes: number }[];
+  };
+  /** Retrieval rows: the same as `model.id`. */
+  embeddingModelId: string;
+  runtimeDetail: { name: "llama.cpp" | "onnxruntime"; version: string };
+  /** `installedRamBytes` is installed capacity, never usage. */
+  host: {
+    os: string;
+    osVersion: string | null;
+    arch: string;
+    cpuBrand: string | null;
+    logicalCpus: number;
+    installedRamBytes: number | null;
+  };
+  conditions: {
+    nCtx: number;
+    maxOutputTokens: number;
+    maxPassages: number;
+    temperature: number;
+    seed: number;
+    threads: number;
+    corpusSha256: string;
+    /** The operating system's file cache is never controlled. */
+    pageCache: "notControlled";
+  };
+  /**
+   * `cold` is true only for the first request after the process restarted.
+   * Startup time is separate from `taskDurationMs`. A task with several
+   * requests is cold only through its first one.
+   */
+  timing: {
+    processStartMs: number | null;
+    requestsInTask: number;
+    requestsSinceProcessStart: number;
+    requestPosition: "firstRequestAfterServerRestart" | "immediateRepeat";
+  };
+  /** The values actually used, not the defaults assumed. */
+  serverSettings: {
+    startupWarmup: "default-on" | "disabled";
+    cachePrompt: boolean;
+  };
+  observation: "single cold/repeat pair; initial observation, not a stable performance estimate";
+  memory: BenchmarkMemory[];
+  /** Equals `modelDiskBytes`: the model's own files, never installed size. */
+  modelFileBytes: number;
+  objectiveChecks: BenchmarkCheck[];
+  /** The full raw outcome, kept so a reviewer can read what was produced. */
+  output: unknown;
+  outputSha256: string;
+  reviews: BenchmarkReview[];
+  schemaVersion: 1;
+  apply: { status: "notRun"; reason: string };
+}
+
 /* -------------------------------------------------------- persistent index */
 
 /**

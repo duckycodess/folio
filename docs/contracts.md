@@ -225,6 +225,42 @@ or owned by someone else) is refused rather than replaced. Edits keep their prev
 100 most recent applied plans; older edit entries remain listed with
 `recoverable: false`.
 
+## Model Lab results (issue #8, proposal for TJ)
+
+`BenchmarkResult` is unchanged. `BenchmarkRecord` extends it additively in
+`src/domain/contracts.ts` and stays assignable to it; the serde mirror lives in
+`folio-core::lab`. `fixtures/contracts/benchmark-record.json` is a contract
+example with placeholder values, not a measurement.
+
+- **Separate tasks.** Retrieval, interpretation, summary and edit are separate
+  records. There is no per-model, per-task or overall score, and no field
+  carries one.
+- **`correctness`** is set only by deterministic checks against the labelled
+  suite. A summary record keeps `correctness: null` until a person reviews it,
+  and a review never writes `correctness` either. `reviews: []` means Not
+  reviewed. Reviews are appended with the `outputSha256` of the output the
+  reviewer read; `output` and `outputSha256` are never overwritten.
+- **Cold and repeat.** `cold: true` means the first request after the process
+  restarted (`timing.requestPosition: "firstRequestAfterServerRestart"`);
+  `cold: false` is the immediate repeat on the same process. Startup time is
+  `timing.processStartMs`, outside `taskDurationMs`. The operating system's
+  file cache is not controlled (`conditions.pageCache: "notControlled"`).
+  `serverSettings` records the startup warmup and prompt-cache settings used.
+  One pair per case is an initial observation, not a stable estimate.
+- **Memory.** Each `memory` entry names its process and states what span the
+  peak covers (`scope`) and how it was read (`method`). A process-lifetime peak
+  is never presented as one task's memory, and it is never whole-device RAM.
+  An unavailable peak is `null` with `unavailableReason`.
+  `peakProcessRamBytes` is the generation-process entry for generation tasks,
+  the Folio-process entry for retrieval, or `null`.
+- **Sizes.** `modelFileBytes` equals `modelDiskBytes`: the model's own files.
+  It is not an installed size. `host.installedRamBytes` is installed capacity,
+  not usage.
+- **Persistence.** Records are stored as versioned JSON (`schemaVersion: 1`) in
+  the existing `benchmark_results` table and outlive removal of the model.
+- **Apply.** `apply` is always `notRun` with its reason; Model Lab never
+  bypasses the native approval engine.
+
 ## What is not implemented yet
 
 Local embedding and generation are issues #4 and #8, including model-generated
