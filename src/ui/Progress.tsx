@@ -1,3 +1,6 @@
+import { useEffect } from "react";
+import { useAnnounce } from "./Announcer";
+
 interface ProgressProps {
   label: string;
   /** 0–100. Omit when the real progress is unknown. */
@@ -7,6 +10,9 @@ interface ProgressProps {
 /** Never invent a percentage: unknown progress renders as indeterminate. */
 export function Progress({ label, value }: ProgressProps) {
   const known = value !== undefined;
+  const announce = useAnnounce();
+  // Say once that work started; the result is announced by whatever follows.
+  useEffect(() => announce(`${label}…`), [announce, label]);
   return (
     <div className="progress">
       <div className="progress-label">

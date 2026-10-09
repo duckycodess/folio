@@ -1,16 +1,26 @@
 import { ArrowRight } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { simulatedFailure } from "../adapters/simulate";
+import type { Drafts } from "../app/drafts";
 import type { WorkspaceState } from "../app/useWorkspace";
 import type { DocumentRecord } from "../domain/contracts";
+import type { FolioError } from "../domain/errors";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { Modal } from "../ui/Modal";
 import { Olio } from "../ui/Olio";
 import { Panel } from "../ui/Panel";
+import { RecoveryNotice } from "../ui/RecoveryNotice";
 import { listedSelection } from "../shell/reader";
 import { FileList } from "./FileList";
 
-export function OrganizeView({ workspace }: { workspace: WorkspaceState }) {
+export function OrganizeView({
+  workspace,
+  drafts,
+}: {
+  workspace: WorkspaceState;
+  drafts: Drafts;
+}) {
   // Like the reader, ignore a chosen file that the current search leaves out,
   // and offer only files the search includes.
   const selected = listedSelection(workspace.selected, workspace.results);
@@ -41,6 +51,8 @@ export function OrganizeView({ workspace }: { workspace: WorkspaceState }) {
           <RenameForm
             key={selected.id}
             document={selected}
+            name={drafts.renameName(selected.id)}
+            onNameChange={(name) => drafts.setRenameName(selected.id, name)}
             onChangeFile={() => {
               workspace.clearSelection();
               // The form is replaced by the file list; keep focus in it.
@@ -71,15 +83,29 @@ export function OrganizeView({ workspace }: { workspace: WorkspaceState }) {
 
 function RenameForm({
   document,
+  name,
+  onNameChange,
   onChangeFile,
 }: {
   document: DocumentRecord;
+  /** Kept outside the form, so it survives errors and switching views. */
+  name: string;
+  onNameChange: (name: string) => void;
   onChangeFile: () => void;
 }) {
-  const [name, setName] = useState("");
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [failure, setFailure] = useState<FolioError | null>(null);
+  const input = useRef<HTMLInputElement>(null);
   const trimmed = name.trim();
   const invalid = /[\\/]/.test(trimmed);
+
+  function preview() {
+    if (!trimmed || invalid) return;
+    // In practice mode, the preview step fails the way a refused change would.
+    const simulated = simulatedFailure("changes");
+    setFailure(simulated ?? null);
+    if (!simulated) setPreviewOpen(true);
+  }
 
   return (
     <>
@@ -87,7 +113,7 @@ function RenameForm({
         className="rename-form"
         onSubmit={(event) => {
           event.preventDefault();
-          if (trimmed && !invalid) setPreviewOpen(true);
+          preview();
         }}
       >
         <label htmlFor="rename-input" className="field-label">
@@ -95,13 +121,17 @@ function RenameForm({
         </label>
         <div className="field-row">
           <input
+            ref={input}
             id="rename-input"
             className="text-input"
             value={name}
             placeholder={document.name}
             aria-describedby="rename-help"
             aria-invalid={invalid || undefined}
-            onChange={(event) => setName(event.target.value)}
+            onChange={(event) => {
+              onNameChange(event.target.value);
+              setFailure(null);
+            }}
           />
           <Button type="submit" disabled={!trimmed || invalid}>
             Preview rename
@@ -112,6 +142,16 @@ function RenameForm({
             ? "A file name can't contain / or \\."
             : "You'll see the exact change before anything happens."}
         </p>
+        {failure && (
+          <RecoveryNotice
+            error={failure}
+            actions={{
+              previewAgain: preview,
+              retry: preview,
+              chooseAnotherName: () => input.current?.select(),
+            }}
+          />
+        )}
         <div className="form-actions">
           <Button variant="ghost" onClick={onChangeFile}>
             Choose a different file

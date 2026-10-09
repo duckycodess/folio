@@ -29,7 +29,16 @@ export function Notice({ tone = "info", children, action }: NoticeProps) {
 
   useEffect(() => {
     if (tone === "danger") return;
-    const text = body.current?.textContent?.trim() ?? "";
+    // Join block children with spaces, so a title and message aren't run together.
+    const element = body.current;
+    const text = element
+      ? (element.children.length
+          ? [...element.children].map((child) => child.textContent?.trim())
+          : [element.textContent?.trim()]
+        )
+          .filter(Boolean)
+          .join(" ")
+      : "";
     if (!text || text === announced.current) return;
     announced.current = text;
     announce(text);

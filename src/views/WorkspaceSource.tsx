@@ -25,7 +25,7 @@ export function WorkspaceSource({ workspace }: { workspace: WorkspaceState }) {
       <Button
         variant={sample ? "primary" : "secondary"}
         icon={sample ? <FolderPlus size={18} /> : <FolderOpen size={18} />}
-        disabled={!workspace.nativeAvailable || workspace.busy}
+        disabled={!workspace.canChooseFolder || workspace.busy}
         onClick={workspace.selectFolder}
       >
         {sample ? "Add folder" : "Change folder"}

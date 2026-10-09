@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { failSoon, simulatedFailure } from "../adapters/simulate";
 import {
   chooseWorkspace,
   loadFixtureDocuments,
@@ -12,7 +13,20 @@ import type {
   WorkspaceInfo,
 } from "../domain/contracts";
 import { discoverExplicitReferences, keywordSearch } from "../domain/discovery";
-import { toFolioError } from "../domain/errors";
+import { toFolioError, type FolioError } from "../domain/errors";
+import { actionReducer, IDLE, type ActionState } from "./actionState";
+
+/** A failure on screen, with the step that can be retried. */
+export interface Failure {
+  error: FolioError;
+  retry?: () => void;
+}
+
+/** What opening a folder produced, shown only after the native core says so. */
+export interface FolderOpened {
+  name: string;
+  files: number;
+}
 
 /**
  * Whose files are listed. The desktop app starts with `none` until the user
@@ -26,6 +40,8 @@ export interface WorkspaceState {
   workspace: WorkspaceInfo | null;
   source: WorkspaceSourceKind;
   nativeAvailable: boolean;
+  /** The desktop app, or the browser preview simulating a folder failure. */
+  canChooseFolder: boolean;
   /** True while the sample files are on their way. */
   loading: boolean;
   query: string;
@@ -36,9 +52,12 @@ export interface WorkspaceState {
   /** Related documents for the selection, from explicit links only. */
   neighbors: DocumentRecord[];
   busy: boolean;
-  error: string;
+  failure: Failure | null;
+  dismissFailure: () => void;
   notice: string;
   dismissNotice: () => void;
+  folderAction: ActionState<FolderOpened>;
+  dismissFolderResult: () => void;
   selectDocument: (document: DocumentRecord) => Promise<void>;
   clearSelection: () => void;
   selectFolder: () => Promise<void>;
@@ -51,7 +70,11 @@ export function useWorkspace(): WorkspaceState {
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
   const [selectedId, setSelectedId] = useState("");
   const [query, setQuery] = useState("");
-  const [error, setError] = useState("");
+  const [failure, setFailure] = useState<Failure | null>(null);
+  const [folderAction, dispatchFolder] = useReducer(
+    actionReducer<FolderOpened>,
+    IDLE,
+  );
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [samplesRequested, setSamplesRequested] = useState(!nativeAvailable);
@@ -70,7 +93,7 @@ export function useWorkspace(): WorkspaceState {
         if (active && !folderOpened.current) setDocuments(fixtures);
       })
       .catch((cause) => {
-        if (active) setError(toFolioError(cause).message);
+        if (active) setFailure({ error: toFolioError(cause) });
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -106,20 +129,27 @@ export function useWorkspace(): WorkspaceState {
   async function selectDocument(document: DocumentRecord) {
     const current = ++request.current;
     setSelectedId(document.id);
-    setError("");
-    if (!workspace || document.content !== undefined) {
+    setFailure(null);
+    const simulated = simulatedFailure("read");
+    if (!simulated && (!workspace || document.content !== undefined)) {
       setBusy(false);
       return;
     }
     setBusy(true);
     try {
-      const read = await readNativeDocument(workspace.id, document);
+      const read = simulated
+        ? await failSoon(simulated)
+        : await readNativeDocument(workspace!.id, document);
       if (current !== request.current) return;
       setDocuments((all) =>
         all.map((item) => (item.id === read.id ? read : item)),
       );
     } catch (cause) {
-      if (current === request.current) setError(toFolioError(cause).message);
+      if (current === request.current)
+        setFailure({
+          error: toFolioError(cause),
+          retry: () => void selectDocument(document),
+        });
     } finally {
       if (current === request.current) setBusy(false);
     }
@@ -127,11 +157,20 @@ export function useWorkspace(): WorkspaceState {
 
   async function selectFolder() {
     const current = ++request.current;
-    setError("");
+    setFailure(null);
     setBusy(true);
+    dispatchFolder({ type: "start", request: current });
     try {
-      const chosen = await chooseWorkspace();
-      if (current !== request.current || !chosen) return;
+      const simulated = simulatedFailure("folder");
+      const chosen = simulated
+        ? await failSoon(simulated)
+        : await chooseWorkspace();
+      if (current !== request.current) return;
+      if (!chosen) {
+        // The user closed the folder picker; nothing to report.
+        dispatchFolder({ type: "reset" });
+        return;
+      }
       folderOpened.current = true;
       setLoading(false);
       setWorkspace(chosen.info);
@@ -143,8 +182,19 @@ export function useWorkspace(): WorkspaceState {
           ? `${chosen.skipped.length} file(s) couldn't be identified and aren't listed.`
           : "",
       );
+      dispatchFolder({
+        type: "nativeSucceeded",
+        request: current,
+        result: {
+          name: folderName(chosen.info.rootPath),
+          files: chosen.documents.length,
+        },
+      });
     } catch (cause) {
-      if (current === request.current) setError(toFolioError(cause).message);
+      if (current !== request.current) return;
+      const error = toFolioError(cause);
+      dispatchFolder({ type: "nativeFailed", request: current, error });
+      setFailure({ error, retry: () => void selectFolder() });
     } finally {
       if (current === request.current) setBusy(false);
     }
@@ -155,6 +205,8 @@ export function useWorkspace(): WorkspaceState {
     workspace,
     source: workspace ? "folder" : samplesRequested ? "samples" : "none",
     nativeAvailable,
+    canChooseFolder:
+      nativeAvailable || simulatedFailure("folder") !== undefined,
     loading,
     query,
     setQuery,
@@ -163,9 +215,12 @@ export function useWorkspace(): WorkspaceState {
     selected,
     neighbors,
     busy,
-    error,
+    failure,
+    dismissFailure: () => setFailure(null),
     notice,
     dismissNotice: () => setNotice(""),
+    folderAction,
+    dismissFolderResult: () => dispatchFolder({ type: "reset" }),
     selectDocument,
     clearSelection: () => setSelectedId(""),
     selectFolder,
@@ -175,4 +230,9 @@ export function useWorkspace(): WorkspaceState {
       setSamplesRequested(true);
     },
   };
+}
+
+/** The last segment of a folder path, on Windows or macOS. */
+function folderName(rootPath: string): string {
+  return rootPath.split(/[\\/]/).filter(Boolean).at(-1) ?? rootPath;
 }
