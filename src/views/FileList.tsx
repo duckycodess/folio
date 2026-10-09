@@ -2,7 +2,7 @@ import { useState, type FocusEvent, type KeyboardEvent } from "react";
 import type { DocumentRecord } from "../domain/contracts";
 import { FileTypeIcon } from "../ui/FileTypeIcon";
 import { ListRow } from "../ui/ListRow";
-import { fileKind, folderOf, formatBytes } from "./format";
+import { fileKind, folderOf, formatBytes, formatDate } from "./format";
 
 interface FileListProps {
   label: string;
@@ -12,6 +12,10 @@ interface FileListProps {
 }
 
 /**
+ * The file table: name, location, type, modified and size. Columns drop out
+ * as the table narrows (see `.file-table` in components.css), and the location
+ * moves under the name.
+ *
  * Arrow keys, Home and End move between rows; Enter or Space opens one. The
  * single Tab stop follows the focused row, so Tab and Shift+Tab come back to it.
  */
@@ -57,31 +61,64 @@ export function FileList({
       : documents[0]?.id;
 
   return (
-    <div
-      className="file-list"
-      role="listbox"
-      aria-label={label}
-      onKeyDown={onKeyDown}
-      onFocus={onFocus}
-    >
-      {documents.map((document) => (
-        <ListRow
-          key={document.id}
-          icon={<FileTypeIcon mediaType={document.mediaType} />}
-          title={document.name}
-          subtitle={folderOf(document.relativePath)}
-          meta={
-            <>
-              <span>{fileKind(document)}</span>
-              <span className="tabular">{formatBytes(document.sizeBytes)}</span>
-            </>
-          }
-          selected={document.id === selectedId}
-          tabbable={document.id === tabStop}
-          dataId={document.id}
-          onSelect={() => onSelect(document)}
-        />
-      ))}
+    <div className="file-table">
+      {/* Visual column headings; each row's spoken name carries the same facts. */}
+      <div className="file-table-head" aria-hidden="true">
+        <span className="file-col-name">Name</span>
+        <span className="file-col-location">Location</span>
+        <span className="file-col-type">Type</span>
+        <span className="file-col-modified">Modified</span>
+        <span className="file-col-size">Size</span>
+      </div>
+      <div
+        className="file-list"
+        role="listbox"
+        aria-label={label}
+        onKeyDown={onKeyDown}
+        onFocus={onFocus}
+      >
+        {documents.map((document) => {
+          const location = folderOf(document.relativePath);
+          const kind = fileKind(document);
+          const size = formatBytes(document.sizeBytes);
+          const modified =
+            document.modifiedAtMs === undefined
+              ? undefined
+              : formatDate(document.modifiedAtMs);
+          return (
+            <ListRow
+              key={document.id}
+              icon={<FileTypeIcon mediaType={document.mediaType} />}
+              title={document.name}
+              subtitle={location}
+              cells={
+                <>
+                  <span className="file-col-location">{location}</span>
+                  <span className="file-col-type">{kind}</span>
+                  <span className="file-col-modified tabular">
+                    {modified ?? "—"}
+                  </span>
+                  <span className="file-col-size tabular">{size}</span>
+                </>
+              }
+              label={[
+                document.name,
+                location,
+                kind,
+                modified ? `modified ${modified}` : undefined,
+                size,
+              ]
+                .filter(Boolean)
+                .join(", ")}
+              tooltip={document.relativePath}
+              selected={document.id === selectedId}
+              tabbable={document.id === tabStop}
+              dataId={document.id}
+              onSelect={() => onSelect(document)}
+            />
+          );
+        })}
+      </div>
     </div>
   );
 }

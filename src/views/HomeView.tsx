@@ -1,5 +1,6 @@
 import { Folders, SearchX } from "lucide-react";
 import type { WorkspaceState } from "../app/useWorkspace";
+import type { DocumentRecord } from "../domain/contracts";
 import type { ViewId } from "../shell/navigation";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
@@ -7,6 +8,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { Olio } from "../ui/Olio";
 import { Panel } from "../ui/Panel";
 import { FileList } from "./FileList";
+import { EmptyFolder, NoFolder } from "./NoFolder";
 import { WorkspaceSource } from "./WorkspaceSource";
 
 interface HomeViewProps {
@@ -17,23 +19,49 @@ interface HomeViewProps {
 export function HomeView({ workspace, onNavigate }: HomeViewProps) {
   const searching = workspace.query.trim().length > 0;
   const documents = workspace.results.map((result) => result.document);
+  const noFolder = workspace.source === "none";
 
   return (
     <div className="view">
       <header className="page-header page-header-home">
-        {/* One Olio per view: the header pose follows the list below. */}
-        <Olio
-          pose={
-            documents.length ? "default" : searching ? "confused" : "peeking"
-          }
-          size={96}
-        />
+        {/* One Olio per view: the header pose follows the list below, and
+            the no-folder state brings its own. */}
+        {!noFolder && (
+          <Olio
+            pose={
+              documents.length ? "default" : searching ? "confused" : "peeking"
+            }
+            size={96}
+          />
+        )}
         <div className="page-header-text">
           <h1 className="page-title">Your workspace</h1>
           <p className="page-tagline">Everything in its place.</p>
         </div>
       </header>
 
+      {noFolder ? (
+        <NoFolder workspace={workspace} />
+      ) : (
+        <HomeContents
+          workspace={workspace}
+          onNavigate={onNavigate}
+          searching={searching}
+          documents={documents}
+        />
+      )}
+    </div>
+  );
+}
+
+function HomeContents({
+  workspace,
+  onNavigate,
+  searching,
+  documents,
+}: HomeViewProps & { searching: boolean; documents: DocumentRecord[] }) {
+  return (
+    <>
       <WorkspaceSource workspace={workspace} />
 
       {/* Empty, so it gives way to the file list in short windows. */}
@@ -80,18 +108,14 @@ export function HomeView({ workspace, onNavigate }: HomeViewProps) {
           </EmptyState>
         ) : workspace.loading ? (
           <p className="muted">Loading files…</p>
+        ) : workspace.source === "folder" ? (
+          <EmptyFolder workspace={workspace} showOlio={false} />
         ) : (
-          <EmptyState
-            title={
-              workspace.workspace
-                ? "This folder has no supported files"
-                : "No sample files"
-            }
-          >
-            Folio reads text, Markdown and text-based PDF files.
+          <EmptyState title="No sample files">
+            The sample files couldn't be loaded.
           </EmptyState>
         )}
       </Panel>
-    </div>
+    </>
   );
 }

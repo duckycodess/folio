@@ -20,7 +20,12 @@ export function GraphView({ workspace }: { workspace: WorkspaceState }) {
       </header>
       <Panel
         title="Links between files"
-        actions={<Badge>{links.length} found</Badge>}
+        actions={
+          <>
+            {workspace.source === "samples" && <Badge>Sample files</Badge>}
+            <Badge>{links.length} found</Badge>
+          </>
+        }
       >
         {links.length ? (
           <ul className="relationship-list">

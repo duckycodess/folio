@@ -168,7 +168,16 @@
 .file-list {
   display: flex;
   flex-direction: column;
-  margin: calc(var(--space-2) * -1) calc(var(--space-4) * -1);
+}
+.list-row-main {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex: 1;
+  min-width: 0;
+}
+.list-row-cells {
+  display: contents;
 }
 .list-row {
   display: flex;
@@ -227,6 +236,67 @@
   color: var(--color-text-secondary);
 }
 
+/* File table: a listbox laid out as columns. The columns follow the table's
+   own width, so they fit beside the document panel as well as without it. */
+.file-table {
+  container: file-table / inline-size;
+  margin: calc(var(--space-4) * -1);
+}
+.file-table-head,
+.file-table .list-row {
+  --file-columns: minmax(0, 1fr) minmax(0, 10rem) 6rem 8rem 5rem;
+  display: grid;
+  grid-template-columns: var(--file-columns);
+  align-items: center;
+  gap: var(--space-4);
+}
+.file-table-head {
+  padding: var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-muted);
+  color: var(--color-text-secondary);
+  font: var(--text-small);
+  font-weight: 600;
+}
+.file-table .list-row {
+  min-height: 48px;
+}
+.file-table .list-row-cells > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--text-small);
+  color: var(--color-text-secondary);
+}
+/* The location has its own column while there's room for it. */
+.file-table .list-row-subtitle {
+  display: none;
+}
+@container file-table (max-width: 680px) {
+  .file-table-head,
+  .file-table .list-row {
+    --file-columns: minmax(0, 1fr) minmax(0, 9rem) 7rem;
+  }
+  .file-table .file-col-type,
+  .file-table .file-col-size {
+    display: none;
+  }
+}
+@container file-table (max-width: 460px) {
+  .file-table-head,
+  .file-table .list-row {
+    --file-columns: minmax(0, 1fr);
+  }
+  .file-table .file-col-location,
+  .file-table .file-col-modified {
+    display: none;
+  }
+  .file-table .list-row-subtitle {
+    display: block;
+  }
+}
+
 /* Empty state */
 .empty-state {
   display: flex;
@@ -259,6 +329,12 @@
 }
 .empty-state-action {
   margin-top: var(--space-2);
+}
+.empty-state-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
 }
 .empty-state-compact {
   flex-direction: row;

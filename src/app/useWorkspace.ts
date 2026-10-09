@@ -14,12 +14,19 @@ import type {
 import { discoverExplicitReferences, keywordSearch } from "../domain/discovery";
 import { toFolioError } from "../domain/errors";
 
+/**
+ * Whose files are listed. The desktop app starts with `none` until the user
+ * adds a folder or asks for the samples; the browser preview only has samples.
+ */
+export type WorkspaceSourceKind = "none" | "samples" | "folder";
+
 export interface WorkspaceState {
   documents: DocumentRecord[];
-  /** `null` while showing the bundled sample files. */
+  /** `null` unless the user has chosen a folder. */
   workspace: WorkspaceInfo | null;
+  source: WorkspaceSourceKind;
   nativeAvailable: boolean;
-  /** True until the first file list (sample files or a folder) has arrived. */
+  /** True while the sample files are on their way. */
   loading: boolean;
   query: string;
   setQuery: (query: string) => void;
@@ -35,6 +42,8 @@ export interface WorkspaceState {
   selectDocument: (document: DocumentRecord) => Promise<void>;
   clearSelection: () => void;
   selectFolder: () => Promise<void>;
+  /** Desktop only: list the bundled sample files before adding a folder. */
+  showSamples: () => void;
 }
 
 export function useWorkspace(): WorkspaceState {
@@ -45,7 +54,8 @@ export function useWorkspace(): WorkspaceState {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [samplesRequested, setSamplesRequested] = useState(!nativeAvailable);
+  const [loading, setLoading] = useState(!nativeAvailable);
   // Only the latest folder or file request may update state.
   const request = useRef(0);
   // Once a folder is open, late-arriving sample files must not replace it,
@@ -53,6 +63,7 @@ export function useWorkspace(): WorkspaceState {
   const folderOpened = useRef(false);
 
   useEffect(() => {
+    if (!samplesRequested) return;
     let active = true;
     loadFixtureDocuments()
       .then((fixtures) => {
@@ -67,7 +78,7 @@ export function useWorkspace(): WorkspaceState {
     return () => {
       active = false;
     };
-  }, []);
+  }, [samplesRequested]);
 
   const selected = documents.find((document) => document.id === selectedId);
   const results = useMemo(
@@ -142,6 +153,7 @@ export function useWorkspace(): WorkspaceState {
   return {
     documents,
     workspace,
+    source: workspace ? "folder" : samplesRequested ? "samples" : "none",
     nativeAvailable,
     loading,
     query,
@@ -157,5 +169,10 @@ export function useWorkspace(): WorkspaceState {
     selectDocument,
     clearSelection: () => setSelectedId(""),
     selectFolder,
+    showSamples: () => {
+      if (samplesRequested || folderOpened.current) return;
+      setLoading(true);
+      setSamplesRequested(true);
+    },
   };
 }

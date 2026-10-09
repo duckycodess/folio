@@ -151,9 +151,14 @@ export function DocumentPanel({
         {tab === "Details" && (
           <>
             <dl className="details-list">
-              <dt>Location</dt>
-              <dd title={document.relativePath}>
-                {folderOf(document.relativePath)}
+              {/* The full path wraps here; lists truncate it. */}
+              <dt>Path</dt>
+              <dd>{document.relativePath}</dd>
+              <dt>{workspace.workspace ? "In folder" : "Source"}</dt>
+              <dd>
+                {workspace.workspace
+                  ? workspace.workspace.rootPath
+                  : "Sample file bundled with Folio"}
               </dd>
               <dt>Type</dt>
               <dd>{fileKind(document)}</dd>
@@ -161,8 +166,17 @@ export function DocumentPanel({
               <dd>{languageLabel(document.language)}</dd>
               <dt>Size</dt>
               <dd className="tabular">{formatBytes(document.sizeBytes)}</dd>
+              <dt>Modified</dt>
+              <dd className="tabular">
+                {document.modifiedAtMs === undefined
+                  ? "Not recorded"
+                  : formatModified(document.modifiedAtMs)}
+              </dd>
             </dl>
-            <h3 className="subsection-title">Contents</h3>
+            <div className="subsection-header">
+              <h3 className="subsection-title">Contents</h3>
+              <Badge>Read-only</Badge>
+            </div>
             {workspace.busy && document.content === undefined ? (
               <Progress label="Reading file" />
             ) : document.content !== undefined ? (
