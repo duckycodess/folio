@@ -203,42 +203,9 @@ export function progressPercent(
 
 /* -------------------------------------------------------------- Model Lab */
 
-export const BENCHMARK_TASKS: BenchmarkResult["task"][] = [
-  "retrieval",
-  "interpretation",
-  "summary",
-  "edit",
-];
-
 export const TASK_LABELS: Record<BenchmarkResult["task"], string> = {
   retrieval: "Finding files",
   interpretation: "Reading requests",
   summary: "Summaries",
   edit: "Edits",
 };
-
-/**
- * Results kept per task, never combined into one score. Every task appears,
- * so a task with no recorded runs shows as such instead of disappearing.
- */
-export function resultsByTask(results: BenchmarkResult[]) {
-  return BENCHMARK_TASKS.map((task) => ({
-    task,
-    results: results.filter((result) => result.task === task),
-  }));
-}
-
-export function correctnessLabel(result: BenchmarkResult): string {
-  return result.correctness === null
-    ? "Not graded"
-    : result.correctness
-      ? "Correct"
-      : "Incorrect";
-}
-
-/** Peak RAM of the measured process. It is never the whole device's RAM. */
-export function ramLabel(result: BenchmarkResult): string {
-  return result.peakProcessRamBytes === null
-    ? "Not measured"
-    : `${exactSize(result.peakProcessRamBytes).split(" (")[0]} peak (Folio's model process)`;
-}
