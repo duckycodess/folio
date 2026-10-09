@@ -45,6 +45,30 @@ pub struct ImpactCandidate {
     pub reason: String,
     pub evidence: Vec<SourcePassage>,
     pub strength: ImpactStrength,
+    /// The relationship that connected this candidate to the target, when one did.
+    /// Absent for a byte-identical copy, which is related by content alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relationship_type: Option<RelationshipKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<RelationshipProvenance>,
+}
+
+/// The `type` tag of a `Relationship`.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RelationshipKind {
+    ExplicitReference,
+    Similarity,
+    SharedFactCandidate,
+}
+
+/// The `provenance` of a `Relationship`.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RelationshipProvenance {
+    DocumentLink,
+    Embedding,
+    Model,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
