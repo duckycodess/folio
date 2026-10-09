@@ -73,7 +73,13 @@ The embedding adapter is ONNX Runtime plus `tokenizers`, using the pinned multil
 
 The generation adapter launches a verified manifest runtime with a fixed argument vector, a random per-process API key, and `127.0.0.1` only. The API key is visible in the child process arguments; this is accepted for the loopback-only runtime and is not exposed as a remote service. Requests use the local OpenAI-compatible endpoint, bounded context/output settings, deterministic temperature/seed defaults, schema-constrained JSON, and Qwen thinking disabled. One provider instance permits one active generation; it exposes explicit unload, interrupts blocked reads on cancellation, reaps idle children, and unloads from the Tauri exit hook. Windows Job Object kill-on-close behavior has not been verified. Runtime/model installation is explicit, size- and SHA-256-verified, atomic, and confined to app data.
 
-Summaries and answers are `GroundedAnswer` display data, never actions. Source passages are UTF-16-offset evidence, are delimited as untrusted prompt data, and have their citations validated against the passages supplied to that stage. Map/reduce limits return `partialSummary` with coverage rather than silently truncating. A question with no retrieved evidence returns `insufficientEvidence` without calling generation.
+Summaries and answers are additive `GroundedResult` display data, structurally
+assignable to the frozen `GroundedAnswer`, and never actions. Source passages
+are UTF-8-byte evidence bound to a content hash, are delimited as untrusted
+prompt data, and have their citations validated against the passages supplied
+to that stage. Map/reduce limits return `partialSummary` with coverage rather
+than silently truncating. A question with no retrieved evidence returns
+`insufficientEvidence` without calling generation.
 
 Interpretation receives only the user's request and a fixed schema/examples. Its deterministic resolver handles exact filename-stem matches, ambiguity, current-content exact-find checks, duplicate-path information, safe TXT/Markdown destinations, and unsupported delete. Candidate fallback is currently lexical/keyword-based; a cross-language target description that does not share searchable terms asks for clarification/selection until #3 supplies an indexed semantic target-candidate seam. It emits a typed `OperationProposal` only; #4 adds no approval, apply, write, ActionPlan, or Ripple path. The native #5 approval engine remains authoritative for any future filesystem change.
 

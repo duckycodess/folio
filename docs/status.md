@@ -25,7 +25,18 @@ No AI or save completion should be presented without the corresponding native/pr
 
 ## Remote CI verification after conflict resolution
 
-GitHub Actions run [37939253553](https://github.com/duckycodess/folio/actions/runs/37939253553) passed at `7265b05` (2026-10-09): frontend formatting/type checks/tests/build plus the Linux core suite, and native `cargo test --manifest-path src-tauri/Cargo.toml` on Windows and macOS. This supersedes earlier compile/test uncertainty for that revision only. No local WSL tests were resumed. CI did not run gated real-model acceptance, desktop interaction, packaging, or 8-GB measurements, and does not resolve the static contract/identity integration findings. PR #15 remains draft.
+GitHub Actions run [37939253553](https://github.com/duckycodess/folio/actions/runs/37939253553) passed at `7265b05` (2026-10-09): frontend formatting/type checks/tests/build plus the Linux core suite, and native `cargo test --manifest-path src-tauri/Cargo.toml` on Windows and macOS. This supersedes earlier compile/test uncertainty for that revision only. No local WSL tests were resumed. CI did not run gated real-model acceptance, desktop interaction, packaging, or 8-GB measurements, and did not resolve the then-pending static contract/identity integration findings. PR #15 remains draft.
+
+The subsequent C1–C5 integration fixes are split into focused commits on
+`FOLIO-4`: native registry resolution, native document identity and hash
+parity, `FolioError` conversion, the additive `GroundedResult` boundary, and
+offset-helper contract tests. Formatting and static diff checks passed locally;
+local tests, builds and inference remain intentionally stopped because WSL
+memory pressure caused repeated restarts. Remote Actions for the post-fix
+commits are the verification path and must be named by SHA before this status
+is treated as CI evidence. TJ review is still required for the additive
+contract proposals and grounded-summary correctness; no real-model acceptance,
+desktop interaction, packaging, or 8-GB measurement is claimed here.
 
 ## Verification
 
