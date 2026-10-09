@@ -784,6 +784,22 @@ Checked on macOS with Node.js 26.10.0, on `main` after #63 and #64:
 
 Not verified: real downloads and the real figures in the Tauri app, an interrupted download or a hash mismatch against the real store (they surface through the shared recovery notice and the "Damaged: download again" state), and screen readers.
 
+### After review: rebuilt on `main` (PR #108)
+
+- **Merged with `main`.** The generation slot is `main`'s (#104, #109), and this branch's own slot code is dropped. Ask & Act keeps `planAsk` together with #105's exact-name rule and `namesOnly`. This branch's ADR is now 0016, because `main`'s 0015 is #101's. The stored-space goldens moved to `title-path-chunk-v2`.
+- **Stale documents are embedded.** A stale document keeps its last good chunks and now gets vectors in the current space, so #101's coverage can complete. Its text still never reaches a prompt: the read paths stay `indexed`-only.
+- **The re-check skips missing files.** A document that a scan removed is skipped, and the others are still re-read.
+- **Ask and the Graph refresh don't block each other.** `fill_vectors` takes the embedding lock only when chunks are pending. When an Ask is filling vectors, the Graph refresh skips embedding (`embeddingSyncRunning`) and runs discovery on what exists; coverage shows the rest as not yet embedded.
+- **Each request has its own Stop.** One token per request, with no shared reset. A Stop before a request starts doesn't affect it, and a Stop reaches every request in flight.
+- **Unmatched chosen-file answers are labelled.** When nothing in a chosen file passes the evidence gate, the answer still uses its opening or closest passages (#88), but it carries `chosenFileUnmatched`. Ask & Act then says so.
+- **Interpretation:**
+  - A file named with its extension (`project-plan.md`, `Sample_Resume.pdf`) is that file.
+  - Names match regardless of case and common accents ("nino" finds `Niño_report.md`; Latin-1 and Latin Extended-A only, because the crate has no Unicode-normalization dependency).
+  - A folder's name doesn't name the files inside it.
+  - More than 5 matching files means the whole folder, not a chooser. A chooser lists the tightest matches first.
+- **Not done:** vectors of the previous stored space aren't deleted. They can't be told apart from the webview-registered snapshot space without a stored-input record, so they only cost disk space.
+- **Checked on Linux (WSL):** native 314 passed / 2 ignored; folio-core 226 passed / 2 ignored; `npm run format:check`, `check`, `test` (477 passed, 9 todo), `build` and `check:bundle` all passed. No real model was run.
+
 ### Ask & Act answers from the chosen file (2026-10-10, issue #88)
 
 Testing the desktop app with a real local model (qwen3-0.6b) reported that Ask & Act didn't use the file's contents and never asked which file a question meant. Reading the code found wiring causes before any question of model quality:
