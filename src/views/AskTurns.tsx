@@ -5,7 +5,6 @@ import {
   preparingLabel,
   type AskTurn,
 } from "../app/askAct";
-import { requestForFile } from "../app/proposals";
 import type { AskActController } from "../app/useAskAct";
 import type { RelationshipsState } from "../app/useRelationships";
 import type { WorkspaceState } from "../app/useWorkspace";
@@ -228,7 +227,9 @@ export function TurnBody({
           <p>
             {outcome.purpose === "summarize"
               ? "Which file should Olio summarize?"
-              : "This could mean several files."}
+              : outcome.purpose === "question"
+                ? "Which file should Olio use?"
+                : "This could mean several files."}
           </p>
           {outcome.purpose === "change" && (
             <p className="muted">
@@ -241,21 +242,13 @@ export function TurnBody({
             query={turn.request}
             onOpen={onOpen}
             onOpenPassage={relations.openPassage}
-            action={
-              outcome.purpose === "summarize"
-                ? {
-                    label: (document) => `Summarize ${document.name}`,
-                    run: (document) => ask.chooseForSummary(turn.id, document),
-                  }
-                : {
-                    label: (document) => `Use ${document.name}`,
-                    run: (document) =>
-                      ask.ask(
-                        requestForFile(turn.request, document.relativePath),
-                        document,
-                      ),
-                  }
-            }
+            action={{
+              label: (document) =>
+                outcome.purpose === "summarize"
+                  ? `Summarize ${document.name}`
+                  : `Use ${document.name}`,
+              run: (document) => ask.chooseFile(turn.id, document),
+            }}
           />
         </>
       );

@@ -108,8 +108,12 @@ export interface AskActController {
   find: (request: string) => void;
   /** `chosen` is the file the user picked; a change must target it. */
   ask: (request: string, chosen?: DocumentRecord) => void;
-  /** Summarizes the chosen file of an earlier turn. */
-  chooseForSummary: (turnId: number, document: DocumentRecord) => void;
+  /**
+   * Continues an earlier "which file?" turn with the file the user picked:
+   * summarizes it, answers the question from it, or reads the change request
+   * again for it.
+   */
+  chooseFile: (turnId: number, document: DocumentRecord) => void;
   cancel: () => void;
   clear: () => void;
   /** The conversation currently open. Both Ask & Act and the floating chat
@@ -319,12 +323,39 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
             : practiceReply(request, onProgress),
         chosen,
       ),
-    chooseForSummary: (turnId, document) => {
+    chooseFile: (turnId, document) => {
       if (!folderId || !conversation) return;
-      void summarize(folderId, document.id);
-      updateTurnIn(conversation.id, turnId, {
-        outcome: { type: "summary", document },
-      });
+      const turn = conversation.turns.find((other) => other.id === turnId);
+      const outcome = turn?.outcome;
+      if (!turn || outcome?.type !== "chooseFile") return;
+      switch (outcome.purpose) {
+        case "summarize":
+          void summarize(folderId, document.id);
+          updateTurnIn(conversation.id, turnId, {
+            outcome: { type: "summary", document },
+          });
+          return;
+        case "question":
+          // The intent is already known; answer from the chosen file.
+          void run(
+            "ask",
+            turn.request,
+            async (folder) => ({
+              type: "answer",
+              result: await answerQuestion(folder, turn.request, document.id),
+            }),
+            document,
+          );
+          return;
+        case "change":
+          void run(
+            "ask",
+            turn.request,
+            (folder) => interpret(folder, turn.request, document),
+            document,
+          );
+          return;
+      }
     },
     cancel: () => void cancelGeneration().catch(() => undefined),
     clear: () => conversation && clearTurnsIn(conversation.id),
