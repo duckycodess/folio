@@ -159,6 +159,21 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 
 ## Verification
 
+### Adaptive layout and resizable reader, in progress (2026-10-10, issue #67)
+
+The first part of #67, opened as a draft PR:
+
+- The shell now picks its layout from its own measured width, not fixed window breakpoints (`src/app/shellLayout.ts`). The sidebar keeps its labels while there's room. With a file open, the sidebar collapses to the icon rail before the list loses its 420px minimum. Only when even the rail leaves too little room does the reader overlay the list, which stays mounted behind it and is made `inert`.
+- The reader can be resized by dragging the separator, or with Left/Right and Home/End on the focusable `role="separator"`. Its width stays between 320px and 60% of the window and is remembered in `localStorage`; if storage fails, the 380px default is used.
+- File table columns drop one at a time as the table's own width shrinks: Size, then Modified, then Type, then Location (`src/app/fileColumns.ts`). The name column is never dropped. Once Location drops, it moves under the name.
+
+Checked on macOS with Node.js 24.21.0:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test` (excluding the local `.claude/` worktrees): 342 passed, 9 todo. New unit tests cover reader-width clamping, sidebar and reader modes at boundary widths, the list's minimum width whenever the reader is split, and the column drop order.
+
+Not verified: the app was not run in a browser or the desktop app for this change, so dragging, keyboard resizing, the overlay, focus and dark mode have not been checked by hand. There are no component tests for `ResizeHandle`. Still open from #67: opening the reader from Activity and Organize, the list being pushed below the fold, the narrow-window header and narrow Home, and the Graph map label issues.
+
 ### Shared plan review and Edit text (2026-10-10, issue #45)
 
 Checked on Linux with Node.js 24.15.0, on top of #41:
