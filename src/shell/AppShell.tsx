@@ -1,4 +1,5 @@
 import {
+  Compass,
   FlaskConical,
   History,
   Folders,
@@ -22,6 +23,12 @@ import {
 import { useRelationships } from "../app/useRelationships";
 import { useActivity } from "../app/useActivity";
 import { useHome } from "../app/useHome";
+import {
+  loadOnboardingCompleted,
+  saveOnboardingCompleted,
+} from "../app/onboardingStorage";
+import { shouldStartOnboarding } from "../domain/onboarding";
+import { OnboardingView } from "../views/OnboardingView";
 import { hasFilters, passesFilters } from "../domain/homeFilters";
 import { useWorkspace, type WorkspaceSourceKind } from "../app/useWorkspace";
 import { simulatedCode } from "../adapters/simulate";
@@ -106,6 +113,15 @@ export function AppShell() {
     activity.reload();
   };
   const home = useHome(workspace);
+  // First run in the desktop app; reopened from the sidebar's settings.
+  const [welcome, setWelcome] = useState(() =>
+    shouldStartOnboarding(workspace.nativeAvailable, loadOnboardingCompleted()),
+  );
+  function finishWelcome(next?: ViewId) {
+    saveOnboardingCompleted();
+    setWelcome(false);
+    if (next) setView(next);
+  }
   // Above the views, so an apply in progress survives switching views.
   const organize = useOrganize(workspace, filesChanged);
   // Home's Rename and Move have their own plan, so they never show up in
@@ -272,6 +288,17 @@ export function AppShell() {
       workspace.clearSelection();
   }
 
+  if (welcome)
+    return (
+      <AnnouncerProvider>
+        <OnboardingView
+          workspace={workspace}
+          relations={relations}
+          onFinish={finishWelcome}
+        />
+      </AnnouncerProvider>
+    );
+
   return (
     <AnnouncerProvider>
       <div className={`app${showsDocument ? " has-document" : ""}`}>
@@ -299,6 +326,20 @@ export function AppShell() {
                 onSelect={setView}
               />
             </nav>
+            {workspace.nativeAvailable && (
+              <button
+                type="button"
+                className="nav-item"
+                aria-label="Setup guide"
+                title="Setup guide"
+                onClick={() => setWelcome(true)}
+              >
+                <Compass size={20} aria-hidden="true" />
+                <span className="nav-label" aria-hidden="true">
+                  Setup guide
+                </span>
+              </button>
+            )}
             <button
               type="button"
               className="nav-item theme-switch"

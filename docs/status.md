@@ -44,6 +44,13 @@
   - It names the blocking file and changes nothing when the preview refuses it, and it's absent when the earlier version wasn't kept.
   - Success is shown only from the native Undo report; a partial Undo uses the partial-Undo wording.
   - Failed attempts and the action's source aren't recorded by the native history yet (#35), and the page says so.
+- First-run onboarding ([issue #14](https://github.com/duckycodess/folio/issues/14), partly): in the desktop app, five skippable steps, shown until completed or skipped and reopened from the sidebar's "Setup guide".
+  1. Welcome.
+  2. Choose a folder: nothing is read before the system picker returns one, and a cancelled picker changes nothing.
+  3. Local AI: explains what it's for and that Model Lab shows sizes before any download. Nothing downloads here.
+  4. Index: real phases, Stop, and "Continue to Home while indexing".
+  5. What Folio found: exact duplicates and links between files from the indexed folder, with paths and the linking text, or an honest empty state with Search, Organize and Ask & Act.
+  - The model recommendation (device RAM, disk, exact size and revision) is not built yet; it waits on #24 (PR #52).
 - Keyword filtering (explicitly labelled), actual Markdown-link discovery in fixture text, source content views, and a list of those explicit links with their evidence (Graph view).
 - Graph concept map, read-only ([issue #45](https://github.com/duckycodess/folio/issues/45), first of three PRs): Graph opens on a Map, with a Map / List switch; both show the connections for the chosen starting point (all files, a file, a folder or a topic, from #40), and the list keeps Confirmed and Suggested apart. Map and list come from the same pairs (`src/domain/graphScope.ts`). Every file is a node, connected or not. Links are solid with arrowheads, identical copies a double line; dashed lines labelled "AI" are drawn only for embedding or model provenance, which nothing produces yet, so the legend says AI connections will appear when a model produces them. A legend checkbox hides each kind. The layout is deterministic d3-force run synchronously (no animation). Pan, zoom (+ / − / 0, Ctrl or ⌘ + wheel, trackpad or touch pinch; a plain wheel scrolls the page), and dragging a file (it stays pinned and its neighbours settle) work. Keyboard: one Tab stop, arrows follow connections within 60°, preferring the file straight ahead (lowest distance / cos(angle)), Page Up/Down and Home/End go through every file by path, Enter opens the file in the reader, Escape closes it. Selecting a file lists its connections with evidence under the map. Above 400 files the map shows the selected (or most connected) file's neighbourhood with a note. Rename, move, edit and delete from the map, and Shift+F10, are not built yet.
 - Tauri folder picker and scoped native listing/TXT/Markdown reading commands.
@@ -120,6 +127,36 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 8-GB measurement is claimed here.
 
 ## Verification
+
+### Onboarding (2026-10-10, issue #14)
+
+Checked on macOS with Node.js 26.10.0:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 183 passed, 9 todo. The new cases:
+  - onboarding starts once, in the desktop app only;
+  - step order doesn't run off either end;
+  - findings put duplicates first, then cross-folder links;
+  - files the folder no longer lists are ignored, and nothing is invented;
+  - the limit is respected.
+- Headless Chrome, with the desktop commands stood in for by a browser mock:
+  - the browser preview never shows onboarding;
+  - in desktop mode each step's heading takes focus, and no native command runs before the folder is picked;
+  - a cancelled picker leaves Continue disabled;
+  - the chosen folder and its file count show, and the AI step offers no download;
+  - indexing shows its phase with Stop and "Continue to Home while indexing";
+  - "What Folio found" lists the folder's link with both paths and the linking text;
+  - finishing opens Home, the Setup guide reopens it, and it doesn't return after a reload;
+  - no horizontal scroll at 700px.
+
+After Gab's review:
+
+- the local AI step says model setup is coming in a later version, instead of describing a Model Lab that doesn't exist yet;
+- a failed read of the index's links shows the recovery notice with the workflow buttons, not "nothing found" (checked in the browser with the read mocked to fail);
+- a link written both ways counts once;
+- the storage helper is now `src/app/onboardingStorage.ts`.
+
+Not verified: the real picker and index in the desktop app, offline use after setup, model setup (waits on #24), screen readers, and the Tauri webview.
 
 ### Ask & Act workspace (2026-10-10, issue #36)
 
