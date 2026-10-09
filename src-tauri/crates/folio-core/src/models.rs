@@ -465,6 +465,18 @@ impl ModelStore {
                 )
             })?;
         verify_file_cached(&executable, entry)?;
+        // The shared libraries the executable loads are checked too, against the
+        // same record; the cache keeps this cheap after the first launch.
+        for file in &record.files {
+            let path = safe_join(&root, &file.path)?;
+            if is_symlink_or_inside_symlink(&root, &path)? {
+                return Err(provider(
+                    ProviderErrorCode::ModelCorrupt,
+                    "A recorded runtime file was replaced by a link.",
+                ));
+            }
+            verify_file_cached(&path, file)?;
+        }
         Ok(executable)
     }
 
@@ -487,6 +499,7 @@ impl ModelStore {
             .ok_or_else(|| CoreError::Message("The runtime directory has no parent.".into()))?
             .to_path_buf();
         fs::create_dir_all(&parent)?;
+        recover_interrupted_runtime_install(&parent, &root, id)?;
         let unique = uuid::Uuid::new_v4().simple().to_string();
         let staging = parent.join(format!(".staging-{id}-{unique}"));
         fs::create_dir(&staging)?;
@@ -841,6 +854,40 @@ fn write_install_record(id: &str, tree: &Path, archive_sha256: Vec<String>) -> C
     let mut output = File::create(&path)?;
     output.write_all(&serde_json::to_vec_pretty(&record)?)?;
     output.sync_all()?;
+    Ok(())
+}
+
+/// Cleans up after an install that was interrupted (a crash or a kill). If the
+/// runtime directory is missing but a `.previous-{id}-*` copy survived the swap,
+/// that copy is put back; every other leftover staging or previous directory
+/// for this runtime is removed. Only real directories are touched, never links.
+fn recover_interrupted_runtime_install(parent: &Path, root: &Path, id: &str) -> CoreResult<()> {
+    let staging_prefix = format!(".staging-{id}-");
+    let previous_prefix = format!(".previous-{id}-");
+    let mut leftovers = Vec::new();
+    for entry in fs::read_dir(parent)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !(name.starts_with(&staging_prefix) || name.starts_with(&previous_prefix)) {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            leftovers.push((name.starts_with(&previous_prefix), entry.path()));
+        }
+    }
+    if fs::symlink_metadata(root).is_err() {
+        if let Some((_, previous)) = leftovers
+            .iter()
+            .find(|(is_previous, path)| *is_previous && read_install_record(path).is_some())
+        {
+            fs::rename(previous, root)?;
+        }
+    }
+    for (_, path) in leftovers {
+        if path.exists() {
+            let _ = fs::remove_dir_all(&path);
+        }
+    }
     Ok(())
 }
 
@@ -1455,6 +1502,65 @@ mod tests {
         // A changed executable is refused before launch.
         fs::write(&executable, b"#!/bin/sh\necho changed\n").unwrap();
         assert!(store.verified_runtime_executable("test-runtime").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_changed_runtime_library_is_refused_before_launch() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("runtime.tar.gz");
+        runtime_tar(
+            &archive,
+            &[
+                ("llama-b1/llama-server", b"#!/bin/sh\n", 0o755),
+                ("llama-b1/libllama.0.6.0.dylib", b"library", 0o644),
+            ],
+            &[("llama-b1/libllama.0.dylib", "libllama.0.6.0.dylib")],
+        );
+        let store = runtime_store(temp.path());
+        let root = temp.path().join("runtime/llama.cpp/test-runtime");
+        fs::create_dir_all(&root).unwrap();
+        extract_runtime_archive(&archive, &root).unwrap();
+        write_install_record("test-runtime", &root, vec!["archive-sha".into()]).unwrap();
+        assert!(store.verified_runtime_executable("test-runtime").is_ok());
+
+        // The executable is untouched, but a library it loads was replaced.
+        fs::write(
+            root.join("llama-b1/libllama.0.6.0.dylib"),
+            b"tampered library",
+        )
+        .unwrap();
+        assert!(store.verified_runtime_executable("test-runtime").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_interrupted_runtime_swap_is_recovered_and_leftovers_removed() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("runtime/llama.cpp");
+        let root = parent.join("test-runtime");
+        // A crash between moving the old runtime aside and moving the new one in.
+        let previous = parent.join(".previous-test-runtime-abc");
+        fs::create_dir_all(previous.join("llama-b1")).unwrap();
+        let server = previous.join("llama-b1/llama-server");
+        fs::write(&server, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&server, fs::Permissions::from_mode(0o755)).unwrap();
+        write_install_record("test-runtime", &previous, vec!["archive-sha".into()]).unwrap();
+        let staging = parent.join(".staging-test-runtime-def");
+        fs::create_dir_all(staging.join("tree")).unwrap();
+        // Another runtime's leftovers are not this install's business.
+        let other = parent.join(".staging-other-runtime-ghi");
+        fs::create_dir_all(&other).unwrap();
+
+        recover_interrupted_runtime_install(&parent, &root, "test-runtime").unwrap();
+        assert!(
+            read_install_record(&root).is_some(),
+            "the previous runtime was restored"
+        );
+        assert!(!previous.exists());
+        assert!(!staging.exists());
+        assert!(other.exists());
     }
 
     #[cfg(unix)]
