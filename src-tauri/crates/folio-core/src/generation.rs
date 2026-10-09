@@ -294,11 +294,21 @@ impl GenerationProvider for LlamaServerProvider {
             .json(&payload)
             .send()
             .map_err(|error| {
-                CoreError::Provider(NativeProviderErrorError::new(
-                    ProviderErrorCode::RuntimeStartFailed,
-                    format!("Generation request failed: {error}"),
-                ))
+                if cancel.load(Ordering::Relaxed) {
+                    provider(ProviderErrorCode::Cancelled, "Generation cancelled.")
+                } else {
+                    CoreError::Provider(NativeProviderErrorError::new(
+                        ProviderErrorCode::RuntimeStartFailed,
+                        format!("Generation request failed: {error}"),
+                    ))
+                }
             })?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err(provider(
+                ProviderErrorCode::Cancelled,
+                "Generation cancelled.",
+            ));
+        }
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().unwrap_or_default();
@@ -318,7 +328,16 @@ impl GenerationProvider for LlamaServerProvider {
                 ));
             }
             line.clear();
-            let bytes = reader.read_line(&mut line)?;
+            let bytes = match reader.read_line(&mut line) {
+                Ok(bytes) => bytes,
+                Err(_error) if cancel.load(Ordering::Relaxed) => {
+                    return Err(provider(
+                        ProviderErrorCode::Cancelled,
+                        "Generation cancelled.",
+                    ));
+                }
+                Err(error) => return Err(CoreError::Io(error)),
+            };
             if bytes == 0 {
                 break;
             }
@@ -346,10 +365,16 @@ impl GenerationProvider for LlamaServerProvider {
                 generated.push_str(content);
             }
         }
+        if cancel.load(Ordering::Relaxed) {
+            return Err(provider(
+                ProviderErrorCode::Cancelled,
+                "Generation cancelled.",
+            ));
+        }
         parse_json_text(&generated)
     }
 
-    fn unload(&self) -> CoreResult<()> {
+    pub fn cancel_active(&self) -> CoreResult<()> {
         let mut state = self
             .state
             .lock()
@@ -359,6 +384,10 @@ impl GenerationProvider for LlamaServerProvider {
             let _ = running.child.wait();
         }
         Ok(())
+    }
+
+    fn unload(&self) -> CoreResult<()> {
+        self.cancel_active()
     }
 }
 
@@ -536,6 +565,51 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         assert!(unloaded, "idle server was not reaped");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancel_active_stops_the_owned_server() {
+        use crate::contracts::{ModelDescriptor, ModelRole};
+        use crate::models::VerifiedModelFile;
+        use std::fs;
+        use std::process::Command;
+
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("llama-server");
+        let model_path = temp.path().join("model.gguf");
+        fs::write(&executable, b"runtime").unwrap();
+        fs::write(&model_path, b"model").unwrap();
+        let provider = LlamaServerProvider::from_verified_model_with_idle(
+            &executable,
+            VerifiedModelFile {
+                descriptor: ModelDescriptor {
+                    id: "test-generation".into(),
+                    role: ModelRole::Generation,
+                    repo: "local/test".into(),
+                    revision: "test".into(),
+                    files: Vec::new(),
+                    quantization: "test".into(),
+                    license: "test".into(),
+                    runtime: "test".into(),
+                    optional_pack: false,
+                },
+                path: model_path,
+            },
+            1,
+            Duration::from_secs(60),
+        )
+        .unwrap();
+        let child = Command::new("sleep").arg("5").spawn().unwrap();
+        provider.state.lock().unwrap().running = Some(RunningServer {
+            child,
+            port: 1,
+            api_key: "test".into(),
+            last_used: Instant::now(),
+        });
+
+        provider.cancel_active().unwrap();
+        assert!(provider.state.lock().unwrap().running.is_none());
     }
 
     #[test]

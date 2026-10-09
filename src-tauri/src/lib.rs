@@ -845,6 +845,9 @@ fn cancel_generation(
     })?;
     if let Some(cancel) = guard.active_cancel.as_ref() {
         cancel.store(true, Ordering::Release);
+        if let Some(slot) = guard.slot.as_ref() {
+            slot.provider.cancel_active().map_err(native_error)?;
+        }
     }
     Ok(())
 }
