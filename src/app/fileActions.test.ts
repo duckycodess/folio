@@ -54,5 +54,8 @@ describe("renaming a file", () => {
     expect(nameProblem("..", "a.md")).toMatch(/different name/);
     expect(nameProblem("a.md", "a.md")).toMatch(/already/);
     expect(nameProblem("b.md", "a.md")).toBeNull();
+    // Refused natively, since Windows and macOS folders usually ignore case.
+    expect(nameProblem("Notes.md", "notes.md")).toMatch(/capital letters/);
+    expect(nameProblem(" NOTES.MD ", "notes.md")).toMatch(/capital letters/);
   });
 });

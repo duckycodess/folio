@@ -377,9 +377,12 @@ export function PreviewStep({
 export function ResultStep({
   organize,
   heading,
+  onDone = organize.done,
 }: {
   organize: OrganizeController;
   heading: RefObject<HTMLHeadingElement | null>;
+  /** Defaults to starting the flow again; a dialog closes instead. */
+  onDone?: () => void;
 }) {
   const { state, undo, history } = organize;
   const summary = summarizeApply(state.plan!, state.report!);
@@ -428,7 +431,7 @@ export function ResultStep({
             Preview Undo
           </Button>
         )}
-        <Button variant="ghost" onClick={organize.done}>
+        <Button variant="ghost" onClick={onDone}>
           Done
         </Button>
       </div>
