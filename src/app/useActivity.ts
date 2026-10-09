@@ -10,6 +10,8 @@ export interface ActivityState {
   /** `idle` without a folder; history is only read for an open folder. */
   status: "idle" | "loading" | "ready" | "failed";
   batches: ActivityBatch[];
+  /** True when the history reached its limit, so older changes aren't shown. */
+  truncated: boolean;
   failure: FolioError | null;
   reload: () => void;
   /** The batch whose Undo is being previewed or confirmed. */
@@ -29,10 +31,18 @@ export interface ActivityState {
 
 const HISTORY_LIMIT = 500;
 
-export function useActivity(workspace: WorkspaceState): ActivityState {
+/**
+ * `onFilesChanged` runs after an Undo changed files, so views built from the
+ * index (Related, Graph) re-read it; Activity reloads its own history.
+ */
+export function useActivity(
+  workspace: WorkspaceState,
+  onFilesChanged: () => void = () => {},
+): ActivityState {
   const folderId = workspace.workspace?.id;
   const [status, setStatus] = useState<ActivityState["status"]>("idle");
   const [batches, setBatches] = useState<ActivityBatch[]>([]);
+  const [truncated, setTruncated] = useState(false);
   const [failure, setFailure] = useState<FolioError | null>(null);
   const [generation, setGeneration] = useState(0);
   const [undoTarget, setUndoTarget] = useState<ActivityBatch | null>(null);
@@ -42,6 +52,17 @@ export function useActivity(workspace: WorkspaceState): ActivityState {
   const [undoPartial, setUndoPartial] = useState(false);
   const [undoResult, dispatch] = useReducer(actionReducer<UndoReport>, IDLE);
   const request = useRef(0);
+
+  // Another folder: nothing from the previous folder's Undo carries over.
+  useEffect(() => {
+    request.current++;
+    setUndoTarget(null);
+    setUndoPreview(null);
+    setUndoFailure(null);
+    setUndoPartial(false);
+    setUndoBusy(false);
+    dispatch({ type: "reset" });
+  }, [folderId]);
 
   useEffect(() => {
     if (!folderId) {
@@ -56,6 +77,7 @@ export function useActivity(workspace: WorkspaceState): ActivityState {
       .then((entries) => {
         if (!active) return;
         setBatches(groupHistory(entries));
+        setTruncated(entries.length >= HISTORY_LIMIT);
         setStatus("ready");
       })
       .catch((cause) => {
@@ -109,6 +131,7 @@ export function useActivity(workspace: WorkspaceState): ActivityState {
         setUndoPreview(null);
       }
       reload();
+      onFilesChanged();
       await workspace.refreshFolder();
     } catch (cause) {
       // Refused before any file changed.
@@ -124,6 +147,7 @@ export function useActivity(workspace: WorkspaceState): ActivityState {
   return {
     status,
     batches,
+    truncated,
     failure,
     reload,
     undoTarget,

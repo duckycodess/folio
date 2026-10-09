@@ -113,6 +113,8 @@ function ActivityBody({
         ))}
       </ol>
       <p className="muted">
+        {activity.truncated &&
+          "Only the most recent changes are shown, and the oldest entry may be incomplete. "}
         Failed and cancelled attempts aren't recorded yet, and neither is which
         page started a change.
       </p>
@@ -201,10 +203,14 @@ function ChangeLine({ entry }: { entry: HistoryEntry }) {
 function UndoDialog({ activity }: { activity: ActivityState }) {
   const batch = activity.undoTarget;
   const preview = activity.undoPreview;
+  // The native preview decides what goes back. The timeline may hold only
+  // part of a large plan, so count from the preview and never drop the rest.
   const restoring =
     batch && preview
       ? batch.entries.filter((entry) => preview.entryIds.includes(entry.id))
       : [];
+  const total = preview?.entryIds.length ?? 0;
+  const unlisted = total - restoring.length;
   return (
     <Modal
       open={batch !== null}
@@ -221,10 +227,7 @@ function UndoDialog({ activity }: { activity: ActivityState }) {
               disabled={activity.undoBusy}
               onClick={activity.confirmUndo}
             >
-              Undo{" "}
-              {restoring.length === 1
-                ? "1 change"
-                : `${restoring.length} changes`}
+              Undo {total === 1 ? "1 change" : `${total} changes`}
             </Button>
           )}
         </>
@@ -261,6 +264,12 @@ function UndoDialog({ activity }: { activity: ActivityState }) {
               </li>
             ))}
           </ul>
+          {unlisted > 0 && (
+            <p className="muted">
+              and {unlisted} more {unlisted === 1 ? "file" : "files"} from this
+              change, not listed here
+            </p>
+          )}
         </>
       )}
       {preview && !preview.undoable && (

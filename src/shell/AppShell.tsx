@@ -96,7 +96,8 @@ export function AppShell() {
   const drafts = useDrafts();
   const relations = useRelationships(workspace);
   // Read whenever the folder changes, so Activity is current when opened.
-  const activity = useActivity(workspace);
+  // An Undo from Activity changes files too: re-read the index's links.
+  const activity = useActivity(workspace, relations.refresh);
   // After Folio changes files: re-read the index's links and the history.
   const filesChanged = () => {
     relations.refresh();

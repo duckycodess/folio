@@ -86,6 +86,13 @@ Checked on macOS with Node.js 26.10.0:
   - a partial Undo shows the partial-Undo message and "Partly undone";
   - no horizontal scroll at 700px.
 
+After Gab's review:
+
+- the Undo dialog counts from the native preview ("Undo 5 changes") and says how many files it can't list ("and 2 more files from this change, not listed here"), so a plan larger than the history limit is never under-counted;
+- an Undo from Activity also refreshes Related and Graph;
+- a folder change clears the previous folder's Undo state;
+- the page says when only the most recent changes are shown.
+
 Not verified: the real native history and Undo, failed or cancelled batches (not recorded until #35), screen readers, and the Tauri webview.
 
 ### Home as the file browser (2026-10-10, issues #42 and #43)
