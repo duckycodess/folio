@@ -305,6 +305,15 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
         }
     }
 
+    /// Stops a request whose user cancelled it, for the step between preparing
+    /// the index and holding the generation slot.
+    pub(crate) fn ensure_not_cancelled(&self) -> NativeResult<()> {
+        if self.cancel.load(Ordering::Acquire) {
+            return Err(cancelled());
+        }
+        Ok(())
+    }
+
     /// Brings the index in line with the files. Run once per request: it stats
     /// every file but reads only those whose size or modification time changed.
     pub(crate) fn refresh_files(&mut self) -> NativeResult<()> {
@@ -420,11 +429,33 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
         question: &str,
         scope: Scope<'_>,
     ) -> NativeResult<Vec<SourcePassage>> {
-        let space = self.ensure_embedded()?;
-        let passages = match scope {
+        let mut space = self.ensure_embedded()?;
+        let mut retried = false;
+        loop {
+            let passages = self.passages_for(question, scope, space.as_ref())?;
+            let (current, dropped) = self.current_passages_only(passages)?;
+            // A document edited behind the scan's back was just read again, so
+            // look once more: its fresh chunks may answer.
+            if dropped && !retried {
+                retried = true;
+                self.space = None;
+                space = self.ensure_embedded()?;
+                continue;
+            }
+            return Ok(current);
+        }
+    }
+
+    fn passages_for(
+        &mut self,
+        question: &str,
+        scope: Scope<'_>,
+        space: Option<&SpaceInUse>,
+    ) -> NativeResult<Vec<SourcePassage>> {
+        Ok(match scope {
             Scope::Folder => {
                 let results =
-                    self.retrieve(question, None, MAX_PASSAGES, space.as_ref())?;
+                    self.retrieve(question, None, MAX_PASSAGES, space)?;
                 grounding::fit_evidence_budget(
                     results
                         .into_iter()
@@ -435,7 +466,7 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
             }
             Scope::Document(id) => {
                 let mut ranked = self
-                    .scored_passages(question, Some(id), space.as_ref(), Gate::Bypass)?
+                    .scored_passages(question, Some(id), space, Gate::Bypass)?
                     .passages;
                 ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
                 let opening = index::leading_chunks(self.conn, &self.root.id, id, MAX_PASSAGES)?
@@ -447,8 +478,7 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
                     opening,
                 )
             }
-        };
-        self.current_passages_only(passages)
+        })
     }
 
     fn retrieve(
@@ -580,7 +610,12 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
             .iter()
             .map(|hit| retrieval::tokens(&hit.passage.text))
             .collect::<Vec<_>>();
-        let characters = hits.iter().map(|hit| hit.passage.text.len()).sum::<usize>();
+        // Characters, like SQLite's `length()` behind `average_chars`, not bytes:
+        // Filipino and Taglish text has multi-byte letters.
+        let characters = hits
+            .iter()
+            .map(|hit| hit.passage.text.chars().count())
+            .sum::<usize>();
         let token_count = tokens.iter().map(Vec::len).sum::<usize>();
         let tokens_per_character = if characters == 0 {
             0.0
@@ -646,7 +681,7 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
     fn current_passages_only(
         &mut self,
         passages: Vec<SourcePassage>,
-    ) -> NativeResult<Vec<SourcePassage>> {
+    ) -> NativeResult<(Vec<SourcePassage>, bool)> {
         let mut verdicts: HashMap<String, bool> = HashMap::new();
         for passage in &passages {
             if verdicts.contains_key(&passage.document_id) {
@@ -676,10 +711,14 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
             // the recheck, and this request simply goes without it.
             let _ = index::recheck_documents(self.conn, self.root, &changed, index::now_ms());
         }
-        Ok(passages
-            .into_iter()
-            .filter(|passage| verdicts.get(&passage.document_id).copied().unwrap_or(false))
-            .collect())
+        let dropped = !changed.is_empty();
+        Ok((
+            passages
+                .into_iter()
+                .filter(|passage| verdicts.get(&passage.document_id).copied().unwrap_or(false))
+                .collect(),
+            dropped,
+        ))
     }
 
     /// Metadata of every indexed document, with the current text and chunks of
@@ -1146,21 +1185,22 @@ mod tests {
             index.prompt_evidence("project submission deadline", Scope::Folder)
         });
         let during = during.unwrap();
+        // The stale passage is dropped, the file is read again, and the request
+        // looks once more, so it is answered from the new revision rather than
+        // going without that file.
         assert!(
-            during.iter().all(|passage| passage.document_id != plan),
+            during
+                .iter()
+                .filter(|passage| passage.document_id == plan)
+                .all(|passage| !passage.text.contains("October 20")),
             "a passage of the old revision never reaches a prompt"
         );
-        assert!(!during.is_empty(), "other documents still answer");
-
-        let (later, _) = harness.request(&mut embedder, |index| {
-            index.prompt_evidence("project submission deadline", Scope::Folder)
-        });
-        let later = later.unwrap();
-        let current = later
+        let current = during
             .iter()
             .find(|passage| passage.document_id == plan)
-            .expect("the re-read index serves the new revision");
+            .expect("the re-read file answers in the same request");
         assert!(current.text.contains("October 21"));
+        assert!(during.len() > 1, "other documents still answer");
     }
 
     #[test]
@@ -1250,7 +1290,13 @@ mod tests {
         let (during, _) = harness.request(&mut embedder, |index| {
             index.prompt_evidence("zzz nothing matches", Scope::Document(&plan))
         });
-        assert!(during.unwrap().is_empty(), "the old revision is never sent");
+        let during = during.unwrap();
+        assert!(!during.is_empty(), "the file was read again and looked at once more");
+        assert!(
+            during.iter().all(|passage| !passage.text.contains("October 20")),
+            "the old revision is never sent"
+        );
+        assert!(during.iter().any(|passage| passage.text.contains("October 99")));
     }
 
     #[test]

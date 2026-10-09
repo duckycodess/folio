@@ -1615,6 +1615,7 @@ async fn answer_question(
     )?;
     let generation_state = generation_state.inner().clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
+        let cancel = request.cancel.clone();
         let passages = request.run(|index| {
             index.prompt_evidence(
                 &question,
@@ -1634,6 +1635,9 @@ async fn answer_question(
             )?);
         }
         let (provider, claim) = acquire_generation(&app, &generation_state)?;
+        if cancel.load(Ordering::Acquire) {
+            return Err(error(ErrorCode::Cancelled, "The request was cancelled."));
+        }
         let result = grounding::answer_question(
             Some(provider.as_ref()),
             &question,
@@ -1675,6 +1679,8 @@ async fn interpret_request(
             // Files first, so the slot isn't held while the index catches up.
             index.refresh_files()?;
             let (provider, claim) = acquire_generation(&app, &generation_state)?;
+            // A cancel pressed while the model was being verified and started.
+            index.ensure_not_cancelled()?;
             let generated = interpretation::generate_intent(provider.as_ref(), &text, claim.cancel())?;
             drop(claim);
             let intent = match generated.intent {

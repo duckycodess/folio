@@ -208,6 +208,11 @@ export function planAsk(
     }
     case "needsFileSelection": {
       const purpose = meaning.purpose ?? "change";
+      // The user already chose the file; asking again would ignore that.
+      if (chosen && purpose === "question")
+        return { kind: "answer", documentId: chosen.id };
+      if (chosen && purpose === "summarize")
+        return { kind: "summarize", document: chosen };
       const candidates = inScope(meaning.candidates, scope);
       // A question whose candidates all lie outside the scope is still a
       // question about the folder.

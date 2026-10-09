@@ -316,6 +316,27 @@ describe("planAsk", () => {
     ).toEqual({ kind: "answer" });
   });
 
+  it("does not ask again which file when the user already chose one", () => {
+    const selection = (
+      purpose: "question" | "summarize",
+    ): InterpretationResult => ({
+      status: "needsFileSelection",
+      pendingIntent: "{}",
+      purpose,
+      candidates: [
+        result("a-notes.md", "keyword"),
+        result("b-notes.md", "keyword"),
+      ],
+    });
+    expect(planAsk(selection("question"), "Notes?", budget, "")).toEqual({
+      kind: "answer",
+      documentId: budget.id,
+    });
+    expect(
+      planAsk(selection("summarize"), "Summarize notes", budget, ""),
+    ).toEqual({ kind: "summarize", document: budget });
+  });
+
   it("keeps the purpose of a selection and treats an older core's as a change", () => {
     const base = {
       status: "needsFileSelection" as const,
