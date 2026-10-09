@@ -13,15 +13,33 @@ export type RecoveryActionKind =
 export type RecoveryFlow =
   "folder" | "read" | "changes" | "assistant" | "search";
 
+/**
+ * When a change-related error arrived, which decides what is true about the
+ * files:
+ * - `refused`: a check before any write turned the change down (prepare,
+ *   approve, the apply gate, the Undo preflight). Nothing changed.
+ * - `duringApply`: an operation failed partway through an approved batch.
+ *   That file wasn't changed, but earlier operations in the batch were.
+ * - `partialUndo`: an Undo stopped partway; what it already reversed stays
+ *   reversed.
+ */
+export type RecoveryStage = "refused" | "duringApply" | "partialUndo";
+
 export interface Recovery {
   tone: "danger" | "warning" | "info";
   title: string;
   message: string;
   action?: { kind: RecoveryActionKind; label: string };
   flow: RecoveryFlow;
+  /** The code only ever follows a write, so the stage never changes its wording. */
+  afterWrite?: true;
 }
 
 const NOTHING_CHANGED = "No file was changed.";
+const EARLIER_KEPT =
+  "This file wasn't changed. Earlier changes in this batch were kept and can be undone.";
+const UNDO_PARTLY =
+  "Folio undid part of this change, then stopped. Preview Undo again to finish.";
 
 const TRY_AGAIN = { kind: "retry", label: "Try again" } as const;
 const ADD_FOLDER_AGAIN = {
@@ -36,9 +54,9 @@ const PREVIEW_AGAIN = { kind: "previewAgain", label: "Preview again" } as const;
 
 /**
  * User wording for every error code on the boundary. A `Record` over the code
- * type, so a new code doesn't compile until it has wording here. Errors thrown
- * by the change commands are refusals made before any write, which is why
- * those messages can say that no file was changed.
+ * type, so a new code doesn't compile until it has wording here. Change-related
+ * messages are written for the `refused` stage; `recoveryFor` rewords them for
+ * the other stages.
  */
 export const RECOVERY: Record<FolioErrorCode, Recovery> = {
   workspaceNotAuthorized: {
@@ -183,12 +201,14 @@ export const RECOVERY: Record<FolioErrorCode, Recovery> = {
     message: `Only text and Markdown files can be edited. PDFs can be read but not changed. ${NOTHING_CHANGED}`,
     flow: "changes",
   },
+  // The native writer reports this only after the file was changed.
   historyRequired: {
     tone: "danger",
-    title: "Folio couldn't prepare Undo for this change",
-    message: `To keep every change reversible, Folio stopped before saving. ${NOTHING_CHANGED}`,
-    action: TRY_AGAIN,
+    title: "This file was changed, but Undo isn't available for it",
+    message:
+      "Folio saved the change but couldn't record how to reverse it. Keep a copy if you may need the earlier version.",
     flow: "changes",
+    afterWrite: true,
   },
   historyUnknown: {
     tone: "warning",
@@ -199,7 +219,7 @@ export const RECOVERY: Record<FolioErrorCode, Recovery> = {
   undoConflict: {
     tone: "warning",
     title: "These files changed after Folio's change",
-    message: `Undo would overwrite newer edits, so Folio didn't undo anything. ${NOTHING_CHANGED}`,
+    message: `Undo would overwrite newer edits, so Folio stopped. ${NOTHING_CHANGED}`,
     flow: "changes",
   },
   writerNotImplemented: {
@@ -270,7 +290,38 @@ export const RECOVERY: Record<FolioErrorCode, Recovery> = {
   },
 };
 
-/** The wording and next step for any failure, known code or not. */
-export function recoveryFor(error: Pick<FolioError, "code">): Recovery {
-  return RECOVERY[error.code] ?? RECOVERY.internal;
+/** Wording for an Undo that stopped partway, where it differs from the default. */
+const PARTIAL_UNDO: Partial<Record<FolioErrorCode, string>> = {
+  undoConflict:
+    "Folio undid part of this change, then stopped because a file changed afterwards. Preview Undo again to finish.",
+};
+
+/**
+ * The wording and next step for any failure, known code or not. `stage`
+ * matters only for change-related codes; see `RecoveryStage`.
+ */
+export function recoveryFor(
+  error: Pick<FolioError, "code">,
+  stage: RecoveryStage = "refused",
+): Recovery {
+  const base = RECOVERY[error.code] ?? RECOVERY.internal;
+  if (base.flow !== "changes" || base.afterWrite || stage === "refused")
+    return base;
+  const reason = base.message.replace(` ${NOTHING_CHANGED}`, "");
+  // An Undo error never comes from applying a plan; partway, it is a partial Undo.
+  if (
+    stage === "partialUndo" ||
+    (stage === "duringApply" && error.code === "undoConflict")
+  )
+    return {
+      ...base,
+      message: PARTIAL_UNDO[error.code] ?? `${reason} ${UNDO_PARTLY}`,
+      action: { kind: "previewAgain", label: "Preview Undo again" },
+    };
+  // During apply the plan is spent, so retrying it can't help; a new preview can.
+  return {
+    ...base,
+    message: `${reason} ${EARLIER_KEPT}`,
+    action: base.action?.kind === "retry" ? undefined : base.action,
+  };
 }
