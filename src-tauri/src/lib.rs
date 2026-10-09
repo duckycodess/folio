@@ -1639,6 +1639,11 @@ async fn list_models(app: AppHandle) -> Result<Vec<ModelDescriptor>, FolioError>
     )
 }
 
+/// The install state every view reads on load. It uses the per-session hash
+/// cache (a full SHA-256 once, then size and modified time), like a launch
+/// does: the store's uncached `verify_model` re-hashed every GGUF each time a
+/// view mounted or a model was selected, which made selection crawl and left
+/// other models "Checking…" with no way to choose them.
 #[tauri::command]
 async fn verify_model(
     app: AppHandle,
@@ -1646,7 +1651,7 @@ async fn verify_model(
 ) -> Result<ProviderInstallState, FolioError> {
     let state = run_blocking(move || {
         model_store(&app)?
-            .verify_model(&model_id)
+            .model_state(&model_id)
             .map_err(native_error)
     })
     .await?;
