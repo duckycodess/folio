@@ -147,6 +147,11 @@ fn resolve_destination(root: &Path, relative: &str) -> Result<PathBuf, FolioErro
     Ok(canonical_parent.join(name))
 }
 
+/// The key two paths share when the filesystem would treat them as one file.
+fn target_key(path: &str) -> String {
+    path.to_lowercase()
+}
+
 fn assert_editable(relative: &str) -> Result<(), FolioError> {
     let media_type = media_type_for_path(relative).unwrap_or("");
     if !is_editable_media_type(media_type) {
@@ -176,38 +181,54 @@ pub fn preflight_plan(root: &Path, plan: &ActionPlan, now: i64) -> Result<(), Fo
         )
         .with_detail("planId", plan.id.as_str()));
     }
+    // Two passes. The whole batch is checked structurally first, so a plan that
+    // can never be valid is refused the same way whatever the current files
+    // happen to be, and only then is it compared against the filesystem.
+    //
+    // Windows and macOS folders are usually case-insensitive, so two operations
+    // naming the same file in different cases are the same file in practice.
     let mut touched: BTreeSet<String> = BTreeSet::new();
+    let mut checked: Vec<(Option<String>, Option<String>)> =
+        Vec::with_capacity(plan.operations.len());
     for operation in &plan.operations {
-        let mut paths = Vec::new();
-        if let Some(source) = operation.source_path() {
-            let source = normalize_relative_path(source)?;
-            assert_editable(&source)?;
-            paths.push(source);
-        }
-        if let Some(destination) = operation.destination_path() {
-            let destination = assert_portable_destination(destination)?;
-            assert_editable(&destination)?;
-            if Some(destination.as_str()) == operation.source_path() {
-                return Err(error(
-                    ErrorCode::OperationUnsupported,
-                    "A rename needs a destination different from the current name.",
-                )
-                .with_detail("path", destination));
+        let source = match operation.source_path() {
+            Some(raw) => {
+                let source = normalize_relative_path(raw)?;
+                assert_editable(&source)?;
+                Some(source)
             }
-            paths.push(destination);
-        }
-        for path in paths {
-            if !touched.insert(path.clone()) {
+            None => None,
+        };
+        let destination = match operation.destination_path() {
+            Some(raw) => {
+                let destination = assert_portable_destination(raw)?;
+                assert_editable(&destination)?;
+                if source.as_deref().map(target_key) == Some(target_key(&destination)) {
+                    return Err(error(
+                        ErrorCode::OperationUnsupported,
+                        "A rename needs a destination different from the current name.",
+                    )
+                    .with_detail("path", destination));
+                }
+                Some(destination)
+            }
+            None => None,
+        };
+        for path in source.iter().chain(destination.iter()) {
+            if !touched.insert(target_key(path)) {
                 return Err(error(
                     ErrorCode::DuplicateOperationTarget,
                     "Two operations in this plan act on the same file.",
                 )
-                .with_detail("path", path));
+                .with_detail("path", path.as_str()));
             }
         }
+        checked.push((source, destination));
+    }
 
+    for (operation, (source, destination)) in plan.operations.iter().zip(&checked) {
         if let (Some(source), Some(expected)) =
-            (operation.source_path(), operation.expected_content_hash())
+            (source.as_deref(), operation.expected_content_hash())
         {
             match document_hash(root, source) {
                 Ok(observed) if observed == expected => {}
@@ -231,7 +252,7 @@ pub fn preflight_plan(root: &Path, plan: &ActionPlan, now: i64) -> Result<(), Fo
             }
         }
 
-        if let Some(destination) = operation.destination_path() {
+        if let Some(destination) = destination.as_deref() {
             let resolved = resolve_destination(root, destination)?;
             if resolved.symlink_metadata().is_ok() {
                 return Err(error(
@@ -438,6 +459,8 @@ pub fn settle_batch(
         }
     }
     if let Some(index) = cancelled_after_index {
+        // A cancellation reported with no attempts would describe an operation
+        // that never ran. Nothing began, so there is no outcome to record.
         if attempts.is_empty() || index + 1 != attempts.len() {
             return Err(error(
                 ErrorCode::PlanStateInvalid,
@@ -1000,6 +1023,70 @@ mod tests {
     }
 
     #[test]
+    fn refuses_two_operations_whose_names_differ_only_in_case() {
+        // On Windows and macOS these are one file, so the batch would act on
+        // the same document twice.
+        let mut harness = harness();
+        let operations = vec![
+            edit(
+                &harness.workspace_id,
+                "projects/Project-Plan.md",
+                PLAN_TEXT,
+                EDITED_TEXT,
+            ),
+            rename(
+                &harness.workspace_id,
+                "projects/project-plan.md",
+                PLAN_TEXT,
+                "projects/plano.md",
+            ),
+        ];
+        let plan = harness
+            .registry
+            .prepare(
+                &harness.workspace_id.clone(),
+                operations,
+                Vec::new(),
+                NOW,
+                300,
+            )
+            .unwrap();
+        assert_eq!(
+            preflight_plan(&harness.path, &plan, NOW + 1)
+                .unwrap_err()
+                .code,
+            ErrorCode::DuplicateOperationTarget
+        );
+    }
+
+    #[test]
+    fn refuses_a_rename_that_differs_from_the_source_only_in_case() {
+        let mut harness = harness();
+        let operation = rename(
+            &harness.workspace_id,
+            "notes/paalala.md",
+            "Paalala\n",
+            "notes/Paalala.md",
+        );
+        let plan = harness
+            .registry
+            .prepare(
+                &harness.workspace_id.clone(),
+                vec![operation],
+                Vec::new(),
+                NOW,
+                300,
+            )
+            .unwrap();
+        assert_eq!(
+            preflight_plan(&harness.path, &plan, NOW + 1)
+                .unwrap_err()
+                .code,
+            ErrorCode::OperationUnsupported
+        );
+    }
+
+    #[test]
     fn refuses_to_edit_a_format_folio_only_reads() {
         let mut harness = harness();
         fs::write(harness.path.join("paper.pdf"), "%PDF").unwrap();
@@ -1306,6 +1393,19 @@ mod tests {
             .unwrap();
         let outcome = settle_batch(&plan, &approval, &[succeeded("  ", 2)], None, 1, 3);
         assert_eq!(outcome.unwrap_err().code, ErrorCode::HistoryRequired);
+    }
+
+    #[test]
+    fn refuses_a_cancellation_reported_before_any_operation_ran() {
+        let mut harness = harness();
+        let plan = three_operation_plan(&mut harness);
+        let approval = harness
+            .registry
+            .approve(&plan.id, &plan.digest, NOW + 1)
+            .unwrap();
+        // Nothing began, so there is no finished operation to record.
+        let outcome = settle_batch(&plan, &approval, &[], Some(0), 1, 2);
+        assert_eq!(outcome.unwrap_err().code, ErrorCode::PlanStateInvalid);
     }
 
     #[test]

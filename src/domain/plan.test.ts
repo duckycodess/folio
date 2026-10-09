@@ -139,6 +139,77 @@ describe("plan preflight", () => {
     );
   });
 
+  it("refuses two operations whose names differ only in case", async () => {
+    // On Windows and macOS these are one file, so the batch would act on the
+    // same document twice.
+    const plan = await makePlan({
+      id: "plan-case",
+      operations: [
+        await editOperation("projects/Project-Plan.md", PLAN_TEXT, EDITED_TEXT),
+        await renameOperation(
+          "projects/project-plan.md",
+          PLAN_TEXT,
+          "projects/plano.md",
+        ),
+      ],
+    });
+    const observed = await observedPaths({
+      "projects/Project-Plan.md": PLAN_TEXT,
+      "projects/project-plan.md": PLAN_TEXT,
+      "projects/plano.md": null,
+    });
+    expect(codeOf(() => preflightPlan(plan, observed, 1_500))).toBe(
+      "duplicateOperationTarget",
+    );
+  });
+
+  it("refuses a rename whose destination differs from the source only in case", async () => {
+    const plan = await makePlan({
+      id: "plan-case-rename",
+      operations: [
+        await renameOperation(
+          "notes/paalala.md",
+          "Paalala\n",
+          "notes/Paalala.md",
+        ),
+      ],
+    });
+    const observed = await observedPaths({
+      "notes/paalala.md": "Paalala\n",
+      "notes/Paalala.md": null,
+    });
+    expect(codeOf(() => preflightPlan(plan, observed, 1_500))).toBe(
+      "operationUnsupported",
+    );
+  });
+
+  it("refuses a target that exists but is not a file", async () => {
+    const plan = await deadlinePlan();
+    const observed = {
+      "projects/project-plan.md": {
+        exists: true,
+        isFile: false,
+        contentHash: null,
+      },
+    };
+    expect(codeOf(() => preflightPlan(plan, observed, 1_500))).toBe(
+      "operationUnsupported",
+    );
+  });
+
+  it("looks the target up under its normalized path", async () => {
+    // The operation carries a decomposed Filipino filename; the observed state
+    // is keyed by the composed one, which is the same file.
+    const decomposed = "courses/pagsasanay-n\u0303.md";
+    const composed = "courses/pagsasanay-ñ.md";
+    const plan = await makePlan({
+      id: "plan-nfc",
+      operations: [await editOperation(decomposed, PLAN_TEXT, EDITED_TEXT)],
+    });
+    const observed = await observedPaths({ [composed]: PLAN_TEXT });
+    expect(codeOf(() => preflightPlan(plan, observed, 1_500))).toBe("no-error");
+  });
+
   it("refuses to edit a format Folio only reads", async () => {
     const plan = await makePlan({
       id: "plan-pdf",
@@ -406,6 +477,28 @@ describe("batch outcomes", () => {
         }),
       ),
     ).toBe("historyRequired");
+  });
+
+  it("refuses a cancellation reported before any operation ran", async () => {
+    const plan = await threeOperationPlan();
+    const approval: Approval = {
+      planId: plan.id,
+      planDigest: plan.digest,
+      approvedAt: 1_100,
+    };
+    // Nothing began, so there is no finished operation to record.
+    expect(
+      codeOf(() =>
+        settleBatch({
+          plan,
+          approval,
+          attempts: [],
+          cancelledAfterIndex: -1,
+          startedAt: 1_200,
+          finishedAt: 1_201,
+        }),
+      ),
+    ).toBe("planStateInvalid");
   });
 
   it("refuses a short batch with no failure and no cancellation", async () => {

@@ -128,6 +128,19 @@ function observe(observed: ObservedPaths, path: RelativePath): ObservedPath {
   return entry;
 }
 
+/**
+ * The key two paths share when the filesystem would treat them as one file.
+ * Windows and macOS default to case-insensitive names, so a batch that renames
+ * `Plan.md` and edits `plan.md` is acting on the same file twice.
+ */
+function targetKey(path: RelativePath): string {
+  return path.toLowerCase();
+}
+
+function sameTarget(left: RelativePath, right: RelativePath): boolean {
+  return targetKey(left) === targetKey(right);
+}
+
 function assertEditable(path: RelativePath): void {
   const mediaType = mediaTypeForPath(path);
   if (!mediaType || !EDITABLE_MEDIA_TYPES.includes(mediaType as never)) {
@@ -161,55 +174,70 @@ export function preflightPlan(
       { planId: plan.id },
     );
   }
-  const touched = new Set<RelativePath>();
+  // Two passes. The whole batch is checked structurally first, so a plan that
+  // can never be valid is refused the same way whatever the current files
+  // happen to be, and only then is it compared against observed state.
+  //
+  // Windows and macOS folders are usually case-insensitive, so two operations
+  // naming the same file in different cases are the same file in practice.
+  const touched = new Map<string, RelativePath>();
+  const checked: {
+    source?: RelativePath;
+    destination?: RelativePath;
+  }[] = [];
   for (const operation of plan.operations) {
-    const sources: RelativePath[] = [];
-    const destinations: RelativePath[] = [];
+    let source: RelativePath | undefined;
+    let destination: RelativePath | undefined;
 
-    if (operation.kind === "create") {
-      destinations.push(
-        assertPortableDestination(operation.destinationRelativePath),
-      );
-      assertEditable(operation.destinationRelativePath);
-    } else {
-      const source = normalizeRelativePath(operation.relativePath);
-      sources.push(source);
+    if (operation.kind !== "create") {
+      source = normalizeRelativePath(operation.relativePath);
       assertEditable(source);
-      // An edit writes back to its own path; a rename or move needs a free one.
-      if (operation.kind !== "edit") {
-        const destination = assertPortableDestination(
-          operation.destinationRelativePath,
+    }
+    if (operation.kind !== "edit") {
+      destination = assertPortableDestination(
+        operation.destinationRelativePath,
+      );
+      assertEditable(destination);
+      if (source !== undefined && sameTarget(destination, source)) {
+        throw folioError(
+          "operationUnsupported",
+          "A rename needs a destination different from the current name.",
+          { path: source },
         );
-        assertEditable(destination);
-        if (destination === source) {
-          throw folioError(
-            "operationUnsupported",
-            "A rename needs a destination different from the current name.",
-            { path: source },
-          );
-        }
-        destinations.push(destination);
       }
     }
 
-    for (const path of [...sources, ...destinations]) {
-      if (touched.has(path)) {
+    for (const path of [source, destination]) {
+      if (path === undefined) continue;
+      const earlier = touched.get(targetKey(path));
+      if (earlier !== undefined) {
         throw folioError(
           "duplicateOperationTarget",
           "Two operations in this plan act on the same file.",
-          { path },
+          { path, earlierPath: earlier },
         );
       }
-      touched.add(path);
+      touched.set(targetKey(path), path);
     }
+    checked.push({ source, destination });
+  }
 
-    if (operation.kind !== "create") {
-      const current = observe(observed, operation.relativePath);
+  for (const [index, operation] of plan.operations.entries()) {
+    const { source, destination } = checked[index];
+    if (source !== undefined && operation.kind !== "create") {
+      const current = observe(observed, source);
       if (!current.exists) {
         throw folioError(
           "targetMissing",
-          "The file this plan edits is no longer there.",
-          { path: operation.relativePath },
+          "The file this plan changes is no longer there.",
+          { path: source },
+        );
+      }
+      if (current.isFile === false) {
+        throw folioError(
+          "operationUnsupported",
+          "That name is not a file Folio can change.",
+          { path: source },
         );
       }
       if (current.contentHash !== operation.expectedContentHash) {
@@ -217,22 +245,20 @@ export function preflightPlan(
           "targetChanged",
           "This file changed since the preview was prepared. Review a fresh preview.",
           {
-            path: operation.relativePath,
+            path: source,
             expected: operation.expectedContentHash,
-            observed: current.contentHash ?? null,
+            observed: current.contentHash ?? "absent",
           },
         );
       }
     }
 
-    for (const destination of destinations) {
-      if (observe(observed, destination).exists) {
-        throw folioError(
-          "destinationExists",
-          "Something already uses that name. The existing file was left alone.",
-          { path: destination },
-        );
-      }
+    if (destination !== undefined && observe(observed, destination).exists) {
+      throw folioError(
+        "destinationExists",
+        "Something already uses that name. The existing file was left alone.",
+        { path: destination },
+      );
     }
   }
 }
@@ -301,16 +327,18 @@ export function settleBatch(input: SettleBatchInput): BatchResult {
     throw folioError(
       "planStateInvalid",
       "A batch must stop at its first failed operation.",
-      { planId: plan.id, operationIndex: failureIndex },
+      { planId: plan.id, operationIndex: String(failureIndex) },
     );
   }
   const cancelledAfterIndex = input.cancelledAfterIndex;
   if (cancelledAfterIndex !== undefined) {
-    if (cancelledAfterIndex !== attempts.length - 1) {
+    // A cancellation reported with no attempts would describe an operation that
+    // never ran. Nothing began, so there is no outcome to record.
+    if (attempts.length === 0 || cancelledAfterIndex !== attempts.length - 1) {
       throw folioError(
         "planStateInvalid",
         "Cancellation must stop after the operation that was already running.",
-        { planId: plan.id, operationIndex: cancelledAfterIndex },
+        { planId: plan.id, operationIndex: String(cancelledAfterIndex) },
       );
     }
   }
@@ -321,7 +349,7 @@ export function settleBatch(input: SettleBatchInput): BatchResult {
         throw folioError(
           "historyRequired",
           "A completed operation must have a recoverable history entry.",
-          { planId: plan.id, operationIndex: index },
+          { planId: plan.id, operationIndex: String(index) },
         );
       }
       return {
@@ -471,7 +499,7 @@ export function assertUndoable(preflight: UndoPreflight): void {
       blockingRelativePath: blocking.relativePath,
       blockingHistoryEntryId: blocking.historyEntryId,
       reason: blocking.reason,
-      conflicts: preflight.conflicts.length,
+      conflicts: String(preflight.conflicts.length),
     },
   );
 }
