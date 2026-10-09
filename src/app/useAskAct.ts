@@ -205,11 +205,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
       indexed = [];
     }
     return inScope(
-      mergeFolderResults(
-        workspace.documents,
-        [...named, ...indexed],
-        partial,
-      ),
+      mergeFolderResults(workspace.documents, [...named, ...indexed], partial),
       scope,
     ).slice(0, RESULT_LIMIT);
   }
