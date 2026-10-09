@@ -2,8 +2,8 @@
 
 ## Implemented starter pieces
 
-- SOS React interface with workflows A/B/C and synthetic document navigation.
-- Keyword filtering (explicitly labelled), actual Markdown-link discovery in fixture text, source content views, and a graph of those explicit links.
+- Golden Daylight app shell ([issue #16](https://github.com/duckycodess/folio/issues/16)): design tokens with light and proposed dark themes, locally bundled Inter and Lucide icons, sidebar navigation (Home, Files, Organize, Graph, Ask & Act, Model Lab), a global search field with a platform-aware ⌘K / Ctrl K shortcut, a document panel with Summary, Details and Related tabs, and shared button, badge, panel, list row, empty state, notice, modal and progress components. The starter `App.tsx` presentation and `src/styles.css` are retired. Summaries, Ask & Act, collections, renames and Model Lab show honest "not available yet" states; nothing is presented as AI output or a saved change.
+- Keyword filtering (explicitly labelled), actual Markdown-link discovery in fixture text, source content views, and a list of those explicit links with their evidence (Graph view).
 - Tauri folder picker and scoped native listing/TXT/Markdown reading commands.
 - [Frozen cross-track contracts](contracts.md) declared in both `src/domain/contracts.ts` and `src-tauri/src/contracts.rs`: typed failures, stable workspace/document identity, UTF-8 source offsets bound to a document revision, typed relationship evidence, embedding-space fingerprints, provider error/cancellation codes, plans, approvals, per-operation outcomes, history and undo shapes.
 - Native commands that return `{ code, message, details? }` instead of prose, a workspace registry that refuses an identity it never issued, listing that reports files it cannot identify instead of renaming them, and reads that return the document's content hash.
@@ -40,6 +40,46 @@ The native writer is [issue #5](https://github.com/duckycodess/folio/issues/5). 
 No AI or save completion should be presented until the corresponding native/provider implementation succeeds. Model sizes, installed size, memory targets, and platform support remain subject to measurements.
 
 ## Verification
+
+### App shell and design tokens (2026-10-09, issue #16)
+
+Checked on macOS with Node.js 26.10.0:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 90 passed, 16 todo. The new cases cover the platform-aware search shortcut and the navigation keeping Organize separate from Ask & Act.
+- Browser preview (sample fixtures only) in headless Google Chrome via Playwright at 1280×850 (light and dark), 1024×768, 700×800, and 640×425 at device scale 2 (200% zoom of 1280×850):
+  - no horizontal page scroll;
+  - Inter loaded from the bundle;
+  - smallest rendered text 12px;
+  - at 1280 and 1024 the file list and the selected document's panel are both on the first screen;
+  - at 700px and 200% zoom the document replaces the list, with a Back control.
+- Keyboard checks in the same run:
+  - ⌘K focuses search on macOS, and Ctrl+K is ignored there;
+  - arrow keys move between file rows and between document tabs;
+  - the active nav item has `aria-current="page"`;
+  - Escape closes the rename preview and returns focus to its trigger.
+
+Follow-up after the #25 design review, checked the same way at 1280×850 and 700×600:
+
+- the dark tokens match `docs/design.md`;
+- Escape closes the document panel and returns focus to the row that opened it;
+- only one file row is in the Tab order, and arrow keys move between rows;
+- at 700×600 the Home title is visually hidden but still a heading for screen readers, and six file rows are on the first screen;
+- picking a folder before the sample files finish loading can no longer show the samples as that folder (code fix; there's no DOM test environment to cover it automatically).
+
+Second review round on PR #26, checked the same way (headless Chrome, sample fixtures) at 1280×850, 700×800 and 640×425 at device scale 2:
+
+- with a document open at 700px and 200% zoom, the search field and notices stay visible above it, ⌘K focuses search, opening a document moves focus to its heading, and there's no horizontal scroll;
+- Organize no longer opens the reader; the rename form stays visible with a "Choose a different file" control, and the typed name is cleared when the file changes;
+- Escape in the search field clears it without closing the document; Escape elsewhere still closes it and returns focus to its row;
+- following a Related link moves focus to the new document's heading;
+- the list's single Tab stop follows the arrow-key focus;
+- startup shows "Loading files…" instead of the empty-folder message;
+- non-error notices are announced through one always-present live region (DOM check only; not tested with a screen reader);
+- with reduced motion, the indeterminate progress bar is a still, half-opaque fill;
+- `npm test`: 92 passed, 16 todo, adding cases for the search shortcut on Cyrillic, Greek and Dvorak layouts.
+
+Not verified: Ctrl K on Windows (unit-tested only), screen readers, the Tauri webview, native folder picking, and the dark theme's visual review. Contrast follows the measured token pairs in `docs/design.md`; no automated contrast audit was run on rendered pages.
 
 ### Contract freeze and safety baseline (2026-10-09, issue #2)
 
