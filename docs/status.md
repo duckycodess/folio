@@ -35,8 +35,8 @@ Checked on 2026-10-09 with Node.js 24.19.0:
 - `npm test`: 9 tests passed, covering approval/expiry/current-content checks, required history, explicit-reference containment, Filipino keyword retrieval, and embedding-space fingerprints.
 - `npm run build`: passed; the production frontend compiles.
 - SQLite migration: executed in memory with Python's SQLite; Filipino FTS matching, insert/update/delete triggers, embedding revision separation, foreign-key guards, and cascading cleanup passed.
-- `npm run tauri info`: configuration recognized. Native builds/tests were not run because Rust/Cargo and Linux desktop libraries are unavailable here. Windows/macOS CI jobs are configured but have not run yet.
-- Browser smoke checks were attempted but could not start: the browser binary is absent and its download returned an invalid archive. Visual behavior and native folder-picker behavior still require verification.
+- `npm run tauri info`: configuration recognized. Native tests were not run on the original Linux preparation host. [GitHub Checks run 37913994204](https://github.com/duckycodess/folio/actions/runs/37913994204), for commit `52208c6ded13c515ade8d438a27ec58ba0012931`, passed frontend checks and native `cargo test` on Windows and macOS. CI did not build/install consumer bundles or exercise local inference and full offline workflows.
+- The original browser attempt could not start. A later visual/interaction review on 2026-10-09 used headless Windows Edge at 1366×768, 1024×768 and 390×844 against the browser fixtures. Search, Organize, Summarize and Ask & Act rendered without horizontal page overflow or JavaScript exceptions; Escape closed the assistant and restored focus. Readability, layout, hidden search evidence and cross-workflow notice defects remain tracked in [UI replacement #6](https://github.com/duckycodess/folio/issues/6) and [workflow UI #7](https://github.com/duckycodess/folio/issues/7). This did not verify native folder picking, inference, writes or installers.
 
 Checked on 2026-10-09 on Windows 11 (x64) with Rust 1.91.1 and Node.js 20.20.2 (below the 22.12 engines baseline; CI uses 22):
 
@@ -46,3 +46,11 @@ Checked on 2026-10-09 on Windows 11 (x64) with Rust 1.91.1 and Node.js 20.20.2 (
 - Not run: any macOS native test. macOS relies on the CI `desktop-check` job.
 
 Local inference, filesystem apply/undo, native packaging, and actual performance/size measurements remain unverified and unimplemented as described above. Indexing time and database size have not been measured.
+
+## Product-context refresh
+
+On 2026-10-09, the user confirmed the settled scope and authorized Impeccable init plus a direct main-branch push. The existing `docs/product.md` was updated in place with product-schema version 1, the webview platform classification, users, purpose, positioning, operating context, evidence, product principles and accessibility requirements. No competing root `PRODUCT.md` or replacement visual world was created.
+
+The named team plan now gives TJ most checking and integration/release coordination, Dann local AI, Gab native workspace/actions and Louise the replacement UI. The full MVP and current UI replacement remain implementation work; this documentation refresh does not complete any of those features.
+
+Documentation-refresh validation passed: Impeccable product schema 1 and the webview platform value, all 15 local Markdown references, preservation of the four original scope sections, named ownership and all ten issue links, and Prettier formatting for the three changed documentation files. Application and native tests were not rerun for this documentation-only refresh.
