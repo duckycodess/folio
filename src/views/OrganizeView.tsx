@@ -7,10 +7,14 @@ import { EmptyState } from "../ui/EmptyState";
 import { Modal } from "../ui/Modal";
 import { Olio } from "../ui/Olio";
 import { Panel } from "../ui/Panel";
+import { listedSelection } from "../shell/reader";
 import { FileList } from "./FileList";
 
 export function OrganizeView({ workspace }: { workspace: WorkspaceState }) {
-  const selected = workspace.selected;
+  // Like the reader, ignore a chosen file that the current search leaves out,
+  // and offer only files the search includes.
+  const selected = listedSelection(workspace.selected, workspace.results);
+  const choices = workspace.results.map((result) => result.document);
 
   return (
     <div className="view">
@@ -54,7 +58,7 @@ export function OrganizeView({ workspace }: { workspace: WorkspaceState }) {
             <p className="muted">Choose a file to rename.</p>
             <FileList
               label="Files to rename"
-              documents={workspace.documents}
+              documents={choices}
               selectedId={undefined}
               onSelect={workspace.selectDocument}
             />

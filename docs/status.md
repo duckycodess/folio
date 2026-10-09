@@ -49,7 +49,7 @@ No AI or save completion should be presented until the corresponding native/prov
 Checked on macOS with Node.js 26.10.0:
 
 - `npm run format:check`, `npm run check` and `npm run build`: passed.
-- `npm test`: 102 passed, 16 todo. The new cases cover which document the reader may show: nothing until a file is chosen, never a file the current search excludes, files opened from Graph, and none in Organize or Ask & Act.
+- `npm test`: 104 passed, 16 todo. The new cases cover which document the reader and Organize may use: nothing until a file is chosen, never a file the current search excludes, files opened from Graph, and none in Organize or Ask & Act.
 - Browser preview in headless Google Chrome via Playwright, at 1280×850, 1024×768, 700×800, and 640×425 at device scale 2:
   - nothing is selected or opened at startup;
   - at 1280 and 1024 the table and the reader are both on the first screen, and with the reader open the table keeps Name, Location and Modified;
@@ -57,6 +57,7 @@ Checked on macOS with Node.js 26.10.0:
   - the open row has `aria-selected="true"` and a spoken name with its location, type, date and size;
   - a long Filipino/Taglish file name and folder path injected into a row truncate with an ellipsis, without page overflow, and the row's tooltip carries the full path;
   - a search that excludes the open file closes the reader, and clearing the search brings it back;
+  - after review: with that search active, Organize offers only the matching files instead of a rename form for the hidden one (open `project-plan.md`, search "budget", go to Organize → only `budget-notes.md` is offered);
   - the reader shows the contents with a Read-only badge, the full path, and the source ("Sample file bundled with Folio").
 - Desktop no-folder state, simulated in the browser by setting the flag the Tauri API reads: Home and Files show Olio with "Add folder" and "Look at sample files", and the latter lists the 15 samples under "Showing sample files".
 

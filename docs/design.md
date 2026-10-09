@@ -222,7 +222,7 @@ Active item: `--sidebar-item-active` background, 3px gold bar on the left edge, 
 
 ## Icons
 
-Outline icons on a 24px grid, 1.5–2px rounded strokes, charcoal on light surfaces — the brandbook set matches **Lucide**. Install `lucide-react` from npm so icons are bundled; no icon CDN. Icon-only buttons need an `aria-label` and a tooltip. File types use coloured tiles at 20–24px, as in the brandbook: PDF red (`--file-pdf`), plain text blue (`--file-text`), and Markdown charcoal in light mode and ivory in dark mode. Each tile has a white or charcoal Lucide glyph at ≥4.5:1, and the tiles are ≥3:1 against surfaces. They're decorative, because the file name and type text carry the meaning. Brand logos (Acrobat, Word, Notion) are not used.
+Outline icons on a 24px grid, 1.5–2px rounded strokes, charcoal on light surfaces — the brandbook set matches **Lucide**. Install `lucide-react` from npm so icons are bundled; no icon CDN. Icon-only buttons need an `aria-label` and a tooltip. File types use coloured tiles at 20–24px, as in the brandbook: PDF red (`--file-pdf`), plain text blue (`--file-text`), and Markdown charcoal in light mode and ivory in dark mode. Each tile has a white or charcoal Lucide glyph at ≥4.5:1. The tiles are ≥3:1 against the page and panel surfaces in both themes, but in dark mode the PDF and text tiles drop below that on hovered and selected rows (down to 2.62:1). That's acceptable because they're decorative: the file name and type text carry the meaning. Brightening them would push the white glyphs below 4.5:1. Brand logos (Acrobat, Word, Notion) are not used.
 
 ## Olio, the mascot
 
