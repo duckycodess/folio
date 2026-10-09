@@ -43,7 +43,6 @@ const FIXTURE_PATHS: &[&str] = &[
 
 const E5_MODEL_ID: &str = "multilingual-e5-small-int8";
 const QWEN_MODEL_ID: &str = "qwen3-0.6b-q4-k-m";
-const R8_IGNORE: &str = "requires verified local E5 and llama.cpp model files";
 
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/documents")
@@ -455,7 +454,7 @@ fn assert_citations_within(
 }
 
 #[test]
-#[ignore = R8_IGNORE]
+#[ignore = "requires verified local E5 and llama.cpp model files"]
 fn r8_retrieval_cross_language() {
     let prepared = prepared();
     let english_query = "Community Learning Project submission deadline";
@@ -513,7 +512,7 @@ fn r8_retrieval_cross_language() {
 }
 
 #[test]
-#[ignore = R8_IGNORE]
+#[ignore = "requires verified local E5 and llama.cpp model files"]
 fn r8_interpretation_deadline() {
     let prepared = prepared();
     let generation = GenerationGuard::new(&prepared.inputs);
@@ -554,7 +553,7 @@ fn r8_interpretation_deadline() {
 }
 
 #[test]
-#[ignore = R8_IGNORE]
+#[ignore = "requires verified local E5 and llama.cpp model files"]
 fn r8_interpretation_ambiguity() {
     let prepared = prepared();
     let generation = GenerationGuard::new(&prepared.inputs);
@@ -580,7 +579,7 @@ fn r8_interpretation_ambiguity() {
 }
 
 #[test]
-#[ignore = R8_IGNORE]
+#[ignore = "requires verified local E5 and llama.cpp model files"]
 fn r8_evidence_gate() {
     let prepared = prepared();
     let queries = [
@@ -651,7 +650,7 @@ fn r8_evidence_gate() {
 }
 
 #[test]
-#[ignore = R8_IGNORE]
+#[ignore = "requires verified local E5 and llama.cpp model files"]
 fn r8_summary_cited_output() {
     let prepared = prepared();
     let generation = GenerationGuard::new(&prepared.inputs);
@@ -706,7 +705,7 @@ fn r8_summary_cited_output() {
 }
 
 #[test]
-#[ignore = R8_IGNORE]
+#[ignore = "requires verified local E5 and llama.cpp model files"]
 fn r8_cancellation_and_recovery() {
     let prepared = prepared();
     let generation = GenerationGuard::new(&prepared.inputs);
