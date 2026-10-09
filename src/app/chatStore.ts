@@ -1,6 +1,6 @@
 import type { FolioErrorPayload } from "../domain/contracts";
 import { folioError } from "../domain/errors";
-import { addTurn, updateTurn, type AskTurn } from "./askAct";
+import { addTurn, MAX_TURNS, updateTurn, type AskTurn } from "./askAct";
 
 /**
  * One conversation: Olio's floating chat and the Ask & Act page read and
@@ -23,6 +23,13 @@ export interface ChatState {
 
 /** Oldest conversations are dropped first, across every folder. */
 export const MAX_CONVERSATIONS = 20;
+
+/**
+ * What the stored history may take, in UTF-16 characters, well under the
+ * browser's ~5 MB per-origin storage. Beyond it the oldest conversations are
+ * left out of what is saved (they stay visible until the app closes).
+ */
+export const MAX_STORED_CHARS = 1_000_000;
 
 export const EMPTY_STATE: ChatState = { conversations: [], activeId: null };
 
@@ -187,23 +194,50 @@ function persistableTurns(turns: AskTurn[]): StoredTurn[] {
     .map((turn) => ({ ...turn, error: turn.error?.toPayload() }));
 }
 
-export function serializeChatState(state: ChatState): string {
-  return JSON.stringify({
-    activeId: state.activeId,
-    conversations: state.conversations.map((conversation) => ({
+/**
+ * The stored form, at most `maxChars` long: the oldest conversations are
+ * dropped until it fits, so a full storage quota can't silently stop saving.
+ */
+export function serializeChatState(
+  state: ChatState,
+  maxChars = MAX_STORED_CHARS,
+): string {
+  let conversations = [...state.conversations]
+    .sort((a, b) => a.updatedAt - b.updatedAt)
+    .map((conversation) => ({
       ...conversation,
       turns: persistableTurns(conversation.turns),
-    })),
-  });
+    }));
+  for (;;) {
+    const json = JSON.stringify({ activeId: state.activeId, conversations });
+    if (json.length <= maxChars || conversations.length === 0) return json;
+    conversations = conversations.slice(1);
+  }
 }
 
+const FINISHED: ReadonlySet<unknown> = new Set(["done", "failed", "cancelled"]);
+
+/**
+ * Only well-formed, finished turns come back: stored data may be from an
+ * older version, edited or damaged, and a bad turn must not break the chat.
+ */
 function reviveTurns(raw: unknown): AskTurn[] {
   if (!Array.isArray(raw)) return [];
   return raw
     .filter(
       (turn): turn is Record<string, unknown> =>
-        typeof turn === "object" && turn !== null,
+        typeof turn === "object" &&
+        turn !== null &&
+        typeof turn.id === "number" &&
+        typeof turn.request === "string" &&
+        (turn.action === "find" || turn.action === "ask") &&
+        FINISHED.has(turn.status) &&
+        (turn.outcome === undefined ||
+          (typeof turn.outcome === "object" &&
+            turn.outcome !== null &&
+            typeof (turn.outcome as { type?: unknown }).type === "string")),
     )
+    .slice(-MAX_TURNS)
     .map((turn) => {
       const payload = turn.error as FolioErrorPayload | undefined;
       return {

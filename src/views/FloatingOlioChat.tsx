@@ -105,7 +105,9 @@ export function FloatingOlioChat({
   const launcherRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const announced = useRef<number | null>(null);
+  // The running turn this chat saw start; only its end is announced, so
+  // stored history and switching conversations announce nothing.
+  const watching = useRef<number | null>(null);
   const headingId = useId();
 
   // Attaching a file only makes sense while that file is still open.
@@ -115,13 +117,15 @@ export function FloatingOlioChat({
 
   const latest = ask.turns.at(-1);
   useEffect(() => {
-    if (
-      !latest ||
-      latest.status === "running" ||
-      announced.current === latest.id
-    )
+    if (!latest) return;
+    if (latest.status === "running") {
+      watching.current = latest.id;
       return;
-    announced.current = latest.id;
+    }
+    if (watching.current !== latest.id) return;
+    watching.current = null;
+    // On Ask & Act the page announces the same turn itself.
+    if (view === "assistant") return;
     announce(
       latest.status === "cancelled"
         ? "Request cancelled."
@@ -129,18 +133,21 @@ export function FloatingOlioChat({
           ? "The request didn't finish."
           : "Olio's reply is ready.",
     );
-  }, [latest, announce]);
+  }, [latest, announce, view]);
 
   useEffect(() => {
     if (!open) return;
     function onKeyDown(event: globalThis.KeyboardEvent) {
       if (event.key !== "Escape" || event.defaultPrevented) return;
+      // Escape inside a dialog over the chat (its change preview, or any
+      // other modal) belongs to that dialog, not to the chat behind it.
+      if (changing || !panelRef.current?.contains(event.target as Node)) return;
       event.preventDefault();
       close();
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open]);
+  }, [open, changing]);
 
   useEffect(() => {
     if (open) textareaRef.current?.focus();
@@ -168,13 +175,23 @@ export function FloatingOlioChat({
       onNavigate("organize");
       close();
     } else if (command?.name === "search") {
-      ask.find(command.args || typed);
+      // "/search" alone has nothing to look for; keep the text so the user
+      // can add a query.
+      if (!command.args) return;
+      ask.find(command.args);
     } else if (command?.name === "summarize") {
-      ask.ask(
-        command.args ? `Summarize ${command.args}` : "Summarize this file",
-      );
+      // Without an argument, summarize the attached or open file.
+      const file = attached ?? currentFile;
+      if (command.args) ask.ask(`Summarize ${command.args}`);
+      else if (file)
+        ask.ask(requestForFile("Summarize this file", file.relativePath), file);
+      else ask.ask("Summarize this file");
+    } else if (attached) {
+      // The attached file binds the request: a change to any other file is
+      // refused before a preview.
+      ask.ask(requestForFile(typed, attached.relativePath), attached);
     } else {
-      ask.ask(attached ? requestForFile(typed, attached.relativePath) : typed);
+      ask.ask(typed);
     }
     setText("");
     setAttached(null);
@@ -303,7 +320,7 @@ export function FloatingOlioChat({
                         onRetry={() =>
                           turn.action === "find"
                             ? ask.find(turn.request)
-                            : ask.ask(turn.request)
+                            : ask.ask(turn.request, turn.chosen)
                         }
                         onNavigate={onNavigate}
                         onPreviewChange={setChanging}

@@ -8,7 +8,6 @@ import {
   rebuildIndex,
   semanticSearch,
 } from "../adapters/ai";
-import { mockReply } from "../adapters/mockChat";
 import type {
   DocumentRecord,
   ProviderIndexStatus,
@@ -18,6 +17,7 @@ import { toFolioError, type FolioError } from "../domain/errors";
 import {
   inScope,
   summaryTarget,
+  targetsChosenFile,
   type AskOutcome,
   type AskTurn,
 } from "./askAct";
@@ -41,6 +41,21 @@ import type { WorkspaceState } from "./useWorkspace";
 
 const RESULT_LIMIT = 20;
 
+/**
+ * The browser preview's practice replies. `TAURI_ENV_PLATFORM` is set while
+ * `tauri build` runs, so in the desktop build this branch is dead code and
+ * the mock adapter is not bundled at all.
+ */
+async function practiceReply(
+  request: string,
+  onProgress: (partial: AskOutcome) => void,
+): Promise<AskOutcome> {
+  if (import.meta.env.TAURI_ENV_PLATFORM)
+    throw new Error("Practice replies are not part of the desktop app.");
+  const { mockReply } = await import("../adapters/mockChat");
+  return mockReply(request, onProgress);
+}
+
 export interface ConversationSummary {
   id: string;
   title: string;
@@ -61,7 +76,8 @@ export interface AskActController {
   turns: AskTurn[];
   busy: boolean;
   find: (request: string) => void;
-  ask: (request: string) => void;
+  /** `chosen` is the file the user picked; a change must target it. */
+  ask: (request: string, chosen?: DocumentRecord) => void;
   /** Summarizes the chosen file of an earlier turn. */
   chooseForSummary: (turnId: number, document: DocumentRecord) => void;
   cancel: () => void;
@@ -116,7 +132,11 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
       .catch(() => undefined);
   }, [folderId]);
 
-  const busy = turns.some((turn) => turn.status === "running");
+  // One request at a time across every conversation and folder: starting a
+  // new conversation, or switching to another, must not start a second one.
+  const busy = snapshot.conversations.some((other) =>
+    other.turns.some((turn) => turn.status === "running"),
+  );
 
   async function run(
     action: AskTurn["action"],
@@ -125,6 +145,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
       folder: string,
       onProgress: (partial: AskOutcome) => void,
     ) => Promise<AskOutcome>,
+    chosen?: DocumentRecord,
   ) {
     const text = request.trim();
     // Without a folder, the desktop app has nothing to search; the browser
@@ -137,6 +158,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
       request: text,
       action,
       status: "running",
+      chosen,
     });
     const onProgress = (partial: AskOutcome) =>
       updateTurnIn(conversationId, id, { outcome: partial });
@@ -172,6 +194,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
   async function interpret(
     folder: string,
     request: string,
+    chosen?: DocumentRecord,
   ): Promise<AskOutcome> {
     const meaning = await interpretRequest(folder, request);
     switch (meaning.status) {
@@ -204,6 +227,10 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
       case "needsClarification":
         return { type: "clarify", question: meaning.question };
       case "proposal":
+        // Naming the chosen file in the request doesn't bind the model, so
+        // a change to any other file is refused here, before any preview.
+        if (chosen && !targetsChosenFile(meaning.proposal, chosen.id))
+          return { type: "otherFile", proposal: meaning.proposal, chosen };
         return { type: "proposal", proposal: meaning.proposal };
       case "unsupported":
         return { type: "unsupported", reason: meaning.reason };
@@ -240,11 +267,17 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
               query: request.trim(),
               results: await search(folder, request),
             }
-          : mockReply(request, onProgress),
+          : practiceReply(request, onProgress),
       ),
-    ask: (request) =>
-      void run("ask", request, (folder, onProgress) =>
-        desktop ? interpret(folder, request) : mockReply(request, onProgress),
+    ask: (request, chosen) =>
+      void run(
+        "ask",
+        request,
+        (folder, onProgress) =>
+          desktop
+            ? interpret(folder, request, chosen)
+            : practiceReply(request, onProgress),
+        chosen,
       ),
     chooseForSummary: (turnId, document) => {
       if (!folderId || !conversation) return;

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "dmg"],
+    "createUpdaterArtifacts": false,
+    "icon": [
+      "target/packaging-icons/32x32.png",
+      "target/packaging-icons/128x128.png",
+      "target/packaging-icons/128x128@2x.png",
+      "target/packaging-icons/icon.icns",
+      "target/packaging-icons/icon.ico"
+    ],
+    "license": "MIT",
+    "resources": {
+      "../LICENSE": "licenses/Folio-MIT.txt"
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "signCommand": null,
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "signingIdentity": "-"
+    }
+  }
+}

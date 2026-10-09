@@ -248,6 +248,7 @@ export function TurnBody({
                     run: (document) =>
                       ask.ask(
                         requestForFile(turn.request, document.relativePath),
+                        document,
                       ),
                   }
             }
@@ -291,6 +292,14 @@ export function TurnBody({
       return (
         <Notice tone="info">
           Olio can't do that here: {outcome.reason} Nothing was changed.
+        </Notice>
+      );
+    case "otherFile":
+      return (
+        <Notice tone="warning">
+          Olio proposed a change to another file than the one you chose (
+          {outcome.chosen.relativePath}): {describeProposal(outcome.proposal)}.
+          Nothing was changed. Try naming the change more precisely.
         </Notice>
       );
     case "unreadable":

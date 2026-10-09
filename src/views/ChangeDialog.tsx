@@ -148,6 +148,12 @@ export function ChangeDialog({
         document.contentHash === operation.expectedContentHash
           ? document
           : await readNativeDocument(folder, document);
+      // The diff must be drawn against the revision the edit applies to.
+      if (read.contentHash !== operation.expectedContentHash)
+        throw folioError(
+          "targetChanged",
+          "The file changed after Olio read it.",
+        );
       setBefore(read.content ?? null);
       return [operation];
     });

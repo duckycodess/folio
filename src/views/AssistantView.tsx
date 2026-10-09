@@ -53,20 +53,22 @@ export function AssistantView({
   const announce = useAnnounce();
   const request = drafts.instruction;
   const latest = ask.turns.at(-1);
-  const announced = useRef<number | null>(null);
+  // The running turn this page saw start; only its end is announced, so
+  // stored history and switching conversations announce nothing.
+  const watching = useRef<number | null>(null);
   const folders = folderChoices(workspace.documents).filter(Boolean);
   const root = workspace.workspace?.rootPath ?? "";
   const rootName = root.split(/[\\/]/).filter(Boolean).at(-1) ?? root;
 
   // Say when a request finishes; the result itself is on the page.
   useEffect(() => {
-    if (
-      !latest ||
-      latest.status === "running" ||
-      announced.current === latest.id
-    )
+    if (!latest) return;
+    if (latest.status === "running") {
+      watching.current = latest.id;
       return;
-    announced.current = latest.id;
+    }
+    if (watching.current !== latest.id) return;
+    watching.current = null;
     const outcome = latest.outcome;
     announce(
       latest.status === "cancelled"
@@ -252,7 +254,7 @@ export function AssistantView({
                 onRetry={() =>
                   turn.action === "find"
                     ? ask.find(turn.request)
-                    : ask.ask(turn.request)
+                    : ask.ask(turn.request, turn.chosen)
                 }
                 onNavigate={onNavigate}
                 onPreviewChange={previewChange}

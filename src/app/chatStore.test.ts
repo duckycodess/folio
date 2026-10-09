@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { folioError } from "../domain/errors";
+import { MAX_TURNS } from "./askAct";
 import {
   activeConversation,
   conversationsForFolder,
@@ -7,6 +8,7 @@ import {
   deserializeChatState,
   EMPTY_STATE,
   MAX_CONVERSATIONS,
+  MAX_STORED_CHARS,
   pruned,
   serializeChatState,
   withActiveId,
@@ -155,6 +157,66 @@ describe("persistence round-trip", () => {
     });
     const revived = deserializeChatState(serializeChatState(withTurn));
     expect(activeConversation(revived, "a")?.turns).toHaveLength(0);
+  });
+
+  it("drops malformed or unfinished stored turns and keeps the turn cap", () => {
+    const good = (id: number) => ({
+      id,
+      request: `turn ${id}`,
+      action: "find",
+      status: "done",
+    });
+    const stored = JSON.stringify({
+      activeId: "c1",
+      conversations: [
+        {
+          id: "c1",
+          folderId: "a",
+          turns: [
+            {},
+            { ...good(1), request: undefined },
+            { ...good(2), status: "running" },
+            { ...good(3), outcome: "not an outcome" },
+            ...Array.from({ length: 30 }, (_, index) => good(10 + index)),
+          ],
+        },
+      ],
+    });
+    const conversation = activeConversation(deserializeChatState(stored), "a")!;
+    expect(conversation.turns).toHaveLength(MAX_TURNS);
+    expect(conversation.turns.every((turn) => turn.status === "done")).toBe(
+      true,
+    );
+    expect(conversation.turns.at(-1)?.request).toBe("turn 39");
+    expect(conversationTitle(conversation)).toBe("turn 20");
+  });
+
+  it("keeps the stored history under the size cap, oldest out first", () => {
+    let state: ChatState = EMPTY_STATE;
+    for (let index = 0; index < 3; index += 1) {
+      const { state: next, id } = withNewConversation(state, "a", "");
+      state = withTurnAdded(next, id, {
+        request: "x".repeat(400),
+        action: "find",
+        status: "done",
+      }).state;
+      state = {
+        ...state,
+        conversations: state.conversations.map((conversation) =>
+          conversation.id === id
+            ? { ...conversation, updatedAt: index }
+            : conversation,
+        ),
+      };
+    }
+    // Room for two of the three conversations, not all of them.
+    const all = serializeChatState(state).length;
+    const limit = all - 100;
+    const json = serializeChatState(state, limit);
+    expect(json.length).toBeLessThanOrEqual(limit);
+    const kept = deserializeChatState(json).conversations;
+    expect(kept.map((conversation) => conversation.updatedAt)).toEqual([1, 2]);
+    expect(serializeChatState(state).length).toBeLessThan(MAX_STORED_CHARS);
   });
 
   it("starts empty for missing or corrupt data", () => {

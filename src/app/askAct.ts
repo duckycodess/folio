@@ -1,4 +1,5 @@
 import type {
+  DocumentId,
   DocumentRecord,
   GroundedResult,
   OperationProposal,
@@ -23,6 +24,8 @@ export type AskOutcome =
   | { type: "proposal"; proposal: OperationProposal }
   | { type: "unsupported"; reason: string }
   | { type: "unreadable" }
+  /** A change to another file than the one the user chose; never previewed. */
+  | { type: "otherFile"; proposal: OperationProposal; chosen: DocumentRecord }
   /**
    * The browser-preview mock only (#66): a fabricated reply, always shown
    * labelled "Practice replies — not a model". Never produced by a real
@@ -37,6 +40,8 @@ export interface AskTurn {
   status: "running" | "done" | "failed" | "cancelled";
   outcome?: AskOutcome;
   error?: FolioError;
+  /** The file the user picked for this request, which a change must target. */
+  chosen?: DocumentRecord;
 }
 
 /** Earlier turns stay readable; the list is bounded. */
@@ -122,6 +127,17 @@ export function summaryTarget(
 }
 
 /** The change a proposal describes, in plain words. */
+/**
+ * Whether a proposal changes the file the user chose. A create changes no
+ * existing file, so it can't contradict the choice.
+ */
+export function targetsChosenFile(
+  proposal: OperationProposal,
+  chosenId: DocumentId,
+): boolean {
+  return proposal.kind === "create" || proposal.documentId === chosenId;
+}
+
 export function describeProposal(proposal: OperationProposal): string {
   switch (proposal.kind) {
     case "edit":
