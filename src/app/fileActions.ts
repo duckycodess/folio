@@ -30,6 +30,10 @@ export function nameProblem(name: string, current: string): string | null {
   if (/[\\/]/.test(trimmed)) return "A file name can't contain / or \\.";
   if (trimmed === "." || trimmed === "..") return "Choose a different name.";
   if (trimmed === current) return "That's already the file's name.";
+  // Windows and macOS folders usually ignore case, so the native plan refuses
+  // a rename that only changes capital letters.
+  if (trimmed.toLowerCase() === current.toLowerCase())
+    return "A new name must differ by more than capital letters.";
   return null;
 }
 

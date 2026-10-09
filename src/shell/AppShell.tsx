@@ -115,6 +115,15 @@ export function AppShell() {
   const reading = readerDocument(view, workspace.selected, workspace.results);
   const showsDocument = reading !== undefined;
 
+  // "Show related" is for that one opening: once another file (or none) is
+  // shown, opening the file again starts on its usual tab.
+  const readingId = reading?.id;
+  useEffect(() => {
+    setPanelTab((current) =>
+      current && current.documentId !== readingId ? null : current,
+    );
+  }, [readingId]);
+
   // The listener is added once and reads the latest render through this ref.
   const latest = useRef({ showsDocument, closeDocument, openHome });
   latest.current = { showsDocument, closeDocument, openHome };
@@ -137,18 +146,22 @@ export function AppShell() {
   function fileActions(document: DocumentRecord): RowMenuItem[] {
     return [
       {
+        id: "open",
         label: "Open",
         onSelect: () => void workspace.selectDocument(document),
       },
       {
+        id: "rename",
         label: "Rename…",
         onSelect: () => setActionDialog({ kind: "rename", document }),
       },
       {
+        id: "move",
         label: "Move to folder…",
         onSelect: () => setActionDialog({ kind: "move", document }),
       },
       {
+        id: "related",
         label: "Show related",
         onSelect: () => {
           setPanelTab((current) => ({
@@ -393,9 +406,7 @@ export function AppShell() {
             initialTab={
               panelTab?.documentId === reading.id ? panelTab.tab : undefined
             }
-            actions={fileActions(reading).filter(
-              (item) => item.label !== "Open",
-            )}
+            actions={fileActions(reading).filter((item) => item.id !== "open")}
             onClose={closeDocument}
             onNavigate={setView}
           />

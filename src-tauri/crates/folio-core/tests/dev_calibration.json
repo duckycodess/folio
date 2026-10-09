@@ -1,0 +1,76 @@
+{
+  "purpose": "Development-only queries for calibrating the semantic evidence gate. They are written for calibration, are not the R8 acceptance inputs, and must not be replaced by them. Held-out evaluation remains TJ's separate suite.",
+  "corpus": "fixtures/documents (the same 15 synthetic documents as R8)",
+  "calibrationRule": "GATE_MIN_MARGIN and GATE_MIN_TOP_COSINE are each chosen as the value that maximizes related passes minus unrelated passes on these queries; when the two sets separate this is any value between them, and ties are resolved toward the lower value by taking the lowest three-decimal value in the maximizing interval. Both are recorded with the run that produced them.",
+  "related": [
+    {
+      "query": "When is the presentation for the student project?",
+      "relevant": ["projects/project-plan.md", "notes/tala-sa-proyekto.md"]
+    },
+    {
+      "query": "Ano ang kailangan bago mangolekta ng sagot sa panayam?",
+      "relevant": [
+        "research/tala-sa-pamamaraan.md",
+        "research/methodology-notes.md"
+      ]
+    },
+    {
+      "query": "Kailan yung math practice session?",
+      "relevant": ["courses/math-review.md", "courses/pagsasanay-sa-math.md"]
+    },
+    {
+      "query": "What should I bring for the weekend trip?",
+      "relevant": ["personal/travel-notes.md"]
+    },
+    {
+      "query": "Ano ang bibilhin sa palengke ngayong Sabado?",
+      "relevant": ["personal/grocery-list.md"]
+    },
+    {
+      "query": "track spending for transport and school supplies",
+      "relevant": ["personal/budget-notes.md"]
+    },
+    {
+      "query": "Saan tayo mag-aaral sa Biyernes?",
+      "relevant": ["notes/study-session.md"]
+    },
+    {
+      "query": "Who is assigned to write the report?",
+      "relevant": ["meetings/meeting-notes.md"]
+    }
+  ],
+  "unrelated": [
+    "How do I renew a driver's license?",
+    "Sino ang nanalo sa basketball kagabi?",
+    "What is the capital city of Australia?",
+    "Paano ayusin ang sirang gulong ng bisikleta?",
+    "Best fan curve settings for a gaming laptop",
+    "Magkano ang palitan ng dolyar ngayon?"
+  ],
+  "calibrations": [
+    {
+      "run": "37949760186",
+      "commit": "9764bc3",
+      "space": "multilingual-e5-small-int8 761b726d, chunker paragraph-800-utf8-v2 + title-path-v1",
+      "margin": {
+        "relatedMin": 0.0262,
+        "unrelatedMax": 0.0304,
+        "maximizingInterval": "(0.0304, 0.0335]",
+        "chosen": 0.031
+      },
+      "topCosine": {
+        "relatedMin": 0.8017,
+        "unrelatedMax": 0.8125,
+        "maximizingInterval": "(0.8125, 0.8193]",
+        "chosen": 0.813
+      },
+      "combinedOnDevelopmentQueries": {
+        "relatedPassed": 7,
+        "relatedTotal": 8,
+        "unrelatedPassed": 0,
+        "unrelatedTotal": 6,
+        "relatedMissed": ["Who is assigned to write the report?"]
+      }
+    }
+  ]
+}
