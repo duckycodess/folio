@@ -7,6 +7,7 @@ pub mod checks;
 pub mod host;
 pub mod memory;
 pub mod record;
+pub mod runner;
 pub mod sink;
 pub mod suite;
 pub mod workspace;
