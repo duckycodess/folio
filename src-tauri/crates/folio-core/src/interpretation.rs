@@ -137,6 +137,45 @@ pub fn interpret_request_traced(
     chunks: &[Chunk],
     cancel: &AtomicBool,
 ) -> CoreResult<InterpretationTrace> {
+    let generated = generate_intent(provider, request, cancel)?;
+    let result = match generated.intent {
+        Ok(intent) => resolve_model_intent(
+            &intent,
+            detect_language(request),
+            documents,
+            contents,
+            chunks,
+        ),
+        Err(invalid) => invalid,
+    };
+    Ok(InterpretationTrace {
+        result,
+        raw_model_output: generated.raw_model_output,
+        prompt_sha256: generated.prompt_sha256,
+    })
+}
+
+/// What the model said, before any file is chosen. Callers that cannot hold
+/// the whole corpus in memory generate first, look up only the files the
+/// target description could mean, then call [`resolve_model_intent`] with those.
+#[derive(Clone, Debug)]
+pub struct GeneratedIntent {
+    /// `Err` holds the `InvalidModelOutput` result for output that is not a
+    /// valid intent.
+    pub intent: Result<ModelIntent, InterpretationResult>,
+    /// `None` when generation failed before producing JSON.
+    pub raw_model_output: Option<Value>,
+    /// SHA-256 over the exact prompt messages sent to the model.
+    pub prompt_sha256: String,
+}
+
+/// Run one schema-constrained model interpretation. The model sees the request
+/// only; no document text is read or sent.
+pub fn generate_intent(
+    provider: &dyn GenerationProvider,
+    request: &str,
+    cancel: &AtomicBool,
+) -> CoreResult<GeneratedIntent> {
     crate::generation::check_request_length(request)?;
     let messages = build_interpretation_messages(request);
     let prompt_sha256 = hex::encode(Sha256::digest(
@@ -151,10 +190,10 @@ pub fn interpret_request_traced(
     let value = match output {
         Ok(value) => value,
         Err(error) if is_invalid_output(&error) => {
-            return Ok(InterpretationTrace {
-                result: InterpretationResult::InvalidModelOutput {
+            return Ok(GeneratedIntent {
+                intent: Err(InterpretationResult::InvalidModelOutput {
                     raw_output_digest: digest_text(&error.to_string()),
-                },
+                }),
                 raw_model_output: None,
                 prompt_sha256,
             });
@@ -162,20 +201,13 @@ pub fn interpret_request_traced(
         Err(error) => return Err(error),
     };
     let digest = digest_value(&value);
-    let result = match parse_model_intent(value.clone()) {
-        Ok(intent) => resolve_model_intent(
-            &intent,
-            detect_language(request),
-            documents,
-            contents,
-            chunks,
-        ),
-        Err(_) => InterpretationResult::InvalidModelOutput {
+    let intent = parse_model_intent(value.clone()).map_err(|_| {
+        InterpretationResult::InvalidModelOutput {
             raw_output_digest: digest,
-        },
-    };
-    Ok(InterpretationTrace {
-        result,
+        }
+    });
+    Ok(GeneratedIntent {
+        intent,
         raw_model_output: Some(value),
         prompt_sha256,
     })
@@ -258,6 +290,11 @@ pub fn resolve_model_intent(
         };
     };
     let (document, exact_duplicate_paths) = target;
+    if document.media_type == "application/pdf" {
+        return InterpretationResult::Unsupported {
+            reason: "Text-based PDFs are read-only in Folio, so they can't be edited, renamed or moved.".into(),
+        };
+    }
 
     match intent.intent {
         IntentKind::Edit => resolve_edit(
@@ -706,6 +743,105 @@ mod tests {
             destination: None,
             new_content: None,
             clarification: None,
+        }
+    }
+
+    struct Fixed(Value);
+
+    impl GenerationProvider for Fixed {
+        fn model_id(&self) -> &str {
+            "fixed"
+        }
+        fn revision(&self) -> &str {
+            "1"
+        }
+        fn generate_json(
+            &self,
+            _schema: &Value,
+            _messages: &[ChatMessage],
+            _budget: &GenerationBudget,
+            _cancel: &AtomicBool,
+        ) -> CoreResult<Value> {
+            Ok(self.0.clone())
+        }
+        fn unload(&self) -> CoreResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn generating_the_intent_reads_no_document_and_matches_the_full_interpretation() {
+        let (record, chunks) = document("notes/plan.md", "plan.md", "Deadline is March 3.");
+        let value = json!({
+            "intent": "edit", "targetDescription": "plan", "find": "March 3",
+            "replace": "March 4", "destination": null, "newContent": null,
+            "clarification": null
+        });
+        let provider = Fixed(value.clone());
+        let cancel = AtomicBool::new(false);
+        let generated = generate_intent(&provider, "Change the plan date.", &cancel).unwrap();
+        assert_eq!(generated.raw_model_output, Some(value));
+        let intent = generated.intent.unwrap();
+        assert_eq!(intent.intent, IntentKind::Edit);
+
+        let contents = HashMap::new();
+        let documents = [record];
+        let split = resolve_model_intent(
+            &intent,
+            detect_language("Change the plan date."),
+            &documents,
+            &contents,
+            &chunks,
+        );
+        let whole = interpret_request(
+            &provider,
+            "Change the plan date.",
+            &documents,
+            &contents,
+            &chunks,
+            &cancel,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(&split).unwrap(),
+            serde_json::to_value(&whole).unwrap()
+        );
+    }
+
+    #[test]
+    fn output_that_is_not_an_intent_is_reported_invalid() {
+        let provider = Fixed(json!({"intent": "edit"}));
+        let generated =
+            generate_intent(&provider, "Change it.", &AtomicBool::new(false)).unwrap();
+        assert!(matches!(
+            generated.intent,
+            Err(InterpretationResult::InvalidModelOutput { .. })
+        ));
+    }
+
+    #[test]
+    fn a_pdf_target_is_read_only() {
+        let (mut record, chunks) = document("papers/report.pdf", "report.pdf", "Deadline is March 3.");
+        record.media_type = "application/pdf".into();
+        let mut edit = intent(IntentKind::Edit);
+        edit.target_description = Some("report".into());
+        edit.find = Some("March 3".into());
+        edit.replace = Some("March 4".into());
+        let mut rename = intent(IntentKind::Rename);
+        rename.target_description = Some("report".into());
+        rename.destination = Some("report-final.pdf".into());
+        for model_intent in [edit, rename] {
+            let result = resolve_model_intent(
+                &model_intent,
+                Language::En,
+                std::slice::from_ref(&record),
+                &HashMap::new(),
+                &chunks,
+            );
+            assert!(
+                matches!(result, InterpretationResult::Unsupported { .. }),
+                "{result:?}"
+            );
         }
     }
 
