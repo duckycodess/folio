@@ -52,6 +52,9 @@ The brandbook is a direction, not a spec of shipped features. Its screens contai
 | `--sidebar-text`         | `#FFFCF3` | Sidebar labels                                       |
 | `--sidebar-text-muted`   | `#B8BAB4` | Sidebar secondary text                               |
 | `--sidebar-focus`        | `#F5BF18` | Focus ring inside the sidebar                        |
+| `--graph-edge`           | `#5C5F59` | Graph lines (follows `--color-text-secondary`)       |
+| `--graph-edge-ai`        | `#5B5BD6` | Dashed lines for AI connections (indigo, not gold)   |
+| `--graph-node-rim`       | `#5C5F59` | Rim of a file node on the graph                      |
 
 ### Contrast rules
 
@@ -61,9 +64,10 @@ Measured with the WCAG 2.x formula on the white canvas and surfaces:
 | --------------------- | ------- | -------------------------------------------------------------- |
 | Charcoal on white     | 15.89:1 | All text                                                       |
 | Charcoal on gold      | 9.34:1  | Button labels and icons on gold                                |
-| `#5C5F59` on white    | 6.49:1  | Secondary text                                                 |
+| `#5C5F59` on white    | 6.49:1  | Secondary text, graph lines and node rims                      |
 | `#6B6E68` on white    | 5.18:1  | Tertiary text and placeholders                                 |
 | `#8A6500` on white    | 5.33:1  | Links                                                          |
+| `#5B5BD6` on white    | 5.37:1  | Dashed AI graph lines only — never text                        |
 | `#B8BAB4` on charcoal | 8.11:1  | Sidebar muted text                                             |
 | Gold on charcoal      | 9.34:1  | Active indicator and focus ring in sidebar                     |
 | `#8A8C86` on white    | 3.40:1  | Control borders only — **never text**                          |
@@ -100,6 +104,9 @@ The brandbook only shows a light theme. #16 requires dark mode, so these values 
 | `--sidebar-text`         | `#FFFCF3`  | Unchanged                                  |
 | `--sidebar-text-muted`   | `#B8BAB4`  | Unchanged                                  |
 | `--sidebar-focus`        | `#F5BF18`  | Unchanged                                  |
+| `--graph-edge`           | `#B8BAB4`  | Follows `--color-text-secondary`           |
+| `--graph-edge-ai`        | `#9B8AFB`  | Lighter indigo; gold stays for actions     |
+| `--graph-node-rim`       | `#B8BAB4`  | Follows `--color-text-secondary`           |
 
 Dark-theme contrast, measured with the same formula:
 
@@ -117,6 +124,8 @@ Dark-theme contrast, measured with the same formula:
 | Charcoal on gold                                  | 9.34:1         | Button labels and icons        |
 | `#FFFCF3` / `#B8BAB4` on sidebar-active `#2A2D28` | 13.61 / 7.13:1 | Active nav item                |
 | Gold on sidebar `#111310` / active `#2A2D28`      | 10.98 / 8.21:1 | Sidebar indicator and focus    |
+| `#B8BAB4` on surface                              | 6.47:1         | Graph lines and node rims      |
+| `#9B8AFB` on surface / muted                      | 5.62 / 4.93:1  | Dashed AI graph lines          |
 
 Define dark values under `@media (prefers-color-scheme: dark)` and a `data-theme="dark"` override. The sidebar's **Theme** switch cycles System → Light → Dark. System follows the OS. The choice is remembered on this device (`src/app/theme.ts`) and applied before the first render. Any new token or pair must be added to both contrast tables.
 
@@ -233,6 +242,17 @@ Active item: `--sidebar-item-active` background, 3px gold bar on the left edge, 
 **Status pill** (sidebar bottom): dot + text, for example "Local AI · Private · Yours". The text and dot come from real runtime state — see Product truth.
 
 **Notices and errors**: follow #18. Inline notice = icon + plain-language message + one action; danger uses `--color-danger` text on `--color-danger-bg`.
+
+**Graph concept map** (#45)
+
+- A Map / List switch (`aria-pressed`, bold and outlined when pressed). Both are drawn from the same pairs; the list always shows every connection and is never a fallback.
+- Edges: links and identical copies are **solid**. A link has an arrowhead at the linked file (at both ends when two files link each other); an identical copy is a **double line**. Connections a model found (similarity, shared-fact candidates) are **dashed** in `--graph-edge-ai` (indigo; gold stays reserved for actions) and labelled **"AI"**, and exist only when a model produced them. The selected file's edges are labelled in text ("Link", "Identical copy", "AI · Similar content") when they are long enough to hold a label; zooming in lengthens them. Line style and text carry the meaning, never colour alone.
+- Nodes: a 9px circle with a `--graph-node-rim` rim and the file name below it, truncated to 24 characters (full name in the accessible name, full path in the tooltip). The selected node has a gold fill, a heavier `--color-text` rim and a bold label; gold is decoration here, the rim and `aria-pressed` carry the state. Keyboard focus draws a 2px `--color-focus` ring outside the node.
+- Keyboard: one Tab stop (a roving `tabindex`). Arrow keys move to a connected file within 60° of the arrow (see Arrow choice); when there is none, focus stays and "No connected file that way" is announced. Page Up/Page Down go through every file by path, Home/End to the first and last. Enter or Space opens the file in the reader; Escape deselects. + / − zoom and 0 fits the map.
+- Arrow choice: among connected files within ±60° of the arrow, the lowest `distance / cos(angle)` wins, so a file straight ahead beats a slightly nearer diagonal one (100px ahead scores 100; 85px at 45° scores 120), while a much nearer diagonal one still wins.
+- Pointer: drag the background to pan, drag a file to move and pin it. A plain scroll wheel scrolls the page; Ctrl or ⌘ + wheel zooms around the pointer, and a trackpad pinch (sent as Ctrl + wheel by Chromium and WebKit) or a two-finger touch pinch zooms too. The zoom buttons over the map do the same as + / − / 0.
+- The layout is computed at once and deterministically (d3-force with a seeded random source), so nothing animates and reduced motion needs no special case. Zoom scales positions only; labels keep their size.
+- The legend lists links and identical copies with a checkbox each. AI kinds appear only when such connections exist; otherwise one line says they will appear when a model produces them. The zoom controls float over the map with the floating-layer shadow.
 
 ## Icons
 
