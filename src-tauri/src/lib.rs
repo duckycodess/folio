@@ -1395,7 +1395,7 @@ async fn organization_suggestions(
     .await
 }
 
-/* ------------------------------------------- virtual collections (#78, ADR 0016) */
+/* ------------------------------------------- virtual collections (#78, ADR 0017) */
 
 #[tauri::command]
 async fn list_collections(state: State<'_, Folio>, workspace_id: String) -> Result<Vec<VirtualCollection>, FolioError> {

@@ -363,7 +363,7 @@ mod tests {
         assert!(!needs_a_name(&titled, true), "a title-based name is suggested instead");
         let mut pdf = text_document("scan.pdf", "Extracted text.").record;
         pdf.media_type = "application/pdf".into();
-        assert!(!needs_a_name(&pdf, false), "PDFs are read-only, so they are never renamed");
+        assert!(!needs_a_name(&pdf, false), "the model names only TXT and Markdown files");
     }
 
     #[test]
