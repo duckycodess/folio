@@ -20,6 +20,13 @@
 - Home as the file browser ([#42](https://github.com/duckycodess/folio/issues/42), [#43](https://github.com/duckycodess/folio/issues/43), ADR 0010). The Files tab is gone. Home lists every file, sorted by path, with a count. Each row has a keyboard-accessible ⋯ menu (Open, Rename…, Move to folder…, Show related), and the document panel has the same menu. Rename and Move use the exact preview, Approve and Undo flow from #22, in a dialog. The search field is only on Home, centred, and ⌘K / Ctrl K from any page opens Home and focuses it. Rows take an optional `renderDetail` slot for #19's search evidence. With the sample files, Rename and Move explain that a folder is needed. In practice mode (`?simulate=<code>`), they show the simulated refusal instead.
 - Organize flow ([issue #22](https://github.com/duckycodess/folio/issues/22)), desktop only. Analyze re-indexes the open folder, with live progress and Stop, then lists exact duplicates (by content, never moved or deleted) and filename suggestions to tick. The exact preview shows every from → to path from the native plan. Approve echoes that plan's digest and applies it. The result is worded from the per-file outcomes, so a batch that stopped partway never says nothing changed. It shows what was recorded in history and offers a Preview Undo. A refused apply keeps the preview, with Preview again. The Rename form uses the same native plan with a folder open. With the sample files, Organize explains that a folder is needed. Virtual collections are still not available.
 - Search evidence ([issue #19](https://github.com/duckycodess/folio/issues/19)): each Home search result shows how it matched (words in the text or in the name; "Similar meaning" only for semantic results) and up to two excerpts with the query words highlighted, case- and accent-insensitive, plus page labels for PDFs. Selecting an excerpt opens the reader at that highlighted passage. In an open folder, text search uses the persistent index (FTS5 keyword search), merged with file-name matches. An unindexed folder says that only names are searched and offers **Index this folder**, with progress and Stop. A file kept open outside the results is labelled, and a note says that finding files by meaning needs a local AI model.
+- Home filters, pinned folders and recent files ([issue #33](https://github.com/duckycodess/folio/issues/33)):
+  - Folder, File type and Modified filters under the search field combine with the query. A folder includes its subfolders, and files with no recorded time pass only "Any time". The panel shows "N of M files", and an empty result offers Clear filters.
+  - The reader follows the filters as it follows search: a file the filters hide closes the reader, and a labelled note offers Clear filters.
+  - Pinned folders (pin from the Folder filter) are one-tap filters. Recent files lists files opened in Folio on this device. Both are remembered per folder on this device only; a pin is not a permission.
+  - Filters are kept when leaving Home and coming back.
+  - The empty Collections placeholder gives way once pins or recent files exist, so the file list stays on the first screen.
+  - The heading stays "Your workspace", per #43.
 - Keyword filtering (explicitly labelled), actual Markdown-link discovery in fixture text, source content views, and a list of those explicit links with their evidence (Graph view).
 - Graph concept map, read-only ([issue #45](https://github.com/duckycodess/folio/issues/45), first of three PRs): Graph opens on a Map, with a Map / List switch; both show the connections for the chosen starting point (all files, a file, a folder or a topic, from #40), and the list keeps Confirmed and Suggested apart. Map and list come from the same pairs (`src/domain/graphScope.ts`). Every file is a node, connected or not. Links are solid with arrowheads, identical copies a double line; dashed lines labelled "AI" are drawn only for embedding or model provenance, which nothing produces yet, so the legend says AI connections will appear when a model produces them. A legend checkbox hides each kind. The layout is deterministic d3-force run synchronously (no animation). Pan, zoom (+ / − / 0, Ctrl or ⌘ + wheel, trackpad or touch pinch; a plain wheel scrolls the page), and dragging a file (it stays pinned and its neighbours settle) work. Keyboard: one Tab stop, arrows follow connections within 60°, preferring the file straight ahead (lowest distance / cos(angle)), Page Up/Down and Home/End go through every file by path, Enter opens the file in the reader, Escape closes it. Selecting a file lists its connections with evidence under the map. Above 400 files the map shows the selected (or most connected) file's neighbourhood with a note. Rename, move, edit and delete from the map, and Shift+F10, are not built yet.
 - Tauri folder picker and scoped native listing/TXT/Markdown reading commands.
@@ -119,6 +126,37 @@ Checked on macOS with Node.js 26.10.0, on #48 with #15 (`FOLIO-4`) merged in:
   - nothing scrolls sideways at 700px.
 
 Not verified: a real model's summaries, which #15 still marks "Not reviewed"; cancellation against llama.cpp; Filipino and Taglish output; screen readers.
+
+### Home filters, pins and recent files (2026-10-10, issue #33)
+
+Checked on macOS with Node.js 26.10.0:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 178 passed, 9 todo. The new cases cover:
+  - folder filters including subfolders but not same-prefix folders, and the top level;
+  - type filters;
+  - date filters that never guess a missing time;
+  - combined filters;
+  - the folder list;
+  - recent-file order and limit;
+  - pin toggling.
+- Headless Chrome, with the desktop commands stood in for by a browser mock:
+  - folder "research" shows 1 of 4 files, and adding PDF shows "No files match these filters" with Clear filters;
+  - "Past week" and the pinned-folder chip filter correctly;
+  - recent files appear newest first, labelled "Opened in Folio on this device";
+  - a filter that hides the open file closes the reader and labels it;
+  - filters survive a trip to Graph, and pins and recent files survive a reload;
+  - the first file row is on the first screen at 1280×850 and at 1024×768 with the reader open;
+  - no horizontal scroll at 700px.
+- The filter selects first wrapped their labels around the controls, which gave them names like "FolderAll foldersTop…". The labels now point at the selects with `for`.
+
+After review (2026-10-10):
+
+- Fixed: a pinned or chosen folder with no listed files left (after Organize or Move empties it) wasn't among the Folder options, so the select showed "All folders" while the filter hid everything. The select and the pin chip now show it as "old-projects (no files)".
+- `npm run format:check`, `npm run check` and `npm run build`: passed. `npm test`: 193 passed, 9 todo, after merging `main` (#40, #42).
+- Headless Chrome, sample files, `{"pins":["old-projects"]}` seeded in `folio.home.samples`: the chip reads "old-projects (no files)", and choosing it leaves the select on "old-projects (no files)" with Unpin folder and Clear filters.
+
+Not verified: a real folder through the desktop app, screen readers, and the Tauri webview.
 
 ### Graph entry points (2026-10-10, issue #40)
 
