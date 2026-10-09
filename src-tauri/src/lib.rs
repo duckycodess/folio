@@ -1871,41 +1871,39 @@ async fn summarize_document(
     .await?)
 }
 
+/// Answers from passages of the persistent index (all of the folder, or one
+/// document when `document_id` is given). With no evidence the model is never
+/// called.
 #[tauri::command]
 async fn answer_question(
     app: AppHandle,
     state: State<'_, Folio>,
-    index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
+    lab_state: State<'_, lab_commands::LabState>,
     generation_state: State<'_, GenerationState>,
     workspace_id: String,
     question: String,
     document_id: Option<String>,
 ) -> Result<GroundedResult, FolioError> {
     let document_id = ai_boundary::validate_document_filter(&workspace_id, document_id.as_deref())?;
-    let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
-    let index_state = index_state.inner().clone();
-    let embedding_state = embedding_state.inner().clone();
+    let request = AiRequest::new(
+        &app,
+        state.inner(),
+        embedding_state.inner(),
+        lab_state.inner(),
+        &workspace_id,
+    )?;
     let generation_state = generation_state.inner().clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
-        let snapshot = ensure_snapshot(&app, &embedding_state, &root, &index_state)?;
-        let results = search_snapshot(
-            &app,
-            &embedding_state,
-            &snapshot,
-            &question,
-            document_id.as_deref(),
-        )?;
-        let passages = results
-            .into_iter()
-            .filter(|result| {
-                document_id
-                    .as_ref()
-                    .is_none_or(|id| &result.document.id == id)
-            })
-            .flat_map(|result| result.passages)
-            .take(folio_core::generation::MAX_PASSAGES)
-            .collect::<Vec<_>>();
+        let passages = request.run(|index| {
+            index.prompt_evidence(
+                &question,
+                match document_id.as_deref() {
+                    Some(id) => evidence::Scope::Document(id),
+                    None => evidence::Scope::Folder,
+                },
+            )
+        })?;
         if passages.is_empty() {
             return Ok(grounding::answer_question(
                 None,
@@ -1928,77 +1926,47 @@ async fn answer_question(
     .await?)
 }
 
-fn search_snapshot(
-    app: &AppHandle,
-    embedding_state: &EmbeddingState,
-    snapshot: &IndexSnapshot,
-    query: &str,
-    document_id: Option<&str>,
-) -> Result<Vec<ProviderSearchResult>, FolioError> {
-    let limit = folio_core::generation::MAX_PASSAGES;
-    if snapshot.embedding_space.is_none() {
-        return Ok(snapshot
-            .retriever
-            .keyword(
-                &snapshot.documents,
-                &snapshot.chunks,
-                query,
-                snapshot.chunks.len(),
-            )
-            .into_iter()
-            .filter(|result| document_id.is_none_or(|id| result.document.id == id))
-            .take(limit)
-            .collect());
-    };
-    let query_embedding = with_embedding_provider(app, embedding_state, |provider| {
-        provider.embed_query(query, None).map_err(native_error)
-    })?
-    .ok_or_else(|| NativeProviderError {
-        code: folio_core::contracts::ProviderErrorCode::ModelNotInstalled,
-        message: "The selected embedding model is no longer installed.".into(),
-        detail: None,
-    })?;
-    Ok(snapshot
-        .retriever
-        .search_scoped(
-            &snapshot.documents,
-            &snapshot.chunks,
-            query,
-            Some(&query_embedding),
-            document_id,
-            limit,
-        )
-        .map_err(|failure| {
-            annotate_embedding_space_failure(
-                failure,
-                snapshot.embedding_space.as_ref().expect("semantic space"),
-                &query_embedding.space,
-            )
-        })?)
-}
-
+/// Interprets a request. The model sees the request only; the folder's index is
+/// brought up to date, and then only the few files the target description could
+/// mean are read, to resolve it.
 #[tauri::command]
 async fn interpret_request(
     app: AppHandle,
     state: State<'_, Folio>,
+    embedding_state: State<'_, EmbeddingState>,
+    lab_state: State<'_, lab_commands::LabState>,
     generation_state: State<'_, GenerationState>,
     workspace_id: String,
     text: String,
 ) -> Result<InterpretationResult, FolioError> {
-    let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
+    let request = AiRequest::new(
+        &app,
+        state.inner(),
+        embedding_state.inner(),
+        lab_state.inner(),
+        &workspace_id,
+    )?;
     let generation_state = generation_state.inner().clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
-        let (documents, contents, chunks, _skipped_documents) = load_corpus(&root)?;
-        let (provider, claim) = acquire_generation(&app, &generation_state)?;
-        let result = interpretation::interpret_request(
-            provider.as_ref(),
-            &text,
-            &documents,
-            &contents,
-            &chunks,
-            claim.cancel(),
-        );
-        Ok(result?)
+        request.run(|index| {
+            // Files first, so the slot isn't held while the index catches up.
+            index.refresh_files()?;
+            let (provider, claim) = acquire_generation(&app, &generation_state)?;
+            let generated = interpretation::generate_intent(provider.as_ref(), &text, claim.cancel())?;
+            drop(claim);
+            let intent = match generated.intent {
+                Ok(intent) => intent,
+                Err(invalid) => return Ok(invalid),
+            };
+            let corpus = index.interpretation_corpus(intent.target_description.as_deref())?;
+            Ok(interpretation::resolve_model_intent(
+                &intent,
+                grounding::detect_language(&text),
+                &corpus.documents,
+                &corpus.contents,
+                &corpus.chunks,
+            ))
+        })
     })
     .await?)
 }
