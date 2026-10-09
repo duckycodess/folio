@@ -115,6 +115,10 @@ pub struct GeneratorHandle {
 /// before opening the next, so only one server can be alive.
 pub trait GeneratorFactory {
     fn open(&self, model_id: &str) -> CoreResult<GeneratorHandle>;
+    /// What a record says about a model without opening it, so a model that
+    /// cannot be opened is still recorded under its own identity. An id the
+    /// catalog does not know is an error and stops the run.
+    fn identify(&self, model_id: &str) -> CoreResult<(ModelRef, RuntimeDetail)>;
 }
 
 pub struct EmbeddingSubject<'a> {
@@ -149,6 +153,16 @@ pub fn system_clock_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// The task a generation case measures; a retrieval case is not one.
+fn task_of(case: &SuiteCase) -> Option<BenchmarkTask> {
+    match case {
+        SuiteCase::Interpretation { .. } => Some(BenchmarkTask::Interpretation),
+        SuiteCase::Summary { .. } => Some(BenchmarkTask::Summary),
+        SuiteCase::Edit { .. } => Some(BenchmarkTask::Edit),
+        SuiteCase::Retrieval { .. } => None,
+    }
 }
 
 fn is_cancelled(error: &CoreError) -> bool {
@@ -604,9 +618,6 @@ impl LabRunner<'_> {
         let workspace = self.workspaces.create(&self.run_id, self.corpus)?;
         let expected = LabWorkspaces::expected_snapshot(self.corpus);
         let loaded = self.load_workspace(&workspace)?;
-        let handle = self.factory.open(model_id)?;
-        let lab = LabProvider::new(&*handle.generator);
-
         let cases: Vec<SuiteCase> = self
             .suite
             .cases
@@ -614,6 +625,28 @@ impl LabRunner<'_> {
             .filter(|case| !matches!(case, SuiteCase::Retrieval { .. }))
             .cloned()
             .collect();
+        let opening = Instant::now();
+        let handle = match self.factory.open(model_id) {
+            Ok(handle) => handle,
+            Err(error) if is_cancelled(&error) => return Ok(Flow::Cancelled),
+            // A model that cannot be opened is a measurement for each of its
+            // cases; the run goes on to the next model.
+            Err(error) => {
+                let (model, runtime) = self.factory.identify(model_id)?;
+                for case in &cases {
+                    if let Some(task) = task_of(case) {
+                        self.startup_failure(
+                            case, task, &model, &runtime, None, &error, opening, "open",
+                        )?;
+                    }
+                }
+                self.workspaces.verify_unchanged(&workspace, &expected)?;
+                self.workspaces.remove(&workspace)?;
+                return Ok(Flow::Continue);
+            }
+        };
+        let lab = LabProvider::new(&*handle.generator);
+
         for case in &cases {
             if self.cancelled() {
                 return Ok(Flow::Cancelled);
@@ -641,11 +674,8 @@ impl LabRunner<'_> {
         workspace: &LabWorkspace,
         expected: &Snapshot,
     ) -> CoreResult<Flow> {
-        let task = match case {
-            SuiteCase::Interpretation { .. } => BenchmarkTask::Interpretation,
-            SuiteCase::Summary { .. } => BenchmarkTask::Summary,
-            SuiteCase::Edit { .. } => BenchmarkTask::Edit,
-            SuiteCase::Retrieval { .. } => return Ok(Flow::Continue),
+        let Some(task) = task_of(case) else {
+            return Ok(Flow::Continue);
         };
         let restart_started = Instant::now();
         let restart_pid = match handle.generator.restart(self.cancel) {
@@ -653,7 +683,17 @@ impl LabRunner<'_> {
             // A model that cannot start is a measurement: it is recorded for
             // this case and the run moves on to the next case and model.
             Err(error) => {
-                return self.startup_failure(case, task, handle, &error, restart_started);
+                let log = handle.generator.server_log();
+                return self.startup_failure(
+                    case,
+                    task,
+                    &handle.model,
+                    &handle.runtime,
+                    log.as_deref(),
+                    &error,
+                    restart_started,
+                    "startup",
+                );
             }
             Ok(pid) => pid,
         };
@@ -791,16 +831,20 @@ impl LabRunner<'_> {
 
     /// Records that the server did not start for a case. No request was made,
     /// so nothing is graded and no correctness is claimed.
+    #[allow(clippy::too_many_arguments)]
     fn startup_failure(
         &mut self,
         case: &SuiteCase,
         task: BenchmarkTask,
-        handle: &GeneratorHandle,
+        model: &ModelRef,
+        runtime: &RuntimeDetail,
+        server_log: Option<&str>,
         error: &CoreError,
         started: Instant,
+        stage: &str,
     ) -> CoreResult<Flow> {
         let (failed, mut output) = Self::failure(task, error);
-        output["stage"] = json!("startup");
+        output["stage"] = json!(stage);
         let evaluation = Evaluation {
             outcome: failed.outcome,
             correctness: failed.correctness,
@@ -818,8 +862,8 @@ impl LabRunner<'_> {
         let measured = Measured {
             case_id: case.id().to_string(),
             task,
-            model: handle.model.clone(),
-            runtime: observed_runtime(&handle.runtime, handle.generator.server_log().as_deref()),
+            model: model.clone(),
+            runtime: observed_runtime(runtime, server_log),
             prompt_sha256: prompt_fingerprint(),
             conditions: self.base_conditions(),
             server_settings: Some(ServerSettings {
@@ -1115,7 +1159,26 @@ mod tests {
     }
 
     impl GeneratorFactory for ScriptedFactory {
+        fn identify(&self, model_id: &str) -> CoreResult<(ModelRef, RuntimeDetail)> {
+            Ok((
+                model_ref(model_id, crate::contracts::ModelRole::Generation, 1000),
+                RuntimeDetail {
+                    name: RuntimeName::LlamaCpp,
+                    version: "scripted-llama".into(),
+                    backend: None,
+                },
+            ))
+        }
+
         fn open(&self, model_id: &str) -> CoreResult<GeneratorHandle> {
+            if model_id.starts_with("unopenable-") {
+                return Err(CoreError::Provider(
+                    crate::error::NativeProviderErrorError::new(
+                        ProviderErrorCode::ModelCorrupt,
+                        "scripted: the model file is missing",
+                    ),
+                ));
+            }
             let now = self.live.now.fetch_add(1, Ordering::SeqCst) + 1;
             self.live.max.fetch_max(now, Ordering::SeqCst);
             self.live.opened.fetch_add(1, Ordering::SeqCst);
@@ -1441,6 +1504,46 @@ mod tests {
                 "the embedding model is a product model"
             );
         }
+    }
+
+    #[test]
+    fn a_model_that_cannot_be_opened_is_recorded_and_later_models_still_run() {
+        let harness = harness();
+        let mut sink = MemorySink::default();
+        let cancel = AtomicBool::new(false);
+        let (result, order) = run_with(&harness, &["unopenable-x", "model-a"], &cancel, &mut sink);
+        assert_eq!(result.unwrap(), RunEnd::Completed);
+        assert_eq!(
+            order,
+            vec!["model-a"],
+            "only the model that opened was started"
+        );
+
+        let failed: Vec<&BenchmarkRecord> = sink
+            .records
+            .iter()
+            .filter(|r| r.model_id == "unopenable-x")
+            .collect();
+        assert_eq!(failed.len(), 3);
+        for record in failed {
+            assert_eq!(record.outcome_kind, OutcomeKind::RuntimeError);
+            assert!(record.retry_needed);
+            assert_eq!(record.output["stage"], "open");
+            assert_eq!(record.objective_checks[0].name, "serverStarted");
+            assert!(record.objective_checks[0]
+                .detail
+                .contains("model file is missing"));
+            assert_eq!(record.model.id, "unopenable-x");
+        }
+        assert_eq!(
+            sink.records
+                .iter()
+                .filter(|r| r.model_id == "model-a")
+                .count(),
+            6
+        );
+        assert_eq!(sink.runs.last().unwrap().status, RunStatus::Completed);
+        assert_eq!(harness.live.max.load(Ordering::SeqCst), 1);
     }
 
     #[test]

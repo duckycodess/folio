@@ -17,7 +17,7 @@ use folio_core::lab::runner::{
 };
 use folio_core::lab::suite::{Corpus, Suite};
 use folio_core::lab::workspace::LabWorkspaces;
-use folio_core::lab::{GpuOffload, JsonFileSink, RuntimeDetail, RuntimeName};
+use folio_core::lab::{BenchmarkTask, GpuOffload, JsonFileSink, RuntimeDetail, RuntimeName};
 use folio_core::models::ModelStore;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -119,9 +119,22 @@ fn model_lab_real_run() -> CoreResult<()> {
 
     assert_eq!(end, RunEnd::Completed);
     let export = sink.export();
-    // Three retrieval cases for the embedding model, three generation cases for
-    // each generation model, each measured twice (first request, then repeat).
-    assert_eq!(export.records.len(), 2 * (3 + 3 * generation_ids.len()));
+    // Six retrieval records (three cases, each measured twice) for the embedding
+    // model. Every requested generation model has records: a model that could not
+    // be opened or started has failure records (outcomeKind runtimeError), so a
+    // full run has 6 records per model and a failed one fewer, never none.
+    let retrieval = export
+        .records
+        .iter()
+        .filter(|record| record.task == BenchmarkTask::Retrieval)
+        .count();
+    assert_eq!(retrieval, 6);
+    for id in &generation_ids {
+        assert!(
+            export.records.iter().any(|record| &record.model_id == id),
+            "{id} has no records"
+        );
+    }
     for record in &export.records {
         record.validate()?;
     }

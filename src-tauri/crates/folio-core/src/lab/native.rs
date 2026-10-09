@@ -95,6 +95,18 @@ pub struct StoreGeneratorFactory {
 }
 
 impl GeneratorFactory for StoreGeneratorFactory {
+    fn identify(&self, model_id: &str) -> CoreResult<(ModelRef, RuntimeDetail)> {
+        let model = if is_candidate_id(model_id) {
+            model_ref_in(
+                &candidates::candidate_descriptor(model_id)?,
+                ModelCatalog::EvaluationCandidate,
+            )
+        } else {
+            model_ref(ModelStore::new(&self.data_dir)?.model(model_id)?)
+        };
+        Ok((model, self.runtime.clone()))
+    }
+
     fn open(&self, model_id: &str) -> CoreResult<GeneratorHandle> {
         // Candidate ids never collide with product ids, so the id picks the store.
         let (store, catalog) = if is_candidate_id(model_id) {
@@ -219,6 +231,30 @@ mod tests {
         let product = model_ref(&first_of(&store, ModelRole::Generation));
         assert_eq!(product.catalog, ModelCatalog::Product);
         assert!(!product.evaluation_only && product.license_note.is_none());
+    }
+
+    #[test]
+    fn a_model_is_identified_without_being_opened_and_an_unknown_id_is_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let factory = StoreGeneratorFactory {
+            data_dir: dir.path().to_path_buf(),
+            executable: dir.path().join("llama-server"),
+            runtime: RuntimeDetail {
+                name: RuntimeName::LlamaCpp,
+                version: "test".into(),
+                backend: None,
+            },
+            threads: 1,
+            cpu_only: true,
+            log_dir: None,
+        };
+        let (candidate, runtime) = factory.identify("gemma-sea-lion-v4.5-e2b-q4-k-m").unwrap();
+        assert!(candidate.evaluation_only);
+        assert_eq!(candidate.files[0].bytes, 3_427_879_360);
+        assert_eq!(runtime.version, "test");
+        let (product, _) = factory.identify("qwen3-0.6b-q4-k-m").unwrap();
+        assert!(!product.evaluation_only);
+        assert!(factory.identify("no-such-model").is_err());
     }
 
     #[test]
