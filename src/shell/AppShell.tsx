@@ -1,5 +1,6 @@
 import {
   FlaskConical,
+  History,
   Folders,
   House,
   Monitor,
@@ -19,6 +20,7 @@ import {
   type ThemePreference,
 } from "../app/theme";
 import { useRelationships } from "../app/useRelationships";
+import { useActivity } from "../app/useActivity";
 import { useWorkspace, type WorkspaceSourceKind } from "../app/useWorkspace";
 import { simulatedCode } from "../adapters/simulate";
 import { useDrafts } from "../app/drafts";
@@ -37,6 +39,7 @@ import {
 } from "../views/FileActionDialog";
 import { GraphView } from "../views/GraphView";
 import { HomeView } from "../views/HomeView";
+import { ActivityView } from "../views/ActivityView";
 import { ModelLabView } from "../views/ModelLabView";
 import { OrganizeView } from "../views/OrganizeView";
 import {
@@ -55,6 +58,7 @@ const ICONS: Record<ViewId, LucideIcon> = {
   organize: Folders,
   graph: Waypoints,
   assistant: Sparkles,
+  activity: History,
   modelLab: FlaskConical,
 };
 
@@ -75,6 +79,7 @@ const TITLES: Record<ViewId, string> = {
   organize: "Organize",
   graph: "Graph",
   assistant: "Ask & Act",
+  activity: "Activity",
   modelLab: "Model Lab",
 };
 
@@ -90,11 +95,18 @@ export function AppShell() {
   const workspace = useWorkspace();
   const drafts = useDrafts();
   const relations = useRelationships(workspace);
+  // Read whenever the folder changes, so Activity is current when opened.
+  const activity = useActivity(workspace);
+  // After Folio changes files: re-read the index's links and the history.
+  const filesChanged = () => {
+    relations.refresh();
+    activity.reload();
+  };
   // Above the views, so an apply in progress survives switching views.
-  const organize = useOrganize(workspace, relations.refresh);
+  const organize = useOrganize(workspace, filesChanged);
   // Home's Rename and Move have their own plan, so they never show up in
   // Organize (and the reverse).
-  const fileAction = useOrganize(workspace, relations.refresh);
+  const fileAction = useOrganize(workspace, filesChanged);
   const [actionDialog, setActionDialog] = useState<{
     kind: FileActionKind;
     document: DocumentRecord;
@@ -373,6 +385,9 @@ export function AppShell() {
               )}
               {view === "assistant" && (
                 <AssistantView drafts={drafts} onNavigate={setView} />
+              )}
+              {view === "activity" && (
+                <ActivityView workspace={workspace} activity={activity} />
               )}
               {view === "modelLab" && <ModelLabView />}
             </AnnouncerProvider>

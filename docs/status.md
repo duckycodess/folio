@@ -10,6 +10,11 @@
 - Shared error and recovery states ([issue #18](https://github.com/duckycodess/folio/issues/18)): every error code maps to one plain-language message and next step ([error-states.md](error-states.md)), shown through one recovery notice in every workflow. Drafts (the Ask & Act request, rename names per file) survive errors and view changes. Success after opening a folder is shown only once the native core reports it. Each view announces into its own live region. Modals keep Tab inside them. A browser-only practice mode (`?simulate=<code>`) triggers each state in its own flow.
 - Home as the file browser ([#42](https://github.com/duckycodess/folio/issues/42), [#43](https://github.com/duckycodess/folio/issues/43), ADR 0010). The Files tab is gone. Home lists every file, sorted by path, with a count. Each row has a keyboard-accessible ⋯ menu (Open, Rename…, Move to folder…, Show related), and the document panel has the same menu. Rename and Move use the exact preview, Approve and Undo flow from #22, in a dialog. The search field is only on Home, centred, and ⌘K / Ctrl K from any page opens Home and focuses it. Rows take an optional `renderDetail` slot for #19's search evidence. With the sample files, Rename and Move explain that a folder is needed.
 - Organize flow ([issue #22](https://github.com/duckycodess/folio/issues/22)), desktop only. Analyze re-indexes the open folder, with live progress and Stop, then lists exact duplicates (by content, never moved or deleted) and filename suggestions to tick. The exact preview shows every from → to path from the native plan. Approve echoes that plan's digest and applies it. The result is worded from the per-file outcomes, so a batch that stopped partway never says nothing changed. It shows what was recorded in history and offers a Preview Undo. A refused apply keeps the preview, with Preview again. The Rename form uses the same native plan with a folder open. With the sample files, Organize explains that a folder is needed. Virtual collections are still not available.
+- Activity tab ([issue #34](https://github.com/duckycodess/folio/issues/34)): the main navigation is Home, Organize, Graph, Ask & Act and Activity, with Model Lab in the sidebar's settings area. Activity lists what Folio actually changed, from the native history only, one entry per approved plan, newest first. Each entry shows what changed (moved, renamed, edited, created, deleted, or "changed" for a mix), the time, its status (applied, partly undone, undone), and each file's before and after paths.
+  - Undo first previews exactly which files go back.
+  - It names the blocking file and changes nothing when the preview refuses it, and it's absent when the earlier version wasn't kept.
+  - Success is shown only from the native Undo report; a partial Undo uses the partial-Undo wording.
+  - Failed attempts and the action's source aren't recorded by the native history yet (#35), and the page says so.
 - Keyword filtering (explicitly labelled), actual Markdown-link discovery in fixture text, source content views, and a list of those explicit links with their evidence (Graph view).
 - Tauri folder picker and scoped native listing/TXT/Markdown reading commands.
 - [Frozen cross-track contracts](contracts.md) declared in both `src/domain/contracts.ts` and `src-tauri/src/contracts.rs`: typed failures, stable workspace/document identity, UTF-8 source offsets bound to a document revision, typed relationship evidence, embedding-space fingerprints, provider error/cancellation codes, plans, approvals, per-operation outcomes, history and undo shapes.
@@ -60,6 +65,28 @@ Provider cases are listed as pending, not mocked, in `src/domain/pending.test.ts
 No AI or save completion should be presented until the corresponding native/provider implementation succeeds. Model sizes, installed size, memory targets, and platform support remain subject to measurements.
 
 ## Verification
+
+### Activity (2026-10-10, issue #34)
+
+Checked on macOS with Node.js 26.10.0:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 169 passed, 9 todo. The new cases cover:
+  - telling moves, renames, edits, creates and deletes apart;
+  - one entry per plan, newest first, with operations in order;
+  - "Changed N files" for a mix;
+  - applied, partly undone and undone status;
+  - no Undo for unrecoverable changes;
+  - the navigation's destinations, with Model Lab in settings.
+- Headless Chrome, browser preview:
+  - with sample files, Activity says the samples are never changed;
+  - with the native history and Undo commands mocked, entries read "Moved 3 files" and "Renamed 1 file" with their paths, and an unrecoverable change has no Undo and says why;
+  - a refused Undo names the newer edit, offers no confirm button, and returns focus on Escape;
+  - a confirmed Undo shows "Undone. 3 files are back as they were." and marks the entry undone;
+  - a partial Undo shows the partial-Undo message and "Partly undone";
+  - no horizontal scroll at 700px.
+
+Not verified: the real native history and Undo, failed or cancelled batches (not recorded until #35), screen readers, and the Tauri webview.
 
 ### Home as the file browser (2026-10-10, issues #42 and #43)
 

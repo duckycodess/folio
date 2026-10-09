@@ -723,3 +723,60 @@
 .home-search .search-field {
   max-width: 640px;
 }
+
+/* Activity (#34) */
+.activity-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.activity-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--color-border);
+}
+.activity-item:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.activity-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+.activity-heading {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+.activity-title {
+  font: var(--text-heading);
+}
+.activity-meta {
+  font: var(--text-small);
+  color: var(--color-text-secondary);
+}
+.activity-files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font: var(--text-small);
+}
+.change-line {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  overflow-wrap: anywhere;
+}
+.change-line.is-undone > span:not(.muted) {
+  text-decoration: line-through;
+  color: var(--color-text-secondary);
+}

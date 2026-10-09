@@ -1,4 +1,5 @@
-export type ViewId = "home" | "organize" | "graph" | "assistant" | "modelLab";
+export type ViewId =
+  "home" | "organize" | "graph" | "assistant" | "activity" | "modelLab";
 
 export interface NavItem {
   id: ViewId;
@@ -14,6 +15,7 @@ export const PRIMARY_NAV: NavItem[] = [
   { id: "organize", label: "Organize" },
   { id: "graph", label: "Graph" },
   { id: "assistant", label: "Ask & Act" },
+  { id: "activity", label: "Activity" },
 ];
 
 export const SECONDARY_NAV: NavItem[] = [
