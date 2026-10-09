@@ -7,6 +7,7 @@ import {
   MAX_TURNS,
   matchReason,
   methodLabel,
+  preparingLabel,
   summaryTarget,
   targetsChosenFile,
   updateTurn,
@@ -176,5 +177,46 @@ describe("the file the user chose", () => {
         "workspace:projects/plan.md",
       ),
     ).toBe(true);
+  });
+});
+
+describe("preparingLabel", () => {
+  it("says what a request is preparing, and how far it is", () => {
+    expect(
+      preparingLabel({
+        workspaceId: "w",
+        phase: "reading",
+        processed: 120,
+        total: 400,
+      }),
+    ).toBe("Reading your files: 120 of 400");
+    expect(
+      preparingLabel({
+        workspaceId: "w",
+        phase: "embedding",
+        processed: 64,
+        total: 900,
+      }),
+    ).toBe("Preparing search by meaning: 64 of 900 passages");
+  });
+
+  it("has nothing to say without work, and never overshoots the total", () => {
+    expect(preparingLabel(null)).toBeUndefined();
+    expect(
+      preparingLabel({
+        workspaceId: "w",
+        phase: "reading",
+        processed: 0,
+        total: 0,
+      }),
+    ).toBeUndefined();
+    expect(
+      preparingLabel({
+        workspaceId: "w",
+        phase: "embedding",
+        processed: 12,
+        total: 10,
+      }),
+    ).toBe("Preparing search by meaning: 10 of 10 passages");
   });
 });

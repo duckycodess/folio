@@ -2,6 +2,7 @@ import {
   describeProposal,
   matchReason,
   methodLabel,
+  preparingLabel,
   type AskTurn,
 } from "../app/askAct";
 import { requestForFile } from "../app/proposals";
@@ -137,13 +138,16 @@ export function TurnBody({
         ) : (
           <Progress
             label={
-              turn.action === "find"
+              preparingLabel(ask.progress) ??
+              (turn.action === "find"
                 ? "Looking through your files"
-                : "Olio is working on your request"
+                : "Olio is working on your request")
             }
           />
         )}
-        {turn.action === "ask" && <Button onClick={ask.cancel}>Cancel</Button>}
+        {(turn.action === "ask" || ask.progress) && (
+          <Button onClick={ask.cancel}>Cancel</Button>
+        )}
       </div>
     );
   if (turn.status === "cancelled")

@@ -5,11 +5,13 @@ import {
   indexStatus,
   interpretRequest,
   isAvailable,
+  onPreparingProgress,
   rebuildIndex,
   semanticSearch,
 } from "../adapters/ai";
 import type {
   DocumentRecord,
+  PreparingProgress,
   ProviderIndexStatus,
   SearchResult,
 } from "../domain/contracts";
@@ -42,6 +44,32 @@ import type { WorkspaceState } from "./useWorkspace";
 const RESULT_LIMIT = 20;
 
 /**
+ * Follows what a request is doing while it prepares the folder. Returns the
+ * function that stops listening, safe to call before the listener is ready.
+ */
+function watchPreparing(
+  folderId: string,
+  onUpdate: (progress: PreparingProgress) => void,
+): () => void {
+  let stopped = false;
+  let unlisten: (() => void) | undefined;
+  onPreparingProgress((update) => {
+    if (!stopped && update.workspaceId === folderId) onUpdate(update);
+  })
+    .then((stop) => {
+      if (stopped) stop();
+      else unlisten = stop;
+    })
+    .catch(() => {
+      // Progress is a nicety; the request's own result is what counts.
+    });
+  return () => {
+    stopped = true;
+    unlisten?.();
+  };
+}
+
+/**
  * The browser preview's practice replies. `TAURI_ENV_PLATFORM` is set while
  * `tauri build` runs, so in the desktop build this branch is dead code and
  * the mock adapter is not bundled at all.
@@ -71,6 +99,8 @@ export interface AskActController {
   setScope: (folder: string) => void;
   index: ProviderIndexStatus | null;
   preparing: boolean;
+  /** What the request in flight is preparing, when it is preparing. */
+  progress: PreparingProgress | null;
   indexError: FolioError | null;
   prepare: () => void;
   turns: AskTurn[];
@@ -111,6 +141,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
   const turns = conversation?.turns ?? [];
   const [index, setIndex] = useState<ProviderIndexStatus | null>(null);
   const [preparing, setPreparing] = useState(false);
+  const [progress, setProgress] = useState<PreparingProgress | null>(null);
   const [indexError, setIndexError] = useState<FolioError | null>(null);
   const mounted = useRef(true);
 
@@ -162,6 +193,12 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
     });
     const onProgress = (partial: AskOutcome) =>
       updateTurnIn(conversationId, id, { outcome: partial });
+    const stopWatching =
+      desktop && folderId
+        ? watchPreparing(folderId, (update) => {
+            if (mounted.current) setProgress(update);
+          })
+        : undefined;
     try {
       updateTurnIn(conversationId, id, {
         status: "done",
@@ -177,6 +214,8 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
           : { status: "failed", error },
       );
     } finally {
+      stopWatching?.();
+      if (mounted.current) setProgress(null);
       // The first request prepares the folder; show what it prepared.
       indexStatus(folderId)
         .then((status) => mounted.current && setIndex(status))
@@ -247,15 +286,25 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
       setConversationScope(ensureActiveConversation(folderId), folder),
     index: index && index.workspaceId === folderId ? index : null,
     preparing,
+    progress,
     indexError,
     prepare: () => {
       if (!folderId || preparing) return;
       setPreparing(true);
       setIndexError(null);
+      const stopWatching = watchPreparing(folderId, (update) => {
+        if (mounted.current) setProgress(update);
+      });
       rebuildIndex(folderId)
         .then((status) => mounted.current && setIndex(status))
         .catch((cause) => mounted.current && setIndexError(toFolioError(cause)))
-        .finally(() => mounted.current && setPreparing(false));
+        .finally(() => {
+          stopWatching();
+          if (mounted.current) {
+            setProgress(null);
+            setPreparing(false);
+          }
+        });
     },
     turns,
     busy,

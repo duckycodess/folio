@@ -1,4 +1,5 @@
 import type {
+  PreparingProgress,
   DocumentId,
   DocumentRecord,
   GroundedResult,
@@ -149,4 +150,18 @@ export function describeProposal(proposal: OperationProposal): string {
     case "create":
       return `Create ${proposal.destinationRelativePath}`;
   }
+}
+
+/**
+ * What a request is doing while it prepares the folder, or `undefined` when
+ * there is nothing to say (no work, or a total of zero).
+ */
+export function preparingLabel(
+  progress: PreparingProgress | null | undefined,
+): string | undefined {
+  if (!progress || progress.total <= 0) return undefined;
+  const done = Math.min(progress.processed, progress.total);
+  return progress.phase === "reading"
+    ? `Reading your files: ${done} of ${progress.total}`
+    : `Preparing search by meaning: ${done} of ${progress.total} passages`;
 }

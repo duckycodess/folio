@@ -481,6 +481,18 @@ export interface SkippedDocument {
 }
 
 /**
+ * `folio://preparing-progress`: an AI request bringing the folder's index up
+ * to date, first reading changed files, then embedding passages that have no
+ * vector yet.
+ */
+export interface PreparingProgress {
+  workspaceId: WorkspaceId;
+  phase: "reading" | "embedding";
+  processed: number;
+  total: number;
+}
+
+/**
  * What the persistent index holds for a folder, as AI requests use it.
  * `method` is `hybrid` only when chunks have vectors in the loaded embedding
  * model's space; otherwise search is keyword search. `embeddedChunkCount` is

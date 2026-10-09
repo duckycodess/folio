@@ -1,6 +1,8 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   GroundedResult,
+  PreparingProgress,
   ProviderIndexStatus,
   InterpretationResult,
   SearchResult,
@@ -77,4 +79,16 @@ export function unloadGeneration(): Promise<void> {
 
 export function cancelGeneration(): Promise<void> {
   return call("cancel_generation");
+}
+
+/**
+ * Progress while a request prepares the folder. Rejects outside the desktop
+ * app, where there is nothing to prepare.
+ */
+export function onPreparingProgress(
+  handler: (progress: PreparingProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<PreparingProgress>("folio://preparing-progress", (event) =>
+    handler(event.payload),
+  );
 }

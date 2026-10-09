@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { preparingLabel } from "../app/askAct";
 import { folderChoices } from "../app/fileActions";
 import type { Drafts } from "../app/drafts";
 import { useAskAct } from "../app/useAskAct";
@@ -154,7 +155,8 @@ export function AssistantView({
         </select>
         <p className="muted ask-index">
           {ask.preparing
-            ? "Preparing this folder for search…"
+            ? (preparingLabel(ask.progress) ??
+              "Preparing this folder for search…")
             : index
               ? `${index.documentCount} files prepared for ${
                   index.method === "keyword"
