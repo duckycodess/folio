@@ -299,51 +299,13 @@ export function OrganizeFlowPanel({
           <Progress label="Preparing the exact preview" />
         )}
 
-        {(state.stage === "preview" || state.stage === "applying") &&
-          state.plan && (
-            <div className="flow-step">
-              <h3 ref={heading} tabIndex={-1} className="subsection-title">
-                Exact preview: nothing has changed yet
-              </h3>
-              <PlanTable
-                rows={state.plan.operations.map(planRow)}
-                caption="Changes Folio will make after you approve"
-              />
-              {state.plan.impacts.length > 0 && (
-                <Notice tone="info">
-                  {state.plan.impacts.length} related{" "}
-                  {state.plan.impacts.length === 1 ? "passage" : "passages"} may
-                  need a look afterwards. They won't be changed.
-                </Notice>
-              )}
-              {state.error && (
-                <RecoveryNotice
-                  error={state.error}
-                  actions={{ previewAgain: organize.previewAgain }}
-                  onDismiss={organize.dismissError}
-                />
-              )}
-              {state.stage === "applying" ? (
-                <Progress label="Applying the approved changes" />
-              ) : (
-                <div className="form-actions">
-                  <Button
-                    variant="primary"
-                    disabled={state.error !== null}
-                    onClick={organize.approveAndApply}
-                  >
-                    Approve and apply{" "}
-                    {state.plan.operations.length === 1
-                      ? "this change"
-                      : `${state.plan.operations.length} changes`}
-                  </Button>
-                  <Button variant="ghost" onClick={organize.backToSuggestions}>
-                    {suggestions ? "Back to suggestions" : "Cancel"}
-                  </Button>
-                </div>
-              )}
-            </div>
-          )}
+        {(state.stage === "preview" || state.stage === "applying") && (
+          <PreviewStep
+            organize={organize}
+            heading={heading}
+            cancelLabel={suggestions ? "Back to suggestions" : "Cancel"}
+          />
+        )}
 
         {state.stage === "result" && state.plan && state.report && (
           <ResultStep organize={organize} heading={heading} />
@@ -353,12 +315,74 @@ export function OrganizeFlowPanel({
   );
 }
 
-function ResultStep({
+/** The exact native plan, and Approve. Shared by Organize and Home's file actions. */
+export function PreviewStep({
   organize,
   heading,
+  cancelLabel,
 }: {
   organize: OrganizeController;
   heading: RefObject<HTMLHeadingElement | null>;
+  cancelLabel: string;
+}) {
+  const { state } = organize;
+  if (!state.plan) return null;
+  return (
+    <div className="flow-step">
+      <h3 ref={heading} tabIndex={-1} className="subsection-title">
+        Exact preview: nothing has changed yet
+      </h3>
+      <PlanTable
+        rows={state.plan.operations.map(planRow)}
+        caption="Changes Folio will make after you approve"
+      />
+      {state.plan.impacts.length > 0 && (
+        <Notice tone="info">
+          {state.plan.impacts.length} related{" "}
+          {state.plan.impacts.length === 1 ? "passage" : "passages"} may need a
+          look afterwards. They won't be changed.
+        </Notice>
+      )}
+      {state.error && (
+        <RecoveryNotice
+          error={state.error}
+          actions={{ previewAgain: organize.previewAgain }}
+          onDismiss={organize.dismissError}
+        />
+      )}
+      {state.stage === "applying" ? (
+        <Progress label="Applying the approved changes" />
+      ) : (
+        <div className="form-actions">
+          <Button
+            variant="primary"
+            disabled={state.error !== null}
+            onClick={organize.approveAndApply}
+          >
+            Approve and apply{" "}
+            {state.plan.operations.length === 1
+              ? "this change"
+              : `${state.plan.operations.length} changes`}
+          </Button>
+          <Button variant="ghost" onClick={organize.backToSuggestions}>
+            {cancelLabel}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** What happened, with history and Undo. Shared with Home's file actions. */
+export function ResultStep({
+  organize,
+  heading,
+  onDone = organize.done,
+}: {
+  organize: OrganizeController;
+  heading: RefObject<HTMLHeadingElement | null>;
+  /** Defaults to starting the flow again; a dialog closes instead. */
+  onDone?: () => void;
 }) {
   const { state, undo, history } = organize;
   const summary = summarizeApply(state.plan!, state.report!);
@@ -407,7 +431,7 @@ function ResultStep({
             Preview Undo
           </Button>
         )}
-        <Button variant="ghost" onClick={organize.done}>
+        <Button variant="ghost" onClick={onDone}>
           Done
         </Button>
       </div>

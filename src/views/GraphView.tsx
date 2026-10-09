@@ -1,9 +1,26 @@
 import { ArrowLeftRight, ArrowRight, Waypoints } from "lucide-react";
-import { useEffect } from "react";
+import {
+  useDeferredValue,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
+import { folderChoices } from "../app/fileActions";
 import type { RelationshipsState } from "../app/useRelationships";
 import type { WorkspaceState } from "../app/useWorkspace";
-import { describeConnection, type Connection } from "../domain/connections";
+import { describeConnection } from "../domain/connections";
+import { hasSearchWords } from "../domain/discovery";
 import type { DocumentRecord } from "../domain/contracts";
+import {
+  folderSpread,
+  graphPairs,
+  isConfirmed,
+  type GraphPair,
+  type GraphStart,
+} from "../domain/graphScope";
 import { Badge } from "../ui/Badge";
 import { EmptyState } from "../ui/EmptyState";
 import { FileTypeIcon } from "../ui/FileTypeIcon";
@@ -11,34 +28,18 @@ import { Panel } from "../ui/Panel";
 import {
   ConnectionEvidence,
   CoverageNote,
+  folderLocation,
   originalLocation,
 } from "./Connections";
 
-interface Pair {
-  from: DocumentRecord;
-  to: DocumentRecord;
-  connection: Connection;
-}
+type StartKind = GraphStart["kind"];
 
-/** Each connection once: seen from the file that comes first by path. */
-function allPairs(
-  documents: DocumentRecord[],
-  relations: RelationshipsState,
-): Pair[] {
-  const sorted = [...documents].sort((a, b) =>
-    a.relativePath.localeCompare(b.relativePath),
-  );
-  const order = new Map(sorted.map((document, index) => [document.id, index]));
-  const byId = new Map(sorted.map((document) => [document.id, document]));
-  const pairs: Pair[] = [];
-  for (const from of sorted)
-    for (const connection of relations.connectionsOf(from.id)) {
-      const to = byId.get(connection.otherId);
-      if (to && order.get(from.id)! < order.get(to.id)!)
-        pairs.push({ from, to, connection });
-    }
-  return pairs;
-}
+const START_LABELS: Record<StartKind, string> = {
+  all: "All files",
+  file: "A file",
+  folder: "A folder",
+  topic: "A topic",
+};
 
 function FileEnd({
   document,
@@ -62,9 +63,110 @@ function FileEnd({
   );
 }
 
+function PairList({
+  pairs,
+  workspace,
+  relations,
+  onOpen,
+}: {
+  pairs: GraphPair[];
+  workspace: WorkspaceState;
+  relations: RelationshipsState;
+  onOpen: (document: DocumentRecord) => void;
+}) {
+  const byId = new Map(workspace.documents.map((d) => [d.id, d]));
+  return (
+    <ul className="relationship-list">
+      {pairs.map(({ from, to, connection }) => {
+        const label = describeConnection(connection);
+        const directed =
+          connection.direction === "outgoing" ||
+          connection.direction === "incoming";
+        const [first, second] =
+          connection.direction === "incoming" ? [to, from] : [from, to];
+        return (
+          <li
+            key={`${connection.kind}-${from.id}-${to.id}`}
+            className="connection connection-pair"
+          >
+            <div className="connection-ends">
+              <FileEnd
+                document={first}
+                workspace={workspace}
+                onOpen={() => onOpen(first)}
+              />
+              {directed ? (
+                <ArrowRight size={16} aria-label="links to" />
+              ) : (
+                <ArrowLeftRight size={16} aria-label="and" />
+              )}
+              <FileEnd
+                document={second}
+                workspace={workspace}
+                onOpen={() => onOpen(second)}
+              />
+            </div>
+            <p className="connection-provenance">
+              <Badge>
+                {connection.kind === "explicitReference" ? "Link" : label.type}
+              </Badge>{" "}
+              {label.provenance}
+            </p>
+            <ConnectionEvidence
+              evidence={connection.evidence}
+              byId={byId}
+              onOpen={relations.openPassage}
+            />
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/** Arrow keys, Home and End move between the files in the list. */
+function moveBetweenFiles(event: KeyboardEvent<HTMLDivElement>) {
+  const target = event.target as HTMLElement;
+  if (!target.classList.contains("connection-end")) return;
+  const ends = [
+    ...event.currentTarget.querySelectorAll<HTMLElement>(".connection-end"),
+  ];
+  const index = ends.indexOf(target);
+  const next =
+    event.key === "ArrowDown" || event.key === "ArrowRight"
+      ? index + 1
+      : event.key === "ArrowUp" || event.key === "ArrowLeft"
+        ? index - 1
+        : event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? ends.length - 1
+            : null;
+  if (next === null) return;
+  event.preventDefault();
+  ends[Math.max(0, Math.min(ends.length - 1, next))]?.focus();
+}
+
+function scopeTitle(start: GraphStart, byId: Map<string, DocumentRecord>) {
+  switch (start.kind) {
+    case "all":
+      return "Connections between files";
+    case "file":
+      return `Connected to ${byId.get(start.documentId)?.name ?? "this file"}`;
+    case "folder":
+      return `Connections in ${start.folder}`;
+    case "topic":
+      return hasSearchWords(start.term)
+        ? `Connections about “${start.term.trim()}”`
+        : "Connections about a topic";
+  }
+}
+
 /**
- * The relationships of the whole workspace as a keyboard- and screen-reader-
- * friendly list. A drawn graph would be an extra view, never the only one.
+ * Relationships as a keyboard- and screen-reader-friendly list, starting from
+ * every file, one file, a folder or a topic. Confirmed connections (links,
+ * identical bytes) are kept apart from suggestions. A drawn graph would be an
+ * extra view, never the only one.
  */
 export function GraphView({
   workspace,
@@ -75,8 +177,74 @@ export function GraphView({
 }) {
   const { request } = relations;
   useEffect(request, [request]);
-  const pairs = allPairs(workspace.documents, relations);
-  const byId = new Map(workspace.documents.map((d) => [d.id, d]));
+  const ids = useId();
+  const documents = useMemo(
+    () =>
+      [...workspace.documents].sort((a, b) =>
+        a.relativePath.localeCompare(b.relativePath),
+      ),
+    [workspace.documents],
+  );
+  const folders = folderChoices(workspace.documents).filter(Boolean);
+  const byId = new Map(documents.map((d) => [d.id, d]));
+
+  const [chosenKind, setKind] = useState<StartKind>(() =>
+    workspace.selected ? "file" : "all",
+  );
+  const [fileId, setFileId] = useState(
+    () => workspace.selected?.id ?? documents[0]?.id ?? "",
+  );
+  // Opening a file anywhere, including from this list, makes it the file to
+  // start from, so the user can walk from one file to the next.
+  const selectedId = workspace.selected?.id;
+  useEffect(() => {
+    if (selectedId) setFileId(selectedId);
+  }, [selectedId]);
+  const [folder, setFolder] = useState(() => folders[0] ?? "");
+  const [term, setTerm] = useState("");
+  // Typing stays responsive while the list catches up with the term.
+  const deferredTerm = useDeferredValue(term);
+
+  // A folder with no subfolders has nothing to choose, so show everything.
+  const kind = chosenKind === "folder" && !folders.length ? "all" : chosenKind;
+  const documentId = byId.has(fileId) ? fileId : (documents[0]?.id ?? "");
+  const folderName = folders.includes(folder) ? folder : (folders[0] ?? "");
+  const start: GraphStart = useMemo(
+    () =>
+      kind === "file"
+        ? { kind, documentId }
+        : kind === "folder"
+          ? { kind, folder: folderName }
+          : kind === "topic"
+            ? { kind, term: deferredTerm }
+            : { kind },
+    [kind, documentId, folderName, deferredTerm],
+  );
+  const { connectionsOf } = relations;
+  const pairs = useMemo(
+    () => graphPairs(documents, connectionsOf, start),
+    [documents, connectionsOf, start],
+  );
+  const confirmed = pairs.filter((pair) => isConfirmed(pair.connection));
+  const suggested = pairs.filter((pair) => !isConfirmed(pair.connection));
+  const spread = folderSpread(pairs);
+
+  // Opening a file from the list in "A file" mode rebuilds the list, which
+  // removes the button that had focus. Move focus to the new title so the
+  // keyboard user stays in the list and hears where they are.
+  const listTitle = useRef<HTMLHeadingElement>(null);
+  const walking = useRef(false);
+  function openFile(document: DocumentRecord) {
+    walking.current = kind === "file" && document.id !== documentId;
+    void workspace.selectDocument(document);
+  }
+  useEffect(() => {
+    if (!walking.current) return;
+    walking.current = false;
+    const active = window.document.activeElement;
+    if (!active || active === window.document.body || !active.isConnected)
+      listTitle.current?.focus();
+  }, [documentId]);
 
   return (
     <div className="view">
@@ -86,8 +254,88 @@ export function GraphView({
           How your files connect, with the evidence.
         </p>
       </header>
+
+      <Panel title="Start from">
+        <div className="graph-start">
+          <fieldset className="choice-group">
+            <legend className="visually-hidden">Start from</legend>
+            {(Object.keys(START_LABELS) as StartKind[]).map((option) => (
+              <label key={option} className="choice">
+                <input
+                  type="radio"
+                  name={`${ids}-start`}
+                  value={option}
+                  checked={kind === option}
+                  disabled={option === "folder" && !folders.length}
+                  onChange={() => setKind(option)}
+                />
+                {START_LABELS[option]}
+              </label>
+            ))}
+          </fieldset>
+          {kind === "file" && (
+            <div className="graph-start-field">
+              <label htmlFor={`${ids}-file`} className="field-label">
+                File
+              </label>
+              <select
+                id={`${ids}-file`}
+                className="text-input"
+                value={start.kind === "file" ? start.documentId : ""}
+                onChange={(event) => setFileId(event.target.value)}
+              >
+                {documents.map((document) => (
+                  <option key={document.id} value={document.id}>
+                    {document.relativePath}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {kind === "folder" && (
+            <div className="graph-start-field">
+              <label htmlFor={`${ids}-folder`} className="field-label">
+                Folder
+              </label>
+              <select
+                id={`${ids}-folder`}
+                className="text-input"
+                value={start.kind === "folder" ? start.folder : ""}
+                onChange={(event) => setFolder(event.target.value)}
+              >
+                {folders.map((choice) => (
+                  <option key={choice} value={choice}>
+                    {choice}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {kind === "topic" && (
+            <div className="graph-start-field">
+              <label htmlFor={`${ids}-topic`} className="field-label">
+                Topic or search term
+              </label>
+              <input
+                id={`${ids}-topic`}
+                type="search"
+                className="text-input"
+                value={term}
+                aria-describedby={`${ids}-topic-help`}
+                onChange={(event) => setTerm(event.target.value)}
+              />
+              <p id={`${ids}-topic-help`} className="field-help">
+                Keyword match on file names and the text of files Folio has
+                read. A file matches if it has any of the words.
+              </p>
+            </div>
+          )}
+        </div>
+      </Panel>
+
       <Panel
-        title="Connections between files"
+        title={scopeTitle(start, byId)}
+        titleRef={listTitle}
         actions={
           <>
             {workspace.source === "samples" && <Badge>Sample files</Badge>}
@@ -97,63 +345,78 @@ export function GraphView({
       >
         <CoverageNote relations={relations} />
         {pairs.length ? (
-          <ul className="relationship-list">
-            {pairs.map(({ from, to, connection }) => {
-              const label = describeConnection(connection);
-              const directed =
-                connection.direction === "outgoing" ||
-                connection.direction === "incoming";
-              const [first, second] =
-                connection.direction === "incoming" ? [to, from] : [from, to];
-              return (
-                <li
-                  key={`${connection.kind}-${from.id}-${to.id}`}
-                  className="connection connection-pair"
-                >
-                  <div className="connection-ends">
-                    <FileEnd
-                      document={first}
-                      workspace={workspace}
-                      onOpen={() => workspace.selectDocument(first)}
-                    />
-                    {directed ? (
-                      <ArrowRight size={16} aria-label="links to" />
-                    ) : (
-                      <ArrowLeftRight size={16} aria-label="and" />
-                    )}
-                    <FileEnd
-                      document={second}
-                      workspace={workspace}
-                      onOpen={() => workspace.selectDocument(second)}
-                    />
-                  </div>
-                  <p className="connection-provenance">
-                    <Badge>
-                      {connection.kind === "explicitReference"
-                        ? "Link"
-                        : label.type}
-                    </Badge>{" "}
-                    {label.provenance}
-                  </p>
-                  <ConnectionEvidence
-                    evidence={connection.evidence}
-                    byId={byId}
-                    onOpen={relations.openPassage}
-                  />
-                </li>
-              );
-            })}
-          </ul>
+          // Arrow keys move between files across both lists.
+          <div className="graph-lists" onKeyDown={moveBetweenFiles}>
+            {confirmed.length > 0 && (
+              <section aria-labelledby={`${ids}-confirmed`}>
+                <h3 id={`${ids}-confirmed`} className="graph-list-heading">
+                  Confirmed <Badge>{confirmed.length}</Badge>
+                </h3>
+                <p className="muted">
+                  Links written in the files and identical copies.
+                </p>
+                <PairList
+                  pairs={confirmed}
+                  workspace={workspace}
+                  relations={relations}
+                  onOpen={openFile}
+                />
+              </section>
+            )}
+            {suggested.length > 0 && (
+              <section aria-labelledby={`${ids}-suggested`}>
+                <h3 id={`${ids}-suggested`} className="graph-list-heading">
+                  Suggested <Badge>{suggested.length}</Badge>
+                </h3>
+                <p className="muted">
+                  Similar passages and possible shared facts. Check the evidence
+                  before relying on them.
+                </p>
+                <PairList
+                  pairs={suggested}
+                  workspace={workspace}
+                  relations={relations}
+                  onOpen={openFile}
+                />
+              </section>
+            )}
+          </div>
         ) : (
           <EmptyState
             icon={<Waypoints size={24} />}
-            title="No connections found"
+            title={
+              start.kind === "topic" && !hasSearchWords(start.term)
+                ? "Type a topic to start"
+                : "No connections found"
+            }
           >
             Folio connects files through links written inside them and identical
             copies.
           </EmptyState>
         )}
       </Panel>
+
+      {pairs.length > 0 && (
+        <Panel title="Where these files are">
+          <ul className="folder-spread">
+            {spread.map(({ folder: name, files }) => (
+              <li key={name}>
+                <span className="related-path">
+                  {folderLocation(name, workspace)}
+                </span>
+                <Badge>
+                  {files} {files === 1 ? "file" : "files"}
+                </Badge>
+              </li>
+            ))}
+          </ul>
+          <p className="muted">
+            A written relationship summary needs a local AI model, which isn't
+            available in this version yet. The connections and evidence above
+            don't need one.
+          </p>
+        </Panel>
+      )}
     </div>
   );
 }

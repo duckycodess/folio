@@ -175,7 +175,9 @@ The brandbook sidebar shows Home · Files · Collections · Graph · Assistant. 
 | Activity             | Folio's recorded changes, with safe Undo                                                     | Accountability                |
 | Model Lab (settings) | Model setup and comparisons                                                                  | Settings                      |
 
-There is no Files tab: Home is the file browser (#42). Search appears only on Home, centred under the header, and ⌘K or Ctrl K opens Home from any page (#43). Summarize lives where documents are, in the detail panel's Summary tab; Ask & Act can request the same summary (#20).
+There is no Files tab (#42, ADR 0010). Home is the file browser, like a phone's Files app: every file, each with a ⋯ menu (Open, Rename…, Move to folder…, Show related). The document panel's header has the same menu. Rename and Move use the same exact preview, Approve and Undo as Organize; nothing changes in one click.
+
+Search appears only on Home, centred under the header, and ⌘K or Ctrl K opens Home from any page (#43). Summarize lives in each file's **Summary** tab, with a "Summarize this file" button there, or from Ask & Act (#20). It isn't a row action.
 
 **Home layout**, top to bottom:
 
@@ -203,8 +205,9 @@ Active item: `--sidebar-item-active` background, 3px gold bar on the left edge, 
 
 **Search field**
 
-- On Home only, centred under the header (about 640px wide, full width when narrow), search icon left, placeholder "Search files, ideas, or projects", shortcut hint right.
-- The shortcut is platform-aware: **⌘K** on macOS, **Ctrl K** on Windows.
+- Only on Home: horizontally centred under the page header, at most 640px wide, and full width in narrow windows. Search icon on the left, placeholder "Search files, ideas, or projects", shortcut hint on the right. Other pages have no search field, and the query filters only Home's list.
+- The shortcut is platform-aware: **⌘K** on macOS, **Ctrl K** on Windows. From any page it opens Home and focuses the field.
+- In a narrow window with a document open, the field stays above the reader.
 - Opens results inline; results follow #19 (excerpt, path, page, match method).
 
 **Collection cards**

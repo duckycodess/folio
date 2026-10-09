@@ -12,13 +12,19 @@ interface ListRowProps {
   /** Hover text; defaults to the title and subtitle. */
   tooltip?: string;
   selected?: boolean;
-  /** Only one row in the listbox is in the Tab order (roving tabindex). */
+  /** Id of text that describes the row further, such as search evidence. */
+  describedBy?: string;
+  /** Only one row in the list is in the Tab order (roving tabindex). */
   tabbable?: boolean;
   dataId?: string;
   onSelect: () => void;
 }
 
-/** A selectable row inside an element with `role="listbox"`. */
+/**
+ * The main button of a file row. It opens the file; the row's other controls
+ * (an actions menu) sit beside it, so it is a list of buttons rather than a
+ * listbox, whose options can't contain controls.
+ */
 export function ListRow({
   icon,
   title,
@@ -28,6 +34,7 @@ export function ListRow({
   label,
   tooltip,
   selected = false,
+  describedBy,
   tabbable = selected,
   dataId,
   onSelect,
@@ -35,9 +42,9 @@ export function ListRow({
   return (
     <button
       type="button"
-      role="option"
-      aria-selected={selected}
+      aria-current={selected ? "true" : undefined}
       aria-label={label}
+      aria-describedby={describedBy}
       tabIndex={tabbable ? 0 : -1}
       data-document-id={dataId}
       className={`list-row${selected ? " is-selected" : ""}`}
