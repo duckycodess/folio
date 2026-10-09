@@ -366,7 +366,6 @@ describe("Model Lab record contract (issue #8)", () => {
     expect(backend?.cpuOnlyVerified).toBe(true);
     expect(backend?.gpuLayersOffloaded).toBe(0);
     expect(backend?.layersTotal).toBe(29);
-    expect(JSON.stringify(backend)).not.toMatch(/cpu-only|cpuOnly/i);
   });
 
   it("allows an in-process retrieval row to have no server settings", () => {

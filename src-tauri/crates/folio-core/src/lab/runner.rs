@@ -29,9 +29,10 @@ use crate::lab::host::{
 };
 use crate::lab::memory::PeakReading;
 use crate::lab::record::{
-    AppActivity, ApplyOutcome, BenchmarkRecord, BenchmarkTask, Check, Conditions, HostInfo,
-    MemoryEntry, MemoryProcess, ModelRef, Observation, OutcomeKind, PageCache, RequestPosition,
-    RunStatus, RunSummary, RuntimeDetail, SchemaVersion, ServerSettings, StartupWarmup, Timing,
+    AppActivity, ApplyOutcome, BenchmarkRecord, BenchmarkTask, Check, Conditions, GpuOffload,
+    HostInfo, MemoryEntry, MemoryProcess, ModelRef, Observation, OutcomeKind, PageCache,
+    RequestPosition, RunStatus, RunSummary, RuntimeDetail, SchemaVersion, ServerSettings,
+    StartupWarmup, Timing,
 };
 use crate::lab::sink::LabSink;
 use crate::lab::suite::{Corpus, Suite, SuiteCase};
@@ -1073,8 +1074,11 @@ mod tests {
         restarts: AtomicUsize,
         requests: AtomicUsize,
         saw_cache_prompt_off: AtomicBool,
-        /// The scripted server process has exited ("dying-" ids after one request).
+        /// The scripted server process has exited. A "dying-" server exits once
+        /// it has served a task, so it is gone when the lab next looks for it.
         dead: AtomicBool,
+        /// `requests` when the server was last restarted.
+        requests_at_restart: AtomicUsize,
     }
 
     impl GenerationProvider for ScriptedGenerator {
@@ -1114,9 +1118,6 @@ mod tests {
             if budget.cache_prompt == Some(false) {
                 self.saw_cache_prompt_off.store(true, Ordering::SeqCst);
             }
-            if self.id.starts_with("dying-") {
-                self.dead.store(true, Ordering::SeqCst);
-            }
             if schema["properties"].get("intent").is_some() {
                 Ok(json!({
                     "intent": "edit",
@@ -1141,6 +1142,8 @@ mod tests {
         fn restart(&self, _cancel: &AtomicBool) -> CoreResult<Option<u32>> {
             self.restarts.fetch_add(1, Ordering::SeqCst);
             self.dead.store(false, Ordering::SeqCst);
+            self.requests_at_restart
+                .store(self.requests.load(Ordering::SeqCst), Ordering::SeqCst);
             if self.id.starts_with("broken-") {
                 return Err(CoreError::Provider(
                     crate::error::NativeProviderErrorError::new(
@@ -1153,6 +1156,12 @@ mod tests {
         }
 
         fn server_pid(&self) -> Option<u32> {
+            if self.id.starts_with("dying-")
+                && self.requests.load(Ordering::SeqCst)
+                    > self.requests_at_restart.load(Ordering::SeqCst)
+            {
+                self.dead.store(true, Ordering::SeqCst);
+            }
             if self.dead.load(Ordering::SeqCst) {
                 None
             } else {
@@ -1215,6 +1224,7 @@ mod tests {
                     requests: AtomicUsize::new(0),
                     saw_cache_prompt_off: AtomicBool::new(false),
                     dead: AtomicBool::new(false),
+                    requests_at_restart: AtomicUsize::new(0),
                 }),
             })
         }
@@ -1476,6 +1486,7 @@ mod tests {
             requests: AtomicUsize::new(0),
             saw_cache_prompt_off: AtomicBool::new(false),
             dead: AtomicBool::new(false),
+            requests_at_restart: AtomicUsize::new(0),
         };
         generator.live.now.store(1, Ordering::SeqCst);
         let lab = LabProvider::new(&generator);

@@ -642,6 +642,12 @@ mod tests {
             .as_mut()
             .unwrap()
             .gpu_layers_offloaded = Some(12);
+        contradicted
+            .runtime_detail
+            .backend
+            .as_mut()
+            .unwrap()
+            .cpu_only_verified = Some(false);
         contradicted.validate().unwrap();
     }
 
