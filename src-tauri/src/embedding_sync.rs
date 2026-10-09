@@ -51,14 +51,14 @@ pub trait ChunkStore {
     fn put(&mut self, items: &[ChunkVector]) -> NativeResult<usize>;
 }
 
-pub struct IndexChunkStore {
-    conn: Connection,
+pub struct IndexChunkStore<'a> {
+    conn: &'a mut Connection,
     workspace_id: String,
     fingerprint: String,
 }
 
-impl IndexChunkStore {
-    pub fn new(conn: Connection, workspace_id: String, fingerprint: String) -> Self {
+impl<'a> IndexChunkStore<'a> {
+    pub fn new(conn: &'a mut Connection, workspace_id: String, fingerprint: String) -> Self {
         Self {
             conn,
             workspace_id,
@@ -67,13 +67,13 @@ impl IndexChunkStore {
     }
 }
 
-impl ChunkStore for IndexChunkStore {
+impl ChunkStore for IndexChunkStore<'_> {
     fn pending(&mut self, limit: usize) -> NativeResult<Vec<PendingChunk>> {
-        index::pending_embedding_chunks(&self.conn, &self.workspace_id, &self.fingerprint, limit)
+        index::pending_embedding_chunks(self.conn, &self.workspace_id, &self.fingerprint, limit)
     }
 
     fn put(&mut self, items: &[ChunkVector]) -> NativeResult<usize> {
-        index::put_embeddings(&mut self.conn, &self.workspace_id, &self.fingerprint, items)
+        index::put_embeddings(self.conn, &self.workspace_id, &self.fingerprint, items)
     }
 }
 
@@ -1077,9 +1077,9 @@ mod tests {
 
     #[test]
     fn unregistered_space_is_reported() {
-        let (_folder, conn, root, _fingerprint, _provider) =
+        let (_folder, mut conn, root, _fingerprint, _provider) =
             sqlite_fixture(&[("a.md", "A document.")]);
-        let mut store = IndexChunkStore::new(conn, root.id, "missing-space".into());
+        let mut store = IndexChunkStore::new(&mut conn, root.id, "missing-space".into());
         let failure = store.pending(10).unwrap_err();
         assert_eq!(failure.code, ErrorCode::EmbeddingSpaceMismatch);
     }

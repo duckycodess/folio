@@ -1129,6 +1129,7 @@ pub struct ChunkCosine {
 #[derive(Debug, Clone)]
 pub struct StoredChunk {
     pub chunk_id: i64,
+    pub ordinal: usize,
     pub passage: SourcePassage,
 }
 
@@ -1166,11 +1167,11 @@ pub fn vector_scores(conn: &Connection, workspace_id: &str, fingerprint: &str, q
 }
 
 fn chunk_from_row(row: &Row<'_>) -> rusqlite::Result<StoredChunk> {
-    let (chunk_id, document_id, hash, text, start, end, page): (i64, String, String, String, i64, i64, Option<u32>) = (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?);
-    Ok(StoredChunk { chunk_id, passage: passage(&document_id, &hash, start as usize, end as usize, &text, page) })
+    let (chunk_id, document_id, hash, text, start, end, page, ordinal): (i64, String, String, String, i64, i64, Option<u32>, i64) = (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?);
+    Ok(StoredChunk { chunk_id, ordinal: ordinal as usize, passage: passage(&document_id, &hash, start as usize, end as usize, &text, page) })
 }
 
-const CHUNK_COLUMNS: &str = "c.chunk_id, c.document_id, d.content_hash, c.chunk_text, c.start_offset, c.end_offset, c.page";
+const CHUNK_COLUMNS: &str = "c.chunk_id, c.document_id, d.content_hash, c.chunk_text, c.start_offset, c.end_offset, c.page, c.ordinal";
 
 /// The chunks with these ids, as passages bound to their document's indexed revision. Chunks of
 /// documents that are no longer `indexed`, and ids that no longer exist, are left out.
@@ -1226,6 +1227,13 @@ pub fn keyword_stats(conn: &Connection, workspace_id: &str, terms: &[String], do
 pub fn leading_chunks(conn: &Connection, workspace_id: &str, document_id: &str, limit: usize) -> NativeResult<Vec<StoredChunk>> {
     let mut statement = conn.prepare(&format!("SELECT {CHUNK_COLUMNS} FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.workspace_id = ?1 AND d.status = 'indexed' AND c.document_id = ?2 ORDER BY c.ordinal LIMIT ?3"))?;
     let rows = statement.query_map(params![workspace_id, document_id, limit.clamp(1, 100) as i64], chunk_from_row)?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// Every chunk of an indexed document in reading order.
+pub fn document_chunks(conn: &Connection, workspace_id: &str, document_id: &str) -> NativeResult<Vec<StoredChunk>> {
+    let mut statement = conn.prepare(&format!("SELECT {CHUNK_COLUMNS} FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.workspace_id = ?1 AND d.status = 'indexed' AND c.document_id = ?2 ORDER BY c.ordinal"))?;
+    let rows = statement.query_map(params![workspace_id, document_id], chunk_from_row)?;
     Ok(rows.collect::<Result<_, _>>()?)
 }
 

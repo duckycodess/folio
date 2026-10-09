@@ -5,6 +5,7 @@ mod contracts;
 mod db;
 mod embedding_sync;
 mod error;
+mod evidence;
 mod extract;
 mod identity;
 mod index;
@@ -427,10 +428,10 @@ async fn sync_embeddings(
         })?;
         let stored_space = embedding_sync::stored_index_space(&provider_space)?;
 
-        let conn = db::open(&index_path)?;
+        let mut conn = db::open(&index_path)?;
         let space_fingerprint = index::register_space(&conn, &stored_space)?;
         let mut store = embedding_sync::IndexChunkStore::new(
-            conn,
+            &mut conn,
             workspace_id.clone(),
             space_fingerprint.clone(),
         );
