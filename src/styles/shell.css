@@ -430,13 +430,38 @@
   }
 }
 
-/* 700px minimum and 200% zoom: the document replaces the list. */
+/* 700px minimum and 200% zoom: the document replaces the list. Search and
+   notices (read errors among them) stay visible above it. */
 @media (max-width: 860px) {
   .app.has-document {
     grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+  .app.has-document .sidebar {
+    grid-row: 1 / -1;
   }
   .app.has-document .main-column {
+    display: contents;
+  }
+  .app.has-document .topbar {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .app.has-document .main {
+    grid-column: 2;
+    grid-row: 2;
+    overflow: visible;
+    padding-block: 0;
+  }
+  .app.has-document .main > .view {
     display: none;
+  }
+  .app.has-document .main > .notice {
+    margin: var(--space-3) 0 0;
+  }
+  .app.has-document .document-panel {
+    grid-column: 2;
+    grid-row: 3;
   }
   .document-panel {
     border-left: 0;

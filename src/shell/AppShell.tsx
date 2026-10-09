@@ -20,6 +20,7 @@ import {
   type ThemePreference,
 } from "../app/theme";
 import { useWorkspace } from "../app/useWorkspace";
+import { AnnouncerProvider } from "../ui/Announcer";
 import { Notice } from "../ui/Notice";
 import { SearchField } from "../ui/SearchField";
 import { AssistantView } from "../views/AssistantView";
@@ -63,8 +64,20 @@ const TITLES: Record<ViewId, string> = {
   modelLab: "Model Lab",
 };
 
-/** Views whose content is a document list, so the reader panel sits beside it. */
-const DOCUMENT_VIEWS = new Set<ViewId>(["home", "files", "organize", "graph"]);
+/**
+ * Views whose main content is a document list, so the reader sits beside it
+ * (or, in narrow windows, takes its place). Organize is not one: its rename
+ * form must stay visible next to the chosen file.
+ */
+const DOCUMENT_VIEWS = new Set<ViewId>(["home", "files", "graph"]);
+
+/** Escape in a text field belongs to the field (a search box clears itself). */
+function isEditable(target: EventTarget | null) {
+  return (
+    target instanceof Element &&
+    target.closest("input, textarea, select, [contenteditable='true']") !== null
+  );
+}
 
 export function AppShell() {
   const workspace = useWorkspace();
@@ -74,16 +87,21 @@ export function AppShell() {
   const [theme, setTheme] = useState<ThemePreference>(loadTheme);
   const showsDocument = DOCUMENT_VIEWS.has(view) && workspace.selected;
 
+  // The listener is added once and reads the latest render through this ref.
+  const latest = useRef({ showsDocument, closeDocument });
+  latest.current = { showsDocument, closeDocument };
+
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      // An open modal handles its own Escape.
-      if (
-        event.key === "Escape" &&
-        showsDocument &&
-        !event.defaultPrevented &&
-        !document.querySelector("dialog[open]")
-      ) {
-        closeDocument();
+      if (event.key === "Escape") {
+        // An open modal handles its own Escape.
+        if (
+          latest.current.showsDocument &&
+          !event.defaultPrevented &&
+          !isEditable(event.target) &&
+          !document.querySelector("dialog[open]")
+        )
+          latest.current.closeDocument();
         return;
       }
       if (!isSearchShortcut(event, platform)) return;
@@ -93,7 +111,7 @@ export function AppShell() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  });
+  }, [platform]);
 
   function cycleTheme() {
     const next = nextTheme(theme);
@@ -119,112 +137,123 @@ export function AppShell() {
 
   function onSearch(query: string) {
     workspace.setQuery(query);
+    // In narrow windows the reader covers the list; show the results instead.
+    if (window.matchMedia("(max-width: 860px)").matches)
+      workspace.clearSelection();
     if (view !== "home" && view !== "files") setView("home");
   }
 
   return (
-    <div className={`app${showsDocument ? " has-document" : ""}`}>
-      <a className="skip-link" href="#main">
-        Skip to content
-      </a>
-      <aside className="sidebar">
-        {/* Interim text wordmark until the logo SVG is exported. */}
-        <span className="wordmark" role="img" aria-label="Folio">
-          <span className="wordmark-full" aria-hidden="true">
-            folio
-          </span>
-          <span className="wordmark-short" aria-hidden="true">
-            f
-          </span>
-        </span>
-        <nav aria-label="Main" className="nav">
-          <NavList items={PRIMARY_NAV} current={view} onSelect={setView} />
-        </nav>
-        <div className="sidebar-footer">
-          <nav aria-label="Settings" className="nav">
-            <NavList items={SECONDARY_NAV} current={view} onSelect={setView} />
-          </nav>
-          <button
-            type="button"
-            className="nav-item theme-switch"
-            aria-label={themeAction}
-            title={themeAction}
-            onClick={cycleTheme}
-          >
-            <ThemeIcon size={20} aria-hidden="true" />
-            <span className="nav-label" aria-hidden="true">
-              {themeLabel}
+    <AnnouncerProvider>
+      <div className={`app${showsDocument ? " has-document" : ""}`}>
+        <a className="skip-link" href="#main">
+          Skip to content
+        </a>
+        <aside className="sidebar">
+          {/* Interim text wordmark until the logo SVG is exported. */}
+          <span className="wordmark" role="img" aria-label="Folio">
+            <span className="wordmark-full" aria-hidden="true">
+              folio
             </span>
-          </button>
-          <button
-            type="button"
-            className="status-pill"
-            onClick={() => setView("modelLab")}
-            aria-label="Local AI not set up. Open Model Lab."
-            title="Local AI isn't set up. Open Model Lab."
-          >
-            <span className="status-dot" aria-hidden="true" />
-            <span className="status-text">Local AI not set up</span>
-          </button>
-        </div>
-      </aside>
-
-      <div className="main-column">
-        <header className="topbar">
-          <nav aria-label="Breadcrumb" className="breadcrumb">
-            <span>{workspace.workspace ? "Workspace" : "Sample files"}</span>
-            <span aria-hidden="true">/</span>
-            <span aria-current="page">{TITLES[view]}</span>
+            <span className="wordmark-short" aria-hidden="true">
+              f
+            </span>
+          </span>
+          <nav aria-label="Main" className="nav">
+            <NavList items={PRIMARY_NAV} current={view} onSelect={setView} />
           </nav>
-          <SearchField
-            ref={searchInput}
-            label="Search files"
-            value={workspace.query}
-            onChange={onSearch}
-            placeholder="Search files, ideas, or projects"
-            shortcut={searchShortcutLabel(platform)}
-          />
-        </header>
-
-        <main id="main" className="main" tabIndex={-1}>
-          {workspace.error && <Notice tone="danger">{workspace.error}</Notice>}
-          {workspace.notice && (
-            <Notice
-              tone="warning"
-              action={
-                <button
-                  type="button"
-                  className="link-button"
-                  onClick={workspace.dismissNotice}
-                >
-                  Dismiss
-                </button>
-              }
+          <div className="sidebar-footer">
+            <nav aria-label="Settings" className="nav">
+              <NavList
+                items={SECONDARY_NAV}
+                current={view}
+                onSelect={setView}
+              />
+            </nav>
+            <button
+              type="button"
+              className="nav-item theme-switch"
+              aria-label={themeAction}
+              title={themeAction}
+              onClick={cycleTheme}
             >
-              {workspace.notice}
-            </Notice>
-          )}
-          {view === "home" && (
-            <HomeView workspace={workspace} onNavigate={setView} />
-          )}
-          {view === "files" && <FilesView workspace={workspace} />}
-          {view === "organize" && <OrganizeView workspace={workspace} />}
-          {view === "graph" && <GraphView workspace={workspace} />}
-          {view === "assistant" && <AssistantView onNavigate={setView} />}
-          {view === "modelLab" && <ModelLabView />}
-        </main>
-      </div>
+              <ThemeIcon size={20} aria-hidden="true" />
+              <span className="nav-label" aria-hidden="true">
+                {themeLabel}
+              </span>
+            </button>
+            <button
+              type="button"
+              className="status-pill"
+              onClick={() => setView("modelLab")}
+              aria-label="Local AI not set up. Open Model Lab."
+              title="Local AI isn't set up. Open Model Lab."
+            >
+              <span className="status-dot" aria-hidden="true" />
+              <span className="status-text">Local AI not set up</span>
+            </button>
+          </div>
+        </aside>
 
-      {showsDocument && workspace.selected && (
-        <DocumentPanel
-          key={workspace.selected.id}
-          document={workspace.selected}
-          workspace={workspace}
-          onClose={closeDocument}
-          onNavigate={setView}
-        />
-      )}
-    </div>
+        <div className="main-column">
+          <header className="topbar">
+            <nav aria-label="Breadcrumb" className="breadcrumb">
+              <span>{workspace.workspace ? "Workspace" : "Sample files"}</span>
+              <span aria-hidden="true">/</span>
+              <span aria-current="page">{TITLES[view]}</span>
+            </nav>
+            <SearchField
+              ref={searchInput}
+              label="Search files"
+              value={workspace.query}
+              onChange={onSearch}
+              placeholder="Search files, ideas, or projects"
+              shortcut={searchShortcutLabel(platform)}
+            />
+          </header>
+
+          <main id="main" className="main" tabIndex={-1}>
+            {workspace.error && (
+              <Notice tone="danger">{workspace.error}</Notice>
+            )}
+            {workspace.notice && (
+              <Notice
+                tone="warning"
+                action={
+                  <button
+                    type="button"
+                    className="link-button"
+                    onClick={workspace.dismissNotice}
+                  >
+                    Dismiss
+                  </button>
+                }
+              >
+                {workspace.notice}
+              </Notice>
+            )}
+            {view === "home" && (
+              <HomeView workspace={workspace} onNavigate={setView} />
+            )}
+            {view === "files" && <FilesView workspace={workspace} />}
+            {view === "organize" && <OrganizeView workspace={workspace} />}
+            {view === "graph" && <GraphView workspace={workspace} />}
+            {view === "assistant" && <AssistantView onNavigate={setView} />}
+            {view === "modelLab" && <ModelLabView />}
+          </main>
+        </div>
+
+        {showsDocument && workspace.selected && (
+          <DocumentPanel
+            key={workspace.selected.id}
+            document={workspace.selected}
+            workspace={workspace}
+            onClose={closeDocument}
+            onNavigate={setView}
+          />
+        )}
+      </div>
+    </AnnouncerProvider>
   );
 }
 

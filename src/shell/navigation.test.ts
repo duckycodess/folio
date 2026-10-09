@@ -43,6 +43,28 @@ describe("search shortcut", () => {
       true,
     );
   });
+
+  it("works on keyboard layouts that don't type Latin letters", () => {
+    expect(
+      isSearchShortcut(key({ key: "л", code: "KeyK", ctrlKey: true }), "Win32"),
+    ).toBe(true);
+    expect(
+      isSearchShortcut(key({ key: "κ", code: "KeyK", metaKey: true }), "macOS"),
+    ).toBe(true);
+    expect(
+      isSearchShortcut(key({ key: "о", code: "KeyJ", ctrlKey: true }), "Win32"),
+    ).toBe(false);
+  });
+
+  it("follows the typed letter on Latin layouts such as Dvorak", () => {
+    // Dvorak types T in the QWERTY K position and K in the V position.
+    expect(
+      isSearchShortcut(key({ key: "t", code: "KeyK", ctrlKey: true }), "Win32"),
+    ).toBe(false);
+    expect(
+      isSearchShortcut(key({ key: "k", code: "KeyV", ctrlKey: true }), "Win32"),
+    ).toBe(true);
+  });
 });
 
 describe("navigation", () => {

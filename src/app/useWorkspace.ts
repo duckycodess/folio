@@ -19,6 +19,8 @@ export interface WorkspaceState {
   /** `null` while showing the bundled sample files. */
   workspace: WorkspaceInfo | null;
   nativeAvailable: boolean;
+  /** True until the first file list (sample files or a folder) has arrived. */
+  loading: boolean;
   query: string;
   setQuery: (query: string) => void;
   results: SearchResult[];
@@ -43,6 +45,7 @@ export function useWorkspace(): WorkspaceState {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
   // Only the latest folder or file request may update state.
   const request = useRef(0);
   // Once a folder is open, late-arriving sample files must not replace it,
@@ -57,6 +60,9 @@ export function useWorkspace(): WorkspaceState {
       })
       .catch((cause) => {
         if (active) setError(toFolioError(cause).message);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
       });
     return () => {
       active = false;
@@ -116,6 +122,7 @@ export function useWorkspace(): WorkspaceState {
       const chosen = await chooseWorkspace();
       if (current !== request.current || !chosen) return;
       folderOpened.current = true;
+      setLoading(false);
       setWorkspace(chosen.info);
       setDocuments(chosen.documents);
       setSelectedId("");
@@ -136,6 +143,7 @@ export function useWorkspace(): WorkspaceState {
     documents,
     workspace,
     nativeAvailable,
+    loading,
     query,
     setQuery,
     results,

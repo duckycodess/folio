@@ -413,6 +413,15 @@
   width: 35%;
   animation: progress-slide 1.2s ease-in-out infinite;
 }
+/* Reduced motion: a still, partly filled bar instead of a sliding one. */
+@media (prefers-reduced-motion: reduce) {
+  .progress-indeterminate .progress-fill {
+    left: 0;
+    width: 100%;
+    opacity: 0.5;
+    animation: none;
+  }
+}
 @keyframes progress-slide {
   from {
     left: -35%;
