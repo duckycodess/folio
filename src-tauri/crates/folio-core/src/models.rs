@@ -668,6 +668,8 @@ fn provider(code: ProviderErrorCode, message: impl Into<String>) -> CoreError {
 
 fn validate_id(id: &str) -> CoreResult<()> {
     if id.is_empty()
+        || id == "."
+        || id == ".."
         || !id.chars().all(|character| {
             character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
         })
@@ -1287,6 +1289,14 @@ mod tests {
         symlink(&outside, partial_path(&destination)).unwrap();
 
         assert!(is_symlink_or_inside_symlink(&root, &partial_path(&destination)).unwrap());
+    }
+
+    #[test]
+    fn dot_ids_are_not_simple_names() {
+        for id in [".", "..", "", "a/b", "a\\b"] {
+            assert!(validate_id(id).is_err(), "{id:?} was accepted");
+        }
+        assert!(validate_id("qwen3-0.6b-q4-k-m").is_ok());
     }
 
     #[test]
