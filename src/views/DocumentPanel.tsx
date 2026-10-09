@@ -1,4 +1,4 @@
-import { ArrowLeft, CornerUpLeft, Sparkles, X } from "lucide-react";
+import { ArrowLeft, CornerUpLeft, X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import type { RelationshipsState } from "../app/useRelationships";
 import type { WorkspaceState } from "../app/useWorkspace";
@@ -6,11 +6,11 @@ import { highlightRange, passageState } from "../domain/connections";
 import type { DocumentRecord } from "../domain/contracts";
 import type { ViewId } from "../shell/navigation";
 import { Badge } from "../ui/Badge";
-import { Button } from "../ui/Button";
-import { EmptyState } from "../ui/EmptyState";
 import { FileTypeIcon } from "../ui/FileTypeIcon";
 import { Progress } from "../ui/Progress";
+import { RowMenu, type RowMenuItem } from "../ui/RowMenu";
 import { RelatedList } from "./Connections";
+import { SummaryTab } from "./SummaryTab";
 import { fileKind, formatBytes, formatModified, languageLabel } from "./format";
 
 const TABS = ["Summary", "Details", "Related"] as const;
@@ -20,6 +20,10 @@ interface DocumentPanelProps {
   document: DocumentRecord;
   workspace: WorkspaceState;
   relations: RelationshipsState;
+  /** Opens on this tab, e.g. after "Show related" from a file row. */
+  initialTab?: Tab;
+  /** The file's actions (Rename, Move…), the same as its row's ⋯ menu. */
+  actions?: RowMenuItem[];
   onClose: () => void;
   onNavigate: (view: ViewId) => void;
 }
@@ -28,6 +32,8 @@ export function DocumentPanel({
   document,
   workspace,
   relations,
+  initialTab,
+  actions,
   onClose,
   onNavigate,
 }: DocumentPanelProps) {
@@ -35,7 +41,9 @@ export function DocumentPanel({
   const focus =
     relations.focus?.documentId === document.id ? relations.focus : null;
   const [tab, setTab] = useState<Tab>(
-    relations.returnedTo === document.id ? "Related" : "Details",
+    relations.returnedTo === document.id
+      ? "Related"
+      : (initialTab ?? "Details"),
   );
   const mark = useRef<HTMLElement>(null);
   const origin = relations.trail[relations.trail.length - 1];
@@ -113,6 +121,13 @@ export function DocumentPanel({
               ` · ${formatModified(document.modifiedAtMs)}`}
           </p>
         </div>
+        {actions && actions.length > 0 && (
+          <RowMenu
+            label={`Actions for ${document.name}`}
+            items={actions}
+            tabbable
+          />
+        )}
         <button
           type="button"
           className="icon-button document-close"
@@ -165,20 +180,12 @@ export function DocumentPanel({
         tabIndex={0}
       >
         {tab === "Summary" && (
-          <EmptyState
-            icon={<Sparkles size={24} />}
-            title="Summaries need a local AI model"
-            action={
-              <Button
-                variant="secondary"
-                onClick={() => onNavigate("modelLab")}
-              >
-                Open Model Lab
-              </Button>
-            }
-          >
-            You can still read the whole file in Details.
-          </EmptyState>
+          <SummaryTab
+            document={document}
+            workspace={workspace}
+            relations={relations}
+            onNavigate={onNavigate}
+          />
         )}
 
         {tab === "Details" && (

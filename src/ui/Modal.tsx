@@ -19,10 +19,10 @@ interface ModalProps {
   /** Extra class on the dialog, e.g. `modal-wide`. */
   className?: string;
   /**
-   * While true, Escape and the close button don't close the dialog: used while
-   * a change is being saved, so its result can't be closed away unseen.
+   * False while the modal must stay open, for example while a change it
+   * started is being applied: Escape and the close button do nothing.
    */
-  locked?: boolean;
+  dismissible?: boolean;
 }
 
 /**
@@ -37,7 +37,7 @@ export function Modal({
   children,
   footer,
   className,
-  locked = false,
+  dismissible = true,
 }: ModalProps) {
   const dialog = useRef<HTMLDialogElement>(null);
   const opener = useRef<Element | null>(null);
@@ -81,7 +81,7 @@ export function Modal({
       aria-labelledby={titleId}
       onKeyDown={trapTab}
       onCancel={(event) => {
-        if (locked) event.preventDefault();
+        if (!dismissible) event.preventDefault();
       }}
       onClose={() => {
         onClose();
@@ -96,7 +96,7 @@ export function Modal({
           type="button"
           className="icon-button"
           aria-label="Close"
-          disabled={locked}
+          disabled={!dismissible}
           onClick={() => dialog.current?.close()}
         >
           <X size={18} aria-hidden="true" />

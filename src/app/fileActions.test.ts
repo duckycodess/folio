@@ -2,14 +2,79 @@ import { describe, expect, it } from "vitest";
 import type { DocumentRecord } from "../domain/contracts";
 import {
   fileActionAvailability,
-  moveFolders,
-  renameProblem,
+  folderChoices,
+  nameProblem,
+  relocateOperation,
 } from "./fileActions";
-import { moveOperation, renameOperation } from "./useOrganize";
+
+const doc = (relativePath: string) =>
+  ({
+    id: `w:${relativePath}`,
+    relativePath,
+    contentHash: "a".repeat(64),
+  }) as DocumentRecord & { contentHash: string };
+
+describe("moving a file", () => {
+  it("offers every folder inside the open folder, and the top", () => {
+    expect(
+      folderChoices([
+        doc("school/math/review.md"),
+        doc("school/notes.md"),
+        doc("plan.md"),
+      ]),
+    ).toEqual(["", "school", "school/math"]);
+  });
+
+  it("keeps the name and changes the folder", () => {
+    expect(
+      relocateOperation(doc("school/notes.md"), { folder: "school/math" }),
+    ).toMatchObject({
+      kind: "move",
+      relativePath: "school/notes.md",
+      destinationRelativePath: "school/math/notes.md",
+      expectedDestination: "absent",
+    });
+    expect(
+      relocateOperation(doc("school/notes.md"), { folder: "" })
+        .destinationRelativePath,
+    ).toBe("notes.md");
+  });
+});
+
+describe("renaming a file", () => {
+  it("keeps the folder and pins the revision Folio read", () => {
+    expect(
+      relocateOperation(doc("school/notes.md"), { name: " tala.md " }),
+    ).toMatchObject({
+      kind: "rename",
+      destinationRelativePath: "school/tala.md",
+      expectedContentHash: "a".repeat(64),
+    });
+  });
+
+  it("refuses names that would leave the folder or change nothing", () => {
+    expect(nameProblem("", "a.md")).toMatch(/Type a new name/);
+    expect(nameProblem("../x.md", "a.md")).toMatch(/can't contain/);
+    expect(nameProblem("x\\y.md", "a.md")).toMatch(/can't contain/);
+    expect(nameProblem("..", "a.md")).toMatch(/different name/);
+    expect(nameProblem("a.md", "a.md")).toMatch(/already/);
+    expect(nameProblem("b.md", "a.md")).toBeNull();
+    // Refused natively, since Windows and macOS folders usually ignore case.
+    expect(nameProblem("Notes.md", "notes.md")).toMatch(/capital letters/);
+    expect(nameProblem(" NOTES.MD ", "notes.md")).toMatch(/capital letters/);
+  });
+
+  it("keeps a text or Markdown ending, in English or Filipino", () => {
+    expect(nameProblem("plano-ng-proyekto.md", "plan.md")).toBeNull();
+    expect(nameProblem("  Talaan ni Niña.txt ", "plan.md")).toBeNull();
+    expect(nameProblem("plan.markdown", "plan.md")).toBeNull();
+    expect(nameProblem("plan.pdf", "plan.md")).toMatch(/\.md/);
+    expect(nameProblem("plan", "plan.md")).toMatch(/\.md/);
+  });
+});
 
 const folder = { source: "folder", nativeAvailable: true } as const;
 const markdown = { mediaType: "text/markdown" } as const;
-const pdf = { mediaType: "application/pdf" } as const;
 
 describe("file action availability", () => {
   it("needs the desktop app and a folder the user added", () => {
@@ -31,87 +96,8 @@ describe("file action availability", () => {
   });
 
   it("only opens PDFs", () => {
-    expect(fileActionAvailability(folder, pdf)).toMatchObject({
-      available: false,
-      reason: /PDFs can only be opened/,
-    });
-  });
-});
-
-describe("rename names", () => {
-  it("accepts a new text or Markdown name, in English or Filipino", () => {
-    expect(renameProblem("notes/plan.md", "plano-ng-proyekto.md")).toBeNull();
-    expect(renameProblem("notes/plan.md", "  Talaan ni Niña.txt ")).toBeNull();
-  });
-
-  it("explains a name the native core would refuse", () => {
-    expect(renameProblem("plan.md", " ")).toMatch(/Type a new name/);
-    expect(renameProblem("plan.md", "a/b.md")).toMatch(/can't contain/);
-    expect(renameProblem("plan.md", "a\\b.md")).toMatch(/can't contain/);
-    expect(renameProblem("notes/Plan.md", "plan.MD")).toMatch(/current name/);
-    expect(renameProblem("plan.md", "plan.pdf")).toMatch(/\.md/);
-    expect(renameProblem("plan.md", "plan")).toMatch(/\.md/);
-  });
-});
-
-describe("move destinations", () => {
-  const documents = [
-    { relativePath: "plan.md" },
-    { relativePath: "projects/2026/plan.md" },
-    { relativePath: "projects/budget.md" },
-    { relativePath: "Archive/Plan.md" },
-    { relativePath: "notes/tala.txt" },
-  ];
-
-  it("offers only existing folders, never the file's own, and flags name clashes", () => {
-    expect(moveFolders(documents, { relativePath: "notes/tala.txt" })).toEqual([
-      { folder: "" },
-      { folder: "Archive" },
-      { folder: "projects" },
-      { folder: "projects/2026" },
-    ]);
     expect(
-      moveFolders(documents, { relativePath: "projects/budget.md" }),
-    ).toEqual([
-      { folder: "" },
-      { folder: "Archive" },
-      { folder: "notes" },
-      { folder: "projects/2026" },
-    ]);
-    // `plan.md` is already in the top folder, in projects/2026 and (in
-    // another case) in Archive.
-    const plan = moveFolders(documents, {
-      relativePath: "projects/2026/plan.md",
-    });
-    expect(
-      plan.filter((item) => item.blocked).map((item) => item.folder),
-    ).toEqual(["", "Archive"]);
-  });
-});
-
-describe("rename and move operations", () => {
-  const document = {
-    id: "w:projects/plan.md",
-    relativePath: "projects/plan.md",
-    contentHash: `sha256:${"a".repeat(64)}`,
-  } as DocumentRecord & { contentHash: string };
-
-  it("pin the revision and never replace an existing file", () => {
-    expect(moveOperation(document, "archive/2026")).toEqual({
-      kind: "move",
-      documentId: document.id,
-      relativePath: "projects/plan.md",
-      expectedContentHash: document.contentHash,
-      destinationRelativePath: "archive/2026/plan.md",
-      expectedDestination: "absent",
-    });
-    expect(moveOperation(document, "")).toMatchObject({
-      destinationRelativePath: "plan.md",
-    });
-    expect(renameOperation(document, "plano.md")).toMatchObject({
-      kind: "rename",
-      destinationRelativePath: "projects/plano.md",
-      expectedDestination: "absent",
-    });
+      fileActionAvailability(folder, { mediaType: "application/pdf" }),
+    ).toMatchObject({ available: false, reason: /PDFs can only be opened/ });
   });
 });

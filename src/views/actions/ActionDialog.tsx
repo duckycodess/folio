@@ -50,7 +50,7 @@ export function ActionDialog({
       title={title}
       onClose={close}
       className="modal-wide"
-      locked={busy}
+      dismissible={!busy}
     >
       {availability.available ? (
         children
