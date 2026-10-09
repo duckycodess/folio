@@ -112,7 +112,8 @@ Checked on Linux (x86-64 VM, 8 vCPUs, 7 GiB RAM) with Rust 1.99.0 and Node.js 24
   - migration 005 on a version-4 database keeping edit and rename rows and accepting `delete`;
   - the delete plan's canonical bytes and digest against the golden fixture.
 - `lib.rs` was not compiled on this host. It needed no change (`prepare_plan` already deserializes any `FileOperation` and computes impacts with `plan_impacts`), but the Tauri commands were not built or run. Nothing was tested on Windows or macOS; CI's jobs for this branch have not run yet.
-- `npm run format:check`, `npm run check`, `npm test` (165 passed, 9 todo; 158 on `main`) and `npm run build`: passed. The new cases cover the delete digest against the fixture, preflight of a delete (PDF refused, changed target refused), the Undo preflight for a deletion (free name, occupied name, not recoverable) and the paths it observes, and the Organize preview row and "Deleted 1 file." headline.
+- Rebased onto `main` with #15 merged: native tests 168 passed, 2 ignored again. `identity.rs` now calls `folio_core::interpretation::is_windows_reserved_name`, and `folio-core`'s dependencies need OpenSSL headers this host lacks, so the scratch crate compiled a verbatim copy of that one function instead of the `folio-core` crate. `folio-core` itself was not built here.
+- `npm run format:check`, `npm run check`, `npm test` (169 passed, 9 todo after the rebase; 165 before it) and `npm run build`: passed. The new cases cover the delete digest against the fixture, preflight of a delete (PDF refused, changed target refused), the Undo preflight for a deletion (free name, occupied name, not recoverable) and the paths it observes, and the Organize preview row and "Deleted 1 file." headline.
 
 ### Organize flow (2026-10-09, issue #22)
 
