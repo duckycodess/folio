@@ -520,7 +520,7 @@ fn r8_interpretation_deadline() {
     let benchmark_request = "Palitan sa project plan ang deadline na October 20 to October 23.";
     let workflow_request =
         "Hanapin yung project plan at palitan ang deadline na October 20 to October 23.";
-    let benchmark_result = interpretation::interpret_request(
+    let benchmark_trace = interpretation::interpret_request_traced(
         generation.provider.as_ref(),
         benchmark_request,
         &prepared.documents,
@@ -529,7 +529,7 @@ fn r8_interpretation_deadline() {
         &cancel,
     )
     .expect("real benchmark interpretation");
-    let workflow_result = interpretation::interpret_request(
+    let workflow_trace = interpretation::interpret_request_traced(
         generation.provider.as_ref(),
         workflow_request,
         &prepared.documents,
@@ -543,11 +543,21 @@ fn r8_interpretation_deadline() {
         json!({
             "inputs": [benchmark_request, workflow_request],
             "results": {
-                "benchmark": &benchmark_result,
-                "workflow": &workflow_result,
+                "benchmark": &benchmark_trace.result,
+                "workflow": &workflow_trace.result,
+            },
+            "rawModelOutputs": {
+                "benchmark": &benchmark_trace.raw_model_output,
+                "workflow": &workflow_trace.raw_model_output,
+            },
+            "promptSha256": {
+                "benchmark": &benchmark_trace.prompt_sha256,
+                "workflow": &workflow_trace.prompt_sha256,
             },
         }),
     );
+    let benchmark_result = benchmark_trace.result;
+    let workflow_result = workflow_trace.result;
     assert_edit_proposal(&benchmark_result);
     assert_edit_proposal(&workflow_result);
 }
@@ -559,7 +569,7 @@ fn r8_interpretation_ambiguity() {
     let generation = GenerationGuard::new(&prepared.inputs);
     let cancel = AtomicBool::new(false);
     let request = "Rename the notes to archived-notes.md.";
-    let result = interpretation::interpret_request(
+    let trace = interpretation::interpret_request_traced(
         generation.provider.as_ref(),
         request,
         &prepared.documents,
@@ -570,8 +580,14 @@ fn r8_interpretation_ambiguity() {
     .expect("real ambiguous interpretation");
     write_evidence(
         "r8_interpretation_ambiguity",
-        json!({"input": request, "result": &result}),
+        json!({
+            "input": request,
+            "result": &trace.result,
+            "rawModelOutput": &trace.raw_model_output,
+            "promptSha256": &trace.prompt_sha256,
+        }),
     );
+    let result = trace.result;
     assert!(matches!(
         result,
         InterpretationResult::NeedsFileSelection { .. }

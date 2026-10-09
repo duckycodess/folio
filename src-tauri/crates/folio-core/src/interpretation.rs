@@ -100,6 +100,20 @@ pub fn parse_model_intent(value: Value) -> Result<ModelIntent, String> {
     serde_json::from_value(Value::Object(object.clone())).map_err(|error| error.to_string())
 }
 
+/// Diagnostic record of one interpretation: the resolved result plus the raw
+/// schema-constrained model value it was resolved from. It exists so
+/// acceptance evidence can tell a model failure from a resolver failure; it is
+/// never a proposal or an approval.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InterpretationTrace {
+    pub result: InterpretationResult,
+    /// `None` when generation failed before producing JSON.
+    pub raw_model_output: Option<Value>,
+    /// SHA-256 over the exact prompt messages sent to the model.
+    pub prompt_sha256: String,
+}
+
 /// Run one model interpretation, then resolve it without exposing document
 /// text to the model and without creating an approval plan or writing a file.
 pub fn interpret_request(
@@ -110,37 +124,60 @@ pub fn interpret_request(
     chunks: &[Chunk],
     cancel: &AtomicBool,
 ) -> CoreResult<InterpretationResult> {
+    interpret_request_traced(provider, request, documents, contents, chunks, cancel)
+        .map(|trace| trace.result)
+}
+
+/// Same as [`interpret_request`], additionally returning the raw model value.
+pub fn interpret_request_traced(
+    provider: &dyn GenerationProvider,
+    request: &str,
+    documents: &[DocumentRecord],
+    contents: &HashMap<String, String>,
+    chunks: &[Chunk],
+    cancel: &AtomicBool,
+) -> CoreResult<InterpretationTrace> {
+    let messages = build_interpretation_messages(request);
+    let prompt_sha256 = hex::encode(Sha256::digest(
+        serde_json::to_vec(&messages).expect("chat messages are serializable"),
+    ));
     let output = provider.generate_json(
         &interpretation_schema(),
-        &build_interpretation_messages(request),
+        &messages,
         &GenerationBudget::default(),
         cancel,
     );
     let value = match output {
         Ok(value) => value,
         Err(error) if is_invalid_output(&error) => {
-            return Ok(InterpretationResult::InvalidModelOutput {
-                raw_output_digest: digest_text(&error.to_string()),
+            return Ok(InterpretationTrace {
+                result: InterpretationResult::InvalidModelOutput {
+                    raw_output_digest: digest_text(&error.to_string()),
+                },
+                raw_model_output: None,
+                prompt_sha256,
             });
         }
         Err(error) => return Err(error),
     };
     let digest = digest_value(&value);
-    let intent = match parse_model_intent(value) {
-        Ok(intent) => intent,
-        Err(_) => {
-            return Ok(InterpretationResult::InvalidModelOutput {
-                raw_output_digest: digest,
-            });
-        }
+    let result = match parse_model_intent(value.clone()) {
+        Ok(intent) => resolve_model_intent(
+            &intent,
+            detect_language(request),
+            documents,
+            contents,
+            chunks,
+        ),
+        Err(_) => InterpretationResult::InvalidModelOutput {
+            raw_output_digest: digest,
+        },
     };
-    Ok(resolve_model_intent(
-        &intent,
-        detect_language(request),
-        documents,
-        contents,
-        chunks,
-    ))
+    Ok(InterpretationTrace {
+        result,
+        raw_model_output: Some(value),
+        prompt_sha256,
+    })
 }
 
 pub fn resolve_model_intent(
