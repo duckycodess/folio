@@ -225,8 +225,7 @@ export function useOrganize(workspace: WorkspaceState): OrganizeController {
         .map((item) => item.operation);
       if (operations.length) void preview(operations);
     },
-    previewRename: (document, newName) =>
-      void previewRename(document, newName),
+    previewRename: (document, newName) => void previewRename(document, newName),
     previewAgain: () => {
       if (state.operations.length) void preview(state.operations);
     },

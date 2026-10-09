@@ -7,6 +7,7 @@
 - A sidebar theme switch (System, Light, Dark), remembered on the device, and coloured file-type tiles in file lists and the document panel. Checked in headless Chromium: the switch cycles, the choice survives a reload, and System removes the override. The sample files are all Markdown, so the PDF and text tiles have not been seen rendered.
 - File table and reader ([issue #17](https://github.com/duckycodess/folio/issues/17)): name, location, type, modified and size columns that drop to fit the space; the reader beside the table (or in place of it below 860px) shows the file's text as read-only, with its full path. The reader never shows a file the current list excludes. In the desktop app, Folio starts with an "Add folder" state (sample files on request); an added folder with no readable files offers "Choose another folder". The browser preview lists sample files and says so.
 - Shared error and recovery states ([issue #18](https://github.com/duckycodess/folio/issues/18)): every error code maps to one plain-language message and next step ([error-states.md](error-states.md)), shown through one recovery notice in every workflow. Drafts (the Ask & Act request, rename names per file) survive errors and view changes. Success after opening a folder is shown only once the native core reports it. Each view announces into its own live region. Modals keep Tab inside them. A browser-only practice mode (`?simulate=<code>`) triggers each state in its own flow.
+- Organize flow ([issue #22](https://github.com/duckycodess/folio/issues/22)), desktop only. Analyze re-indexes the open folder, with live progress and Stop, then lists exact duplicates (by content, never moved or deleted) and filename suggestions to tick. The exact preview shows every from → to path from the native plan. Approve echoes that plan's digest and applies it. The result is worded from the per-file outcomes, so a batch that stopped partway never says nothing changed. It shows what was recorded in history and offers a Preview Undo. A refused apply keeps the preview, with Preview again. The Rename form uses the same native plan with a folder open. With the sample files, Organize explains that a folder is needed. Virtual collections are still not available.
 - Keyword filtering (explicitly labelled), actual Markdown-link discovery in fixture text, source content views, and a list of those explicit links with their evidence (Graph view).
 - Tauri folder picker and scoped native listing/TXT/Markdown reading commands.
 - [Frozen cross-track contracts](contracts.md) declared in both `src/domain/contracts.ts` and `src-tauri/src/contracts.rs`: typed failures, stable workspace/document identity, UTF-8 source offsets bound to a document revision, typed relationship evidence, embedding-space fingerprints, provider error/cancellation codes, plans, approvals, per-operation outcomes, history and undo shapes.
@@ -57,6 +58,35 @@ Provider cases are listed as pending, not mocked, in `src/domain/pending.test.ts
 No AI or save completion should be presented until the corresponding native/provider implementation succeeds. Model sizes, installed size, memory targets, and platform support remain subject to measurements.
 
 ## Verification
+
+### Organize flow (2026-10-09, issue #22)
+
+Checked on macOS with Node.js 26.10.0, on top of #31:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 139 passed, 9 todo. New cases cover:
+  - the flow's steps;
+  - late replies being ignored;
+  - a refused apply keeping the preview;
+  - no apply without a native plan;
+  - preview rows for every from → to;
+  - "saved" only when every change succeeded and the index caught up;
+  - a stopped batch never claiming nothing changed;
+  - a cancelled batch reported by what it kept;
+  - partial and blocked Undo wording.
+- The real UI in headless Chromium, with a **mocked** native core injected as `window.__TAURI_INTERNALS__` (a test harness, not part of the app):
+  - Analyze shows progress, then 2 suggestions and 1 duplicate group;
+  - the preview lists both renames;
+  - the approval echoes the shown plan's id and digest before apply;
+  - the folder is listed again afterwards;
+  - Undo reports "Undid 2 changes.";
+  - a mid-batch failure reads "Saved 1 of 2 changes. Stopped at …" with the earlier change kept;
+  - a refused apply keeps the preview and Preview again issues a new plan;
+  - Stop sends `cancel_indexing`;
+  - a manual rename reads the file before preparing its plan;
+  - no horizontal scroll at 700px.
+
+Not verified: the real native core in the Tauri app (all of the above used the mock), screen readers, and Windows.
 
 ### Error and recovery states (2026-10-09, issue #18)
 

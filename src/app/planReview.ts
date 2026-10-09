@@ -73,7 +73,9 @@ export function summarizeApply(
     return {
       ...planRow(operation),
       status,
-      ...(outcome?.error ? { reason: recoveryFor(outcome.error).title } : {}),
+      ...(outcome?.error
+        ? { reason: recoveryFor(outcome.error, "duringApply").title }
+        : {}),
     };
   });
   const saved = rows.filter((row) => row.status === "succeeded").length;
@@ -146,7 +148,7 @@ export function summarizeUndo(report: UndoReport): {
   if (undone === 0)
     return {
       complete: false,
-      headline: `Nothing was undone.${report.error ? ` ${recoveryFor(report.error).title}.` : ""}`,
+      headline: `Nothing was undone.${report.error ? ` ${recoveryFor(report.error, "refused").title}.` : ""}`,
     };
   return {
     complete: false,
