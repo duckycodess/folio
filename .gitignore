@@ -26,3 +26,6 @@ Thumbs.db
 *:Zone.Identifier
 .idea/
 .vscode/
+
+# Design source sheets (not committed until decided; see docs/design.md)
+/olio-asset-pack*

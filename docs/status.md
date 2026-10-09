@@ -14,6 +14,7 @@
 - A SQLite migration contract.
 - Fifteen English/Filipino/Taglish synthetic text documents and labelled benchmark cases.
 - Product docs, glossary, ADRs, four-person plan, and CI definitions.
+- Golden Daylight design system and Olio mascot rules recorded in [design.md](design.md); not yet implemented in the UI. The dark theme and its contrast ratios are computed, not visually reviewed, and the Olio poses and wordmark SVG are still to be produced.
 
 ## Pending
 
