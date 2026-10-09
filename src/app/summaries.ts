@@ -5,6 +5,7 @@ import type {
   SourcePassage,
 } from "../domain/contracts";
 import type { FolioError } from "../domain/errors";
+import { utf8Length } from "../domain/offsets";
 
 /** One file's summary, wherever it was asked for (Summary tab or Ask & Act). */
 export type SummaryEntry =
@@ -38,6 +39,9 @@ export function createSummaryStore(limit = MAX_SUMMARIES): SummaryStore {
       return null;
     },
     set: (documentId, entry) => {
+      // Clearing never drops a running summary: it would release the
+      // one-at-a-time lock while the model is still working.
+      if (!entry && entries.get(documentId)?.status === "running") return;
       entries.delete(documentId);
       if (entry) entries.set(documentId, entry);
       // Drop the oldest finished summaries; never a running one.
@@ -74,21 +78,29 @@ export function isStale(
   );
 }
 
-/** How much of the file the summary read, as a whole percentage. */
+/**
+ * How much of the file's text the summary read, as a whole percentage.
+ * Coverage ranges are UTF-8 offsets into the extracted text, so they are
+ * compared with that text, never with the file's size on disk (a PDF is
+ * mostly fonts and structure). Unknown until the text has been read.
+ */
 export function coveredPercent(
   result: GroundedResult,
-  document: Pick<DocumentRecord, "id" | "sizeBytes">,
+  document: Pick<DocumentRecord, "id" | "content">,
 ): number | null {
   const entry = result.coverageRanges.find(
     (coverage) => coverage.documentId === document.id,
   );
-  if (!entry || document.sizeBytes <= 0) return null;
+  if (!entry) return null;
   if (entry.complete) return 100;
+  const textBytes =
+    document.content === undefined ? 0 : utf8Length(document.content);
+  if (textBytes <= 0) return null;
   const bytes = entry.ranges.reduce(
     (total, range) => total + Math.max(0, range.end - range.start),
     0,
   );
-  return Math.min(99, Math.floor((bytes / document.sizeBytes) * 100));
+  return Math.min(99, Math.floor((bytes / textBytes) * 100));
 }
 
 /** `notes/plan.md` → `notes/plan summary.md`, avoiding names already taken. */

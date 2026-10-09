@@ -71,6 +71,13 @@ describe("summary store", () => {
     expect(store.get("c")).toBeDefined();
   });
 
+  it("never clears a running summary", () => {
+    const store = createSummaryStore();
+    store.set("a", { status: "running", startedAt: 1 });
+    store.set("a", undefined);
+    expect(store.running()).toBe("a");
+  });
+
   it("tells subscribers about every change", () => {
     const store = createSummaryStore();
     let calls = 0;
@@ -93,7 +100,8 @@ describe("summary checks", () => {
   });
 
   it("reports how much of the file a partial summary read", () => {
-    expect(coveredPercent(result(), { id: ID, sizeBytes: 200 })).toBe(100);
+    const text = "x".repeat(200);
+    expect(coveredPercent(result(), { id: ID, content: text })).toBe(100);
     const partial = result({
       kind: "partialSummary",
       coverageRanges: [
@@ -109,8 +117,14 @@ describe("summary checks", () => {
         },
       ],
     });
-    expect(coveredPercent(partial, { id: ID, sizeBytes: 200 })).toBe(40);
-    expect(coveredPercent(partial, { id: "other", sizeBytes: 200 })).toBeNull();
+    expect(coveredPercent(partial, { id: ID, content: text })).toBe(40);
+    expect(coveredPercent(partial, { id: "other", content: text })).toBeNull();
+    // Measured against the extracted text, not the file on disk: a PDF's
+    // file size would understate what was read.
+    expect(coveredPercent(partial, { id: ID, content: "é".repeat(100) })).toBe(
+      40,
+    );
+    expect(coveredPercent(partial, { id: ID, content: undefined })).toBeNull();
   });
 });
 

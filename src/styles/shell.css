@@ -741,6 +741,79 @@
   max-width: 640px;
 }
 
+/* Model Lab: model setup cards and per-task results. */
+.model-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.model-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.model-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.model-name {
+  margin: 0 var(--space-2) 0 0;
+  font: var(--text-label);
+  overflow-wrap: anywhere;
+}
+.model-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  font: var(--text-small);
+}
+.model-facts dt {
+  color: var(--color-text-secondary);
+}
+.model-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.model-progress {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--space-3);
+}
+.model-progress .progress {
+  flex: 1 1 16rem;
+}
+.results-task {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+.table-scroll {
+  overflow-x: auto;
+}
+.results-table {
+  width: 100%;
+  border-collapse: collapse;
+  font: var(--text-small);
+}
+.results-table th,
+.results-table td {
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+  text-align: left;
+  vertical-align: top;
+}
+
 /* Home filters, pinned folders and recent files (#33) */
 .home-filters {
   display: flex;
@@ -1239,4 +1312,90 @@
 .change-line.is-undone > span:not(.muted) {
   text-decoration: line-through;
   color: var(--color-text-secondary);
+}
+
+/* Ask & Act changes: the exact text diff and Ripple passages. */
+.edit-diff {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.edit-diff del {
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+}
+.edit-diff ins {
+  background: var(--color-selected);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+}
+.ripple {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.ripple h4 {
+  margin: 0;
+}
+.ripple-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ripple-list li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.ripple-list p {
+  margin: 0;
+}
+.ripple-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* Ask Olio launcher on Home: a quiet button under the search field. */
+.home-search:has(.ask-launcher) {
+  flex-direction: column;
+  align-items: center;
+}
+.ask-launcher {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2) var(--space-3);
+  width: 100%;
+  max-width: 640px;
+  margin-top: var(--space-2);
+}
+.ask-launcher-greeting {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0;
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-muted);
+  font: var(--text-small);
+}
+.ask-launcher-dismiss {
+  width: 28px;
+  height: 28px;
+}
+.ask-launcher-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
 }

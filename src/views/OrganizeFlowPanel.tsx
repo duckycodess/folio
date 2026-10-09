@@ -1,5 +1,5 @@
 import { ArrowRight, Copy, FolderOpen } from "lucide-react";
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useRef, type ReactNode, type RefObject } from "react";
 import type { OrganizeStage } from "../app/organizeFlow";
 import {
   planRow,
@@ -320,10 +320,13 @@ export function PreviewStep({
   organize,
   heading,
   cancelLabel,
+  details,
 }: {
   organize: OrganizeController;
   heading: RefObject<HTMLHeadingElement | null>;
   cancelLabel: string;
+  /** More of the exact preview, such as a text diff and Ripple passages. */
+  details?: ReactNode;
 }) {
   const { state } = organize;
   if (!state.plan) return null;
@@ -336,6 +339,7 @@ export function PreviewStep({
         rows={state.plan.operations.map(planRow)}
         caption="Changes Folio will make after you approve"
       />
+      {details}
       {state.plan.impacts.length > 0 && (
         <Notice tone="info">
           {state.plan.impacts.length} related{" "}

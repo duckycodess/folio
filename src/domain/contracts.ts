@@ -454,6 +454,23 @@ export interface RuntimeStatus {
   executablePath?: string;
 }
 
+/** Saved model choices and this computer's runtime build (`model_setup`). */
+export interface ModelSetup {
+  selectedEmbedding: string | null;
+  selectedGeneration: string | null;
+  hostRuntimeId: string;
+  /** Exact download size of that runtime, from the pinned manifest. */
+  hostRuntimeBytes: number | null;
+}
+
+/** One file of a model or runtime download (`folio://model-progress`). */
+export interface DownloadProgress {
+  itemId: string;
+  file: string;
+  receivedBytes: number;
+  totalBytes: number;
+}
+
 export interface SkippedDocument {
   relativePath: string;
   reason: string;
