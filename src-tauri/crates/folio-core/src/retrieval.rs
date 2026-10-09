@@ -114,6 +114,7 @@ impl VectorIndex {
     }
 }
 
+#[derive(Clone)]
 pub struct HybridRetriever {
     pub vector_index: VectorIndex,
     pub max_passages: usize,
