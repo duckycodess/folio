@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "purpose": "evaluation-only",
+  "notice": "Evaluation-only candidates for Model Lab. They are not supported, recommended or selectable product models, and nothing here has been measured. Pins were checked against the Hugging Face metadata API on 2026-10-10; no weights were downloaded for that check.",
+  "models": [
+    {
+      "id": "qwen3.5-0.8b-q4-k-m",
+      "role": "generation",
+      "repo": "unsloth/Qwen3.5-0.8B-GGUF",
+      "revision": "6ab461498e2023f6e3c1baea90a8f0fe38ab64d0",
+      "files": [
+        {
+          "path": "Qwen3.5-0.8B-Q4_K_M.gguf",
+          "sha256": "bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517",
+          "bytes": 532517120,
+          "downloadUrl": "https://huggingface.co/unsloth/Qwen3.5-0.8B-GGUF/resolve/6ab461498e2023f6e3c1baea90a8f0fe38ab64d0/Qwen3.5-0.8B-Q4_K_M.gguf"
+        }
+      ],
+      "quantization": "Q4_K_M",
+      "license": "apache-2.0",
+      "runtime": "llama.cpp",
+      "optionalPack": true,
+      "evaluationOnly": true,
+      "note": "Third-party GGUF conversion by unsloth of Qwen/Qwen3.5-0.8B (@ 2fc06364715b967f1860aea9cf38778875588b17). Tagalog is claimed only in aggregate by the model card."
+    },
+    {
+      "id": "qwen3.5-2b-q4-k-m",
+      "role": "generation",
+      "repo": "unsloth/Qwen3.5-2B-GGUF",
+      "revision": "f6d5376be1edb4d416d56da11e5397a961aca8ae",
+      "files": [
+        {
+          "path": "Qwen3.5-2B-Q4_K_M.gguf",
+          "sha256": "aaf42c8b7c3cab2bf3d69c355048d4a0ee9973d48f16c731c0520ee914699223",
+          "bytes": 1280835840,
+          "downloadUrl": "https://huggingface.co/unsloth/Qwen3.5-2B-GGUF/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Qwen3.5-2B-Q4_K_M.gguf"
+        }
+      ],
+      "quantization": "Q4_K_M",
+      "license": "apache-2.0",
+      "runtime": "llama.cpp",
+      "optionalPack": true,
+      "evaluationOnly": true,
+      "note": "Third-party GGUF conversion by unsloth of Qwen/Qwen3.5-2B (@ 15852e8c16360a2fea060d615a32b45270f8a8fc). Tagalog is claimed only in aggregate by the model card."
+    },
+    {
+      "id": "gemma-sea-lion-v4.5-e2b-q4-k-m",
+      "role": "generation",
+      "repo": "aisingapore/Gemma-SEA-LION-v4.5-E2B-IT-GGUF",
+      "revision": "3c0d3590d93771f3f3e8a879d812500651576171",
+      "files": [
+        {
+          "path": "Gemma-SEA-LION-v4.5-E2B-IT-Q4_K_M.gguf",
+          "sha256": "624a18a8cfc3d8ee29752200f73dc02f5007eaac408d94309e8d8da27b2a7ed9",
+          "bytes": 3427879360,
+          "downloadUrl": "https://huggingface.co/aisingapore/Gemma-SEA-LION-v4.5-E2B-IT-GGUF/resolve/3c0d3590d93771f3f3e8a879d812500651576171/Gemma-SEA-LION-v4.5-E2B-IT-Q4_K_M.gguf"
+        }
+      ],
+      "quantization": "Q4_K_M",
+      "license": "mit",
+      "runtime": "llama.cpp",
+      "optionalPack": true,
+      "evaluationOnly": true,
+      "licenseNote": "Unsettled: the publisher's metadata says MIT, but its license link points to the Gemma 4 license page. Confirm with the publisher before any redistribution; Folio only downloads from the pinned URL and does not redistribute.",
+      "note": "Publisher's own GGUF of aisingapore/Gemma-SEA-LION-v4.5-E2B-IT (@ c028f609f6f84dd0e9b669dad9dc1f9fd61b8bed). The card says the model has not been aligned for safety. The 3.4 GB file is the largest candidate; its RAM fit on 8 GB is unmeasured."
+    }
+  ],
+  "runtimes": []
+}
