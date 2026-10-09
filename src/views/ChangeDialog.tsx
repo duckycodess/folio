@@ -110,7 +110,7 @@ export function ChangeDialog({
   relations: RelationshipsState;
   onClose: () => void;
 }) {
-  const organize = useOrganize(workspace, relations.refresh);
+  const organize = useOrganize(workspace, "assistant", relations.refresh);
   const { state } = organize;
   const heading = useRef<HTMLHeadingElement>(null);
   const [before, setBefore] = useState<string | null>(null);

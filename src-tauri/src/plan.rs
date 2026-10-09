@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::contracts::{
-    ActionPlan, Approval, BatchResult, BatchStopReason, FileOperation, FileOperationKind,
+    ActionPlan, Approval, BatchResult, PlanSource, BatchStopReason, FileOperation, FileOperationKind,
     HistoryEntry,
     ImpactCandidate, OperationOutcome, OperationStatus, RestoredPreview, UndoConflict,
     UndoConflictReason, UndoPreflight,
@@ -20,7 +20,7 @@ use crate::identity::{
 };
 use crate::workspace::{document_hash, resolve_document};
 
-const CANONICAL_HEADER: &str = "FOLIO-PLAN-V1";
+const CANONICAL_HEADER: &str = "FOLIO-PLAN-V2";
 
 fn field(out: &mut Vec<u8>, value: &str) {
     out.extend_from_slice(value.len().to_string().as_bytes());
@@ -32,8 +32,10 @@ fn field(out: &mut Vec<u8>, value: &str) {
 /// Canonical bytes of a plan. Every field is length-prefixed in UTF-8 bytes, so
 /// no path or document body can forge a field boundary.
 ///
-/// The digest covers exactly what can change a file: plan identity, workspace,
-/// the validity window and every operation in order. Ripple candidates never
+/// The digest covers exactly what can change a file, plus where the plan was
+/// started: plan identity, workspace, source, the validity window and every
+/// operation in order. Covering the source means it can't be relabelled after
+/// approval. Ripple candidates never
 /// write, so they are excluded and cannot silently invalidate an approval.
 pub fn canonical_plan_bytes(plan: &ActionPlan) -> Vec<u8> {
     let mut out = Vec::new();
@@ -41,6 +43,7 @@ pub fn canonical_plan_bytes(plan: &ActionPlan) -> Vec<u8> {
     out.push(b'\n');
     field(&mut out, &plan.id);
     field(&mut out, &plan.workspace_id);
+    field(&mut out, plan.source.as_str());
     field(&mut out, &plan.created_at.to_string());
     field(&mut out, &plan.expires_at.to_string());
     field(&mut out, &plan.operations.len().to_string());
@@ -314,6 +317,7 @@ impl PlanRegistry {
     pub fn prepare(
         &mut self,
         workspace_id: &str,
+        source: PlanSource,
         operations: Vec<FileOperation>,
         impacts: Vec<ImpactCandidate>,
         created_at: i64,
@@ -336,6 +340,7 @@ impl PlanRegistry {
                 self.issued
             ),
             workspace_id: workspace_id.to_string(),
+            source,
             created_at,
             expires_at: created_at + lifetime_ms,
             operations,
@@ -781,6 +786,7 @@ mod tests {
             .registry
             .prepare(
                 &harness.workspace_id.clone(),
+                PlanSource::Organize,
                 vec![operation],
                 Vec::new(),
                 NOW,
@@ -946,6 +952,7 @@ mod tests {
             .registry
             .prepare(
                 &harness.workspace_id.clone(),
+                PlanSource::Organize,
                 vec![operation],
                 Vec::new(),
                 NOW,
@@ -985,6 +992,7 @@ mod tests {
             .registry
             .prepare(
                 &harness.workspace_id.clone(),
+                PlanSource::Organize,
                 operations,
                 Vec::new(),
                 NOW,
@@ -1019,6 +1027,7 @@ mod tests {
             .registry
             .prepare(
                 &harness.workspace_id.clone(),
+                PlanSource::Organize,
                 vec![operation],
                 Vec::new(),
                 NOW,
@@ -1049,6 +1058,7 @@ mod tests {
             .registry
             .prepare(
                 &harness.workspace_id.clone(),
+                PlanSource::Organize,
                 vec![operation],
                 Vec::new(),
                 NOW,
@@ -1087,6 +1097,7 @@ mod tests {
             .registry
             .prepare(
                 &harness.workspace_id.clone(),
+                PlanSource::Organize,
                 operations,
                 Vec::new(),
                 NOW,
@@ -1114,6 +1125,7 @@ mod tests {
             .registry
             .prepare(
                 &harness.workspace_id.clone(),
+                PlanSource::Organize,
                 vec![operation],
                 Vec::new(),
                 NOW,
@@ -1137,6 +1149,7 @@ mod tests {
             .registry
             .prepare(
                 &harness.workspace_id.clone(),
+                PlanSource::Organize,
                 vec![operation],
                 Vec::new(),
                 NOW,
@@ -1172,6 +1185,7 @@ mod tests {
             .registry
             .prepare(
                 &harness.workspace_id.clone(),
+                PlanSource::Organize,
                 operations,
                 Vec::new(),
                 NOW,
@@ -1244,6 +1258,7 @@ mod tests {
             .registry
             .prepare(
                 &harness.workspace_id.clone(),
+                PlanSource::Organize,
                 vec![edit(
                     &harness.workspace_id,
                     "projects/project-plan.md",
@@ -1269,6 +1284,15 @@ mod tests {
             verify_plan_digest(&tampered).unwrap_err().code,
             ErrorCode::PlanDigestMismatch
         );
+        // Where a plan was started is covered too: it can't be relabelled.
+        assert_eq!(sneaky.source, PlanSource::Organize);
+        assert!(canonical.contains("8:organize\n"));
+        let mut relabelled = sneaky.clone();
+        relabelled.source = PlanSource::Assistant;
+        assert_eq!(
+            verify_plan_digest(&relabelled).unwrap_err().code,
+            ErrorCode::PlanDigestMismatch
+        );
     }
 
     fn three_operation_plan(harness: &mut Harness) -> ActionPlan {
@@ -1292,6 +1316,7 @@ mod tests {
             .registry
             .prepare(
                 &harness.workspace_id.clone(),
+                PlanSource::Organize,
                 operations,
                 Vec::new(),
                 NOW,
@@ -1705,6 +1730,7 @@ mod tests {
             .registry
             .prepare(
                 &harness.workspace_id.clone(),
+                PlanSource::Organize,
                 vec![operation],
                 Vec::new(),
                 NOW,

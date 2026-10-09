@@ -235,11 +235,54 @@ impl FileOperation {
     }
 }
 
+/// Where in Folio a plan was started. The UI names it when it asks for a plan,
+/// and it is part of the plan digest, so it can't be relabelled after approval.
+/// It is a closed list: no document text can supply it. Plans recorded before
+/// sources existed read as `Unknown`.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum PlanSource {
+    Home,
+    Organize,
+    Graph,
+    Assistant,
+    Summary,
+    #[default]
+    Unknown,
+}
+
+impl PlanSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PlanSource::Home => "home",
+            PlanSource::Organize => "organize",
+            PlanSource::Graph => "graph",
+            PlanSource::Assistant => "assistant",
+            PlanSource::Summary => "summary",
+            PlanSource::Unknown => "unknown",
+        }
+    }
+
+    /// The stored value, or `Unknown` for anything else.
+    pub fn from_stored(value: &str) -> Self {
+        match value {
+            "home" => PlanSource::Home,
+            "organize" => PlanSource::Organize,
+            "graph" => PlanSource::Graph,
+            "assistant" => PlanSource::Assistant,
+            "summary" => PlanSource::Summary,
+            _ => PlanSource::Unknown,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ActionPlan {
     pub id: String,
     pub workspace_id: String,
+    #[serde(default)]
+    pub source: PlanSource,
     pub created_at: i64,
     pub expires_at: i64,
     pub operations: Vec<FileOperation>,
@@ -323,6 +366,44 @@ pub struct HistoryEntry {
     pub recoverable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub undone_at: Option<i64>,
+}
+
+/// One operation of an applied plan, as Activity shows it.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityOperation {
+    pub operation_index: usize,
+    pub operation_kind: FileOperationKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before_relative_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_relative_path: Option<String>,
+    /// Absent when the batch was recorded before outcomes were stored and this
+    /// operation left no history: its outcome is unknown, never guessed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<OperationStatus>,
+    /// Present when the operation failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<FolioError>,
+    /// Present when the operation changed a file, with its Undo state.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub history: Option<HistoryEntry>,
+}
+
+/// One approved plan that Folio ran: what it did, where it was started, and how
+/// it ended. Plans that were prepared or approved but never run are not batches.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityBatch {
+    pub plan_id: String,
+    pub source: PlanSource,
+    pub applied_at: i64,
+    /// Absent for batches recorded before outcomes were stored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<BatchStopReason>,
+    pub operations: Vec<ActivityOperation>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]

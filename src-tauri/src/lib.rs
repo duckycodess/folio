@@ -37,7 +37,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
-use contracts::{ActionPlan, Approval, FileOperation, HistoryEntry, ImpactCandidate, UndoPreflight};
+use contracts::{ActionPlan, ActivityBatch, Approval, FileOperation, HistoryEntry, ImpactCandidate, PlanSource, UndoPreflight};
 use error::{error, ErrorCode, FolioError};
 use index::{
     ChunkVector, DuplicateGroup, EmbeddingSpace, ExplicitReference, IndexProgress,
@@ -341,9 +341,14 @@ async fn read_document(
 async fn prepare_plan(
     state: State<'_, Folio>,
     workspace_id: String,
+    source: PlanSource,
     operations: Vec<FileOperation>,
     impacts: Option<Vec<ImpactCandidate>>,
 ) -> Result<ActionPlan, FolioError> {
+    // `unknown` only describes plans recorded before sources existed.
+    if source == PlanSource::Unknown {
+        return Err(error(ErrorCode::OperationUnsupported, "Say where in Folio this change was started.").with_detail("source", source.as_str()));
+    }
     let workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
     let root = workspaces.resolve(&workspace_id)?;
     // Ripple evidence comes from the index and each edit's diff unless the caller
@@ -354,7 +359,7 @@ async fn prepare_plan(
     };
     let mut plans = state.plans.lock().map_err(|_| unavailable_state())?;
     let now = now_ms();
-    let plan = plans.prepare(&workspace_id, operations, impacts, now, PLAN_LIFETIME_MS)?;
+    let plan = plans.prepare(&workspace_id, source, operations, impacts, now, PLAN_LIFETIME_MS)?;
     plan::preflight_plan(&root.path, &plan, now)?;
     Ok(plan)
 }
@@ -464,6 +469,19 @@ async fn list_history(
 ) -> Result<Vec<HistoryEntry>, FolioError> {
     state.root(&workspace_id)?;
     writer::list_history(&*state.index()?, &workspace_id, limit.unwrap_or(100))
+}
+
+/// Activity: the plans Folio ran, newest first, one entry per batch with every
+/// operation's outcome. `before` is the plan id the previous page ended with.
+#[tauri::command]
+async fn list_activity(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    limit: Option<usize>,
+    before: Option<String>,
+) -> Result<Vec<ActivityBatch>, FolioError> {
+    state.root(&workspace_id)?;
+    writer::list_activity(&*state.index()?, &workspace_id, limit.unwrap_or(50), before.as_deref())
 }
 
 /// Ripple for an explicit phrase, e.g. the value an interpreter knows it replaced.
@@ -1768,6 +1786,7 @@ pub fn run() {
             preview_undo,
             undo_plan,
             list_history,
+            list_activity,
             ripple_impacts,
             prepare_passage_edit,
             organization_suggestions,

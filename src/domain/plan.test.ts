@@ -321,6 +321,15 @@ describe("plan digest", () => {
     );
   });
 
+  it("can't be relabelled with another source after it was issued", async () => {
+    const plan = await deadlinePlan();
+    expect(plan.source).toBe("organize");
+    const relabelled = { ...plan, source: "assistant" as const };
+    expect(await codeOfAsync(() => verifyPlanDigest(relabelled))).toBe(
+      "planDigestMismatch",
+    );
+  });
+
   it("refuses an approval whose plan changed under the same identity", async () => {
     const plan = await deadlinePlan();
     const approval: Approval = {

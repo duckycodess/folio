@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   ActionPlan,
+  ActivityBatch,
   ApplyReport,
   Approval,
   DocumentId,
@@ -8,6 +9,7 @@ import type {
   HistoryEntry,
   ImpactCandidate,
   OrganizationSuggestions,
+  NewPlanSource,
   UndoPreflight,
   UndoReport,
   WorkspaceId,
@@ -33,11 +35,14 @@ async function call<T>(command: string, args?: Record<string, unknown>) {
  */
 export function preparePlan(
   workspaceId: WorkspaceId,
+  /** Where in Folio the change was started; covered by the digest. */
+  source: NewPlanSource,
   operations: FileOperation[],
   impacts?: ImpactCandidate[],
 ): Promise<ActionPlan> {
   return call<ActionPlan>("prepare_plan", {
     workspaceId,
+    source,
     operations,
     impacts,
   });
@@ -102,6 +107,22 @@ export function listHistory(
   limit = 100,
 ): Promise<HistoryEntry[]> {
   return call<HistoryEntry[]>("list_history", { workspaceId, limit });
+}
+
+/**
+ * Activity: the plans Folio ran, newest first, each whole, with every
+ * operation's outcome. `before` is the plan id the previous page ended with.
+ */
+export function listActivity(
+  workspaceId: WorkspaceId,
+  limit = 50,
+  before?: string,
+): Promise<ActivityBatch[]> {
+  return call<ActivityBatch[]>("list_activity", {
+    workspaceId,
+    limit,
+    before,
+  });
 }
 
 /** Ripple candidates for an explicit phrase, e.g. the value an interpreter replaced. */

@@ -30,9 +30,10 @@ def field(value: str) -> bytes:
     return str(len(raw)).encode("ascii") + b":" + raw + b"\n"
 
 def canonical_plan(plan) -> bytes:
-    out = b"FOLIO-PLAN-V1\n"
+    out = b"FOLIO-PLAN-V2\n"
     out += field(plan["id"])
     out += field(plan["workspaceId"])
+    out += field(plan["source"])
     out += field(str(plan["createdAt"]))
     out += field(str(plan["expiresAt"]))
     out += field(str(len(plan["operations"])))
@@ -176,6 +177,7 @@ plan_a_target = "Deadline: October 20\n"
 plan_a = {
     "id": "plan-taglish-deadline",
     "workspaceId": WS,
+    "source": "assistant",
     "createdAt": 1760000000000,
     "expiresAt": 1760000300000,
     "operations": [
@@ -192,6 +194,7 @@ plan_b_note = "Paalala: ang huling araw ay ika-23 ng Oktubre \U0001f4c5\n"
 plan_b = {
     "id": "plan-batch-filipino",
     "workspaceId": WS,
+    "source": "organize",
     "createdAt": 1760000000000,
     "expiresAt": 1760000300000,
     "operations": [
@@ -223,6 +226,7 @@ plan_b = {
 plan_c = {
     "id": "plan-delete-pagsasanay",
     "workspaceId": WS,
+    "source": "graph",
     "createdAt": 1760000000000,
     "expiresAt": 1760000300000,
     "operations": [

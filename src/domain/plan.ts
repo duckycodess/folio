@@ -20,7 +20,7 @@ import {
   normalizeRelativePath,
 } from "./identity";
 
-const CANONICAL_HEADER = "FOLIO-PLAN-V1";
+const CANONICAL_HEADER = "FOLIO-PLAN-V2";
 const encoder = new TextEncoder();
 
 function field(value: string): string {
@@ -32,8 +32,10 @@ function field(value: string): string {
  * no path or document body can forge a field boundary and two plans that differ
  * anywhere produce different bytes.
  *
- * The digest covers exactly what can change a file: plan identity, workspace,
- * the validity window and every operation in order. `impacts` are review
+ * The digest covers exactly what can change a file, plus where the plan was
+ * started: plan identity, workspace, source, the validity window and every
+ * operation in order. Covering the source means it can't be relabelled after
+ * approval. `impacts` are review
  * candidates that never write, so they are excluded; adding or removing a
  * Ripple candidate does not silently invalidate an approval.
  */
@@ -41,6 +43,7 @@ export function canonicalPlanBytes(plan: ActionPlan): Uint8Array {
   let text = `${CANONICAL_HEADER}\n`;
   text += field(plan.id);
   text += field(plan.workspaceId);
+  text += field(plan.source);
   text += field(String(plan.createdAt));
   text += field(String(plan.expiresAt));
   text += field(String(plan.operations.length));

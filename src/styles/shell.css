@@ -1327,6 +1327,13 @@
   text-decoration: line-through;
   color: var(--color-text-secondary);
 }
+/* An operation that changed nothing (failed, cancelled or not started). */
+.change-line.is-unchanged {
+  color: var(--color-text-secondary);
+}
+.activity-stop {
+  font: var(--text-small);
+}
 
 /* Ask & Act changes: the exact text diff and Ripple passages. */
 .edit-diff {

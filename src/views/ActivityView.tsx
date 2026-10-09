@@ -5,10 +5,12 @@ import {
   batchTitle,
   changeKind,
   CONFLICT_REASONS,
+  SOURCE_LABELS,
   STATUS_LABELS,
+  stopSummary,
   type ActivityBatch,
 } from "../domain/activity";
-import type { HistoryEntry } from "../domain/contracts";
+import type { ActivityOperation, HistoryEntry } from "../domain/contracts";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
@@ -22,8 +24,9 @@ import { formatModified } from "./format";
 const FILES_SHOWN = 5;
 
 /**
- * Activity: what Folio actually changed on disk, newest first (#34). Every
- * entry comes from the native history; previews and analyses never appear.
+ * Activity: every approved plan Folio ran, newest first (#34, #35): what
+ * changed, what failed or was cancelled, and where it was started. Every
+ * entry comes from the native record; previews and analyses never appear.
  */
 export function ActivityView({
   workspace,
@@ -112,12 +115,17 @@ function ActivityBody({
           />
         ))}
       </ol>
-      <p className="muted">
-        {activity.truncated &&
-          "Only the most recent changes are shown, and the oldest entry may be incomplete. "}
-        Failed and cancelled attempts aren't recorded yet, and neither is which
-        page started a change.
-      </p>
+      {activity.hasOlder && (
+        <Button
+          variant="ghost"
+          disabled={activity.loadingOlder}
+          onClick={activity.loadOlder}
+        >
+          {activity.loadingOlder
+            ? "Loading older changes…"
+            : "Show older changes"}
+        </Button>
+      )}
     </>
   );
 }
@@ -130,8 +138,10 @@ function ActivityItem({
   onUndo: () => void;
 }) {
   const title = batchTitle(batch);
-  const shown = batch.entries.slice(0, FILES_SHOWN);
-  const hidden = batch.entries.length - shown.length;
+  const source = SOURCE_LABELS[batch.source];
+  const stopped = stopSummary(batch);
+  const shown = batch.operations.slice(0, FILES_SHOWN);
+  const hidden = batch.operations.length - shown.length;
   return (
     <li className="activity-item">
       <div className="activity-head">
@@ -141,6 +151,7 @@ function ActivityItem({
             <time dateTime={new Date(batch.appliedAt).toISOString()}>
               {formatModified(batch.appliedAt)}
             </time>
+            {source && <> · {source}</>}
           </p>
         </div>
         <Badge>{STATUS_LABELS[batch.status]}</Badge>
@@ -154,10 +165,15 @@ function ActivityItem({
           </Button>
         )}
       </div>
+      {stopped && <p className="activity-stop">{stopped}</p>}
       <ul className="activity-files">
-        {shown.map((entry) => (
-          <li key={entry.id}>
-            <ChangeLine entry={entry} />
+        {shown.map((operation) => (
+          <li key={operation.operationIndex}>
+            {operation.history ? (
+              <ChangeLine entry={operation.history} />
+            ) : (
+              <UnchangedLine operation={operation} />
+            )}
           </li>
         ))}
       </ul>
@@ -166,11 +182,13 @@ function ActivityItem({
           and {hidden} more {hidden === 1 ? "file" : "files"}
         </p>
       )}
-      {!batch.canUndo && batch.status !== "undone" && (
-        <p className="muted">
-          Undo isn't available: Folio couldn't keep the earlier version.
-        </p>
-      )}
+      {!batch.canUndo &&
+        batch.status !== "undone" &&
+        batch.status !== "nothingChanged" && (
+          <p className="muted">
+            Undo isn't available: Folio couldn't keep the earlier version.
+          </p>
+        )}
     </li>
   );
 }
@@ -195,6 +213,34 @@ function ChangeLine({ entry }: { entry: HistoryEntry }) {
         </>
       )}
       {entry.undoneAt !== undefined && <span className="muted"> (undone)</span>}
+    </span>
+  );
+}
+
+const NOT_CHANGED: Record<string, string> = {
+  failed: "failed",
+  cancelled: "cancelled, not started",
+  notStarted: "not started",
+};
+
+/** An operation that changed nothing: what it would have done, and why not. */
+function UnchangedLine({ operation }: { operation: ActivityOperation }) {
+  const before = operation.beforeRelativePath;
+  const after = operation.afterRelativePath;
+  const what =
+    operation.operationKind === "create"
+      ? `Create ${after ?? "a file"}`
+      : operation.operationKind === "delete"
+        ? `Delete ${before ?? "a file"}`
+        : operation.operationKind === "edit"
+          ? `Edit ${after ?? before ?? "a file"}`
+          : `${before ?? "a file"} → ${after ?? "a new name"}`;
+  const outcome = operation.status
+    ? (NOT_CHANGED[operation.status] ?? "not changed")
+    : "outcome not recorded";
+  return (
+    <span className="change-line is-unchanged">
+      {what} <span className="muted">({outcome})</span>
     </span>
   );
 }

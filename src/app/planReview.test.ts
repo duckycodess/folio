@@ -31,6 +31,7 @@ function rename(from: string, to: string): FileOperation {
 const PLAN: ActionPlan = {
   id: "plan-1",
   workspaceId: "w",
+  source: "organize",
   createdAt: 1,
   expiresAt: 2,
   operations: [
