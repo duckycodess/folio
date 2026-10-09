@@ -22,25 +22,47 @@ seam and its persistent tests therefore do not yet constitute an end-to-end
 relationship workflow. Those tests are plumbing and deterministic-discovery
 coverage, not evidence of model quality.
 
-The following are draft engineering assumptions for issue #46, not settled
-product decisions: D2 uses the selected installed model and the shared #27
-stored-chunk space (`chunk-text-v1`) once the active-space seam is integrated;
-until then the resolver returns `None`; D3 adds migration
-`006_ai_relationships.sql` after the actual registry's `005_delete_history.sql`;
-D4 stores raw cosine clamped to the contract range with provisional
-thresholds; D5 uses a stricter cosine
-plus a normalized date/numeric anchor as a shared-fact candidate heuristic,
-not contradiction detection; D6 accepts a native document-id scope capped at
-50; D7 adds display-only grounded-result kinds; D8 rechecks native plan
-candidate evidence before an impact explanation; and D9 exposes explicit
-refresh/cancel rather than a watcher. D10 glossary/ADR recording is not
-approved. If another open change also claims migration 006, this branch must
-be rebased and renumbered rather than skipping a registry version.
+Revision 2 records the following user-confirmed decisions for issue #46:
+
+- Q1: AI relationships use the selected installed search model's #27
+  `stored_chunk_space` (`chunk-text-v1`); that integration gates merge
+  readiness.
+- Q2/Q6: shared-fact candidates are conservative, low-recall candidates that
+  require a stricter embedding gate, a typed date/quantity anchor, matching
+  fact roles, clause-level subject corroboration and no negation or contrast.
+  A document link alone never qualifies.
+- Q3: discovery is bounded, progressive and resumable; incomplete work is
+  reported as coverage rather than presented as no connections.
+- Q4: a focused scope receives its strongest displayed neighbours; without a
+  focus, selection is distributed fairly across folders and documents.
+- Q5: incomplete AI review produces a non-blocking warning for Ripple and
+  approval; it makes no claim that links or copies are complete.
+- Q7: a successful Local Sync or approved change may trigger refresh when the
+  search model is ready; there is no watcher.
+- Q8: relationship summaries state the native-authoritative number of
+  supplied connections and files and say when the evidence is incomplete.
+- Q9: stopping or failing a refresh keeps committed work and allows a later
+  run to resume it.
+- Q10: held-out English, Filipino and Taglish quality evidence plus independent
+  human factual review are merge-ready gates; unavailable gates remain
+  explicitly not done.
+
+The monotonic admission order, tiled pair work, fair scheduler, read-time
+union top-K, overflow flag, stale-model checks and Ripple active-space filter
+are technical refinements for these decisions, not additional product claims.
+Migration `006_ai_relationships.sql` remains sequential after the actual
+registry's `005_delete_history.sql`; the coverage migration is `007`, and any
+contention with another open `006` must be resolved by rebase and renumbering,
+never by skipping a registry version.
+
+S1 vocabulary and ADR recording is authorized and recorded in this branch.
+S2–S14 remain incomplete until their stated tests and human gates are done.
 
 Verification on this Linux/WSL host is recorded below. Windows/macOS native
 packaging, real-model E5 quality, threshold calibration, factual review of
 generated text, and the #46 active-space/end-to-end relationship integration
-remain unverified.
+remain unverified. S14's held-out corpus and independent human factual review
+are not done; no fixture result is presented as either.
 
 Verification for this draft:
 
@@ -57,6 +79,28 @@ Verification for this draft:
   workspace reported Folio 185 passed/2 ignored, folio-core 83 passed/2
   ignored, loopback 1 passed, real acceptance 0 passed/7 ignored, and zero
   doc-test failures. This is not a native test run on the exact checkout.
+
+Revision 2 baseline on the exact `FOLIO-46` worktree, after the explicit
+stable-toolchain setup and before new implementation:
+
+- `npm run check`: passed. `npm test`: 45 files passed, 1 skipped; 414 tests
+  passed and 9 todo. `npm run build`: passed. `npm run format:check`: passed.
+- `npm test -- e2e/fake/nativeCore.test.ts`: 1 file and 16 tests passed.
+- `RUSTC=/home/pandan/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc RUSTDOC=/home/pandan/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustdoc CARGO_TARGET_DIR=/tmp/folio46-cargo-target /home/pandan/.cargo/bin/cargo test --manifest-path src-tauri/Cargo.toml --workspace`: Folio 234 passed/2 ignored; folio-core 176 passed/2 ignored; loopback 1 passed; Model Lab real 0 passed/1 ignored; real acceptance 0 passed/7 ignored; both doc-test suites had 0 tests. Compilation emitted warnings only.
+- These checks ran on Linux/WSL. Windows/macOS native execution, packaging,
+  real-model inference, held-out quality, and independent factual review were
+  not run.
+
+Revision 2 currently preserves the existing #27/Gab commands
+`register_embedding_space`, `pending_embedding_chunks`, `put_embeddings` and
+`vector_candidates`; S-1 removal is on hold. The webview may write vectors
+through `put_embeddings`, so `provenance: "embedding"` means derived from
+vectors stored in the active space, not verified native-provider authorship.
+The webview cannot choose the active space, which is resolved natively from
+the selected installed descriptor, and it cannot supply passages to
+generation. No SQLite/index lock is held across provider inference or future
+discovery compute. R3-1 remains open until the active-space filter is applied
+to Ripple and deletion impacts.
 
 ## PR #68 merge resolution
 
