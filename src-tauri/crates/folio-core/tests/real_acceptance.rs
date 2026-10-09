@@ -60,11 +60,14 @@ fn fixture_corpus() -> (Vec<DocumentRecord>, HashMap<String, String>, Vec<Chunk>
             .expect("fixture has a UTF-8 file name");
         let record = DocumentRecord {
             id: (*relative_path).into(),
+            workspace_id: "fixtures".into(),
             relative_path: (*relative_path).into(),
             name: name.into(),
             title: name.into(),
             language: grounding::detect_language(&content),
+            media_type: "text/markdown".into(),
             size_bytes: content.len() as u64,
+            modified_at_ms: None,
             content: Some(content.clone()),
             content_hash: None,
         };
