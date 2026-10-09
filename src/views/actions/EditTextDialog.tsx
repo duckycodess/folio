@@ -204,6 +204,12 @@ export function EditTextDialog({
           onPreviewAgain={() => void previewAgain()}
           onBack={action.reset}
           onDone={onClose}
+          onOpenPassage={(passage) => {
+            const source = workspace.documents.find(
+              (item) => item.id === passage.documentId,
+            );
+            if (source) void workspace.selectDocument(source);
+          }}
         />
       )}
     </ActionDialog>

@@ -87,6 +87,26 @@ export function modelGroups(
     .filter((group) => group.rows.length > 0);
 }
 
+/** Whether the selected writing model and its host runtime can serve a request. */
+export function isGenerationReady(
+  groups: ModelGroup[],
+  setup: ModelSetup | null,
+  runtime: RuntimeStatus | null,
+): boolean {
+  const selected = setup?.selectedGeneration;
+  if (!selected || runtime?.installed !== true) return false;
+  return groups.some(
+    (group) =>
+      group.role === "generation" &&
+      group.rows.some(
+        (row) =>
+          row.descriptor.id === selected &&
+          row.selected &&
+          row.state?.status === "installed",
+      ),
+  );
+}
+
 export type InstallStep = "runtime" | "model";
 
 /**

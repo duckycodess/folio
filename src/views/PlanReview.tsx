@@ -8,7 +8,9 @@ import {
   type RefObject,
 } from "react";
 import { explainImpact } from "../adapters/ai";
+import { isGenerationReady } from "../app/models";
 import { hasUndoableChange } from "../app/planAction";
+import { useModels } from "../app/useModels";
 import {
   impactGroups,
   impactProvenance,
@@ -29,6 +31,7 @@ import type {
   GroundedResult,
   ImpactCandidate,
   UndoPreflight,
+  SourcePassage,
 } from "../domain/contracts";
 import { toFolioError, type FolioError } from "../domain/errors";
 import { diffLines, type DiffLine } from "../domain/textDiff";
@@ -38,6 +41,7 @@ import { Modal } from "../ui/Modal";
 import { Notice } from "../ui/Notice";
 import { Progress } from "../ui/Progress";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
+import { CitedSentences } from "./CitedSentences";
 
 /*
  * The exact preview → approve → result → Undo pieces every file change shares:
@@ -200,10 +204,14 @@ export function ImpactList({
   impacts,
   workspaceId,
   planId,
+  generationReady,
+  onOpenPassage,
 }: {
   impacts: ImpactCandidate[];
   workspaceId?: string;
   planId?: string;
+  generationReady: boolean;
+  onOpenPassage?: (passage: SourcePassage) => void;
 }) {
   const groups = impactGroups(impacts);
   const headingId = useId();
@@ -230,10 +238,12 @@ export function ImpactList({
               <ul className="impact-list">
                 {groups[kind].map((impact) => (
                   <ImpactItem
-                    key={impact.documentId}
+                    key={`${planId ?? "no-plan"}:${impact.documentId}`}
                     impact={impact}
                     workspaceId={workspaceId}
                     planId={planId}
+                    generationReady={generationReady}
+                    onOpenPassage={onOpenPassage}
                   />
                 ))}
               </ul>
@@ -254,27 +264,46 @@ function ImpactItem({
   impact,
   workspaceId,
   planId,
+  generationReady,
+  onOpenPassage,
 }: {
   impact: ImpactCandidate;
   workspaceId?: string;
   planId?: string;
+  generationReady: boolean;
+  onOpenPassage?: (passage: SourcePassage) => void;
 }) {
   const provenance = impactProvenance(impact);
   const [explanation, setExplanation] = useState<GroundedResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<FolioError | null>(null);
+  const requestVersion = useRef(0);
+  useEffect(() => {
+    requestVersion.current += 1;
+    setExplanation(null);
+    setError(null);
+    setBusy(false);
+    return () => {
+      requestVersion.current += 1;
+    };
+  }, [planId, impact.documentId]);
+
   async function explain() {
-    if (!workspaceId || !planId) return;
+    if (!workspaceId || !planId || !generationReady) return;
+    const version = ++requestVersion.current;
     setBusy(true);
     setError(null);
     try {
-      setExplanation(
-        await explainImpact(workspaceId, planId, impact.documentId),
+      const result = await explainImpact(
+        workspaceId,
+        planId,
+        impact.documentId,
       );
+      if (version === requestVersion.current) setExplanation(result);
     } catch (cause) {
-      setError(toFolioError(cause));
+      if (version === requestVersion.current) setError(toFolioError(cause));
     } finally {
-      setBusy(false);
+      if (version === requestVersion.current) setBusy(false);
     }
   }
   return (
@@ -302,11 +331,17 @@ function ImpactItem({
         <>
           <Button
             variant="ghost"
-            disabled={busy}
+            disabled={busy || !generationReady}
             onClick={() => void explain()}
           >
             {busy ? "Explaining…" : "Explain with local AI"}
           </Button>
+          {!generationReady && (
+            <p className="muted">
+              Set up and select an installed writing model and runtime in Model
+              Lab to explain this candidate.
+            </p>
+          )}
           {error && (
             <RecoveryNotice
               error={error}
@@ -324,7 +359,10 @@ function ImpactItem({
                 Generated preview, not saved. Made by {explanation.modelId}{" "}
                 (revision {explanation.revision.slice(0, 12)}).
               </p>
-              <p>{explanation.text}</p>
+              <CitedSentences
+                result={explanation}
+                onOpen={onOpenPassage ?? (() => undefined)}
+              />
             </div>
           )}
         </>
@@ -459,6 +497,7 @@ export function PlanReview({
   backLabel = "Back",
   inModal = false,
   workspaceId,
+  onOpenPassage,
   onPreviewAgain,
   onBack,
   onDone,
@@ -471,8 +510,14 @@ export function PlanReview({
   inModal?: boolean;
   /** Authorized workspace for the display-only Ripple explanation command. */
   workspaceId?: string;
+  /** Opens a cited passage in the surrounding reader when one is available. */
+  onOpenPassage?: (passage: SourcePassage) => void;
 }) {
   const { state } = action;
+  const models = useModels();
+  const generationReady =
+    models.load === "ready" &&
+    isGenerationReady(models.groups, models.setup, models.runtime);
   const heading = useRef<HTMLHeadingElement>(null);
   const previewAgain = onPreviewAgain ?? action.previewAgain;
   const reviewing = state.stage === "preview" || state.stage === "applying";
@@ -539,6 +584,8 @@ export function PlanReview({
             impacts={plan.impacts}
             workspaceId={workspaceId}
             planId={plan.id}
+            generationReady={generationReady}
+            onOpenPassage={onOpenPassage}
           />
         )}
         {state.error && (
