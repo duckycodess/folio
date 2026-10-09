@@ -282,6 +282,10 @@ example with placeholder values, not a measurement.
   An unavailable peak is `null` with `unavailableReason`.
   `peakProcessRamBytes` is the generation-process entry for generation tasks,
   the Folio-process entry for retrieval, or `null`.
+- **App activity.** `conditions.appActivity` is `notControlled`: a run holds the
+  generation slot and the install lock, but the app's own search or indexing may
+  still reload its embedding session and use CPU, so a run on a busy app is not
+  comparable to one on an idle app.
 - **Outcome.** `outcomeKind` is `valid`, `invalidModelOutput`, `timedOut`,
   `runtimeError` or `cancelled`, and `retryNeeded` is true exactly when it is
   neither `valid` nor `cancelled`. A failed outcome has `correctness: false`, or

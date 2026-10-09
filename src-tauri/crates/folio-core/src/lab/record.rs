@@ -63,6 +63,15 @@ pub enum PageCache {
     NotControlled,
 }
 
+/// Whether the rest of Folio was kept idle. It is not: the lab holds the
+/// generation slot and the install lock, but search or indexing in the app may
+/// still reload its own embedding session and use CPU during a run.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum AppActivity {
+    #[serde(rename = "notControlled")]
+    NotControlled,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum Observation {
     #[serde(
@@ -257,6 +266,7 @@ pub struct Conditions {
     pub threads: u32,
     pub corpus_sha256: String,
     pub page_cache: PageCache,
+    pub app_activity: AppActivity,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

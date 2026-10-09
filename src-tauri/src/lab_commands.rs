@@ -282,6 +282,44 @@ fn finish_lab(
     Ok(())
 }
 
+/// What a lab run holds for its whole duration: the generation slot (so user
+/// generation gets `providerBusy`) and the install lock (so no model or runtime
+/// can be installed, removed, re-selected or replaced under it).
+#[derive(Clone)]
+struct LabHold {
+    cancel: Arc<AtomicBool>,
+    install_lock: Arc<AtomicBool>,
+}
+
+fn begin_lab_run(
+    install_state: &InstallState,
+    generation_state: &GenerationState,
+    lab_state: &LabState,
+) -> Result<LabHold, NativeProviderError> {
+    let install_lock = begin_install(install_state)?;
+    match begin_lab_exclusive(generation_state, lab_state) {
+        Ok(cancel) => Ok(LabHold {
+            cancel,
+            install_lock,
+        }),
+        Err(failure) => {
+            let _ = finish_install(install_state, &install_lock);
+            Err(failure)
+        }
+    }
+}
+
+/// Releases everything `begin_lab_run` took, on every exit path.
+fn end_lab_run(
+    install_state: &InstallState,
+    generation_state: &GenerationState,
+    lab_state: &LabState,
+    hold: &LabHold,
+) {
+    let _ = finish_lab(generation_state, lab_state, &hold.cancel);
+    let _ = finish_install(install_state, &hold.install_lock);
+}
+
 fn execute_lab(
     app: &AppHandle,
     index_path: &std::path::Path,
@@ -443,29 +481,19 @@ pub(crate) async fn run_model_lab(
         store
             .verified_runtime_executable(runtime_id_for_host())
             .map_err(native_error)?;
-        // The run holds the install lock too, so no model can be installed or
-        // removed under it and no candidate is replaced mid-measurement.
-        let install_lock = begin_install(&install_state)?;
-        let cancel = match begin_lab_exclusive(&generation_state, &lab_state) {
-            Ok(cancel) => cancel,
-            Err(failure) => {
-                let _ = finish_install(&install_state, &install_lock);
-                return Err(failure.into());
-            }
-        };
+        let hold = begin_lab_run(&install_state, &generation_state, &lab_state)?;
         if let Err(failure) = unload_embedding(&embedding_state) {
-            let _ = finish_lab(&generation_state, &lab_state, &cancel);
-            let _ = finish_install(&install_state, &install_lock);
+            end_lab_run(&install_state, &generation_state, &lab_state, &hold);
             return Err(failure.into());
         }
         let run_id = format!("lab-{}", system_clock_ms());
         let worker = {
-            let (app, run_id, cancel) = (app.clone(), run_id.clone(), cancel.clone());
+            let (app, run_id, hold) = (app.clone(), run_id.clone(), hold.clone());
             let (generation_state, lab_state) = (generation_state.clone(), lab_state.clone());
-            let (install_state, install_lock) = (install_state.clone(), install_lock.clone());
+            let install_state = install_state.clone();
             move || {
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    execute_lab(&app, &index_path, &request, &run_id, &cancel)
+                    execute_lab(&app, &index_path, &request, &run_id, &hold.cancel)
                 }));
                 let (step, failure) = match outcome {
                     Ok(Ok(RunEnd::Completed)) => ("finished", None),
@@ -480,16 +508,14 @@ pub(crate) async fn run_model_lab(
                     LAB_PROGRESS_EVENT,
                     json!({ "runId": run_id, "step": step, "caseId": null, "modelId": null, "error": failure }),
                 );
-                let _ = finish_lab(&generation_state, &lab_state, &cancel);
-                let _ = finish_install(&install_state, &install_lock);
+                end_lab_run(&install_state, &generation_state, &lab_state, &hold);
             }
         };
         if let Err(cause) = std::thread::Builder::new()
             .name("folio-model-lab".into())
             .spawn(worker)
         {
-            let _ = finish_lab(&generation_state, &lab_state, &cancel);
-            let _ = finish_install(&install_state, &install_lock);
+            end_lab_run(&install_state, &generation_state, &lab_state, &hold);
             return Err(error(ErrorCode::Internal, "Model Lab could not start.")
                 .with_detail("cause", cause.to_string()));
         }
@@ -763,6 +789,54 @@ mod tests {
                 .status,
             ModelInstallStatus::NotInstalled
         );
+    }
+
+    #[test]
+    fn a_lab_run_blocks_every_install_remove_select_and_runtime_install_until_it_ends() {
+        let install = InstallState::default();
+        let generation = GenerationState::default();
+        let lab = LabState::default();
+        let hold = begin_lab_run(&install, &generation, &lab).unwrap();
+
+        // install_model, remove_model, select_model and install_runtime all start
+        // with begin_install; install_runtime also needs an idle generation slot.
+        let refused = begin_install(&install).unwrap_err();
+        assert_eq!(refused.code, ProviderErrorCode::GenerationBusy);
+        assert!(crate::begin_runtime_install(&generation).is_err());
+        // A second run cannot start, and a refused one releases nothing it did not take.
+        assert!(begin_lab_run(&install, &generation, &lab).is_err());
+        assert!(lab.lock().unwrap().is_some());
+
+        end_lab_run(&install, &generation, &lab, &hold);
+        let lock = begin_install(&install).expect("the install lock is released");
+        finish_install(&install, &lock).unwrap();
+        crate::begin_runtime_install(&generation).expect("the slot is released");
+        crate::end_runtime_install(&generation);
+        assert!(lab.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_run_that_cannot_take_the_generation_slot_gives_the_install_lock_back() {
+        let install = InstallState::default();
+        let generation = GenerationState::default();
+        let lab = LabState::default();
+        generation.lock().unwrap().active_cancel = Some(Arc::new(AtomicBool::new(false)));
+        assert!(begin_lab_run(&install, &generation, &lab).is_err());
+        let lock = begin_install(&install).expect("nothing is left holding the install lock");
+        finish_install(&install, &lock).unwrap();
+    }
+
+    #[test]
+    fn a_run_cannot_start_while_a_model_install_is_in_progress() {
+        let install = InstallState::default();
+        let generation = GenerationState::default();
+        let lab = LabState::default();
+        let installing = begin_install(&install).unwrap();
+        let refused = begin_lab_run(&install, &generation, &lab).unwrap_err();
+        assert_eq!(refused.code, ProviderErrorCode::GenerationBusy);
+        assert!(generation.lock().unwrap().active_cancel.is_none());
+        finish_install(&install, &installing).unwrap();
+        begin_lab_run(&install, &generation, &lab).unwrap();
     }
 
     #[test]

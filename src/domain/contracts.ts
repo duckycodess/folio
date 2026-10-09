@@ -870,6 +870,11 @@ export interface BenchmarkRecord extends BenchmarkResult {
     corpusSha256: string;
     /** The operating system's file cache is never controlled. */
     pageCache: "notControlled";
+    /**
+     * The rest of Folio is not kept idle: the lab holds the generation slot and
+     * the install lock, but search or indexing may still use the CPU.
+     */
+    appActivity: "notControlled";
   };
   /**
    * `cold` is true only for the first request after the process restarted.

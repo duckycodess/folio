@@ -29,9 +29,9 @@ use crate::lab::host::{
 };
 use crate::lab::memory::PeakReading;
 use crate::lab::record::{
-    ApplyOutcome, BenchmarkRecord, BenchmarkTask, Check, Conditions, HostInfo, MemoryEntry,
-    MemoryProcess, ModelRef, Observation, OutcomeKind, PageCache, RequestPosition, RunStatus,
-    RunSummary, RuntimeDetail, SchemaVersion, ServerSettings, StartupWarmup, Timing,
+    AppActivity, ApplyOutcome, BenchmarkRecord, BenchmarkTask, Check, Conditions, HostInfo,
+    MemoryEntry, MemoryProcess, ModelRef, Observation, OutcomeKind, PageCache, RequestPosition,
+    RunStatus, RunSummary, RuntimeDetail, SchemaVersion, ServerSettings, StartupWarmup, Timing,
 };
 use crate::lab::sink::LabSink;
 use crate::lab::suite::{Corpus, Suite, SuiteCase};
@@ -391,6 +391,7 @@ impl LabRunner<'_> {
             threads: self.threads,
             corpus_sha256: self.corpus.sha256.clone(),
             page_cache: PageCache::NotControlled,
+            app_activity: AppActivity::NotControlled,
         }
     }
 
