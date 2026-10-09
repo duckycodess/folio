@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { OperationProposal } from "../domain/contracts";
-import { changedRegion, proposalOperation, requestForFile } from "./proposals";
+import { changedRegion, proposalOperation } from "./proposals";
 
 const RENAME: OperationProposal = {
   kind: "rename",
@@ -88,13 +88,5 @@ describe("changed region", () => {
       added: "a",
     });
     expect(changedRegion("same", "same")).toBeNull();
-  });
-});
-
-describe("choosing the file", () => {
-  it("names the chosen file after the original request", () => {
-    expect(requestForFile(" palitan ang deadline ", "projects/plan.md")).toBe(
-      "palitan ang deadline\n\nUse this file: projects/plan.md",
-    );
   });
 });
