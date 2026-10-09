@@ -41,12 +41,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-      - uses: actions/cache@v4
+      # Compiled dependencies as well as downloaded crates, keyed on the
+      # target and Cargo.lock. Folio's own crates are always rebuilt.
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: packaging-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+          workspaces: src-tauri -> target
+          key: packaging-${{ matrix.target }}
+          cache-on-failure: true
       - run: npm ci
       - name: Record actual tool versions
         run: |
@@ -57,6 +58,10 @@ jobs:
           npm run --silent tauri -- --version > "$RUNNER_TEMP/tauri-version.txt"
       - name: Generate installer icons from the committed artwork
         run: npm run tauri -- icon src-tauri/icons/source.svg --output src-tauri/target/packaging-icons
+      # A restored cache may hold an earlier run's installer. Remove it so the
+      # next step's check still proves the uploaded one was built here.
+      - name: Clear installers from a restored cache
+        run: rm -rf "src-tauri/target/${{ matrix.target }}/release/bundle"
       - name: Refuse stale bundles and mark this build
         run: >-
           node scripts/collect-packaging.mjs --begin

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { listHistory, previewUndo, undoPlan } from "../adapters/actions";
-import { groupHistory, type ActivityBatch } from "../domain/activity";
+import { listActivity, previewUndo, undoPlan } from "../adapters/actions";
+import { activityPage, type ActivityEntry } from "../domain/activity";
 import type { UndoPreflight, UndoReport } from "../domain/contracts";
 import { toFolioError, type FolioError } from "../domain/errors";
 import { actionReducer, IDLE, type ActionState } from "./actionState";
@@ -9,19 +9,22 @@ import type { WorkspaceState } from "./useWorkspace";
 export interface ActivityState {
   /** `idle` without a folder; history is only read for an open folder. */
   status: "idle" | "loading" | "ready" | "failed";
-  batches: ActivityBatch[];
-  /** True when the history reached its limit, so older changes aren't shown. */
-  truncated: boolean;
+  batches: ActivityEntry[];
+  /** True when older batches may exist beyond the ones loaded. */
+  hasOlder: boolean;
+  loadingOlder: boolean;
+  /** Loads the next page of older batches, each whole. */
+  loadOlder: () => void;
   failure: FolioError | null;
   reload: () => void;
   /** The batch whose Undo is being previewed or confirmed. */
-  undoTarget: ActivityBatch | null;
+  undoTarget: ActivityEntry | null;
   undoPreview: UndoPreflight | null;
   undoBusy: boolean;
   undoFailure: FolioError | null;
   /** True when the failed Undo had already reversed some files. */
   undoPartial: boolean;
-  startUndo: (batch: ActivityBatch) => void;
+  startUndo: (batch: ActivityEntry) => void;
   confirmUndo: () => void;
   closeUndo: () => void;
   /** Settles only from the native Undo report. */
@@ -29,7 +32,11 @@ export interface ActivityState {
   dismissUndoResult: () => void;
 }
 
-const HISTORY_LIMIT = 500;
+/**
+ * Batches per page; a page never splits a batch. Each request asks for one
+ * more, so "Show older changes" only appears when older batches exist.
+ */
+const PAGE = 50;
 
 /**
  * `onFilesChanged` runs after an Undo changed files, so views built from the
@@ -41,17 +48,19 @@ export function useActivity(
 ): ActivityState {
   const folderId = workspace.workspace?.id;
   const [status, setStatus] = useState<ActivityState["status"]>("idle");
-  const [batches, setBatches] = useState<ActivityBatch[]>([]);
-  const [truncated, setTruncated] = useState(false);
+  const [batches, setBatches] = useState<ActivityEntry[]>([]);
+  const [hasOlder, setHasOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [failure, setFailure] = useState<FolioError | null>(null);
   const [generation, setGeneration] = useState(0);
-  const [undoTarget, setUndoTarget] = useState<ActivityBatch | null>(null);
+  const [undoTarget, setUndoTarget] = useState<ActivityEntry | null>(null);
   const [undoPreview, setUndoPreview] = useState<UndoPreflight | null>(null);
   const [undoBusy, setUndoBusy] = useState(false);
   const [undoFailure, setUndoFailure] = useState<FolioError | null>(null);
   const [undoPartial, setUndoPartial] = useState(false);
   const [undoResult, dispatch] = useReducer(actionReducer<UndoReport>, IDLE);
   const request = useRef(0);
+  const listingRequest = useRef(0);
 
   // Another folder: nothing from the previous folder's Undo carries over.
   useEffect(() => {
@@ -65,34 +74,60 @@ export function useActivity(
   }, [folderId]);
 
   useEffect(() => {
+    const current = ++listingRequest.current;
+    setLoadingOlder(false);
+    setHasOlder(false);
+    setFailure(null);
     if (!folderId) {
       setStatus("idle");
       setBatches([]);
       return;
     }
-    let active = true;
     setStatus("loading");
-    setFailure(null);
-    listHistory(folderId, HISTORY_LIMIT)
-      .then((entries) => {
-        if (!active) return;
-        setBatches(groupHistory(entries));
-        setTruncated(entries.length >= HISTORY_LIMIT);
+    listActivity(folderId, PAGE + 1)
+      .then((recorded) => {
+        if (current !== listingRequest.current) return;
+        const page = activityPage(recorded, PAGE);
+        setBatches(page.batches);
+        setHasOlder(page.hasOlder);
         setStatus("ready");
       })
       .catch((cause) => {
-        if (!active) return;
+        if (current !== listingRequest.current) return;
         setFailure(toFolioError(cause));
         setStatus("failed");
       });
     return () => {
-      active = false;
+      listingRequest.current++;
     };
   }, [folderId, generation]);
 
-  const reload = useCallback(() => setGeneration((value) => value + 1), []);
+  const reload = useCallback(() => {
+    listingRequest.current++;
+    setGeneration((value) => value + 1);
+  }, []);
 
-  async function startUndo(batch: ActivityBatch) {
+  async function loadOlder() {
+    const last = batches.at(-1);
+    if (!folderId || !last || loadingOlder) return;
+    const forFolder = folderId;
+    const current = listingRequest.current;
+    setLoadingOlder(true);
+    setFailure(null);
+    try {
+      const recorded = await listActivity(forFolder, PAGE + 1, last.planId);
+      if (current !== listingRequest.current) return;
+      const page = activityPage(recorded, PAGE);
+      setBatches((loaded) => [...loaded, ...page.batches]);
+      setHasOlder(page.hasOlder);
+    } catch (cause) {
+      if (current === listingRequest.current) setFailure(toFolioError(cause));
+    } finally {
+      if (current === listingRequest.current) setLoadingOlder(false);
+    }
+  }
+
+  async function startUndo(batch: ActivityEntry) {
     if (!folderId) return;
     setUndoTarget(batch);
     setUndoPreview(null);
@@ -147,7 +182,9 @@ export function useActivity(
   return {
     status,
     batches,
-    truncated,
+    hasOlder,
+    loadingOlder,
+    loadOlder: () => void loadOlder(),
     failure,
     reload,
     undoTarget,

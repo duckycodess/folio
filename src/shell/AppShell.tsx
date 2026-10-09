@@ -11,7 +11,14 @@ import {
   Waypoints,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import {
   applyTheme,
   loadTheme,
@@ -20,6 +27,16 @@ import {
   THEME_LABELS,
   type ThemePreference,
 } from "../app/theme";
+import {
+  clampReaderWidth,
+  computeShellLayout,
+  loadReaderWidth,
+  READER_MIN_WIDTH,
+  readerMaxWidth,
+  saveReaderWidth,
+} from "../app/shellLayout";
+import { useElementWidth } from "../app/useElementWidth";
+import { ResizeHandle } from "../ui/ResizeHandle";
 import { useRelationships } from "../app/useRelationships";
 import { useActivity } from "../app/useActivity";
 import { useHome } from "../app/useHome";
@@ -124,10 +141,10 @@ export function AppShell() {
     if (next) setView(next);
   }
   // Above the views, so an apply in progress survives switching views.
-  const organize = useOrganize(workspace, filesChanged);
+  const organize = useOrganize(workspace, "organize", filesChanged);
   // Home's Rename and Move have their own plan, so they never show up in
   // Organize (and the reverse).
-  const fileAction = useOrganize(workspace, filesChanged);
+  const fileAction = useOrganize(workspace, "home", filesChanged);
   const [actionDialog, setActionDialog] = useState<{
     kind: FileActionKind;
     document: DocumentRecord;
@@ -164,6 +181,25 @@ export function AppShell() {
   const reading = readerDocument(view, workspace.selected, listed);
   const showsDocument = reading !== undefined;
 
+  // The sidebar, the list and the reader all follow the app's own measured
+  // width, not a fixed window breakpoint (#67): a wide window keeps sidebar
+  // labels even with the reader open, and a narrow one collapses sooner.
+  const [appRef, appWidth] = useElementWidth<HTMLDivElement>(1280);
+  const [requestedReaderWidth, setRequestedReaderWidth] =
+    useState(loadReaderWidth);
+  const layout = computeShellLayout(
+    appWidth,
+    showsDocument,
+    requestedReaderWidth,
+  );
+  function resizeReader(next: number) {
+    // Kept within this window's range, so a drag past the edge doesn't
+    // leave a width that jumps open in a larger window later.
+    const width = clampReaderWidth(next, appWidth);
+    setRequestedReaderWidth(width);
+    saveReaderWidth(width);
+  }
+
   // "Show related" is for that one opening: once another file (or none) is
   // shown, opening the file again starts on its usual tab.
   const readingId = reading?.id;
@@ -174,12 +210,31 @@ export function AppShell() {
   }, [readingId]);
 
   // The listener is added once and reads the latest render through this ref.
-  const latest = useRef({ showsDocument, closeDocument, openHome });
-  latest.current = { showsDocument, closeDocument, openHome };
+  const overlay = layout.readerMode === "overlay";
+  function closeOverlay() {
+    setPanelTab(null);
+    workspace.clearSelection();
+  }
+  const latest = useRef({
+    showsDocument,
+    closeDocument,
+    openHome,
+    overlay,
+    closeOverlay,
+  });
+  latest.current = {
+    showsDocument,
+    closeDocument,
+    openHome,
+    overlay,
+    closeOverlay,
+  };
 
   function openHome() {
-    if (view === "home") focusHomeSearch();
-    else setView("home");
+    if (view !== "home") setView("home");
+    else if (!overlay) focusHomeSearch();
+    // Otherwise the effect below focuses search once the overlay has closed:
+    // the list behind it, search included, is inert until then.
   }
 
   function focusHomeSearch() {
@@ -189,8 +244,8 @@ export function AppShell() {
   }
 
   useEffect(() => {
-    if (view === "home" && focusSearch.current) focusHomeSearch();
-  }, [view]);
+    if (view === "home" && !overlay && focusSearch.current) focusHomeSearch();
+  }, [view, overlay]);
 
   function fileActions(document: DocumentRecord): RowMenuItem[] {
     return [
@@ -258,8 +313,10 @@ export function AppShell() {
       }
       if (!isSearchShortcut(event, platform)) return;
       event.preventDefault();
-      // Search lives on Home (#43): go there, then focus it.
+      // Search lives on Home (#43): go there, then focus it. A reader that
+      // overlays the list makes search inert, so it closes first.
       focusSearch.current = true;
+      if (latest.current.overlay) latest.current.closeOverlay();
       latest.current.openHome();
     }
     window.addEventListener("keydown", onKeyDown);
@@ -303,9 +360,8 @@ export function AppShell() {
 
   function onSearch(query: string) {
     workspace.setQuery(query);
-    // In narrow windows the reader covers the list; show the results instead.
-    if (window.matchMedia("(max-width: 860px)").matches)
-      workspace.clearSelection();
+    // When the reader overlays the list, show the results instead.
+    if (layout.readerMode === "overlay") workspace.clearSelection();
   }
 
   if (welcome)
@@ -319,9 +375,23 @@ export function AppShell() {
       </AnnouncerProvider>
     );
 
+  const appClassName = [
+    "app",
+    showsDocument && "has-document",
+    layout.sidebarMode === "rail" && "sidebar-rail",
+    layout.readerMode === "split" && "reader-split",
+    layout.readerMode === "overlay" && "reader-overlay",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
     <AnnouncerProvider>
-      <div className={`app${showsDocument ? " has-document" : ""}`}>
+      <div
+        ref={appRef}
+        className={appClassName}
+        style={{ "--detail-width": `${layout.readerWidth}px` } as CSSProperties}
+      >
         <a className="skip-link" href="#main">
           Skip to content
         </a>
@@ -385,7 +455,14 @@ export function AppShell() {
           </div>
         </aside>
 
-        <div className="main-column">
+        <div
+          className="main-column"
+          // While the reader overlays the list, the list behind it can't be
+          // reached (it keeps its scroll position and focus for when the
+          // overlay closes), so it's taken out of tab order and the a11y
+          // tree rather than removed.
+          inert={layout.readerMode === "overlay" ? true : undefined}
+        >
           <header className="topbar">
             <nav aria-label="Breadcrumb" className="breadcrumb">
               <span>{SOURCE_LABELS[workspace.source]}</span>
@@ -498,6 +575,15 @@ export function AppShell() {
           </main>
         </div>
 
+        {layout.readerMode === "split" && (
+          <ResizeHandle
+            label="Resize the reader"
+            value={layout.readerWidth}
+            min={READER_MIN_WIDTH}
+            max={readerMaxWidth(appWidth)}
+            onChange={resizeReader}
+          />
+        )}
         {reading && (
           <DocumentPanel
             key={
@@ -514,6 +600,7 @@ export function AppShell() {
             actions={fileActions(reading).filter((item) => item.id !== "open")}
             onClose={closeDocument}
             onNavigate={setView}
+            isOverlay={layout.readerMode === "overlay"}
           />
         )}
         {actionDialog && (

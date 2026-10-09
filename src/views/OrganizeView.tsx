@@ -25,7 +25,11 @@ export function OrganizeView({
         </p>
       </header>
 
-      <OrganizeFlowPanel workspace={workspace} organize={organize} />
+      <OrganizeFlowPanel
+        workspace={workspace}
+        organize={organize}
+        onOpenFile={workspace.selectDocument}
+      />
 
       <Panel title="Collections">
         {/* No Olio here: the floating launcher is the view's one Olio (#66). */}

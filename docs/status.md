@@ -124,7 +124,7 @@ real-model quality, or target-device resource use.
 - FTS5 keyword search across unopened documents, returning document id, path and excerpt as `utf8Byte` passages bound to the indexed revision (`documentContentHash`), with page numbers for PDFs. Labelled `keyword`.
 - Follows the [frozen contract](contracts.md): `workspaceId:relativePath` document ids, `sha256:` hashes, `explicitReference` relationships with the raw and resolved link, `folio-space-v1/...` space fingerprints, and `{ code, message, details }` failures. `read_document` now also returns the extracted text of text-based PDFs.
 - Exact-duplicate groups are confirmed by comparing the files byte for byte in blocks, so files of any size are verified; the comparison runs without holding the index.
-- Embedding store for the provider track: registered spaces keyed by model/revision/quantization/dimensions/preprocessing, per-space pending-chunk listing, vector storage with dimension checks, and exact cosine search within one space only. A vector is stored only while its chunk still holds the text it was computed from (`contentHash`), because chunk ids can be reused after a rescan. No embedding model is connected.
+- Embedding store for the provider track: registered spaces keyed by model/revision/quantization/dimensions/preprocessing, per-space pending-chunk listing, vector storage with dimension checks, and exact cosine search within one space only. `sync_embeddings` fills the store from pending chunks with the selected local embedding model in a stored-chunk space separate from the snapshot space; stale `chunkChanged`/`chunkMissing` refusals are retried silently, bounded by stale and idle limits. Its initial space probe and each provider batch check Model Lab inside the `EmbeddingState` lock before any provider load: a batch already holding that lock may finish when Lab starts, then the next guarded batch returns `providerBusy` and keeps earlier commits. A vector is stored only while its chunk still holds the text it was computed from (`contentHash`), because chunk ids can be reused after a rescan. Live search and Model Lab still use the #4 snapshot path; the existing live `semantic_search` path can reload the product provider during Lab, and #27 does not change that limitation. No UI automatically triggers this fill.
 
 ## Native writer, Ripple, history and Undo (issue #5)
 
@@ -147,6 +147,33 @@ real-model quality, or target-device resource use.
 - Deletion impacts (`ripple::deletion_impacts`, used by `prepare_plan` when no impacts are supplied): files linking to the deleted file are `evidence` with their link passages; shared-fact candidates are `evidence` with their stored provenance; similarity relations and byte-identical copies are `similarityOnly`. A file the deleted one only links to is not listed. At most 25, and they never become operations.
 - Migration `005_delete_history.sql` rebuilds `history` so `operation_kind` allows `delete`, keeping existing rows.
 - No UI offers deletion yet: the Graph node actions are #45. The Organize preview names a deletion ("Delete", "Removed") and an all-delete result says "Deleted N files", but nothing builds a delete plan from the UI.
+
+## Activity: plan sources and every batch's outcome (issue #35)
+
+- Every plan now carries its **source**: `home`, `organize`, `graph`, `assistant` or `summary`. Each `useOrganize` / `usePlanAction` caller names its own, `prepare_plan` requires it and refuses `unknown`, and it is part of the canonical bytes (now `FOLIO-PLAN-V2`) in both `plan.rs` and `plan.ts`, so a plan can't be relabelled after approval (ADR 0014). The golden fixtures were regenerated from `generate-contract-cases.py`; each pinned plan has a source.
+- Migration `006_activity.sql` adds `source` (a closed list, `unknown` for earlier plans) and `outcome_json` to `action_plans`. `apply_plan` stores the `BatchResult`, so failed, cancelled and not-started operations keep their status and error. A plan that failed before changing anything is recorded; a plan that was prepared or approved but never applied is not.
+- `list_activity(workspaceId, limit?, before?)` returns one batch per applied plan, newest first, at most 100 per page and never split across pages, with every operation's paths, status, error and history entry. Plans recorded before 006 read as `unknown`; an operation with history is `succeeded`, and one without has no status rather than a guess.
+- Activity uses it: each entry says where it was started ("From Organize"), a batch that stopped says where and why ("Stopped at notes/plan.md: … The earlier change was kept."), a batch that changed nothing says so ("Couldn't move 1 file"), and operations that didn't run are listed with "failed", "cancelled, not started" or "not started". "Show older changes" loads the next page, replacing the 500-row limit that could cut a batch in half. Activity no longer says failures and sources "aren't recorded yet".
+- Checked on Windows with Node.js 20: `npm run check`, `npm test` (328 passed, 9 todo) and `npm run build`. New tests: `src/domain/activity.test.ts` (stopped, nothing changed, cancelled, unrecorded older batches, sources) and a relabelled-source digest test in `src/domain/plan.test.ts`.
+- **Rust not compiled on the first host** (not enough free disk for the native build); the files were only parse-checked with `rustfmt`. CI later compiled and ran them (see the PR conversation). The new native tests (failed and cancelled batches with outcomes, nothing-changed batches, unapplied plans excluded, paging, a relabelled source refused, and migration 006 over a pre-006 database) run only in CI's `desktop-check`. Activity hasn't been checked in a browser or the Tauri app.
+
+PR #72 review follow-up (2026-10-10, Linux, Node.js 24.15.0):
+
+- Activity counts `historyRequired` after-write failures as changed without Undo, including the first operation and partial batches. Missing legacy outcomes stay unknown rather than being labelled "Nothing changed". Reversing the recoverable entries does not label an unrecoverable write undone.
+- Older-page results, errors and loading-state updates are ignored after a folder change, reload or unmount. Paging failures appear beside the loaded batches with retry, and retry clears the old error.
+- Five new domain regressions pass; the complete frontend suite has 333 passed and 9 existing todo. Type checks and the production build passed.
+- A temporary Chromium harness exercised the actual Activity hook/view with controlled action adapters: six regressions passed for late page success/failure after a folder switch, a stale page finishing during a new page after reload, visible paging errors and retry, a first-operation `historyRequired` result, and unknown legacy outcomes. No browser exceptions occurred. These verify UI state, not native fault injection, the Tauri window or screen readers.
+
+Merge with `main` and second review follow-up (2026-10-10, Linux, Node.js 24):
+
+- Merged `main`. Activity keeps its per-operation list, and a line with history opens its file at the path it shows (#67). The browser-journey fake native core (#69) now requires a `source` in `prepare_plan` (refusing `unknown`), digests `FOLIO-PLAN-V2` with the source, and answers `list_activity` the way native does: only plans that ran, newest first, whole batches, `historyUnknown` for an unknown `before`.
+- The ADR is now 0014: `main` already has a 0012 and a 0013. It now also says the batch's kind, status and counts are derived in `activity.ts` from the native facts, and records three edge cases: a crash before outcomes are stored, cancellation only after the first operation, and an unreadable stored summary.
+- Golden fixtures now pin the Activity wire shape: `planSources`, and an `activity` case for a stopped batch and an older one recorded before sources and outcomes. Rust deserializes each one and serializes it back unchanged (so an optional field stays absent, never `null`), and TypeScript checks it has no nulls and derives the expected counts.
+- `ActionPlan.source` no longer defaults when it's missing, so a missing source is a clear error rather than `unknown`. Native logs unreadable stored summaries or outcomes and operations with no recorded kind instead of dropping them silently.
+- "Show older changes" asks for one batch more than a page, so it no longer appears when the last page is exactly full. The view type is now `ActivityEntry` (the wire type keeps `ActivityBatch`), it computes its changed and unrecorded counts once, and the identity `ATTEMPTS` map is gone.
+- New native tests: a write whose history couldn't be stored (injected with a temporary SQLite trigger) next to a delete that never ran, and a plan whose stored summary and outcomes are unreadable.
+- `npm run check`, `npm test` (427 passed, 9 todo), `npm run build` and `npm run check:bundle` passed. Playwright: 31 passed. The 4 `viewports` axe failures (`.olio-chat-greeting` outside a landmark) fail the same way on `main` and come from the Olio chat, not Activity.
+- Native: `cargo test --no-run` and `cargo check --tests` compiled everything, but the tests couldn't run on this host. It's a QEMU virtual CPU without AVX, and the test binary stops with SIGILL before any test starts, as `main`'s build does. The new native tests still need CI's `desktop-check`. The Tauri app wasn't opened.
 
 ## Pending
 
@@ -224,6 +251,54 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 8-GB measurement is claimed here.
 
 ## Verification
+
+### Embedding store fill (2026-10-10, issue #27)
+
+The native loop and its real SQLite seams were verified on WSL/Linux with the
+rustup Cargo toolchain (Cargo 1.96.1). The deterministic embedding fakes use
+SHA-256-derived vectors to prove hash/text/race safety; they are not evidence
+of real model quality.
+
+- `PATH=/home/pandan/.cargo/bin:$PATH cargo test --manifest-path src-tauri/Cargo.toml`: 231 passed, 2 ignored, including the merged Model Lab native suite, the guard-before-load test, the vector-reuse assertion and the strengthened Immediate-transaction handshake.
+- `PATH=/home/pandan/.cargo/bin:$PATH cargo test --manifest-path src-tauri/Cargo.toml -p folio-core`: 168 unit tests passed, 2 ignored; the loopback integration test passed; the real Model Lab run was ignored; 7 real-acceptance tests were ignored because verified local model files were not supplied.
+- `npm run check`: passed. `npm test`: 344 passed, 9 todo, with 9 pending cases skipped. `npm run build`: passed (`tsc --noEmit` plus Vite production build).
+- The precise Model Lab guarantee is limited to `sync_embeddings`: its initial space probe and each provider batch check inside `EmbeddingState` before any provider load. A batch already holding the lock may finish if Lab starts; Lab then unloads the slot and the next sync batch returns `providerBusy`. The existing live `semantic_search` snapshot path can still reload the product provider during Lab, and #27 does not migrate it.
+- Not verified here: real E5 inference or cross-language model quality, Windows or macOS native execution, the desktop window, packaging, live semantic search over the persistent store, or automatic UI triggering.
+
+### Adaptive layout and resizable reader (2026-10-10, issue #67)
+
+- The shell picks its layout from its own measured width, not fixed window breakpoints (`src/app/shellLayout.ts`). The sidebar keeps its labels while there's room. With a file open, the sidebar collapses to the icon rail before the list loses its 420px minimum. Only when even the rail leaves too little room does the reader overlay the list from the right ([ADR 0012](adr/0012-reader-overlay-instead-of-full-width-replacement.md)). The list stays mounted behind it and is made `inert`.
+- The reader can be resized by dragging the separator, or with Left/Right and Home/End on the focusable `role="separator"`. Its width stays between 320px and 60% of the window, and never wider than fits beside the list's 420px minimum when both minimums fit, so resizing can't push it into overlay. It's saved, already clamped, in `localStorage`; a width saved in a larger window narrows to fit; if storage fails, the 380px default is used.
+- File table columns drop one at a time as the row's own width shrinks: Size, then Modified, then Type, then Location (`src/app/fileColumns.ts`). The name column keeps room for the longest name, from 160px up to 320px, so the name isn't the column that gets truncated. Once Location drops, it moves under the name.
+- Files named in Activity entries and in Organize name suggestions and duplicates now open the reader.
+- Narrow Home (480px and below): filters wrap as label-above-control pairs, the search shortcut hint gives up its room so the placeholder isn't cut off, and the header mascot hides so the title stays on one line.
+- Graph: the map is taller (up to 70vh) and leaves more room under the bottom node's label. Label collisions are left for #45.
+- `docs/design.md`'s Layout section describes the resizable reader instead of the fixed 360–400px panel.
+
+Checked on macOS with Node.js 24.21.0:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test` (excluding the local `.claude/` worktrees): 344 passed, 9 todo. New unit tests cover reader-width clamping, sidebar and reader modes at boundary widths, the list's minimum width whenever the reader is split, the column drop order, the name column's width, and Activity and Organize opening the reader.
+- A scripted pass in headless Chromium against the browser preview (sample files), not committed. It ran at 1920×1080, 1440×900, 1280×850, 1180×800, 1024×768, 900×700, 860×700, 768×700, 600×700 and 400×760, and at 720×450 and 640×425 to stand in for 200% zoom, in light and dark themes:
+  - no horizontal overflow at any size, with the reader open or closed;
+  - no truncated file names in the visible list;
+  - with a file open, 9 rows visible at 1280×850 and 7 at 1024×768;
+  - sidebar labels kept at 1180px, and the rail only once the reader needs the room;
+  - in the overlay, focus moved into the reader and returned to the row on Escape.
+- The separator in the same browser: Left/Right changed the width by 16px, Home and End went to 320px and 60% of the window, dragging resized it, a drag past the edge saved the clamped width, the width survived a reload, and blocked storage fell back to 380px.
+
+Review fixes (Gab, 2026-10-10), after merging `main` (the file row's spoken "modified" date kept inside the new optional columns):
+
+- The width observer follows the app container even when it mounts after Welcome or the setup guide, so a first run doesn't keep the 1280px fallback.
+- The reader's maximum is what fits beside the list (`readerMaxWidth`), used by the layout, the clamp and the separator. Dragging or End can no longer flip it into an overlay that has no handle.
+- ⌘K/Ctrl K closes an overlaying reader before focusing search, since the list behind it is inert.
+- A panel that becomes an overlay while open moves focus into itself.
+- Activity links open the file at the path they show. A rename's history keeps the old path's identity, so the old lookup never matched.
+- The separator ignores non-primary buttons and ends a drag on pointer cancel or lost capture.
+
+Checked on Linux with Node.js 24.15.0: `npm run format:check`, `npm run check`, `npm test` and `npm run build` pass. New layout tests cover the cap beside the list and a remembered width narrowing. Not rerun in a browser.
+
+Not verified: the desktop app on Windows or macOS, screen readers, reduced motion, and browser zoom itself (smaller viewports stood in for it). Opening files from Activity and Organize needs a real folder, so it was not tried in the browser. Neither was a first run through Welcome. Graph label collisions are still open, with #45.
 
 ### Browser journeys against a fake native core (2026-10-10, issue #9)
 

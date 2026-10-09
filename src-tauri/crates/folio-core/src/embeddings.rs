@@ -20,6 +20,28 @@ pub const EMBEDDING_IDLE_UNLOAD: Duration = Duration::from_secs(5 * 60);
 /// query naming a document ("plano ng proyekto", "project plan") can match
 /// it across languages. Part of the embedding-space fingerprint.
 pub const PASSAGE_CONTEXT_VERSION: &str = "title-path-v1";
+/// Persisted chunks are embedded from their stored text only. This is a
+/// separate input contract from the snapshot path, which adds title and path
+/// context before embedding.
+pub const STORED_CHUNK_INPUT_VERSION: &str = "chunk-text-v1";
+
+/// Derive the embedding space used by vectors persisted for native index
+/// chunks. The provider identity is retained, while the input contract is
+/// namespaced so stored vectors can never be compared with snapshot vectors.
+pub fn stored_chunk_space(provider: &EmbeddingSpace) -> EmbeddingSpace {
+    let mut hasher = Sha256::new();
+    hasher.update(b"folio-stored-chunk\n");
+    hasher.update(STORED_CHUNK_INPUT_VERSION.as_bytes());
+    hasher.update(b"\n");
+    hasher.update(provider.preprocessing_fingerprint.as_bytes());
+    EmbeddingSpace {
+        model_id: provider.model_id.clone(),
+        revision: provider.revision.clone(),
+        quantization: provider.quantization.clone(),
+        dimensions: provider.dimensions,
+        preprocessing_fingerprint: hex::encode(hasher.finalize()),
+    }
+}
 
 /// The text embedded for one passage: document title, path words, then the
 /// passage. Only the embedding input changes; source offsets, citations and
@@ -572,6 +594,28 @@ mod tests {
             first,
             embedding_fingerprint("model", "tokenizer", "query: ", "passage: ", 512, "v2")
         );
+    }
+
+    #[test]
+    fn stored_chunk_space_is_separate_and_tracks_provider_identity() {
+        let provider = EmbeddingSpace {
+            model_id: "model".into(),
+            revision: "revision".into(),
+            quantization: "int8".into(),
+            dimensions: 384,
+            preprocessing_fingerprint: "snapshot-input".into(),
+        };
+        let stored = stored_chunk_space(&provider);
+        assert_eq!(stored.model_id, provider.model_id);
+        assert_eq!(stored.revision, provider.revision);
+        assert_eq!(stored.quantization, provider.quantization);
+        assert_eq!(stored.dimensions, provider.dimensions);
+        assert_ne!(stored.preprocessing_fingerprint, provider.preprocessing_fingerprint);
+        assert_eq!(stored, stored_chunk_space(&provider));
+
+        let mut changed = provider.clone();
+        changed.revision = "next-revision".into();
+        assert_ne!(stored, stored_chunk_space(&changed));
     }
 
     #[test]

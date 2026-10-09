@@ -13,7 +13,7 @@ mod tests {
 
     use serde_json::Value;
 
-    use crate::contracts::ActionPlan;
+    use crate::contracts::{ActionPlan, ActivityBatch, PlanSource};
     use crate::error::{ErrorCode, ALL_ERROR_CODES};
     use crate::identity::{
         assert_portable_destination, content_hash, document_id, embedding_space_fingerprint,
@@ -238,5 +238,29 @@ mod tests {
             ["create", "delete", "edit", "rename"].into_iter().collect(),
             "the fixtures cover every distinct canonical layout"
         );
+    }
+    #[test]
+    fn agrees_on_the_plan_sources_a_new_plan_can_name() {
+        let cases = cases();
+        let sources = cases["planSources"].as_array().unwrap();
+        for value in sources {
+            let source: PlanSource = serde_json::from_value(value.clone())
+                .expect("each plan source deserializes into the native enum");
+            assert_ne!(source, PlanSource::Unknown);
+            assert_eq!(source.as_str(), value.as_str().unwrap());
+            assert_eq!(PlanSource::from_stored(source.as_str()), source);
+        }
+        assert!(!sources.contains(&serde_json::json!("unknown")));
+    }
+
+    #[test]
+    fn agrees_on_the_activity_wire_shape() {
+        for entry in cases()["activity"].as_array().unwrap() {
+            let label = entry["label"].as_str().unwrap();
+            let batch: ActivityBatch = serde_json::from_value(entry["batch"].clone())
+                .unwrap_or_else(|failure| panic!("{label}: {failure}"));
+            // Serialized again, an absent field stays absent: no nulls, no extras.
+            assert_eq!(serde_json::to_value(&batch).unwrap(), entry["batch"], "{label}");
+        }
     }
 }
