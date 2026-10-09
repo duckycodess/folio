@@ -49,7 +49,7 @@ use index::{
 };
 use collections::{KeptMember, VirtualCollection};
 use folio_core::collections::{NamingOutcome, SuggestedCollection};
-use organize::OrganizationSuggestions;
+use organize::{DestinationSuggestion, OrganizationSuggestion, OrganizationSuggestions};
 use plan::PlanRegistry;
 use identity::media_type_for_path;
 use writer::{ApplyReport, RealFileSystem, UndoReport};
@@ -1212,6 +1212,7 @@ fn load_corpus(
     let mut documents = Vec::new();
     let mut contents = HashMap::new();
     let mut text_documents = Vec::new();
+    let mut page_chunks = Vec::new();
     let mut skipped_documents = Vec::new();
     for row in metadata {
         // A text-based PDF is read through its extracted text; offsets and the
@@ -1244,11 +1245,33 @@ fn load_corpus(
             content_hash: Some(document_text.content_hash),
         };
         contents.insert(record.id.clone(), content.clone());
-        text_documents.push(TextDocument::new(record.clone(), content));
+        if document_text.pages.is_empty() {
+            text_documents.push(TextDocument::new(record.clone(), content));
+        } else {
+            page_chunks.extend(pdf_page_chunks(&record, &content, &document_text.pages)?);
+        }
         documents.push(record);
     }
-    let chunks = InterimTextChunker::new(text_documents).all_chunks()?;
+    let mut chunks = InterimTextChunker::new(text_documents).all_chunks()?;
+    chunks.extend(page_chunks);
     Ok((documents, contents, chunks, skipped_documents))
+}
+
+/// A PDF's chunks, page by page, so each passage names the one page it is on.
+/// Offsets stay UTF-8 bytes into the whole extracted text.
+fn pdf_page_chunks(record: &DocumentRecord, content: &str, pages: &[workspace::PageRange]) -> Result<Vec<Chunk>, CoreError> {
+    let hash = record.content_hash.as_deref().unwrap_or_default();
+    let mut chunks = Vec::new();
+    for range in pages.iter().filter(|range| range.start <= range.end && range.end <= content.len() && content.is_char_boundary(range.start) && content.is_char_boundary(range.end)) {
+        for mut chunk in folio_core::chunking::chunk_text(&record.id, &content[range.start..range.end], folio_core::chunking::DEFAULT_MAX_CHUNK_BYTES, hash)? {
+            chunk.start += range.start;
+            chunk.end += range.start;
+            chunk.ordinal = chunks.len();
+            chunk.page = Some(range.page);
+            chunks.push(chunk);
+        }
+    }
+    Ok(chunks)
 }
 
 fn document_record(
@@ -1964,6 +1987,89 @@ async fn suggest_collections(
     .await?)
 }
 
+/// Rename and move suggestions from the local models: filenames for files whose
+/// names say nothing (generation model) and existing folders whose files are
+/// closer in meaning (embedding model). Each carries an exact operation that
+/// still goes through the plan, preview and approval.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FileChangeSuggestions {
+    filenames: Vec<OrganizationSuggestion>,
+    /// Files with generic names and no heading that the model was asked to name.
+    filename_candidates: usize,
+    /// As for collections: `named`, `cancelled`, `generationModelMissing`, `failed` or `notNeeded`.
+    naming: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    naming_error: Option<FolioError>,
+    destinations: Vec<DestinationSuggestion>,
+    /// `suggested`, or `embeddingModelMissing` when no folder could be compared.
+    destination_status: &'static str,
+}
+
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn suggest_file_changes(
+    app: AppHandle,
+    state: State<'_, Folio>,
+    index_state: State<'_, IndexState>,
+    embedding_state: State<'_, EmbeddingState>,
+    generation_state: State<'_, GenerationState>,
+    workspace_id: String,
+    collection_id: Option<String>,
+) -> Result<FileChangeSuggestions, FolioError> {
+    let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
+    let members = collection_id.as_deref().map(|id| collections::present_member_ids(&*state.index()?, &root, id)).transpose()?;
+    let index_state = index_state.inner().clone();
+    let embedding_state = embedding_state.inner().clone();
+    let generation_state = generation_state.inner().clone();
+    Ok(run_blocking::<_, FolioError, _>(move || {
+        let snapshot = ensure_snapshot(&app, &embedding_state, &root, &index_state)?;
+        let in_scope = |document: &DocumentRecord| members.as_ref().is_none_or(|members| members.contains(&document.id));
+        let (destination_status, destinations) = match snapshot.embedding_space.as_ref() {
+            None => ("embeddingModelMissing", Vec::new()),
+            Some(space) => {
+                let (chunks, vectors) = snapshot.retriever.vector_index.indexed(space).ok_or_else(|| NativeProviderError {
+                    code: folio_core::contracts::ProviderErrorCode::EmbeddingSpaceMismatch,
+                    message: "The local index has no vectors for the selected embedding model.".into(),
+                    detail: None,
+                })?;
+                let eligible = |document: &DocumentRecord| in_scope(document) && identity::is_editable_media_type(&document.media_type);
+                let found = folio_core::file_suggestions::suggest_destinations(&snapshot.documents, chunks, vectors, space, &eligible).map_err(native_error)?;
+                ("suggested", organize::destinations(&root, &snapshot.documents, found))
+            }
+        };
+        let candidates = snapshot
+            .documents
+            .iter()
+            .filter(|document| in_scope(document) && folio_core::file_suggestions::needs_a_name(document))
+            .take(folio_core::file_suggestions::MAX_NAMED_FILES)
+            .map(|document| (document.clone(), folio_core::file_suggestions::filename_passages(document, document.content.as_deref().unwrap_or_default())))
+            .collect::<Vec<_>>();
+        let (naming, naming_error, filenames) = if candidates.is_empty() {
+            ("notNeeded", None, Vec::new())
+        } else {
+            match acquire_generation(&app, &generation_state) {
+                Err(failure) if failure.code == folio_core::contracts::ProviderErrorCode::ModelNotInstalled => ("generationModelMissing", None, Vec::new()),
+                Err(failure) => ("failed", Some(FolioError::from(failure)), Vec::new()),
+                Ok((provider, cancel)) => {
+                    let named = folio_core::file_suggestions::name_files(provider.as_ref(), &candidates, cancel.as_ref());
+                    finish_generation(&generation_state, &cancel)?;
+                    match named {
+                        Ok((names, outcome)) => (
+                            if outcome == NamingOutcome::Named { "named" } else { "cancelled" },
+                            None,
+                            organize::model_filenames(&root, &snapshot.documents, &names),
+                        ),
+                        Err(failure) => ("failed", Some(FolioError::from(native_error(failure))), Vec::new()),
+                    }
+                }
+            }
+        };
+        Ok(FileChangeSuggestions { filenames, filename_candidates: candidates.len(), naming, naming_error, destinations, destination_status })
+    })
+    .await?)
+}
+
 fn unload_generation_now(generation_state: &GenerationState) -> Result<(), NativeProviderError> {
     let mut guard = generation_state.lock().map_err(|_| NativeProviderError {
         code: folio_core::contracts::ProviderErrorCode::IoError,
@@ -2025,7 +2131,13 @@ mod tests {
         for chunk in chunks.iter().filter(|chunk| chunk.document_id == pdf.id) {
             assert_eq!(&read.content[chunk.start..chunk.end], chunk.text);
             assert_eq!(chunk.content_hash, read.content_hash);
+            // Each chunk lies on the one page it names, as the reader shows it.
+            let page = read.pages.iter().find(|range| Some(range.page) == chunk.page).expect("a PDF chunk names its page");
+            assert!(page.start <= chunk.start && chunk.end <= page.end);
         }
+        let passage = &folio_core::grounding::passages_from_chunks(&chunks.iter().filter(|chunk| chunk.document_id == pdf.id).cloned().collect::<Vec<_>>())[0];
+        assert!(passage.page.is_some());
+        assert!(chunks.iter().filter(|chunk| chunk.document_id != pdf.id).all(|chunk| chunk.page.is_none()));
         assert!(chunks.iter().any(|chunk| chunk.document_id == pdf.id));
         let fingerprint = corpus_fingerprint(&scoped_root).unwrap();
         assert_eq!(fingerprint.iter().map(|(path, ..)| path.as_str()).collect::<Vec<_>>(), ["guide.pdf", "notes.markdown"]);
@@ -2190,6 +2302,7 @@ pub fn run() {
             add_collection_members,
             remove_collection_members,
             suggest_collections,
+            suggest_file_changes,
             list_models,
             verify_model,
             install_model,

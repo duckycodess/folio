@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { cancelGeneration } from "../adapters/ai";
 import {
+  addCollectionMembers,
   keepCollection,
   listCollections,
   removeCollection,
@@ -30,8 +31,11 @@ export interface CollectionsController {
   rename: (collectionId: string, name: string) => Promise<boolean>;
   remove: (collectionId: string) => void;
   removeMember: (collectionId: string, documentId: string) => void;
+  /** Adds one file; the file itself stays where it is. */
+  addMember: (collectionId: string, documentId: string) => Promise<boolean>;
   suggestions: SuggestState;
-  suggest: () => void;
+  /** Resolves once the groups arrive, fail or are stopped. */
+  suggest: () => Promise<void>;
   /**
    * Drops the analysis and stops the model writing names. The runtime runs
    * one generation at a time, so this stops whichever request holds it.
@@ -136,6 +140,18 @@ export function useCollections(
     }
   }
 
+  async function addMember(collectionId: string, documentId: string) {
+    if (!folderId) return false;
+    try {
+      replace(await addCollectionMembers(folderId, collectionId, [documentId]));
+      setError(null);
+      return true;
+    } catch (cause) {
+      setError(toFolioError(cause));
+      return false;
+    }
+  }
+
   async function removeMember(collectionId: string, documentId: string) {
     if (!folderId) return;
     try {
@@ -156,10 +172,11 @@ export function useCollections(
     reload,
     rename,
     remove: (collectionId) => void remove(collectionId),
+    addMember,
     removeMember: (collectionId, documentId) =>
       void removeMember(collectionId, documentId),
     suggestions,
-    suggest: () => void suggest(),
+    suggest,
     stopSuggest: () => {
       if (suggestions.status !== "grouping") return;
       dispatch({ type: "stopped", request: ++next.current });

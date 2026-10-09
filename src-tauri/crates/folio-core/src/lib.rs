@@ -12,6 +12,7 @@ pub mod contracts;
 pub mod device;
 pub mod embeddings;
 pub mod error;
+pub mod file_suggestions;
 pub mod generation;
 pub mod grounding;
 pub mod interpretation;

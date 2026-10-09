@@ -8,4 +8,6 @@ Grouping compares document vectors from one embedding space only, and records th
 
 A kept collection can also be what Organize analyzes. Analyzing a collection limits exact duplicates and filename suggestions to its members and moves nothing into or out of it.
 
+Renames and moves from the local models follow the same plan as every other file change. The model is asked for a filename only for a TXT or Markdown file with no heading whose name is just generic words, numbers or dates, because a heading already gives a title-based name. A destination is an existing folder whose other files (not counting identical copies) are closer in meaning than the file's own folder. Folio doesn't create folders, and PDFs are never renamed or moved because they are read-only. A file can have a title-based name, a model-written name and a folder suggestion at once, so only one of them can be chosen for a preview.
+
 Decided with Gab on 2026-10-10 for issue #78, which Gab took over from Dann. Dann reviews the embedding and generation parts.

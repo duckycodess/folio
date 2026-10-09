@@ -5,6 +5,7 @@ import type {
   ApplyReport,
   Approval,
   DocumentId,
+  FileChangeSuggestions,
   FileOperation,
   HistoryEntry,
   ImpactCandidate,
@@ -166,6 +167,21 @@ export function organizationSuggestions(
   collectionId?: string,
 ): Promise<OrganizationSuggestions> {
   return call<OrganizationSuggestions>("organization_suggestions", {
+    workspaceId,
+    collectionId,
+  });
+}
+
+/**
+ * Renames for files with generic names (local generation model) and moves into
+ * existing folders whose files are closer in meaning (local embedding model).
+ * Stop with `cancelGeneration`; names written so far are kept.
+ */
+export function suggestFileChanges(
+  workspaceId: WorkspaceId,
+  collectionId?: string,
+): Promise<FileChangeSuggestions> {
+  return call<FileChangeSuggestions>("suggest_file_changes", {
     workspaceId,
     collectionId,
   });
