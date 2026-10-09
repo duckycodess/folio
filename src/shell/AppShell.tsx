@@ -21,6 +21,8 @@ import {
 } from "../app/theme";
 import { useRelationships } from "../app/useRelationships";
 import { useActivity } from "../app/useActivity";
+import { useHome } from "../app/useHome";
+import { hasFilters, passesFilters } from "../domain/homeFilters";
 import { useWorkspace, type WorkspaceSourceKind } from "../app/useWorkspace";
 import { simulatedCode } from "../adapters/simulate";
 import { useDrafts } from "../app/drafts";
@@ -103,6 +105,7 @@ export function AppShell() {
     relations.refresh();
     activity.reload();
   };
+  const home = useHome(workspace);
   // Above the views, so an apply in progress survives switching views.
   const organize = useOrganize(workspace, filesChanged);
   // Home's Rename and Move have their own plan, so they never show up in
@@ -125,7 +128,15 @@ export function AppShell() {
   const searchInput = useRef<HTMLInputElement>(null);
   const platform = useMemo(currentPlatform, []);
   const [theme, setTheme] = useState<ThemePreference>(loadTheme);
-  const reading = readerDocument(view, workspace.selected, workspace.results);
+  // Home's filters narrow its list, so the reader follows them there too.
+  const listed = useMemo(() => {
+    if (view !== "home" || !hasFilters(home.filters)) return workspace.results;
+    const now = Date.now();
+    return workspace.results.filter((result) =>
+      passesFilters(result.document, home.filters, now),
+    );
+  }, [view, home.filters, workspace.results]);
+  const reading = readerDocument(view, workspace.selected, listed);
   const showsDocument = reading !== undefined;
 
   // "Show related" is for that one opening: once another file (or none) is
@@ -390,6 +401,7 @@ export function AppShell() {
                   onSearch={onSearch}
                   fileActions={fileActions}
                   onOpenPassage={relations.openPassage}
+                  home={home}
                 />
               )}
               {view === "organize" && (
