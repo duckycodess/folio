@@ -1119,6 +1119,9 @@ export type ExplicitReference = Extract<
 export interface PendingChunk {
   chunkId: number;
   documentId: DocumentId;
+  /** The document's title and relative path, embedded in front of `text`. */
+  title: string;
+  relativePath: string;
   text: string;
   contentHash: ContentHash;
 }

@@ -119,7 +119,7 @@ already committed remain. Existing snapshot `semantic_search` can still
 reload the product embedding provider during a Lab run; that is the
 pre-existing #8 limitation, and #27 does not migrate live search to this
 persistent store. Cancellation keeps already committed batches and reports
-their cumulative counts. Persistent chunks use the separate `chunk-text-v1`
+their cumulative counts. Persistent chunks use the separate `title-path-chunk-v2`
 stored space, so these vectors are not comparable to the title/path snapshot
 space. No UI trigger is implied by these commands. The native index owns the
 all-or-nothing

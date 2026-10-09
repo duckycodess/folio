@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use folio_core::contracts::EmbeddingSpace as ProviderEmbeddingSpace;
-use folio_core::embeddings::stored_chunk_space;
+use folio_core::embeddings::{stored_chunk_space, stored_passage_text};
 use rusqlite::Connection;
 use serde::Serialize;
 
@@ -203,7 +203,7 @@ pub fn sync_embeddings<S: ChunkStore, E: PassageEmbedder>(
 
         let texts = batch
             .iter()
-            .map(|chunk| chunk.text.clone())
+            .map(|chunk| stored_passage_text(&chunk.title, &chunk.relative_path, &chunk.text))
             .collect::<Vec<_>>();
         let (actual_space, vectors) = match embedder.embed_batch(&texts, cancel) {
             Ok(result) => result,
@@ -310,6 +310,8 @@ mod tests {
         PendingChunk {
             chunk_id: id,
             document_id: format!("workspace:{id}.md"),
+            title: format!("Document {id}"),
+            relative_path: format!("{id}.md"),
             text: text.into(),
             content_hash: hash.into(),
         }
@@ -450,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn echoes_pending_hash_verbatim_and_embeds_exact_chunk_text() {
+    fn echoes_pending_hash_verbatim_and_embeds_title_path_and_chunk_text() {
         let space = provider_space("r1");
         let chunk = pending_chunk(1, "Filipino: Oktubre 20 — Señora", SENTINEL_HASH);
         let mut store = ScriptedStore::new(vec![vec![chunk], vec![]]);
@@ -467,7 +469,9 @@ mod tests {
         assert!(summary.complete);
         assert_eq!(
             embedder.inputs,
-            vec![vec![String::from("Filipino: Oktubre 20 — Señora")]]
+            vec![vec![String::from(
+                "Document 1\n1\nFilipino: Oktubre 20 — Señora"
+            )]]
         );
         assert_eq!(store.puts[0][0].content_hash, SENTINEL_HASH);
     }
@@ -748,25 +752,48 @@ mod tests {
         (folder, conn, root, fingerprint, provider)
     }
 
+    /// What the sync embeds for `text` in the document at `path`.
+    fn embedded_text(conn: &Connection, path: &str, text: &str) -> String {
+        let title: String = conn
+            .query_row(
+                "SELECT COALESCE(title, name) FROM documents WHERE relative_path = ?1",
+                [path],
+                |row| row.get(0),
+            )
+            .unwrap();
+        stored_passage_text(&title, path, text)
+    }
+
     fn assert_current_vector_and_old_absent(
         conn: &Connection,
         root: &ScopedRoot,
         fingerprint: &str,
+        path: &str,
         old_text: &str,
         new_text: &str,
     ) {
-        let current_hits =
-            index::vector_candidates(conn, &root.id, fingerprint, &fake_vector(new_text), 100)
-                .unwrap();
+        let current_hits = index::vector_candidates(
+            conn,
+            &root.id,
+            fingerprint,
+            &fake_vector(&embedded_text(conn, path, new_text)),
+            100,
+        )
+        .unwrap();
         let current = current_hits
             .iter()
             .find(|candidate| candidate.passage.text == new_text)
             .expect("the current chunk has a vector");
         assert!((current.score - 1.0).abs() < 0.0001);
 
-        let old_hits =
-            index::vector_candidates(conn, &root.id, fingerprint, &fake_vector(old_text), 100)
-                .unwrap();
+        let old_hits = index::vector_candidates(
+            conn,
+            &root.id,
+            fingerprint,
+            &fake_vector(&embedded_text(conn, path, old_text)),
+            100,
+        )
+        .unwrap();
         assert!(!old_hits
             .iter()
             .any(|candidate| candidate.passage.text == new_text && candidate.score >= 0.99));
@@ -849,6 +876,7 @@ mod tests {
                 &store.conn,
                 &root,
                 &fingerprint,
+                path,
                 old_text,
                 new_text,
             );
@@ -923,11 +951,12 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        for ((_, old_text), (_, new_text)) in old.iter().zip(new.iter()) {
+        for ((path, old_text), (_, new_text)) in old.iter().zip(new.iter()) {
             assert_current_vector_and_old_absent(
                 &store.conn,
                 &root,
                 &fingerprint,
+                path,
                 old_text,
                 new_text,
             );
@@ -1005,7 +1034,14 @@ mod tests {
         assert!(summary.complete);
         assert_eq!(summary.dropped_stale, 1);
         assert_eq!(store.refusals[0].detail("reason"), Some("chunkChanged"));
-        assert_current_vector_and_old_absent(&store.conn, &root, &fingerprint, old_text, new_text);
+        assert_current_vector_and_old_absent(
+            &store.conn,
+            &root,
+            &fingerprint,
+            "filipino.md",
+            old_text,
+            new_text,
+        );
     }
 
     #[test]

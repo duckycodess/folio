@@ -1008,6 +1008,10 @@ pub struct ChunkVector {
 pub struct PendingChunk {
     pub chunk_id: i64,
     pub document_id: String,
+    /// The document's title and relative path, which are embedded with the
+    /// text (see `folio_core::embeddings::stored_passage_text`).
+    pub title: String,
+    pub relative_path: String,
     pub text: String,
     /// Echo this back in `ChunkVector` so a vector for replaced text is refused.
     pub content_hash: String,
@@ -1074,13 +1078,13 @@ pub fn put_embeddings(conn: &mut Connection, workspace_id: &str, fingerprint: &s
     Ok(items.len())
 }
 
-/// Chunks that have no vector in this space yet, for the embedding provider to process.
+/// Chunks of indexed documents that have no vector in this space yet, for the embedding provider to process. A stale document keeps its old chunks for Local Sync, but they are never embedded.
 pub fn pending_embedding_chunks(conn: &Connection, workspace_id: &str, fingerprint: &str, limit: usize) -> NativeResult<Vec<PendingChunk>> {
     space_dimensions(conn, fingerprint)?;
     let mut statement = conn.prepare(
-        "SELECT c.chunk_id, c.document_id, c.chunk_text, c.content_hash FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.workspace_id = ?1 AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.chunk_id = c.chunk_id AND e.space_id = ?2) ORDER BY c.chunk_id LIMIT ?3",
+        "SELECT c.chunk_id, c.document_id, COALESCE(d.title, d.name), d.relative_path, c.chunk_text, c.content_hash FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.workspace_id = ?1 AND d.status = 'indexed' AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.chunk_id = c.chunk_id AND e.space_id = ?2) ORDER BY c.chunk_id LIMIT ?3",
     )?;
-    let rows = statement.query_map(params![workspace_id, fingerprint, limit.clamp(1, 512) as i64], |row| Ok(PendingChunk { chunk_id: row.get(0)?, document_id: row.get(1)?, text: row.get(2)?, content_hash: row.get(3)? }))?;
+    let rows = statement.query_map(params![workspace_id, fingerprint, limit.clamp(1, 512) as i64], |row| Ok(PendingChunk { chunk_id: row.get(0)?, document_id: row.get(1)?, title: row.get(2)?, relative_path: row.get(3)?, text: row.get(4)?, content_hash: row.get(5)? }))?;
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
@@ -1289,6 +1293,26 @@ pub mod tests {
         assert!(message.unwrap().contains("previous version"));
         assert_eq!(chunk_count(&conn, &id), before);
         assert_eq!(search(&conn, &root.id, "checklist", 20).unwrap().iter().find(|hit| hit.document.id == id).unwrap().document.status, "stale");
+    }
+
+    #[test]
+    fn pending_embeddings_skip_stale_documents_but_keep_their_chunks() {
+        let (folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let provider = EmbeddingSpace { model_id: "test".into(), revision: "r1".into(), quantization: "test".into(), dimensions: 2, preprocessing_fingerprint: "p".into() };
+        let fingerprint = register_space(&conn, &provider).unwrap();
+        let id = id_of(&root, "notes/paalala.md");
+        let all = pending_embedding_chunks(&conn, &root.id, &fingerprint, 512).unwrap();
+        assert!(all.iter().any(|chunk| chunk.document_id == id));
+        let own = all.iter().find(|chunk| chunk.document_id == id).unwrap();
+        assert_eq!(own.relative_path, "notes/paalala.md");
+        assert!(!own.title.is_empty());
+        fs::write(folder.path().join("notes/paalala.md"), [0xff, 0xfe, 0xfd, 0x00, 0x01]).unwrap();
+        scan(&mut conn, &root);
+        assert_eq!(status_of(&conn, &root, "notes/paalala.md").0, "stale");
+        let pending = pending_embedding_chunks(&conn, &root.id, &fingerprint, 512).unwrap();
+        assert!(pending.iter().all(|chunk| chunk.document_id != id), "a stale document's chunks are never embedded");
+        assert!(chunk_count(&conn, &id) > 0, "its chunks stay for Local Sync");
     }
 
     #[test]
