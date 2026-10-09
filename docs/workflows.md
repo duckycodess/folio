@@ -10,6 +10,8 @@ The reference image defines three user journeys. Preserve their independent entr
 | B — Smart Organize       | Organize → Select Collection or Folder → Analyze → Preview Suggested Changes → Approve & Apply    | Group virtually; suggest names and destinations; identify exact duplicates.          |
 | C — Ask & Act            | AI Assistant → Enter Instruction → Find Target Files → Preview Actions & Impacts → Approve & Save | Natural-language create/read/edit/rename/move, grounded questions, and Folio Ripple. |
 
+Journey A's second step reads "Browse or Search Files" because the Files page was removed ([ADR 0010](adr/0010-home-is-the-file-browser.md)); the reference image above still says "Files", so don't restore it from there.
+
 The updated product context (2026-10-09) adds workflows that sit beside these journeys rather than replacing them. They are named, not lettered, because their source used letters A–E that clash with the journeys above; issues refer to journey B as Smart Organize and journey C as Ask & Act.
 
 | Workflow               | Steps                                                                                                 | Notes                                                                                       |
