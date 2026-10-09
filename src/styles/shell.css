@@ -147,6 +147,12 @@
   border-radius: 50%;
   background: var(--sidebar-text-muted);
 }
+.status-pill[data-status="ready"] .status-dot {
+  background: var(--color-success-dot);
+}
+.status-pill[data-status="unavailable"] .status-dot {
+  background: var(--color-danger);
+}
 
 /* Main column */
 .main-column {

@@ -2,11 +2,9 @@ import { History, Maximize2, Paperclip, Send, Trash2, X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { PRACTICE_LABEL } from "../adapters/mockChat";
 import { folderChoices } from "../app/fileActions";
-import { localAiStatusLabel } from "../app/localAi";
 import { matchSlashCommands, parseCommand } from "../app/commands";
 import { requestForFile } from "../app/proposals";
 import { useAskAct, type ConversationSummary } from "../app/useAskAct";
-import { useModels } from "../app/useModels";
 import type { RelationshipsState } from "../app/useRelationships";
 import type { WorkspaceState } from "../app/useWorkspace";
 import type { DocumentRecord, OperationProposal } from "../domain/contracts";
@@ -85,6 +83,7 @@ export function FloatingOlioChat({
   onNavigate,
   onOpenFile,
   currentFile,
+  localAiLabel,
 }: {
   workspace: WorkspaceState;
   relations: RelationshipsState;
@@ -93,9 +92,10 @@ export function FloatingOlioChat({
   onOpenFile: OpenFile;
   /** The file open in the reader, if any; offered as an attachable chip. */
   currentFile?: DocumentRecord;
+  /** The shell's reading of the model store, the same one the sidebar shows. */
+  localAiLabel: string;
 }) {
   const ask = useAskAct(workspace);
-  const models = useModels();
   const announce = useAnnounce();
   const [open, setOpen] = useState(false);
   const [panel, setPanel] = useState<"chat" | "history">("chat");
@@ -259,7 +259,7 @@ export function FloatingOlioChat({
               <h2 id={headingId} className="olio-chat-title">
                 Olio
               </h2>
-              <p className="olio-chat-status">{localAiStatusLabel(models)}</p>
+              <p className="olio-chat-status">{localAiLabel}</p>
             </div>
             <Button
               variant="ghost"
