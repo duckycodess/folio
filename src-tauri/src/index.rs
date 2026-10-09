@@ -1113,6 +1113,133 @@ pub fn vector_candidates(conn: &Connection, workspace_id: &str, fingerprint: &st
     Ok(candidates)
 }
 
+// ---------------------------------------------------------------- reads for AI context
+
+/// One chunk's cosine to a query in one embedding space. Passage text is read
+/// afterwards, for the winners only.
+#[derive(Debug, Clone)]
+pub struct ChunkCosine {
+    pub chunk_id: i64,
+    pub document_id: String,
+    pub cosine: f32,
+}
+
+/// A chunk of an indexed document with the revision (`documents.content_hash`)
+/// its offsets belong to.
+#[derive(Debug, Clone)]
+pub struct StoredChunk {
+    pub chunk_id: i64,
+    pub passage: SourcePassage,
+}
+
+/// Corpus statistics for BM25 over the chunks in scope, from the FTS5 index.
+#[derive(Debug, Clone)]
+pub struct KeywordStats {
+    pub chunk_count: usize,
+    pub average_chars: f32,
+    /// Chunks containing each term, aligned with the terms passed in.
+    pub document_frequency: Vec<usize>,
+}
+
+/// Cosine of every chunk in scope against `query`, within one space. Only
+/// documents with status `indexed` are read: a stale document keeps its old chunks for Local
+/// Sync, but they must never reach a prompt. Every score is returned, not a top k, because the
+/// evidence gate measures the best chunk against the median of the whole space.
+pub fn vector_scores(conn: &Connection, workspace_id: &str, fingerprint: &str, query: &[f32], document_id: Option<&str>) -> NativeResult<Vec<ChunkCosine>> {
+    check_vector(query, space_dimensions(conn, fingerprint)?)?;
+    let query_norm = query.iter().map(|value| value * value).sum::<f32>().sqrt();
+    let mut statement = conn.prepare(
+        "SELECT e.chunk_id, c.document_id, e.vector FROM embeddings e JOIN chunks c ON c.chunk_id = e.chunk_id JOIN documents d ON d.id = c.document_id WHERE e.space_id = ?1 AND d.workspace_id = ?2 AND d.status = 'indexed' AND (?3 IS NULL OR c.document_id = ?3)",
+    )?;
+    let rows = statement.query_map(params![fingerprint, workspace_id, document_id], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, Vec<u8>>(2)?)))?;
+    let mut scores = Vec::new();
+    for row in rows {
+        let (chunk_id, document_id, blob) = row?;
+        let vector: Vec<f32> = blob.chunks_exact(4).map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])).collect();
+        if vector.len() != query.len() { continue; }
+        let dot: f32 = vector.iter().zip(query).map(|(a, b)| a * b).sum();
+        let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+        let cosine = if norm == 0.0 || query_norm == 0.0 { 0.0 } else { dot / (norm * query_norm) };
+        scores.push(ChunkCosine { chunk_id, document_id, cosine });
+    }
+    Ok(scores)
+}
+
+fn chunk_from_row(row: &Row<'_>) -> rusqlite::Result<StoredChunk> {
+    let (chunk_id, document_id, hash, text, start, end, page): (i64, String, String, String, i64, i64, Option<u32>) = (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?);
+    Ok(StoredChunk { chunk_id, passage: passage(&document_id, &hash, start as usize, end as usize, &text, page) })
+}
+
+const CHUNK_COLUMNS: &str = "c.chunk_id, c.document_id, d.content_hash, c.chunk_text, c.start_offset, c.end_offset, c.page";
+
+/// The chunks with these ids, as passages bound to their document's indexed revision. Chunks of
+/// documents that are no longer `indexed`, and ids that no longer exist, are left out.
+pub fn stored_chunks(conn: &Connection, workspace_id: &str, chunk_ids: &[i64]) -> NativeResult<Vec<StoredChunk>> {
+    if chunk_ids.is_empty() { return Ok(Vec::new()); }
+    let placeholders = vec!["?"; chunk_ids.len()].join(",");
+    let mut statement = conn.prepare(&format!("SELECT {CHUNK_COLUMNS} FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.workspace_id = ? AND d.status = 'indexed' AND c.chunk_id IN ({placeholders})"))?;
+    let values = std::iter::once(rusqlite::types::Value::Text(workspace_id.to_owned())).chain(chunk_ids.iter().map(|id| rusqlite::types::Value::Integer(*id)));
+    let rows = statement.query_map(rusqlite::params_from_iter(values), chunk_from_row)?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// `"a" OR "b"`, or `None` when no term is a plain alphanumeric word. Terms come from callers that
+/// already split on non-alphanumerics; anything else is dropped so text cannot inject FTS syntax.
+fn match_expression(terms: &[String]) -> Option<String> {
+    let quoted = terms.iter().filter(|term| !term.is_empty() && term.chars().all(char::is_alphanumeric)).map(|term| format!("\"{term}\"")).collect::<Vec<_>>();
+    if quoted.is_empty() { None } else { Some(quoted.join(" OR ")) }
+}
+
+/// Chunks of indexed documents that contain any of the terms, best FTS5 rank first. Candidates
+/// only: callers score them (keyword search, not semantic).
+pub fn keyword_hits(conn: &Connection, workspace_id: &str, terms: &[String], document_id: Option<&str>, limit: usize) -> NativeResult<Vec<StoredChunk>> {
+    let Some(expression) = match_expression(terms) else { return Ok(Vec::new()); };
+    let mut statement = conn.prepare(&format!(
+        "SELECT {CHUNK_COLUMNS} FROM chunks_fts JOIN chunks c ON c.chunk_id = chunks_fts.rowid JOIN documents d ON d.id = c.document_id WHERE chunks_fts MATCH ?1 AND d.workspace_id = ?2 AND d.status = 'indexed' AND (?3 IS NULL OR c.document_id = ?3) ORDER BY bm25(chunks_fts) LIMIT ?4"
+    ))?;
+    let rows = statement.query_map(params![expression, workspace_id, document_id, limit.clamp(1, 1000) as i64], chunk_from_row)?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// How many chunks are in scope, their average length and how many contain each term.
+pub fn keyword_stats(conn: &Connection, workspace_id: &str, terms: &[String], document_id: Option<&str>) -> NativeResult<KeywordStats> {
+    let (chunk_count, average_chars): (i64, Option<f64>) = conn.query_row(
+        "SELECT count(*), AVG(length(c.chunk_text)) FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.workspace_id = ?1 AND d.status = 'indexed' AND (?2 IS NULL OR c.document_id = ?2)",
+        params![workspace_id, document_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let mut statement = conn.prepare(
+        "SELECT count(*) FROM chunks_fts JOIN chunks c ON c.chunk_id = chunks_fts.rowid JOIN documents d ON d.id = c.document_id WHERE chunks_fts MATCH ?1 AND d.workspace_id = ?2 AND d.status = 'indexed' AND (?3 IS NULL OR c.document_id = ?3)",
+    )?;
+    let mut document_frequency = Vec::with_capacity(terms.len());
+    for term in terms {
+        document_frequency.push(match match_expression(std::slice::from_ref(term)) {
+            Some(expression) => statement.query_row(params![expression, workspace_id, document_id], |row| row.get::<_, i64>(0))? as usize,
+            None => 0,
+        });
+    }
+    Ok(KeywordStats { chunk_count: chunk_count as usize, average_chars: average_chars.unwrap_or(0.0) as f32, document_frequency })
+}
+
+/// The first chunks of an indexed document in reading order, for a question about a file the
+/// user chose when no passage scores.
+pub fn leading_chunks(conn: &Connection, workspace_id: &str, document_id: &str, limit: usize) -> NativeResult<Vec<StoredChunk>> {
+    let mut statement = conn.prepare(&format!("SELECT {CHUNK_COLUMNS} FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.workspace_id = ?1 AND d.status = 'indexed' AND c.document_id = ?2 ORDER BY c.ordinal LIMIT ?3"))?;
+    let rows = statement.query_map(params![workspace_id, document_id, limit.clamp(1, 100) as i64], chunk_from_row)?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// `(chunks with a vector in this space, all chunks)` over indexed documents: how much of the
+/// index a semantic search can see.
+pub fn embedding_coverage(conn: &Connection, workspace_id: &str, fingerprint: &str) -> NativeResult<(usize, usize)> {
+    let (embedded, total): (i64, i64) = conn.query_row(
+        "SELECT count(e.chunk_id), count(*) FROM chunks c JOIN documents d ON d.id = c.document_id LEFT JOIN embeddings e ON e.chunk_id = c.chunk_id AND e.space_id = ?2 WHERE d.workspace_id = ?1 AND d.status = 'indexed'",
+        params![workspace_id, fingerprint],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok((embedded as usize, total as usize))
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
@@ -1865,5 +1992,100 @@ pub mod tests {
             let documents = list_documents(&conn, &root.id).unwrap().len();
             println!("{documents} documents, 30 of them {label}; mean of {RUNS} rescans: read every scan {every_scan:?}, with backoff {with_backoff:?}");
         }
+    }
+
+    fn stored_space(conn: &Connection, dimensions: u32) -> String {
+        register_space(conn, &EmbeddingSpace { model_id: "test".into(), revision: "r1".into(), quantization: "test".into(), dimensions, preprocessing_fingerprint: "p".into() }).unwrap()
+    }
+
+    fn fill(conn: &mut Connection, root: &ScopedRoot, fingerprint: &str, vector_for: impl Fn(&PendingChunk) -> Vec<f32>) {
+        let pending = pending_embedding_chunks(conn, &root.id, fingerprint, 512).unwrap();
+        let items: Vec<ChunkVector> = pending.iter().map(|chunk| ChunkVector { chunk_id: chunk.chunk_id, content_hash: chunk.content_hash.clone(), vector: vector_for(chunk) }).collect();
+        put_embeddings(conn, &root.id, fingerprint, &items).unwrap();
+    }
+
+    #[test]
+    fn vector_scores_cover_indexed_documents_in_scope_and_skip_stale_and_deleted_ones() {
+        let (folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let fingerprint = stored_space(&conn, 2);
+        fill(&mut conn, &root, &fingerprint, |_| vec![1.0, 0.0]);
+        let everything = vector_scores(&conn, &root.id, &fingerprint, &[1.0, 0.0], None).unwrap();
+        let total: i64 = conn.query_row("SELECT count(*) FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.status = 'indexed'", [], |row| row.get(0)).unwrap();
+        assert_eq!(everything.len() as i64, total, "every chunk is scored, not a top k");
+        assert!(everything.iter().all(|score| (score.cosine - 1.0).abs() < 1e-6));
+
+        let plan = id_of(&root, "projects/project-plan.md");
+        let scoped = vector_scores(&conn, &root.id, &fingerprint, &[1.0, 0.0], Some(&plan)).unwrap();
+        assert!(!scoped.is_empty() && scoped.iter().all(|score| score.document_id == plan));
+
+        fs::write(folder.path().join("projects/project-plan.md"), [0xff, 0xfe, 0xfd, 0x00]).unwrap();
+        scan(&mut conn, &root);
+        assert_eq!(status_of(&conn, &root, "projects/project-plan.md").0, "stale");
+        let after_stale = vector_scores(&conn, &root.id, &fingerprint, &[1.0, 0.0], None).unwrap();
+        assert!(after_stale.iter().all(|score| score.document_id != plan), "a stale document is never scored");
+        assert_eq!(stored_chunks(&conn, &root.id, &everything.iter().filter(|score| score.document_id == plan).map(|score| score.chunk_id).collect::<Vec<_>>()).unwrap().len(), 0);
+
+        fs::remove_file(folder.path().join("notes/paalala.md")).unwrap();
+        scan(&mut conn, &root);
+        let paalala = id_of(&root, "notes/paalala.md");
+        assert!(vector_scores(&conn, &root.id, &fingerprint, &[1.0, 0.0], None).unwrap().iter().all(|score| score.document_id != paalala));
+    }
+
+    #[test]
+    fn vector_scores_never_read_another_space_and_check_dimensions() {
+        let (_folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let old = stored_space(&conn, 2);
+        let other = register_space(&conn, &EmbeddingSpace { model_id: "test".into(), revision: "r2".into(), quantization: "test".into(), dimensions: 2, preprocessing_fingerprint: "p".into() }).unwrap();
+        fill(&mut conn, &root, &old, |_| vec![1.0, 0.0]);
+        assert!(vector_scores(&conn, &root.id, &other, &[1.0, 0.0], None).unwrap().is_empty(), "r2 sees none of r1's vectors");
+        assert_eq!(vector_scores(&conn, &root.id, &old, &[1.0, 0.0, 0.0], None).unwrap_err().code, ErrorCode::EmbeddingSpaceMismatch);
+        assert_eq!(vector_scores(&conn, &root.id, "folio-space-v1/unknown/x/y/2/z", &[1.0, 0.0], None).unwrap_err().code, ErrorCode::EmbeddingSpaceMismatch);
+        let (embedded, total) = embedding_coverage(&conn, &root.id, &old).unwrap();
+        assert!(embedded > 0 && embedded == total);
+        assert_eq!(embedding_coverage(&conn, &root.id, &other).unwrap().0, 0);
+    }
+
+    #[test]
+    fn keyword_reads_are_status_filtered_scoped_and_injection_safe() {
+        let (folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let terms = vec!["deadline".to_owned()];
+        let hits = keyword_hits(&conn, &root.id, &terms, None, 50).unwrap();
+        assert!(!hits.is_empty());
+        let stats = keyword_stats(&conn, &root.id, &terms, None).unwrap();
+        assert!(stats.chunk_count >= hits.len() && stats.average_chars > 0.0);
+        assert_eq!(stats.document_frequency, vec![hits.len()]);
+
+        let first = hits[0].passage.document_id.clone();
+        let scoped = keyword_hits(&conn, &root.id, &terms, Some(&first), 50).unwrap();
+        assert!(!scoped.is_empty() && scoped.iter().all(|hit| hit.passage.document_id == first));
+        assert!(keyword_stats(&conn, &root.id, &terms, Some(&first)).unwrap().chunk_count < stats.chunk_count);
+
+        assert!(keyword_hits(&conn, &root.id, &["\" OR x".to_owned(), String::new()], None, 5).unwrap().is_empty());
+        assert!(keyword_hits(&conn, &root.id, &[], None, 5).unwrap().is_empty());
+
+        let path = hits[0].passage.document_id.rsplit_once(':').unwrap().1.to_owned();
+        fs::write(folder.path().join(&path), [0xff, 0xfe, 0xfd, 0x00]).unwrap();
+        scan(&mut conn, &root);
+        assert!(keyword_hits(&conn, &root.id, &terms, None, 50).unwrap().iter().all(|hit| hit.passage.document_id != first));
+    }
+
+    #[test]
+    fn stored_chunks_and_leading_chunks_are_bound_to_the_indexed_revision() {
+        let (_folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let plan = id_of(&root, "projects/project-plan.md");
+        let leading = leading_chunks(&conn, &root.id, &plan, 2).unwrap();
+        assert!(!leading.is_empty() && leading.len() <= 2);
+        assert!(leading.windows(2).all(|pair| pair[0].passage.start < pair[1].passage.start), "reading order");
+        let hash: String = conn.query_row("SELECT content_hash FROM documents WHERE id = ?1", [&plan], |row| row.get(0)).unwrap();
+        assert!(leading.iter().all(|chunk| chunk.passage.document_content_hash == hash));
+        let ids: Vec<i64> = leading.iter().map(|chunk| chunk.chunk_id).collect();
+        let again = stored_chunks(&conn, &root.id, &ids).unwrap();
+        assert_eq!(again.len(), ids.len());
+        assert!(stored_chunks(&conn, &root.id, &[]).unwrap().is_empty());
+        assert!(stored_chunks(&conn, "other-workspace", &ids).unwrap().is_empty(), "another workspace's chunks are not readable");
     }
 }
