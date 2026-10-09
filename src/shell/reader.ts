@@ -3,15 +3,15 @@ import type { ViewId } from "./navigation";
 
 /**
  * Views whose main content is a document list, so the reader sits beside it
- * (or, in narrow windows, takes its place). Organize is not one: its rename
- * form must stay visible next to the chosen file.
+ * (or, in narrow windows, takes its place). Organize is not one: it works on
+ * its own plan rather than on the chosen file.
  */
 const DOCUMENT_VIEWS = new Set<ViewId>(["home", "graph", "assistant"]);
 
 /**
  * The chosen file, if the current search results include it. A search that
- * leaves the file out hides it everywhere (the reader, Organize's rename form)
- * until the search changes, so nothing acts on a file that isn't on screen.
+ * leaves the file out hides it everywhere (the reader and its
+ * file actions) until the search changes, so nothing acts on a file that isn't on screen.
  */
 export function listedSelection(
   selected: DocumentRecord | undefined,

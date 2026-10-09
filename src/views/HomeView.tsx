@@ -1,7 +1,7 @@
 import { Folders, SearchX } from "lucide-react";
 import { useMemo, type Ref } from "react";
 import type { WorkspaceState } from "../app/useWorkspace";
-import type { DocumentRecord } from "../domain/contracts";
+import type { DocumentRecord, SourcePassage } from "../domain/contracts";
 import type { ViewId } from "../shell/navigation";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
@@ -13,6 +13,7 @@ import { RecoveryNotice } from "../ui/RecoveryNotice";
 import type { RowMenuItem } from "../ui/RowMenu";
 import { SearchField } from "../ui/SearchField";
 import { FileList } from "./FileList";
+import { FolderSearchStatus, ResultEvidence } from "./SearchEvidence";
 import { EmptyFolder, NoFolder } from "./NoFolder";
 import { WorkspaceSource } from "./WorkspaceSource";
 
@@ -25,6 +26,8 @@ interface HomeViewProps {
   onSearch: (query: string) => void;
   /** Each file row's ⋯ menu. */
   fileActions: (document: DocumentRecord) => RowMenuItem[];
+  /** Opens the reader at a search excerpt, highlighted. */
+  onOpenPassage: (passage: SourcePassage) => void;
 }
 
 /**
@@ -89,9 +92,25 @@ function HomeContents({
   workspace,
   onNavigate,
   fileActions,
+  onOpenPassage,
+  onSearch,
   searching,
   documents,
 }: HomeViewProps & { searching: boolean; documents: DocumentRecord[] }) {
+  const query = workspace.query.trim();
+  // A file kept open from before the search, which the search leaves out.
+  const openElsewhere =
+    searching &&
+    workspace.selected &&
+    !documents.some((document) => document.id === workspace.selected?.id)
+      ? workspace.selected
+      : undefined;
+  const status = !searching
+    ? ""
+    : workspace.search.searching
+      ? "Searching…"
+      : `${documents.length} ${documents.length === 1 ? "file matches" : "files match"} your search.`;
+
   return (
     <>
       <WorkspaceSource workspace={workspace} />
@@ -119,6 +138,9 @@ function HomeContents({
       </section>
 
       {searching && <SearchProblem onNavigate={onNavigate} />}
+      {searching && (
+        <FolderSearchStatus workspace={workspace} onNavigate={onNavigate} />
+      )}
       <Panel
         title={searching ? "Search results" : "Files"}
         actions={
@@ -133,10 +155,21 @@ function HomeContents({
         }
       >
         <p className="visually-hidden" role="status">
-          {searching
-            ? `${documents.length} ${documents.length === 1 ? "file matches" : "files match"} your search.`
-            : ""}
+          {status}
         </p>
+        {openElsewhere && (
+          <p className="muted search-kept">
+            “{openElsewhere.name}” is still open, but it doesn't match this
+            search.{" "}
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => onSearch("")}
+            >
+              Clear search
+            </button>
+          </p>
+        )}
         {documents.length ? (
           <FileList
             label={searching ? "Search results" : "Files"}
@@ -145,10 +178,27 @@ function HomeContents({
             onSelect={workspace.selectDocument}
             actions={fileActions}
             results={workspace.results}
+            renderDetail={
+              searching
+                ? (_document, result) =>
+                    result && (
+                      <ResultEvidence
+                        result={result}
+                        query={query}
+                        onOpenPassage={onOpenPassage}
+                      />
+                    )
+                : undefined
+            }
           />
         ) : searching ? (
           <EmptyState icon={<SearchX size={24} />} title="No matching files">
-            No file contains “{workspace.query.trim()}”. Try another word.
+            {workspace.search.searching
+              ? "Searching…"
+              : workspace.source === "folder" &&
+                  workspace.search.index !== "ready"
+                ? `No file name contains “${query}”. Index this folder to search inside files.`
+                : `No file contains “${query}”. Try another word.`}
           </EmptyState>
         ) : workspace.loading ? (
           <p className="muted">Loading files…</p>
@@ -158,6 +208,19 @@ function HomeContents({
           <EmptyState title="No sample files">
             The sample files couldn't be loaded.
           </EmptyState>
+        )}
+        {searching && (
+          <p className="muted search-scope-note">
+            Keyword search finds the words you type. Finding files by meaning,
+            across English and Filipino, needs a local AI model.{" "}
+            <button
+              type="button"
+              className="link-button"
+              onClick={() => onNavigate("modelLab")}
+            >
+              Open Model Lab
+            </button>
+          </p>
         )}
       </Panel>
     </>
