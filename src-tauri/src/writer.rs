@@ -177,6 +177,8 @@ struct Record {
     before_hash: Option<String>,
     after_hash: Option<String>,
     before_content: Option<Vec<u8>>,
+    /// Unix permission bits of a deleted file, restored by Undo.
+    before_mode: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -232,6 +234,7 @@ fn perform(root: &ScopedRoot, operation: &FileOperation, files: &dyn FileSystem)
                 before_hash: Some(expected_content_hash.clone()),
                 after_hash: Some(content_hash(after.as_bytes())),
                 before_content: Some(before),
+                before_mode: None,
             })
         }
         FileOperation::Create { destination_relative_path, content, .. } => {
@@ -245,6 +248,7 @@ fn perform(root: &ScopedRoot, operation: &FileOperation, files: &dyn FileSystem)
                 before_hash: None,
                 after_hash: Some(content_hash(content.as_bytes())),
                 before_content: None,
+                before_mode: None,
             })
         }
         FileOperation::Rename { document_id, relative_path, expected_content_hash, destination_relative_path, .. }
@@ -263,6 +267,7 @@ fn perform(root: &ScopedRoot, operation: &FileOperation, files: &dyn FileSystem)
                 before_hash: Some(expected_content_hash.clone()),
                 after_hash: Some(expected_content_hash.clone()),
                 before_content: None,
+                before_mode: None,
             })
         }
         // A deletion stores its history before the file goes, so `apply_plan` runs it
@@ -282,6 +287,20 @@ fn delete_with_history(conn: &Connection, root: &ScopedRoot, plan_id: &str, inde
         return Err(error(ErrorCode::UnsupportedMediaType, "Folio deletes TXT and Markdown files. Text-based PDFs are read-only.").with_detail("path", relative_path));
     }
     let path = workspace::resolve_document(&root.path, relative_path)?;
+    // The named path must be the file itself. Through a symbolic link (the file, or a
+    // folder on the way), `path` is the link's target, and deleting it would remove a
+    // file the plan never named; Undo would then find the link in the way.
+    let named = crate::identity::normalize_relative_path(relative_path)?;
+    let literal = root.path.canonicalize().map_err(|cause| unreadable(cause, &root.path))?.join(&named);
+    if literal != path || fs::symlink_metadata(&literal).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(error(ErrorCode::OperationUnsupported, "Folio doesn't delete through a link. Choose the file itself.").with_detail("path", relative_path));
+    }
+    let metadata = fs::metadata(&path).map_err(|cause| unreadable(cause, &path))?;
+    // A read-only file is protected on every platform, as for edits; on Unix removing it
+    // would only need write access to its folder.
+    if metadata.permissions().readonly() {
+        return Err(error(ErrorCode::DocumentUnavailable, "This file is read-only, so Folio left it as it is.").with_detail("path", relative_path));
+    }
     let before = workspace::read_bounded(&path, MAX_TEXT_BYTES)?;
     if content_hash(&before) != expected_content_hash {
         return Err(changed());
@@ -294,6 +313,7 @@ fn delete_with_history(conn: &Connection, root: &ScopedRoot, plan_id: &str, inde
         before_hash: Some(expected_content_hash.to_owned()),
         after_hash: None,
         before_content: Some(before),
+        before_mode: permission_bits(&metadata),
     };
     let id = record_history(conn, plan_id, index, &record, now)
         .map_err(|failure| error(ErrorCode::Internal, "Folio could not keep a copy of this file, so it was not deleted.").with_detail("path", relative_path).with_detail("cause", failure.message))?;
@@ -311,11 +331,37 @@ fn delete_with_history(conn: &Connection, root: &ScopedRoot, plan_id: &str, inde
     Ok(id)
 }
 
+/// The Unix permission bits to restore on Undo; other platforms keep only the
+/// read-only flag, and a read-only file is never deleted.
+fn permission_bits(metadata: &fs::Metadata) -> Option<i64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        Some(i64::from(metadata.permissions().mode() & 0o7777))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        None
+    }
+}
+
+fn restore_permission_bits(path: &Path, mode: Option<i64>) -> Result<(), FolioError> {
+    #[cfg(unix)]
+    if let Some(mode) = mode {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode as u32 & 0o7777)).map_err(|cause| unreadable(cause, path))?;
+    }
+    #[cfg(not(unix))]
+    let _ = (path, mode);
+    Ok(())
+}
+
 fn record_history(conn: &Connection, plan_id: &str, index: usize, record: &Record, now: i64) -> NativeResult<String> {
     let id = format!("history-{plan_id}-{index}");
     conn.execute(
-        "INSERT INTO history (id, plan_id, operation_index, operation_kind, document_ref, before_path, after_path, before_hash, after_hash, before_content, applied_at, recoverable) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1)",
-        params![id, plan_id, index as i64, record.kind.as_str(), record.document_ref, record.before_path, record.after_path, record.before_hash, record.after_hash, record.before_content, now.to_string()],
+        "INSERT INTO history (id, plan_id, operation_index, operation_kind, document_ref, before_path, after_path, before_hash, after_hash, before_content, applied_at, recoverable, before_mode) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 1, ?12)",
+        params![id, plan_id, index as i64, record.kind.as_str(), record.document_ref, record.before_path, record.after_path, record.before_hash, record.after_hash, record.before_content, now.to_string(), record.before_mode],
     )?;
     Ok(id)
 }
@@ -456,13 +502,14 @@ pub fn list_history(conn: &Connection, workspace_id: &str, limit: usize) -> Nati
 struct StoredEntry {
     entry: HistoryEntry,
     before_content: Option<Vec<u8>>,
+    before_mode: Option<i64>,
 }
 
 fn plan_entries(conn: &Connection, workspace_id: &str, plan_id: &str) -> NativeResult<Vec<StoredEntry>> {
     let mut statement = conn.prepare(&format!(
-        "SELECT {HISTORY_COLUMNS}, h.before_content FROM history h JOIN action_plans p ON p.id = h.plan_id WHERE p.workspace_id = ?1 AND h.plan_id = ?2 ORDER BY h.operation_index"
+        "SELECT {HISTORY_COLUMNS}, h.before_content, h.before_mode FROM history h JOIN action_plans p ON p.id = h.plan_id WHERE p.workspace_id = ?1 AND h.plan_id = ?2 ORDER BY h.operation_index"
     ))?;
-    let rows = statement.query_map(params![workspace_id, plan_id], |row| Ok(StoredEntry { entry: entry_from_row(row)?, before_content: row.get(12)? }))?;
+    let rows = statement.query_map(params![workspace_id, plan_id], |row| Ok(StoredEntry { entry: entry_from_row(row)?, before_content: row.get(12)?, before_mode: row.get(13)? }))?;
     let mut entries = Vec::new();
     for row in rows {
         entries.push(row?);
@@ -526,7 +573,14 @@ pub fn undo_plan(conn: &mut Connection, root: &ScopedRoot, plan_id: &str, confir
                     if Some(content_hash(previous)) != entry.before_content_hash {
                         return Err(error(ErrorCode::UndoConflict, "Folio's saved copy of this file doesn't match the file it deleted, so it was not restored.").with_detail("blockingRelativePath", applied));
                     }
-                    files.create_new(&plan::resolve_destination(&root.path, applied)?, previous)
+                    let restored = plan::resolve_destination(&root.path, applied)?;
+                    files.create_new(&restored, previous)?;
+                    // A private file comes back private, as it was before the deletion. The
+                    // file is already restored, so a failure here is reported, not fatal.
+                    if let Err(failure) = restore_permission_bits(&restored, item.before_mode) {
+                        eprintln!("Folio restored {applied} but could not restore its permissions: {}", failure.message);
+                    }
+                    Ok(())
                 }
             }
         })();
@@ -1282,6 +1336,55 @@ mod tests {
         let report = apply_plan(&mut conn, &root, &plan, &approval, NOW + 2, &RealFileSystem, &AtomicBool::new(false)).unwrap();
         assert_eq!(report.batch.outcomes[0].error.as_ref().unwrap().code, ErrorCode::UnsupportedMediaType);
         assert_eq!(fs::read(folder.path().join(pdf)).unwrap(), original);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn undoing_a_deletion_keeps_a_private_file_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let (folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let file = folder.path().join("notes/paalala.md");
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        let report = { let operations = vec![remove(&conn, &root, "notes/paalala.md")]; apply_with(&mut conn, &root, operations, &RealFileSystem) };
+        assert_eq!(statuses(&report), vec![OperationStatus::Succeeded]);
+        assert!(!file.exists());
+        undo_all(&mut conn, &root, &report.batch.plan_id, &RealFileSystem).unwrap();
+        assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600, "restored with its own permissions, not the default");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_read_only_file_is_never_deleted() {
+        use std::os::unix::fs::PermissionsExt;
+        let (folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let file = folder.path().join("notes/paalala.md");
+        let original = fs::read(&file).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o444)).unwrap();
+        let report = { let operations = vec![remove(&conn, &root, "notes/paalala.md")]; apply_with(&mut conn, &root, operations, &RealFileSystem) };
+        assert_eq!(report.batch.outcomes[0].error.as_ref().unwrap().code, ErrorCode::DocumentUnavailable);
+        assert_eq!(fs::read(&file).unwrap(), original, "a read-only file is kept");
+        assert!(list_history(&conn, &root.id, 10).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_deletion_through_a_link_is_refused_and_the_target_kept() {
+        let (folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let target = folder.path().join("notes/paalala.md");
+        let original = fs::read(&target).unwrap();
+        std::os::unix::fs::symlink("paalala.md", folder.path().join("notes/link.md")).unwrap();
+        // A crafted request naming the link: its hash is the target's.
+        let operation = FileOperation::Delete { document_id: id_of(&root, "notes/link.md"), relative_path: "notes/link.md".into(), expected_content_hash: content_hash(&original) };
+        let mut registry = PlanRegistry::new();
+        let plan = registry.prepare(&root.id, vec![operation], Vec::new(), NOW, LIFETIME).unwrap();
+        let approval = registry.approve(&plan.id, &plan.digest, NOW + 1).unwrap();
+        let report = apply_plan(&mut conn, &root, &plan, &approval, NOW + 2, &RealFileSystem, &AtomicBool::new(false)).unwrap();
+        assert_eq!(report.batch.outcomes[0].error.as_ref().unwrap().code, ErrorCode::OperationUnsupported);
+        assert_eq!(fs::read(&target).unwrap(), original, "the file the link points to is kept");
+        assert!(fs::symlink_metadata(folder.path().join("notes/link.md")).is_ok());
     }
 
     #[test]

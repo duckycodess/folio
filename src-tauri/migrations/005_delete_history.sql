@@ -21,7 +21,9 @@ CREATE TABLE history_new (
   document_ref TEXT,
   -- 0 once the content an edit or a deletion needs has been pruned; such an entry can no
   -- longer be undone. A deletion has no after path or hash.
-  recoverable INTEGER NOT NULL DEFAULT 1
+  recoverable INTEGER NOT NULL DEFAULT 1,
+  -- Unix permission bits of a deleted file, so Undo restores a private file as private.
+  before_mode INTEGER
 );
 INSERT INTO history_new (id, plan_id, document_id, before_path, after_path, before_content, after_hash, applied_at, undone_at, operation_index, operation_kind, before_hash, document_ref, recoverable)
   SELECT id, plan_id, document_id, before_path, after_path, before_content, after_hash, applied_at, undone_at, operation_index, operation_kind, before_hash, document_ref, recoverable FROM history;
