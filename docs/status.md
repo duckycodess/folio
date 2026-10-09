@@ -52,7 +52,7 @@
 
 ## Pending
 
-Model-generated Ripple explanations and similarity/shared-fact discovery (issues #4 and #8), creating folders during moves, UI use of the native index and actions (the current UI still searches loaded content), live file watching, multi-folder workspaces, native packaging, and real Model Lab results remain pending. Issue #4 on `FOLIO-4` carries multilingual embedding, semantic search, local generation, grounded summaries/answers, model/runtime setup and proposal-only interpretation through its own interim in-memory chunking and vector index; it does not yet read #3's persistent index, and its proposals are not yet connected to #5's native plan/apply path.
+Model-generated Ripple explanations and similarity/shared-fact discovery (issues #4 and #8), creating folders during moves, UI use of the native index and actions (the current UI still searches loaded content), live file watching, multi-folder workspaces, native packaging, and real Model Lab results (the harness exists; no real run has been recorded, see Model Lab below) remain pending. Issue #4 on `FOLIO-4` carries multilingual embedding, semantic search, local generation, grounded summaries/answers, model/runtime setup and proposal-only interpretation through its own interim in-memory chunking and vector index; it does not yet read #3's persistent index, and its proposals are not yet connected to #5's native plan/apply path.
 
 Two `llama-server` hardening items from the #15 review remain open:
 
@@ -62,6 +62,28 @@ Two `llama-server` hardening items from the #15 review remain open:
 Provider cases are listed as pending, not mocked, in `src/domain/pending.test.ts`. Writer tests use real temporary folders; they are not evidence about the desktop window, installers or a real user's folders.
 
 No AI or save completion should be presented without the corresponding native/provider evidence. Model sizes, installed size, memory targets, and platform support remain subject to measurements.
+
+## Model Lab (issue #8)
+
+**What exists.** A sequential Model Lab harness in `folio-core::lab`, its SQLite persistence and native commands, a typed adapter and a manual measurement workflow. Nothing here is a measurement yet: **no real-model run has been dispatched**, so there are no recorded model results, and no result in this repository should be read as one.
+
+- `BenchmarkRecord` extends the frozen `BenchmarkResult` ([contracts](contracts.md), proposal for TJ). Retrieval, interpretation, summary and edit-proposal outcomes are separate records; there is no aggregate or self-graded score. Outcomes come from deterministic label checks; a summary keeps `correctness: null` and `reviews: []` (Not reviewed) until a person appends a review bound to the output hash.
+- The runner measures one embedding model, then each requested generation model strictly one at a time, on a fresh disposable copy of the bundled corpus (marker-guarded, hash-checked, reset per model; user folders are never touched). Per case the server is restarted, the first request is recorded as `cold` and an immediate repeat as warm; startup time is separate, prompt reuse is off for lab requests only, the OS file cache is not controlled, and one pair per case is an initial observation, not a stable estimate. An actual apply is `notRun`; Ripple candidates are `notRun`.
+- Each record names the exact model revision, quantization and files, the runtime version, OS/CPU/installed RAM (capacity, not usage), context and output budgets, the suite, corpus and prompt hashes, and the process whose peak memory was read with its method and span (process lifetime peak, or `null` with a reason). `modelFileBytes` is the model's own files, not installed size. For llama.cpp rows the runtime id, platform and `--list-devices` output are kept as observed with `gpuOffload: runtimeDefault`.
+- Results are stored as versioned JSON in the existing `benchmark_results` table (no new migration) and outlive removal of the model.
+- Commands: `lab_models`, `run_model_lab` (holds the generation slot, so user generation gets `providerBusy`), `cancel_model_lab`, `list_lab_runs`, `list_lab_results`, `record_lab_review`; adapter `src/adapters/modelLab.ts` rejects in the browser preview. Louise's UI is a separate track.
+- `.github/workflows/model-lab.yml` is `workflow_dispatch` only (Windows default, macOS opt-in; smallest pair by default). The user waived the download byte cap, so the workflow validates the requested ids against the pinned manifest and the free disk, prints the manifest byte totals for information, and does not substitute models. Model task failures are recorded as data, not job failures. GitHub rejected the first version (the `runner` context is not allowed in job-level `env`); after the fix a push no longer creates a failed validation run, but the workflow has not been dispatched.
+
+**Verified (GitHub Actions only; no local build, test or inference was run).** [Run 37968280108](https://github.com/duckycodess/folio/actions/runs/37968280108) at `97ab427` passed all three jobs: frontend (20 Vitest files passed, 1 skipped; `folio-core` 136 passed, 2 ignored on Linux), macOS native (185 passed, 2 ignored; 62 `folio-core` lab/provider tests passed) and Windows native (176 passed, 2 ignored; 61 `folio-core` lab/provider tests passed). The `folio-core` step on Windows and macOS covers the platform memory readers (the test process's own peak is measured on both), host information, the disposable workspaces and the runner with scripted providers. The SQLite writer is tested on a temporary database created by the real migrations, closed and reopened. An earlier Windows-only failure (a line-ending test that doubled `\r` on a CRLF checkout) was a test bug and is fixed.
+
+**Not verified.**
+
+- Real inference through Model Lab, on any platform: the llama.cpp provider has still not run on Windows or macOS since the #4 review fixes, and no pinned model has passed every #4 acceptance phase. A first dispatch may surface #4 defects; those are reported, not fixed here.
+- The native commands through the desktop window, the adapter against the real core, and the Windows `PeakWorkingSetSize` / macOS `ri_lifetime_max_phys_footprint` readings of a real `llama-server`.
+- Any 8 GB-device, CPU-only or installed-size claim. Hosted runners are not the target device.
+- The suite is the six-case development suite and is not frozen; it is not a held-out acceptance suite.
+
+**CPU-only protocol (reported to the coordinator, not changed here).** The target is CPU inference on 8 GB of shared device RAM. `LlamaServerProvider::build_server_args` passes no GPU-offload setting, and the macOS arm64 llama.cpp build can offload to the integrated GPU by default, so macOS runs would not be a CPU-only measurement. The Windows runtime is a CPU build. A lab-only setting such as `--n-gpu-layers 0` would need an additive option on the provider; until then records say `runtimeDefault` and the device listing as observed, and nothing assumes the CPU was used. The provider also discards `llama-server`'s output, so the backend it actually chose is not logged.
 
 ## Remote CI verification after conflict resolution
 
