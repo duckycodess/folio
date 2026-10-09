@@ -1568,16 +1568,60 @@ async fn semantic_search(
 /// (#93), on every exit path — an early `?`, a normal return, or a panic
 /// unwinding through `spawn_blocking` — so a caller can never forget to
 /// release it, and a crash mid-request can never leave Folio stuck "busy".
-struct GenerationLease {
+struct SlotClaim {
     generation_state: GenerationState,
-    provider: Arc<LlamaServerProvider>,
     cancel: Arc<AtomicBool>,
 }
 
-impl Drop for GenerationLease {
+impl SlotClaim {
+    /// Marks the slot active. The caller must already hold the lock and have
+    /// checked `ensure_slot_free`.
+    fn new(guard: &mut GenerationStateInner, generation_state: &GenerationState) -> Self {
+        let cancel = Arc::new(AtomicBool::new(false));
+        guard.active_cancel = Some(cancel.clone());
+        Self {
+            generation_state: generation_state.clone(),
+            cancel,
+        }
+    }
+}
+
+impl Drop for SlotClaim {
     fn drop(&mut self) {
         let _ = finish_generation(&self.generation_state, &self.cancel);
     }
+}
+
+struct GenerationLease {
+    provider: Arc<LlamaServerProvider>,
+    claim: SlotClaim,
+}
+
+fn ensure_slot_free(guard: &GenerationStateInner) -> Result<(), NativeProviderError> {
+    if guard.active_cancel.is_some() {
+        return Err(NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
+            message: "Another local generation request is active.".into(),
+            detail: None,
+        });
+    }
+    if guard.runtime_installing {
+        return Err(NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
+            message: "The local AI runtime is being installed. Try again when it finishes.".into(),
+            detail: None,
+        });
+    }
+    Ok(())
+}
+
+/// `acquire_generation`'s slot handling without the model store or provider
+/// launch, so tests can exercise the busy check and release path directly.
+#[cfg(test)]
+fn claim_free_slot(generation_state: &GenerationState) -> Result<SlotClaim, NativeProviderError> {
+    let mut guard = generation_state.lock().unwrap();
+    ensure_slot_free(&guard)?;
+    Ok(SlotClaim::new(&mut guard, generation_state))
 }
 
 /// The generation provider for the selected model, marked active in the same
@@ -1607,31 +1651,13 @@ fn acquire_generation(
         message: "The local generation state is unavailable.".into(),
         detail: None,
     })?;
-    if guard.active_cancel.is_some() {
-        return Err(NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
-            message: "Another local generation request is active.".into(),
-            detail: None,
-        });
-    }
-    if guard.runtime_installing {
-        return Err(NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
-            message: "The local AI runtime is being installed. Try again when it finishes.".into(),
-            detail: None,
-        });
-    }
-    let cancel = Arc::new(AtomicBool::new(false));
+    ensure_slot_free(&guard)?;
     if let Some(slot) = guard.slot.as_ref() {
         if slot.model_id == verified.descriptor.id && slot.revision == verified.descriptor.revision
         {
             let provider = slot.provider.clone();
-            guard.active_cancel = Some(cancel.clone());
-            return Ok(GenerationLease {
-                generation_state: generation_state.clone(),
-                provider,
-                cancel,
-            });
+            let claim = SlotClaim::new(&mut guard, generation_state);
+            return Ok(GenerationLease { provider, claim });
         }
     }
     if let Some(slot) = guard.slot.take() {
@@ -1649,12 +1675,8 @@ fn acquire_generation(
         revision: provider.revision().into(),
         provider: provider.clone(),
     });
-    guard.active_cancel = Some(cancel.clone());
-    Ok(GenerationLease {
-        generation_state: generation_state.clone(),
-        provider,
-        cancel,
-    })
+    let claim = SlotClaim::new(&mut guard, generation_state);
+    Ok(GenerationLease { provider, claim })
 }
 
 fn finish_generation(
@@ -1713,7 +1735,7 @@ async fn summarize_document(
             lease.provider.as_ref(),
             passages,
             grounding::detect_language(&content),
-            lease.cancel.as_ref(),
+            lease.claim.cancel.as_ref(),
         );
         Ok(result?)
     })
@@ -1770,7 +1792,7 @@ async fn answer_question(
             &question,
             passages,
             grounding::detect_language(&question),
-            lease.cancel.as_ref(),
+            lease.claim.cancel.as_ref(),
         );
         Ok(result?)
     })
@@ -1845,7 +1867,7 @@ async fn interpret_request(
             &documents,
             &contents,
             &chunks,
-            lease.cancel.as_ref(),
+            lease.claim.cancel.as_ref(),
         );
         Ok(result?)
     })
@@ -1905,6 +1927,55 @@ fn unload_generation_now_with_limit(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn unloading_during_a_request_waits_for_the_request_to_release_the_slot() {
+        let generation = GenerationState::default();
+        let claim = claim_free_slot(&generation).unwrap();
+        let cancel = claim.cancel.clone();
+        let request = std::thread::spawn(move || {
+            // Stand in for a request that notices cancellation and returns.
+            while !claim.cancel.load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            std::thread::sleep(Duration::from_millis(40));
+            drop(claim);
+        });
+        let generation_for_unload = generation.clone();
+        let unloader = std::thread::spawn(move || unload_generation_now(&generation_for_unload));
+        while !cancel.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(claim_free_slot(&generation).is_err());
+        unloader.join().unwrap().unwrap();
+        request.join().unwrap();
+        assert!(generation.lock().unwrap().active_cancel.is_none());
+        assert!(claim_free_slot(&generation).is_ok());
+    }
+
+    #[test]
+    fn the_slot_is_released_when_a_request_fails_or_panics() {
+        let generation = GenerationState::default();
+        let failing_request = |state: &GenerationState| -> Result<(), NativeProviderError> {
+            let _claim = claim_free_slot(state)?;
+            Err(NativeProviderError {
+                code: folio_core::contracts::ProviderErrorCode::IoError,
+                message: "generation failed".into(),
+                detail: None,
+            })
+        };
+        assert!(failing_request(&generation).is_err());
+        assert!(generation.lock().unwrap().active_cancel.is_none());
+
+        let generation_for_panic = generation.clone();
+        let panicked = std::thread::spawn(move || {
+            let _claim = claim_free_slot(&generation_for_panic).unwrap();
+            panic!("request panicked while holding the slot");
+        })
+        .join();
+        assert!(panicked.is_err());
+        assert!(claim_free_slot(&generation).is_ok());
+    }
 
     #[test]
     fn corpus_loading_skips_and_reports_unreadable_text() {

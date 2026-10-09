@@ -988,4 +988,27 @@ mod tests {
         assert!(result.is_err());
         assert!(cancel.load(Ordering::Acquire));
     }
+
+    #[test]
+    fn a_new_request_stays_busy_until_an_unloaded_lab_run_finishes() {
+        let generation = GenerationState::default();
+        let lab = LabState::default();
+        let cancel = begin_lab_exclusive(&generation, &lab).unwrap();
+        let generation_for_unload = generation.clone();
+        let unloader =
+            std::thread::spawn(move || crate::unload_generation_now(&generation_for_unload));
+        // Wait until unload has signalled the run, then ask for the slot as a
+        // new request would. The run hasn't called finish_lab yet.
+        while !cancel.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let busy = crate::claim_free_slot(&generation).err().unwrap();
+        assert_eq!(
+            busy.code,
+            folio_core::contracts::ProviderErrorCode::GenerationBusy
+        );
+        finish_lab(&generation, &lab, &cancel).unwrap();
+        unloader.join().unwrap().unwrap();
+        assert!(crate::claim_free_slot(&generation).is_ok());
+    }
 }
