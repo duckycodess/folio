@@ -2,12 +2,37 @@ import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { MediaType } from "../../src/domain/contracts";
+import type { MediaType, ModelDescriptor } from "../../src/domain/contracts";
 import type { FakeFileInput, FakePageRange } from "./types";
 
 const DOCUMENTS = fileURLToPath(
   new URL("../../fixtures/documents", import.meta.url),
 );
+
+/** Model Lab shows real pinned metadata, with every model still uninstalled. */
+export function fixtureModelMetadata(): {
+  models: ModelDescriptor[];
+  runtime: { id: string; version: string; bytes: number };
+} {
+  const manifest = JSON.parse(
+    readFileSync(
+      new URL("../../src-tauri/resources/model-manifest.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  const runtime = manifest.runtimes[0];
+  return {
+    models: manifest.models,
+    runtime: {
+      id: runtime.id,
+      version: runtime.version,
+      bytes: runtime.files.reduce(
+        (sum: number, file: { bytes: number }) => sum + file.bytes,
+        0,
+      ),
+    },
+  };
+}
 
 function walk(directory: string): string[] {
   const found: string[] = [];

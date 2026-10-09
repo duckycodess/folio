@@ -10,6 +10,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/002_index_state.sql"),
     include_str!("../migrations/003_actions.sql"),
     include_str!("../migrations/004_retry_backoff.sql"),
+    include_str!("../migrations/005_delete_history.sql"),
 ];
 
 impl From<rusqlite::Error> for FolioError {
@@ -73,5 +74,49 @@ mod tests {
         assert_eq!(version as usize, MIGRATIONS.len());
         let fts: i64 = conn.query_row("SELECT count(*) FROM chunks_fts", [], |row| row.get(0)).unwrap();
         assert_eq!(fts, 0);
+    }
+
+    #[test]
+    fn migration_005_keeps_existing_history_and_accepts_deletions() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        for sql in &MIGRATIONS[..4] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 4).unwrap();
+        conn.execute_batch(
+            "INSERT INTO workspaces (id, root_path, authorized_at) VALUES ('w', '/w', '0');
+             INSERT INTO action_plans (id, workspace_id, plan_json, plan_digest, status, created_at, expires_at, applied_at) VALUES ('p', 'w', '{}', 'd', 'approved', '0', '1', '0');
+             INSERT INTO history (id, plan_id, operation_index, operation_kind, document_ref, before_path, after_path, before_hash, after_hash, before_content, applied_at, undone_at, recoverable) VALUES ('h0', 'p', 0, 'edit', 'w:a.md', 'a.md', 'a.md', 'sha256:a', 'sha256:b', X'4F6B74', '5', NULL, 1);
+             INSERT INTO history (id, plan_id, operation_index, operation_kind, document_ref, before_path, after_path, before_hash, after_hash, applied_at, undone_at, recoverable) VALUES ('h1', 'p', 1, 'rename', 'w:b.md', 'b.md', 'c.md', 'sha256:c', 'sha256:c', '5', '6', 1);",
+        )
+        .unwrap();
+        assert!(conn.execute("INSERT INTO history (id, plan_id, operation_kind, applied_at) VALUES ('early', 'p', 'delete', '5')", []).is_err(), "version 4 refuses a deletion");
+
+        migrate(&mut conn).unwrap();
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).unwrap();
+        assert_eq!(version as usize, MIGRATIONS.len());
+        type Row = (String, i64, String, Option<String>, Option<String>, Option<String>, Option<Vec<u8>>, Option<String>, i64);
+        let rows: Vec<Row> = conn
+            .prepare("SELECT id, operation_index, operation_kind, document_ref, after_path, after_hash, before_content, undone_at, recoverable FROM history ORDER BY id")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                ("h0".into(), 0, "edit".into(), Some("w:a.md".into()), Some("a.md".into()), Some("sha256:b".into()), Some(b"Okt".to_vec()), None, 1),
+                ("h1".into(), 1, "rename".into(), Some("w:b.md".into()), Some("c.md".into()), Some("sha256:c".into()), None, Some("6".into()), 1),
+            ]
+        );
+        conn.execute("INSERT INTO history (id, plan_id, operation_index, operation_kind, document_ref, before_path, before_hash, before_content, applied_at) VALUES ('h2', 'p', 2, 'delete', 'w:d.md', 'd.md', 'sha256:d', X'00', '7')", []).unwrap();
+        assert!(conn.execute("INSERT INTO history (id, plan_id, operation_kind, applied_at) VALUES ('h3', 'p', 'erase', '7')", []).is_err(), "other kinds are still refused");
+        assert!(conn.execute("INSERT INTO history (id, plan_id, operation_kind, applied_at) VALUES ('h4', 'missing-plan', 'delete', '7')", []).is_err(), "history still belongs to a recorded plan");
+        let defaults: (i64, String, i64) = conn.query_row("INSERT INTO history (id, plan_id, applied_at) VALUES ('h5', 'p', '8') RETURNING operation_index, operation_kind, recoverable", [], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+        assert_eq!(defaults, (0, "edit".into(), 1));
+        let indexed: i64 = conn.query_row("SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'history_plan_idx' AND tbl_name = 'history'", [], |row| row.get(0)).unwrap();
+        assert_eq!(indexed, 1);
     }
 }

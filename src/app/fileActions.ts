@@ -1,4 +1,45 @@
-import type { DocumentRecord, FileOperation } from "../domain/contracts";
+import {
+  EDITABLE_MEDIA_TYPES,
+  type DocumentRecord,
+  type FileOperation,
+} from "../domain/contracts";
+import { mediaTypeForPath } from "../domain/identity";
+import type { WorkspaceState } from "./useWorkspace";
+
+export type FileActionAvailability =
+  { available: true } | { available: false; reason: string };
+
+/**
+ * Whether a file's text, name or folder can be changed. These are early hints
+ * so the user isn't sent to a refusal; the native core still checks every
+ * plan itself. Changes need the desktop app and a folder the user added:
+ * sample files and the browser preview never pretend to save. Folio changes
+ * only text and Markdown files, so a PDF can only be opened.
+ */
+export function fileActionAvailability(
+  workspace: Pick<WorkspaceState, "source" | "nativeAvailable">,
+  document: Pick<DocumentRecord, "mediaType">,
+): FileActionAvailability {
+  if (!workspace.nativeAvailable)
+    return {
+      available: false,
+      reason:
+        "Changing files works in the desktop app. This preview only shows sample files.",
+    };
+  if (workspace.source !== "folder")
+    return {
+      available: false,
+      reason:
+        "Sample files can't be changed. Add a folder to change its files.",
+    };
+  if (!EDITABLE_MEDIA_TYPES.includes(document.mediaType as never))
+    return {
+      available: false,
+      reason:
+        "PDFs can only be opened. Folio changes text and Markdown files only.",
+    };
+  return { available: true };
+}
 
 /** The folder part of a relative path; "" for the top of the open folder. */
 export function folderPath(relativePath: string): string {
@@ -34,6 +75,10 @@ export function nameProblem(name: string, current: string): string | null {
   // a rename that only changes capital letters.
   if (trimmed.toLowerCase() === current.toLowerCase())
     return "A new name must differ by more than capital letters.";
+  // The native plan refuses a destination it couldn't edit afterwards.
+  const mediaType = mediaTypeForPath(trimmed);
+  if (!mediaType || !EDITABLE_MEDIA_TYPES.includes(mediaType as never))
+    return "Keep a .md, .markdown or .txt ending. Folio changes text and Markdown files only.";
   return null;
 }
 

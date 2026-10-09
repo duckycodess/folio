@@ -50,6 +50,16 @@ export interface OrganizeController {
     document: DocumentRecord,
     change: { name: string } | { folder: string },
   ) => void;
+  /**
+   * Builds operations (for example by asking the native core for an exact
+   * passage edit), then previews them. A failure while building is shown
+   * like a refused preview.
+   */
+  previewFrom: (
+    build: (workspaceId: string) => Promise<FileOperation[]>,
+  ) => void;
+  /** Creates one new Markdown file, via an exact plan. */
+  previewCreate: (relativePath: string, content: string) => void;
   /** Resends the operations last previewed, for a fresh native plan. */
   previewAgain: () => void;
   /** Approves exactly the plan on screen, then applies it. */
@@ -140,6 +150,23 @@ export function useOrganize(
     }
   }
 
+  async function previewFrom(
+    build: (workspaceId: string) => Promise<FileOperation[]>,
+  ) {
+    const request = ++next.current;
+    dispatch({ type: "prepareStarted", request, operations: [] });
+    if (!folderId) return noFolder(request);
+    let operations: FileOperation[];
+    try {
+      operations = await build(folderId);
+    } catch (cause) {
+      dispatch({ type: "failed", request, error: toFolioError(cause) });
+      return;
+    }
+    // A newer request (or Cancel) since this one started wins.
+    if (next.current === request) await preview(operations);
+  }
+
   async function previewRelocate(
     document: DocumentRecord,
     change: { name: string } | { folder: string },
@@ -225,6 +252,17 @@ export function useOrganize(
     },
     previewRelocate: (document, change) =>
       void previewRelocate(document, change),
+    previewFrom: (build) => void previewFrom(build),
+    previewCreate: (relativePath, content) =>
+      void preview([
+        {
+          kind: "create",
+          destinationRelativePath: relativePath,
+          mediaType: "text/markdown",
+          content,
+          expectedDestination: "absent",
+        },
+      ]),
     previewAgain: () => {
       if (state.operations.length) void preview(state.operations);
     },

@@ -44,6 +44,8 @@ The independent journeys are:
 | B — Smart Organize       | Organize → Select Collection or Folder → Analyze → Preview Suggested Changes → Approve & Apply    |
 | C — Ask & Act            | AI Assistant → Enter Instruction → Find Target Files → Preview Actions & Impacts → Approve & Save |
 
+The main navigation is Home, Organize, Graph, Ask & Act and Activity, with Model Lab in settings ([ADR 0011](adr/0011-activity-organize-and-model-lab-in-navigation.md)): Home finds, Organize groups and renames with approval, Graph explains, Ask & Act assists, and Activity keeps everything accountable. [Workflows](workflows.md) lists the named workflows beside the three journeys.
+
 The shared pipeline is request → find files → understand content → discover related files → edit and analyze impact → approve, save and refresh the local index. The graph and assistant support SOS instead of replacing its independent entry points. See [workflows](workflows.md).
 
 The prepared demo uses 10–20 local documents with known repeated facts. Its central Taglish request is “Hanapin yung project plan at palitan ang deadline na October 20 to October 23.” The user checks the target and exact diff, reviews related old-deadline passages, approves a real save, sees local refresh, and can undo if the current file still matches the applied change.
@@ -73,7 +75,7 @@ Keep generation and embeddings behind separate adapters. Different embedding rev
 
 ## Boundaries
 
-TXT and Markdown support content editing. Text-based PDFs support reading and indexing; PDF content editing and scanned-PDF OCR are later work. Natural-language deletion is outside the agreed hackathon delivery.
+TXT and Markdown support content editing. Text-based PDFs support reading and indexing; PDF content editing and scanned-PDF OCR are later work. Natural-language deletion is outside the agreed hackathon delivery. Deleting one TXT or Markdown file from the Graph is a manual action with an exact preview, approval and Undo; Folio keeps the file's contents in history and lists the files whose links will break without changing them (ADR 0010).
 
 The demo uses 10–20 prepared documents with known related facts. The starter includes 15 text fixtures; PDF parser acceptance requires adding and testing text-based PDF fixtures.
 

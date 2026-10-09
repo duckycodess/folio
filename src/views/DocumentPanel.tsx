@@ -1,17 +1,17 @@
-import { ArrowLeft, CornerUpLeft, Sparkles, X } from "lucide-react";
+import { ArrowLeft, CornerUpLeft, X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import type { RelationshipsState } from "../app/useRelationships";
 import type { WorkspaceState } from "../app/useWorkspace";
 import { highlightRange, passageState } from "../domain/connections";
+import { ReaderText } from "./ReaderText";
 import type { DocumentRecord } from "../domain/contracts";
 import type { ViewId } from "../shell/navigation";
 import { Badge } from "../ui/Badge";
-import { Button } from "../ui/Button";
-import { EmptyState } from "../ui/EmptyState";
 import { FileTypeIcon } from "../ui/FileTypeIcon";
 import { Progress } from "../ui/Progress";
 import { RowMenu, type RowMenuItem } from "../ui/RowMenu";
 import { RelatedList } from "./Connections";
+import { SummaryTab } from "./SummaryTab";
 import { fileKind, formatBytes, formatModified, languageLabel } from "./format";
 
 const TABS = ["Summary", "Details", "Related"] as const;
@@ -181,20 +181,12 @@ export function DocumentPanel({
         tabIndex={0}
       >
         {tab === "Summary" && (
-          <EmptyState
-            icon={<Sparkles size={24} />}
-            title="Summaries need a local AI model"
-            action={
-              <Button
-                variant="secondary"
-                onClick={() => onNavigate("modelLab")}
-              >
-                Open Model Lab
-              </Button>
-            }
-          >
-            You can still read the whole file in Details.
-          </EmptyState>
+          <SummaryTab
+            document={document}
+            workspace={workspace}
+            relations={relations}
+            onNavigate={onNavigate}
+          />
         )}
 
         {tab === "Details" && (
@@ -237,22 +229,19 @@ export function DocumentPanel({
                       : "The passage can't be shown in this file."}
                   </p>
                 )}
-                {range ? (
-                  <pre className="source-text">
-                    {document.content.slice(0, range[0])}
-                    <mark ref={mark} className="source-highlight" tabIndex={-1}>
-                      {document.content.slice(range[0], range[1])}
-                    </mark>
-                    {document.content.slice(range[1])}
-                  </pre>
-                ) : (
-                  <pre className="source-text">{document.content}</pre>
-                )}
+                <ReaderText
+                  document={{ ...document, content: document.content }}
+                  range={range}
+                  markRef={mark}
+                  focusPage={focus?.page}
+                />
               </>
             ) : (
               <p className="muted">
                 {document.mediaType === "application/pdf"
-                  ? "Reading PDF text isn't available yet."
+                  ? workspace.nativeAvailable
+                    ? "Folio couldn't read this PDF's text."
+                    : "PDF text is read in the desktop app; this preview can't read PDFs."
                   : "This file hasn't been read yet."}
               </p>
             )}

@@ -1,4 +1,5 @@
-import { expect, test } from "../support/app";
+import { addFolder, expect, fake, test } from "../support/app";
+import { RECOVERY } from "../../src/app/recovery";
 import { openView } from "../support/ui";
 
 const TAGLISH =
@@ -6,49 +7,56 @@ const TAGLISH =
 
 /**
  * Journey C — Ask and Act, as far as the merged UI goes today. There is no
- * local model in this build, so a request ends at setup guidance with the
- * instruction kept. Nothing here pretends an assistant exists.
+ * installed model in the fake, so the real assistant UI retains a failed
+ * request and offers setup. This does not simulate a model-generated reply.
  */
 test.describe("Journey C: ask and act", () => {
   test("keeps a Taglish instruction and asks for model setup", async ({
     folio,
   }) => {
+    await addFolder(folio);
     await openView(folio, "Ask & Act");
-    const instruction = folio.getByLabel("What should Folio do?");
+    const instruction = folio.getByRole("textbox", {
+      name: "Your request",
+      exact: true,
+    });
     await instruction.fill(TAGLISH);
-    await folio.getByRole("button", { name: "Preview actions" }).click();
+    await folio.getByRole("button", { name: "Ask Olio", exact: true }).click();
 
     const notice = folio.locator(".notice-warning");
     await expect(notice.locator(".notice-title")).toHaveText(
-      "This needs a local AI model",
+      RECOVERY.modelNotInstalled.title,
     );
-    await expect(
-      notice.getByText("No model is set up yet. Your request is kept."),
-    ).toBeVisible();
+    await expect(folio.locator(".ask-request")).toHaveText(TAGLISH);
+    expect(await fake(folio).calls()).toContain("interpret_request");
 
     await notice.getByRole("button", { name: "Open Model Lab" }).click();
-    await expect(folio.getByText("No local AI model is set up")).toBeVisible();
     await expect(
-      folio.getByText(
-        "Browsing, keyword search and reading files work without one.",
-        {
-          exact: false,
-        },
-      ),
+      folio.getByRole("heading", { name: "Model Lab", exact: true }),
+    ).toBeVisible();
+    await expect(
+      folio.getByRole("button", { name: /^Download / }).first(),
     ).toBeVisible();
 
     // The instruction survived the trip to Model Lab.
     await openView(folio, "Ask & Act");
-    await expect(folio.getByLabel("What should Folio do?")).toHaveValue(
-      TAGLISH,
-    );
+    await expect(
+      folio.getByRole("textbox", { name: "Your request", exact: true }),
+    ).toHaveValue(TAGLISH);
   });
 
   test("keeps Search, Organize and Summarize reachable without the assistant", async ({
     folio,
   }) => {
     // Journeys A and B have their own entry points; the app is not a chat.
-    for (const view of ["Home", "Organize", "Graph", "Ask & Act", "Model Lab"])
+    for (const view of [
+      "Home",
+      "Organize",
+      "Graph",
+      "Ask & Act",
+      "Activity",
+      "Model Lab",
+    ])
       await expect(
         folio.getByRole("button", { name: view, exact: true }),
       ).toBeVisible();

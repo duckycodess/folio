@@ -89,6 +89,15 @@ and absent for a byte-identical copy, which is related by content alone. A
 `similarity` relationship is only ever `similarityOnly`. (Added with issue #5;
 older payloads without these fields remain valid.)
 
+For a `delete`, the candidates are what the deletion leaves for review (ADR
+0010): a document that links to the deleted file is `evidence`
+(`explicitReference`, `documentLink`) with the link passages located in that
+document, because the link will stop working; a `sharedFactCandidate` is
+`evidence` with its stored provenance and its own passages; a `similarity`
+relationship and a byte-identical copy are `similarityOnly`, the copy without a
+relationship type. A document the deleted file only links to is not listed.
+Folio changes none of them.
+
 Vectors are compared only within one embedding space, identified by
 `folio-space-v1/<modelId>/<revision>/<quantization>/<dimensions>/<preprocessing>`
 with `%` and `/` escaped.
@@ -152,8 +161,11 @@ validity window, ordered operations, Ripple `impacts` and a `digest`.
 **Canonical bytes.** `FOLIO-PLAN-V1`, then every field as
 `<utf8ByteLength>:<value>\n`: plan id, workspace id, `createdAt`, `expiresAt`,
 operation count, then per operation its kind followed by its fields in a fixed
-order. Length prefixes mean no path or document body can forge a field
-boundary. `digest` is `sha256` over those bytes.
+order: `create` — destination path, media type, content; `edit` — document id,
+path, expected hash, new content; `rename` and `move` — document id, path,
+expected hash, destination path; `delete` — document id, path, expected hash.
+Length prefixes mean no path or document body can forge a field boundary.
+`digest` is `sha256` over those bytes.
 
 The digest covers exactly what can change a file. `impacts` are review
 candidates that never write, so they are excluded and cannot silently
@@ -213,6 +225,22 @@ those, it refuses with `approvalStale` and changes nothing. An Undo that stops
 partway keeps what it reversed and leaves the rest pending, so a fresh preview
 can finish it.
 
+**Deletion** (issue #44, ADR 0010). A `delete` names `documentId`,
+`relativePath` and `expectedContentHash` and has no destination. Like an edit,
+it applies only to TXT and Markdown files; a PDF is `unsupportedMediaType`. The
+writer reads the file, checks its hash, stores its exact bytes in history and
+only then removes it. If the bytes can't be stored, nothing is deleted
+(`internal`). If the file changed after the preview, or changes or can't be
+removed while Folio deletes it, the stored entry is dropped and the file is
+kept (`targetChanged`, or `documentUnavailable` from the filesystem). Undo
+re-creates the file with an exclusive create at its previous path; a file now
+using that name is `destinationOccupied` and is never replaced, and a folder
+that is gone is `missing`.
+
+**History.** Each `HistoryEntry` carries its `operationKind`. An entry for a
+`delete` has a `beforeRelativePath` and `beforeContentHash` but no
+`afterRelativePath` or `afterContentHash`, because nothing exists after it.
+
 **The writer** (`src-tauri/src/writer.rs`, issue #5) applies an approved plan
 and returns `{ batch: BatchResult, historySettled, indexRefreshed }`. An error
 from `apply_plan` means no file changed; once any operation has run, the report
@@ -221,9 +249,9 @@ writes failed, not that the writes did. A rename or move never replaces an
 existing file. Every operation re-checks its source's hash immediately before
 running, and an edit checks it again just before swapping in the new content.
 An edit keeps the file's permissions, and a file Folio may not write (read-only,
-or owned by someone else) is refused rather than replaced. Edits keep their previous content for the
-100 most recent applied plans; older edit entries remain listed with
-`recoverable: false`.
+or owned by someone else) is refused rather than replaced. Edits and deletions
+keep the content Undo needs for the 100 most recent applied plans; older edit
+and delete entries remain listed with `recoverable: false`.
 
 ## What is not implemented yet
 

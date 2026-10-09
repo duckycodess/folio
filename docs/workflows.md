@@ -10,6 +10,30 @@ The reference image defines three user journeys. Preserve their independent entr
 | B — Smart Organize       | Organize → Select Collection or Folder → Analyze → Preview Suggested Changes → Approve & Apply    | Group virtually; suggest names and destinations; identify exact duplicates.          |
 | C — Ask & Act            | AI Assistant → Enter Instruction → Find Target Files → Preview Actions & Impacts → Approve & Save | Natural-language create/read/edit/rename/move, grounded questions, and Folio Ripple. |
 
+Journey A's second step reads "Browse or Search Files" because the Files page was removed ([ADR 0010](adr/0010-home-is-the-file-browser.md)); the reference image above still says "Files", so don't restore it from there.
+
+The updated product context (2026-10-09) adds workflows that sit beside these journeys rather than replacing them. They are named, not lettered, because their source used letters A–E that clash with the journeys above; issues refer to journey B as Smart Organize and journey C as Ask & Act.
+
+| Workflow               | Steps                                                                                                 | Notes                                                                                       |
+| ---------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Deterministic search   | Home → Type a name or word → Filter by folder, file type or modified date → Open or preview a file    | Part of journey A. Works without a model; never routed through one (#33, #43).              |
+| AI deep search         | Ask & Act → Choose a scope → Describe the file → Review files, paths, excerpts and reasons → Open one | Needs a local model. Says when indexing is incomplete or a file type is unsupported (#36).  |
+| AI-assisted organizing | Ask & Act → Describe the organization → Review the exact plan → Approve → Changes appear in Activity  | Ends in the same preview and approval as journey B; Organize stays its own page (ADR 0011). |
+| Relationship graph     | Graph → Start from a file, folder or topic → Explore connections and evidence → Open related files    | Confirmed links are shown apart from suggested ones (#40).                                  |
+| Activity and recovery  | Activity → Pick an entry → See what changed, when, and before/after paths → Undo when it's safe       | Lists only what Folio recorded as changed; previews and analyses never appear (#34).        |
+
+## First run
+
+On first launch in the desktop app, onboarding leads to a useful workspace in five steps, each of which can be skipped (#14). It can be reopened from the sidebar's Setup guide.
+
+1. **Welcome:** Search. Organize. Summarize. No account, and AI runs on this computer.
+2. **Choose a folder:** nothing is read until the system folder picker returns a folder.
+3. **Local AI (optional):** the computer's RAM and free disk space, the recommended model for each job with its revision and exact download size, and a Download button per model. Skipping keeps browsing and keyword search working.
+4. **Index:** real progress with Stop, and Continue to Home while indexing.
+5. **What Folio found:** exact duplicates and links from the user's own indexed files, with paths and evidence, or an honest empty state that points to Search, Organize and Ask & Act.
+
+After onboarding, journeys A, B and C start from their own pages as before.
+
 ## Shared request pipeline
 
 1. Receive the request, including English, Filipino, or Taglish.

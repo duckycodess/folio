@@ -2,6 +2,7 @@ import type {
   ActionPlan,
   ApplyReport,
   FileOperation,
+  ImpactCandidate,
   OperationStatus,
   UndoPreflight,
   UndoReport,
@@ -10,10 +11,11 @@ import { recoveryFor } from "./recovery";
 
 /** One line of an exact preview: what happens to which path. */
 export interface PlanRow {
-  action: "Rename" | "Move" | "Edit" | "Create";
+  action: "Rename" | "Move" | "Edit" | "Create" | "Delete";
   /** Absent for a new file. */
   from?: string;
-  to: string;
+  /** Absent for a deleted file. */
+  to?: string;
 }
 
 export function planRow(operation: FileOperation): PlanRow {
@@ -33,6 +35,8 @@ export function planRow(operation: FileOperation): PlanRow {
       };
     case "create":
       return { action: "Create", to: operation.destinationRelativePath };
+    case "delete":
+      return { action: "Delete", from: operation.relativePath };
   }
 }
 
@@ -54,6 +58,10 @@ export interface ApplySummary {
 
 function changes(count: number): string {
   return `${count} ${count === 1 ? "change" : "changes"}`;
+}
+
+function files(count: number): string {
+  return `${count} ${count === 1 ? "file" : "files"}`;
 }
 
 /**
@@ -117,10 +125,15 @@ export function summarizeApply(
     );
 
   const complete = saved === total;
+  const onlyDeletions = plan.operations.every(
+    (operation) => operation.kind === "delete",
+  );
   return {
     tone: complete && report.indexRefreshed ? "saved" : "partial",
     headline: complete
-      ? `Saved ${changes(saved)}.`
+      ? onlyDeletions
+        ? `Deleted ${files(saved)}.`
+        : `Saved ${changes(saved)}.`
       : report.batch.stopReason === "cancelled"
         ? `Stopped after ${changed} of ${changes(total)}.`
         : `Saved ${changed} of ${changes(total)}.${failed?.reason ? ` Stopped at ${failed.from ?? failed.to}: ${failed.reason}.` : ""}`,
@@ -165,3 +178,76 @@ export function summarizeUndo(report: UndoReport): {
     headline: `Undid ${undone} of ${changes(undone + remaining)}, then stopped. Preview Undo again to finish.`,
   };
 }
+
+/** Ripple candidates by how Folio knows they're related. */
+export interface ImpactGroups {
+  /** A link written in one of the files. */
+  links: ImpactCandidate[];
+  /** Byte-identical copies of the edited file, related by content alone. */
+  copies: ImpactCandidate[];
+  /** Found by comparing passages or suggested by a local model. */
+  inferred: ImpactCandidate[];
+  /** Anything that doesn't say how it's related. */
+  other: ImpactCandidate[];
+}
+
+export type ImpactKind = keyof ImpactGroups;
+
+/**
+ * Links and copies are facts read from the files and are never grouped as
+ * inferred. A candidate that names no relationship counts as a copy only when
+ * it is also similarity-only, which is how the native core reports one.
+ */
+export function impactKind(impact: ImpactCandidate): ImpactKind {
+  if (
+    impact.relationshipType === "explicitReference" ||
+    impact.provenance === "documentLink"
+  )
+    return "links";
+  if (impact.provenance === "embedding" || impact.provenance === "model")
+    return "inferred";
+  if (
+    !impact.relationshipType &&
+    !impact.provenance &&
+    impact.strength === "similarityOnly"
+  )
+    return "copies";
+  return "other";
+}
+
+export function impactGroups(impacts: ImpactCandidate[]): ImpactGroups {
+  const groups: ImpactGroups = {
+    links: [],
+    copies: [],
+    inferred: [],
+    other: [],
+  };
+  for (const impact of impacts) groups[impactKind(impact)].push(impact);
+  return groups;
+}
+
+/** How Folio knows a candidate is related, and whether to label it AI. */
+export function impactProvenance(impact: ImpactCandidate): {
+  label: string;
+  ai: boolean;
+} {
+  switch (impactKind(impact)) {
+    case "links":
+      return { label: "Link written in the file", ai: false };
+    case "copies":
+      return { label: "Same contents, byte for byte", ai: false };
+    case "inferred":
+      return {
+        label:
+          impact.provenance === "model"
+            ? "Suggested by the local AI model; check before relying on it"
+            : "Found by comparing passages; check before relying on it",
+        ai: true,
+      };
+    case "other":
+      return { label: "Related file", ai: false };
+  }
+}
+
+/** The native core lists at most this many Ripple candidates for one plan. */
+export const RIPPLE_CANDIDATE_CAP = 25;

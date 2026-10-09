@@ -184,9 +184,7 @@ pub fn impacts(conn: &Connection, workspace_id: &str, target: &IndexedDocument, 
         });
     }
 
-    let mut statement = conn.prepare("SELECT id FROM documents WHERE workspace_id = ?1 AND content_hash = ?2 AND id != ?3 AND content_hash != '' ORDER BY relative_path")?;
-    let copies: Vec<String> = statement.query_map(params![workspace_id, target.content_hash, target.id], |row| row.get(0))?.collect::<Result<_, _>>()?;
-    for document_id in copies {
+    for document_id in copies_of(conn, workspace_id, target)? {
         if candidates.iter().any(|candidate| candidate.document_id == document_id) { continue; }
         let document = index::get_document(conn, workspace_id, &document_id)?;
         candidates.push(ImpactCandidate {
@@ -200,25 +198,124 @@ pub fn impacts(conn: &Connection, workspace_id: &str, target: &IndexedDocument, 
         });
     }
 
-    candidates.sort_by(|a, b| (a.strength != ImpactStrength::Evidence, &a.relative_path).cmp(&(b.strength != ImpactStrength::Evidence, &b.relative_path)));
-    candidates.truncate(MAX_CANDIDATES);
-    Ok(candidates)
+    Ok(strongest_first(candidates))
 }
 
-/// Ripple for every edit in a plan: the replaced phrase comes from each edit's diff.
-/// Documents the plan itself changes are not listed as candidates.
+/// Evidence before similarity, then by path, at most `MAX_CANDIDATES`.
+fn strongest_first(mut candidates: Vec<ImpactCandidate>) -> Vec<ImpactCandidate> {
+    candidates.sort_by(|a, b| (a.strength != ImpactStrength::Evidence, &a.relative_path).cmp(&(b.strength != ImpactStrength::Evidence, &b.relative_path)));
+    candidates.truncate(MAX_CANDIDATES);
+    candidates
+}
+
+/// Other documents in the workspace with exactly the target's indexed bytes.
+fn copies_of(conn: &Connection, workspace_id: &str, target: &IndexedDocument) -> NativeResult<Vec<String>> {
+    let mut statement = conn.prepare("SELECT id FROM documents WHERE workspace_id = ?1 AND content_hash = ?2 AND id != ?3 AND content_hash != '' ORDER BY relative_path")?;
+    let copies = statement.query_map(params![workspace_id, target.content_hash, target.id], |row| row.get(0))?.collect::<Result<_, _>>()?;
+    Ok(copies)
+}
+
+/// The stored passages of a relationship that are located in `document_id`, whichever
+/// shape the evidence was stored in (`evidence`, or `sourceEvidence` and `targetEvidence`).
+fn passages_in(evidence_json: &str, document_id: &str) -> Vec<SourcePassage> {
+    let stored: serde_json::Value = serde_json::from_str(evidence_json).unwrap_or_default();
+    let lists = match &stored {
+        serde_json::Value::Array(_) => vec![&stored],
+        _ => ["evidence", "sourceEvidence", "targetEvidence"].iter().filter_map(|key| stored.get(key)).collect(),
+    };
+    lists
+        .into_iter()
+        .filter_map(|list| list.as_array())
+        .flatten()
+        .filter_map(|passage| serde_json::from_value::<SourcePassage>(passage.clone()).ok())
+        .filter(|passage| passage.document_id == document_id)
+        .take(MAX_PASSAGES_PER_DOCUMENT)
+        .collect()
+}
+
+/// What deleting `target` leaves for review. Candidates are review evidence and never
+/// become operations; Folio changes none of them:
+/// - a document that links to the target: `evidence`, with its link passages, because the
+///   link will stop working;
+/// - a shared-fact candidate: `evidence`, with its own passages and stored provenance;
+/// - a similarity relationship or a byte-identical copy: `similarityOnly`;
+/// - a document the target only links to: not reported.
+pub fn deletion_impacts(conn: &Connection, workspace_id: &str, target: &IndexedDocument) -> NativeResult<Vec<ImpactCandidate>> {
+    // Strongest relation per document: a link, then a shared fact, then similarity.
+    let mut related: BTreeMap<String, (u8, RelationshipKind, RelationshipProvenance, Vec<SourcePassage>)> = BTreeMap::new();
+    {
+        let mut statement = conn.prepare("SELECT source_document_id, target_document_id, relationship_type, provenance, evidence_json FROM relationships WHERE source_document_id = ?1 OR target_document_id = ?1")?;
+        let rows = statement.query_map([&target.id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?)))?;
+        for row in rows {
+            let (source, destination, kind, origin, evidence_json) = row?;
+            let (other, outgoing) = if source == target.id { (destination, true) } else { (source, false) };
+            if other == target.id { continue; }
+            let (rank, kind, origin) = match kind.as_str() {
+                "explicitReference" if outgoing => continue,
+                "explicitReference" => (0, RelationshipKind::ExplicitReference, RelationshipProvenance::DocumentLink),
+                "sharedFactCandidate" => (1, RelationshipKind::SharedFactCandidate, provenance(&origin)),
+                _ => (2, RelationshipKind::Similarity, RelationshipProvenance::Embedding),
+            };
+            let passages = passages_in(&evidence_json, &other);
+            let entry = related.entry(other).or_insert_with(|| (rank, kind, origin, Vec::new()));
+            if rank < entry.0 { *entry = (rank, kind, origin, Vec::new()); }
+            if rank == entry.0 {
+                for passage in passages {
+                    if entry.3.len() < MAX_PASSAGES_PER_DOCUMENT && !entry.3.iter().any(|existing| existing.start == passage.start) { entry.3.push(passage); }
+                }
+            }
+        }
+    }
+
+    let mut candidates = Vec::new();
+    for (document_id, (_, kind, origin, evidence)) in related {
+        let (strength, reason) = match kind {
+            RelationshipKind::ExplicitReference => (ImpactStrength::Evidence, "Links to this file. The link will stop working; Folio won't change this file."),
+            RelationshipKind::SharedFactCandidate => (ImpactStrength::Evidence, "May state the same fact as this file. Folio won't change it."),
+            RelationshipKind::Similarity => (ImpactStrength::SimilarityOnly, "Covers similar subject matter. Folio won't change it."),
+        };
+        let document = index::get_document(conn, workspace_id, &document_id)?;
+        candidates.push(ImpactCandidate { document_id, relative_path: document.relative_path, reason: reason.into(), evidence, strength, relationship_type: Some(kind), provenance: Some(origin) });
+    }
+    for document_id in copies_of(conn, workspace_id, target)? {
+        if candidates.iter().any(|candidate| candidate.document_id == document_id) { continue; }
+        let document = index::get_document(conn, workspace_id, &document_id)?;
+        candidates.push(ImpactCandidate {
+            document_id,
+            relative_path: document.relative_path,
+            reason: "Identical copy; the same contents stay here.".into(),
+            evidence: Vec::new(),
+            strength: ImpactStrength::SimilarityOnly,
+            relationship_type: None,
+            provenance: None,
+        });
+    }
+    Ok(strongest_first(candidates))
+}
+
+/// Ripple for every edit and deletion in a plan: an edit's replaced phrase comes from its
+/// diff. Documents the plan itself changes are not listed as candidates.
 pub fn plan_impacts(conn: &Connection, root: &ScopedRoot, operations: &[FileOperation]) -> NativeResult<Vec<ImpactCandidate>> {
     let targeted: Vec<&str> = operations.iter().filter_map(|operation| match operation {
-        FileOperation::Edit { document_id, .. } | FileOperation::Rename { document_id, .. } | FileOperation::Move { document_id, .. } => Some(document_id.as_str()),
+        FileOperation::Edit { document_id, .. } | FileOperation::Rename { document_id, .. } | FileOperation::Move { document_id, .. } | FileOperation::Delete { document_id, .. } => Some(document_id.as_str()),
         FileOperation::Create { .. } => None,
     }).collect();
     let mut found: Vec<ImpactCandidate> = Vec::new();
     for operation in operations {
-        let FileOperation::Edit { document_id, relative_path, after, .. } = operation else { continue };
-        let Ok(document) = index::get_document(conn, &root.id, document_id) else { continue };
-        let Ok(current) = workspace::read_text(&root.path, relative_path) else { continue };
-        let Some(phrase) = replaced_phrase(&current.content, after) else { continue };
-        for candidate in impacts(conn, &root.id, &document, &phrase)? {
+        let candidates = match operation {
+            FileOperation::Edit { document_id, relative_path, after, .. } => {
+                let Ok(document) = index::get_document(conn, &root.id, document_id) else { continue };
+                let Ok(current) = workspace::read_text(&root.path, relative_path) else { continue };
+                let Some(phrase) = replaced_phrase(&current.content, after) else { continue };
+                impacts(conn, &root.id, &document, &phrase)?
+            }
+            FileOperation::Delete { document_id, .. } => {
+                let Ok(document) = index::get_document(conn, &root.id, document_id) else { continue };
+                deletion_impacts(conn, &root.id, &document)?
+            }
+            _ => continue,
+        };
+        for candidate in candidates {
             if !targeted.contains(&candidate.document_id.as_str()) && !found.iter().any(|existing| existing.document_id == candidate.document_id) {
                 found.push(candidate);
             }

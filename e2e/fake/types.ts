@@ -3,6 +3,7 @@ import type {
   FolioErrorCode,
   FolioErrorDetails,
   MediaType,
+  ModelDescriptor,
   RelativePath,
   ScanSummary,
 } from "../../src/domain/contracts";
@@ -51,6 +52,9 @@ export interface FakeNativeOptions {
   skipped: FakeSkippedEntry[];
   /** `choose_workspace` resolves to `null`, as a dismissed picker does. */
   dismissFolderPicker: boolean;
+  /** Pinned manifest metadata only; the fake never installs or runs a model. */
+  models?: ModelDescriptor[];
+  runtime?: { id: string; version: string; bytes: number };
 }
 
 /** A failure to inject into the next (or every) call of one command. */

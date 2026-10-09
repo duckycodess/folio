@@ -175,7 +175,8 @@ describe("the browser-journey fake native core", () => {
     expect(preview.operations).toEqual([canonical]);
     const { id, digest } = preview;
     const shownOperation = preview.operations[0];
-    if (shownOperation.kind !== "rename") throw new Error("Expected rename preview");
+    if (shownOperation.kind !== "rename")
+      throw new Error("Expected rename preview");
     shownOperation.destinationRelativePath = "projects/mutated-preview.md";
     preview.digest = `sha256:${"0".repeat(64)}`;
     preview.expiresAt = 0;
@@ -192,9 +193,9 @@ describe("the browser-journey fake native core", () => {
     });
     expect(report.batch.stopReason).toBe("completed");
     expect(control().readFile(PLAN)).toBeNull();
-    expect(control().readFile("projects/community-learning-project.md")).toContain(
-      "Community Learning Project",
-    );
+    expect(
+      control().readFile("projects/community-learning-project.md"),
+    ).toContain("Community Learning Project");
     expect(control().readFile("projects/mutated-input.md")).toBeNull();
     expect(control().readFile("projects/mutated-preview.md")).toBeNull();
   });
@@ -331,6 +332,48 @@ describe("the browser-journey fake native core", () => {
         })
       ).code,
     ).toBe("planStateInvalid");
+  });
+
+  it("pins the additive delete digest and its recoverable history shape", async () => {
+    const rename = await renameOperation();
+    if (rename.kind !== "rename") throw new Error("Expected rename fixture");
+    const before = control().readFile(PLAN);
+    const operation: FileOperation = {
+      kind: "delete",
+      documentId: rename.documentId,
+      relativePath: PLAN,
+      expectedContentHash: rename.expectedContentHash,
+    };
+    const plan = await call<ActionPlan>("prepare_plan", {
+      workspaceId: WORKSPACE_ID,
+      operations: [operation],
+    });
+    expect(plan.digest).toBe(await planDigest(plan));
+    await call("approve_plan", {
+      workspaceId: WORKSPACE_ID,
+      planId: plan.id,
+      planDigest: plan.digest,
+    });
+    await call("apply_plan", { workspaceId: WORKSPACE_ID, planId: plan.id });
+    expect(control().readFile(PLAN)).toBeNull();
+    const [entry] = await call<HistoryEntry[]>("list_history", {
+      workspaceId: WORKSPACE_ID,
+    });
+    expect(entry.operationKind).toBe("delete");
+    expect(entry.beforeRelativePath).toBe(PLAN);
+    expect(entry).not.toHaveProperty("afterRelativePath");
+    expect(entry).not.toHaveProperty("afterContentHash");
+    const undo = await call<UndoPreflight>("preview_undo", {
+      workspaceId: WORKSPACE_ID,
+      planId: plan.id,
+    });
+    expect(undo.undoable).toBe(true);
+    await call("undo_plan", {
+      workspaceId: WORKSPACE_ID,
+      planId: plan.id,
+      entryIds: undo.entryIds,
+    });
+    expect(control().readFile(PLAN)).toBe(before);
   });
 
   it("keeps earlier changes when an operation fails partway through a batch", async () => {
@@ -568,11 +611,13 @@ describe("the browser-journey fake native core", () => {
   });
 
   it("rejects with the plain wire failure shape, for any injected code", async () => {
-    control().failNext("read_document", {
-      code: "documentTooLarge",
+    const failure = {
+      code: "documentTooLarge" as const,
       message: "Too large.",
       details: { path: PLAN },
-    });
+    };
+    expect(control().failNext("read_document", failure)).toBeUndefined();
+    failure.details.path = "mutated-control-input.md";
     const refusal = await rejection("read_document", {
       workspaceId: WORKSPACE_ID,
       relativePath: PLAN,

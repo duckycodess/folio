@@ -1,5 +1,7 @@
 import {
+  Compass,
   FlaskConical,
+  History,
   Folders,
   House,
   Monitor,
@@ -9,7 +11,7 @@ import {
   Waypoints,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   applyTheme,
   loadTheme,
@@ -19,6 +21,15 @@ import {
   type ThemePreference,
 } from "../app/theme";
 import { useRelationships } from "../app/useRelationships";
+import { useActivity } from "../app/useActivity";
+import { useHome } from "../app/useHome";
+import {
+  loadOnboardingCompleted,
+  saveOnboardingCompleted,
+} from "../app/onboardingStorage";
+import { shouldStartOnboarding } from "../domain/onboarding";
+import { OnboardingView } from "../views/OnboardingView";
+import { hasFilters, passesFilters } from "../domain/homeFilters";
 import { useWorkspace, type WorkspaceSourceKind } from "../app/useWorkspace";
 import { simulatedCode } from "../adapters/simulate";
 import { useDrafts } from "../app/drafts";
@@ -29,6 +40,7 @@ import { AnnouncerProvider } from "../ui/Announcer";
 import type { RowMenuItem } from "../ui/RowMenu";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
 import { Notice } from "../ui/Notice";
+import { prefillAskScope } from "../app/useAskAct";
 import { AssistantView } from "../views/AssistantView";
 import { DocumentPanel } from "../views/DocumentPanel";
 import {
@@ -37,6 +49,7 @@ import {
 } from "../views/FileActionDialog";
 import { GraphView } from "../views/GraphView";
 import { HomeView } from "../views/HomeView";
+import { ActivityView } from "../views/ActivityView";
 import { ModelLabView } from "../views/ModelLabView";
 import { OrganizeView } from "../views/OrganizeView";
 import {
@@ -55,6 +68,7 @@ const ICONS: Record<ViewId, LucideIcon> = {
   organize: Folders,
   graph: Waypoints,
   assistant: Sparkles,
+  activity: History,
   modelLab: FlaskConical,
 };
 
@@ -75,6 +89,7 @@ const TITLES: Record<ViewId, string> = {
   organize: "Organize",
   graph: "Graph",
   assistant: "Ask & Act",
+  activity: "Activity",
   modelLab: "Model Lab",
 };
 
@@ -90,29 +105,63 @@ export function AppShell() {
   const workspace = useWorkspace();
   const drafts = useDrafts();
   const relations = useRelationships(workspace);
+  // Read whenever the folder changes, so Activity is current when opened.
+  // An Undo from Activity changes files too: re-read the index's links.
+  const activity = useActivity(workspace, relations.refresh);
+  // After Folio changes files: re-read the index's links and the history.
+  const filesChanged = () => {
+    relations.refresh();
+    activity.reload();
+  };
+  const home = useHome(workspace);
+  // First run in the desktop app; reopened from the sidebar's settings.
+  const [welcome, setWelcome] = useState(() =>
+    shouldStartOnboarding(workspace.nativeAvailable, loadOnboardingCompleted()),
+  );
+  function finishWelcome(next?: ViewId) {
+    saveOnboardingCompleted();
+    setWelcome(false);
+    if (next) setView(next);
+  }
   // Above the views, so an apply in progress survives switching views.
-  const organize = useOrganize(workspace, relations.refresh);
+  const organize = useOrganize(workspace, filesChanged);
   // Home's Rename and Move have their own plan, so they never show up in
   // Organize (and the reverse).
-  const fileAction = useOrganize(workspace, relations.refresh);
+  const fileAction = useOrganize(workspace, filesChanged);
   const [actionDialog, setActionDialog] = useState<{
     kind: FileActionKind;
     document: DocumentRecord;
   } | null>(null);
-  // "Show related" opens the document on its Related tab.
+  // "Show related" opens the document on its Related tab, and Ask & Act
+  // can open one on its Summary tab.
   const [panelTab, setPanelTab] = useState<{
     documentId: string;
-    tab: "Related";
+    tab: "Related" | "Summary";
     /** Reopens the panel on that tab even if the file is already open. */
     request: number;
   } | null>(null);
   // Set by ⌘K / Ctrl K on another page; Home focuses search once it shows.
   const focusSearch = useRef(false);
   const [view, setView] = useState<ViewId>("home");
+  // Home's scroll position, restored when coming back from another page.
+  const mainRef = useRef<HTMLElement>(null);
+  const homeScroll = useRef(0);
+  useLayoutEffect(() => {
+    if (view === "home" && mainRef.current)
+      mainRef.current.scrollTop = homeScroll.current;
+  }, [view]);
   const searchInput = useRef<HTMLInputElement>(null);
   const platform = useMemo(currentPlatform, []);
   const [theme, setTheme] = useState<ThemePreference>(loadTheme);
-  const reading = readerDocument(view, workspace.selected, workspace.results);
+  // Home's filters narrow its list, so the reader follows them there too.
+  const listed = useMemo(() => {
+    if (view !== "home" || !hasFilters(home.filters)) return workspace.results;
+    const now = Date.now();
+    return workspace.results.filter((result) =>
+      passesFilters(result.document, home.filters, now),
+    );
+  }, [view, home.filters, workspace.results]);
+  const reading = readerDocument(view, workspace.selected, listed);
   const showsDocument = reading !== undefined;
 
   // "Show related" is for that one opening: once another file (or none) is
@@ -247,6 +296,17 @@ export function AppShell() {
       workspace.clearSelection();
   }
 
+  if (welcome)
+    return (
+      <AnnouncerProvider>
+        <OnboardingView
+          workspace={workspace}
+          relations={relations}
+          onFinish={finishWelcome}
+        />
+      </AnnouncerProvider>
+    );
+
   return (
     <AnnouncerProvider>
       <div className={`app${showsDocument ? " has-document" : ""}`}>
@@ -274,6 +334,20 @@ export function AppShell() {
                 onSelect={setView}
               />
             </nav>
+            {workspace.nativeAvailable && (
+              <button
+                type="button"
+                className="nav-item"
+                aria-label="Setup guide"
+                title="Setup guide"
+                onClick={() => setWelcome(true)}
+              >
+                <Compass size={20} aria-hidden="true" />
+                <span className="nav-label" aria-hidden="true">
+                  Setup guide
+                </span>
+              </button>
+            )}
             <button
               type="button"
               className="nav-item theme-switch"
@@ -308,7 +382,16 @@ export function AppShell() {
             </nav>
           </header>
 
-          <main id="main" className="main" tabIndex={-1}>
+          <main
+            id="main"
+            ref={mainRef}
+            className="main"
+            tabIndex={-1}
+            onScroll={(event) => {
+              if (view === "home")
+                homeScroll.current = event.currentTarget.scrollTop;
+            }}
+          >
             {simulatedCode && (
               <Notice tone="info">
                 Practice mode: this preview simulates “
@@ -377,6 +460,16 @@ export function AppShell() {
                   onSearch={onSearch}
                   fileActions={fileActions}
                   onOpenPassage={relations.openPassage}
+                  home={home}
+                  onAskOlio={() => {
+                    const query = workspace.query.trim();
+                    if (query) drafts.setInstruction(query);
+                    prefillAskScope(
+                      workspace.workspace?.id,
+                      home.filters.folder ?? "",
+                    );
+                    setView("assistant");
+                  }}
                 />
               )}
               {view === "organize" && (
@@ -386,7 +479,24 @@ export function AppShell() {
                 <GraphView workspace={workspace} relations={relations} />
               )}
               {view === "assistant" && (
-                <AssistantView drafts={drafts} onNavigate={setView} />
+                <AssistantView
+                  workspace={workspace}
+                  relations={relations}
+                  drafts={drafts}
+                  onNavigate={setView}
+                  onOpenFile={(document, tab) => {
+                    if (tab)
+                      setPanelTab((current) => ({
+                        documentId: document.id,
+                        tab,
+                        request: (current?.request ?? 0) + 1,
+                      }));
+                    void workspace.selectDocument(document);
+                  }}
+                />
+              )}
+              {view === "activity" && (
+                <ActivityView workspace={workspace} activity={activity} />
               )}
               {view === "modelLab" && <ModelLabView />}
             </AnnouncerProvider>

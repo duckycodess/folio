@@ -21,9 +21,19 @@ const VIEWPORTS = [
  */
 for (const viewport of VIEWPORTS)
   test.describe(`At ${viewport.width}×${viewport.height}`, () => {
-    test.use({ viewport });
+    test.use({ viewport, onboardingCompleted: false });
 
     test("every screen fits and passes axe", async ({ folio }) => {
+      // Fresh desktop launches now enter onboarding. Inspect that real UI,
+      // then take its explicit skip route before the core journeys.
+      await expect(
+        folio.getByRole("heading", { name: "Welcome to Folio" }),
+      ).toBeVisible();
+      await expectNoHorizontalScroll(folio);
+      await expectNoAxeViolations(folio);
+      await folio
+        .getByRole("button", { name: "Skip setup", exact: true })
+        .click();
       // Before a folder: the empty state and its illustration.
       await expectNoHorizontalScroll(folio);
       await expectNoAxeViolations(folio);
@@ -68,10 +78,25 @@ for (const viewport of VIEWPORTS)
       await expectNoAxeViolations(folio);
 
       // Graph, Ask & Act and Model Lab.
-      for (const view of ["Graph", "Ask & Act", "Model Lab"]) {
+      for (const view of ["Graph", "Ask & Act", "Activity", "Model Lab"]) {
         await openView(folio, view);
+        if (view === "Model Lab")
+          await expect(
+            folio.getByRole("button", { name: /^Download / }).first(),
+          ).toBeVisible();
+        if (view === "Ask & Act")
+          await expect(
+            folio.getByRole("textbox", { name: "Your request", exact: true }),
+          ).toBeVisible();
         await expectNoHorizontalScroll(folio);
         await expectNoAxeViolations(folio);
+        if (view === "Graph") {
+          await folio
+            .getByRole("button", { name: "List", exact: true })
+            .click();
+          await expectNoHorizontalScroll(folio);
+          await expectNoAxeViolations(folio);
+        }
       }
     });
   });

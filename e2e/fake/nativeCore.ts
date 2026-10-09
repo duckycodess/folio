@@ -16,11 +16,16 @@ import type {
   IndexProgress,
   IndexedDocument,
   MediaType,
+  ModelDescriptor,
+  ModelInstallState,
+  ModelSetup,
   OperationOutcome,
   OperationStatus,
   OrganizationSuggestion,
   OrganizationSuggestions,
+  ProviderIndexStatus,
   RelativePath,
+  RuntimeStatus,
   ScanSummary,
   SearchResult,
   SourcePassage,
@@ -547,7 +552,8 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
         text += field(operation.documentId);
         text += field(operation.relativePath);
         text += field(operation.expectedContentHash);
-        text += field(operation.destinationRelativePath);
+        if (operation.kind !== "delete")
+          text += field(operation.destinationRelativePath);
       }
     }
     return encoder.encode(text);
@@ -586,7 +592,7 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
             { path: source },
           );
       }
-      if (operation.kind !== "edit") {
+      if (operation.kind !== "edit" && operation.kind !== "delete") {
         destination = assertPortableDestination(
           operation.destinationRelativePath,
         );
@@ -807,6 +813,7 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
         id,
         planId,
         operationIndex,
+        operationKind: operation.kind,
         appliedAt,
         documentId: documentIdFor(destination),
         afterRelativePath: destination,
@@ -828,6 +835,7 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
         id,
         planId,
         operationIndex,
+        operationKind: operation.kind,
         appliedAt,
         documentId: operation.documentId,
         beforeRelativePath: source,
@@ -838,6 +846,21 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
         beforeContent,
       };
     }
+    if (operation.kind === "delete") {
+      files.delete(source);
+      return {
+        id,
+        planId,
+        operationIndex,
+        operationKind: operation.kind,
+        appliedAt,
+        documentId: operation.documentId,
+        beforeRelativePath: source,
+        beforeContentHash,
+        beforeContent,
+        recoverable: true,
+      };
+    }
     const destination = operation.destinationRelativePath;
     files.delete(source);
     files.set(destination, { ...entry, modifiedAtMs: appliedAt });
@@ -845,6 +868,7 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
       id,
       planId,
       operationIndex,
+      operationKind: operation.kind,
       appliedAt,
       documentId: operation.documentId,
       beforeRelativePath: source,
@@ -866,7 +890,8 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
 
   function pathsOf(operation: FileOperation): RelativePath[] {
     if (operation.kind === "create") return [operation.destinationRelativePath];
-    if (operation.kind === "edit") return [operation.relativePath];
+    if (operation.kind === "edit" || operation.kind === "delete")
+      return [operation.relativePath];
     return [operation.relativePath, operation.destinationRelativePath];
   }
 
@@ -1024,6 +1049,17 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
         continue;
       }
       const current = files.get(appliedPath);
+      if (entry.operationKind === "delete") {
+        if (current)
+          conflicts.push({
+            historyEntryId: entry.id,
+            documentId: entry.documentId,
+            relativePath: appliedPath,
+            observedContentHash: await hashOf(current),
+            reason: "destinationOccupied",
+          });
+        continue;
+      }
       if (!current) {
         conflicts.push({
           historyEntryId: entry.id,
@@ -1122,8 +1158,14 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
         undone.length >= writer.undoStopAfter
       )
         break;
-      const appliedPath = entry.afterRelativePath!;
-      if (entry.beforeRelativePath === undefined) {
+      const appliedPath = entry.afterRelativePath ?? entry.beforeRelativePath!;
+      if (entry.operationKind === "delete") {
+        files.set(appliedPath, {
+          content: entry.beforeContent ?? "",
+          mediaType: mediaTypeForPath(appliedPath)!,
+          modifiedAtMs: Date.now(),
+        });
+      } else if (entry.beforeRelativePath === undefined) {
         files.delete(appliedPath);
       } else if (entry.beforeRelativePath === appliedPath) {
         files.set(appliedPath, {
@@ -1397,6 +1439,15 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
         contentHash: await hashOf(entry),
         sizeBytes: sizeOf(entry),
         modifiedAtMs: entry.modifiedAtMs,
+        ...(entry.pages
+          ? {
+              pages: entry.pages.map((page) => ({
+                page: page.page,
+                start: utf8Offset(entry.content, page.startIndex),
+                end: utf8Offset(entry.content, page.endIndex),
+              })),
+            }
+          : {}),
       };
     },
 
@@ -1437,6 +1488,72 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
         String(args.query),
         Number(args.limit ?? 20),
       );
+    },
+
+    async list_models(): Promise<ModelDescriptor[]> {
+      return options.models ?? [];
+    },
+
+    async model_setup(): Promise<ModelSetup> {
+      return {
+        selectedEmbedding: null,
+        selectedGeneration: null,
+        hostRuntimeId: options.runtime?.id ?? "e2e-runtime",
+        hostRuntimeBytes: options.runtime?.bytes ?? null,
+        deviceMemoryBytes: null,
+        availableDiskBytes: null,
+      };
+    },
+
+    async runtime_status(args): Promise<RuntimeStatus> {
+      return {
+        id: String(args.runtimeId),
+        version: options.runtime?.version ?? "none",
+        installed: false,
+      };
+    },
+
+    async verify_model(args): Promise<ModelInstallState> {
+      return { id: String(args.modelId), status: "notInstalled" };
+    },
+
+    async index_status(): Promise<ProviderIndexStatus> {
+      return {
+        ...(authorized ? { workspaceId: options.workspaceId } : {}),
+        documentCount: index.size,
+        chunkCount: index.size,
+        method: "keyword",
+      };
+    },
+
+    async rebuild_index(args): Promise<ProviderIndexStatus> {
+      await scanWorkspace(String(args.workspaceId));
+      return {
+        workspaceId: options.workspaceId,
+        documentCount: index.size,
+        chunkCount: index.size,
+        method: "keyword",
+      };
+    },
+
+    async semantic_search(args) {
+      return searchIndex(
+        String(args.workspaceId),
+        String(args.query),
+        Number(args.limit ?? 10),
+      );
+    },
+
+    async interpret_request() {
+      fail("modelNotInstalled", "No local generation model is installed.");
+    },
+
+    async summarize_document() {
+      fail("modelNotInstalled", "No local generation model is installed.");
+    },
+
+    async answer_question() {
+      fail("modelNotInstalled", "No local generation model is installed.");
     },
 
     async list_relationships(args) {
@@ -1588,8 +1705,12 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
 
   const control: FakeControl = {
     sentinel: SENTINEL,
-    failNext: (command, failure) => failOnce.set(command, wireCopy(failure)),
-    failAlways: (command, failure) => failAlways.set(command, wireCopy(failure)),
+    failNext: (command, failure) => {
+      failOnce.set(command, wireCopy(failure));
+    },
+    failAlways: (command, failure) => {
+      failAlways.set(command, wireCopy(failure));
+    },
     clearFailures: () => {
       failOnce.clear();
       failAlways.clear();

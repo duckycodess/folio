@@ -125,6 +125,12 @@ describe("cross-language contract fixtures", () => {
   });
 
   it("agrees on canonical plan bytes and digests", async () => {
+    const kinds = cases.plans.flatMap((entry) =>
+      entry.plan.operations.map((operation) => operation.kind),
+    );
+    expect(new Set(kinds)).toEqual(
+      new Set(["create", "edit", "rename", "delete"]),
+    );
     for (const entry of cases.plans) {
       const plan = entry.plan as unknown as ActionPlan;
       const canonical = canonicalPlanBytes(plan);

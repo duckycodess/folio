@@ -16,6 +16,8 @@ interface ModalProps {
   onClose: () => void;
   children: ReactNode;
   footer?: ReactNode;
+  /** Extra class on the dialog, e.g. `modal-wide`. */
+  className?: string;
   /**
    * False while the modal must stay open, for example while a change it
    * started is being applied: Escape and the close button do nothing.
@@ -34,6 +36,7 @@ export function Modal({
   onClose,
   children,
   footer,
+  className,
   dismissible = true,
 }: ModalProps) {
   const dialog = useRef<HTMLDialogElement>(null);
@@ -74,7 +77,7 @@ export function Modal({
   return (
     <dialog
       ref={dialog}
-      className="modal"
+      className={`modal${className ? ` ${className}` : ""}`}
       aria-labelledby={titleId}
       onKeyDown={trapTab}
       onCancel={(event) => {

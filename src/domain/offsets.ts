@@ -68,6 +68,41 @@ export function utf8OffsetToUtf16Index(text: string, offset: number): number {
   }
 }
 
+/**
+ * String indices for ascending UTF-8 offsets, in one pass over `text`, for
+ * converting many offsets at once (a long PDF's pages). Gives the same index
+ * as `utf8OffsetToUtf16Index` for each offset, and refuses the same offsets:
+ * inside a character, past the end, or out of order.
+ */
+export function utf8OffsetsToUtf16Indices(
+  text: string,
+  offsets: number[],
+): number[] {
+  const indices: number[] = [];
+  let byte = 0;
+  let index = 0;
+  for (const offset of offsets) {
+    if (!Number.isInteger(offset) || offset < byte)
+      throw folioError("internal", "Source offsets must be in order.", {
+        offset: String(offset),
+      });
+    while (byte < offset && index < text.length) {
+      const code = text.codePointAt(index)!;
+      // A lone surrogate encodes as U+FFFD, three bytes, like TextEncoder.
+      byte += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+      index += code > 0xffff ? 2 : 1;
+    }
+    if (byte !== offset)
+      throw folioError(
+        "internal",
+        "A source offset must fall on a character boundary.",
+        { offset: String(offset) },
+      );
+    indices.push(index);
+  }
+  return indices;
+}
+
 /** The excerpt between two UTF-8 byte offsets, or a typed error. */
 export function sliceByUtf8Offsets(
   text: string,

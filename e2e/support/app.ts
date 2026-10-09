@@ -1,5 +1,5 @@
 import { test as base, expect, type Page } from "@playwright/test";
-import { fixtureCorpus } from "../fake/corpus";
+import { fixtureCorpus, fixtureModelMetadata } from "../fake/corpus";
 import { installFakeNativeCore } from "../fake/nativeCore";
 import type { FolioErrorCode } from "../../src/domain/contracts";
 import type {
@@ -37,18 +37,25 @@ declare global {
 export async function installFake(
   page: Page,
   overrides: Partial<FakeNativeOptions> = {},
+  onboardingCompleted = true,
 ): Promise<void> {
   const options: FakeNativeOptions = {
     ...DEFAULT_OPTIONS,
     files: fixtureCorpus(),
+    ...fixtureModelMetadata(),
     ...overrides,
   };
   await page.addInitScript(installFakeNativeCore, options);
+  if (onboardingCompleted)
+    await page.addInitScript(() => {
+      window.localStorage.setItem("folio.onboarding.completed", "true");
+    });
 }
 
-export const test = base.extend<{ folio: Page }>({
-  folio: async ({ page }, use) => {
-    await installFake(page);
+export const test = base.extend<{ folio: Page; onboardingCompleted: boolean }>({
+  onboardingCompleted: [true, { option: true }],
+  folio: async ({ page, onboardingCompleted }, use) => {
+    await installFake(page, {}, onboardingCompleted);
     await page.goto("/");
     await use(page);
   },

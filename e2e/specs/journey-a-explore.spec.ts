@@ -90,6 +90,7 @@ test.describe("Journey A: explore and understand", () => {
     // Graph reads the folder index, which Organize's Analyze fills.
     await analyzeFolder(folio);
     await openView(folio, "Graph");
+    await folio.getByRole("button", { name: "List", exact: true }).click();
     await expect(
       folio.getByRole("region", { name: "Connections between files" }),
     ).toBeVisible();

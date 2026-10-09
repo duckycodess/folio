@@ -3,10 +3,14 @@ import type {
   ActionPlan,
   ApplyReport,
   FileOperation,
+  ImpactCandidate,
   OperationOutcome,
   UndoReport,
 } from "../domain/contracts";
 import {
+  impactGroups,
+  impactKind,
+  impactProvenance,
   planRow,
   summarizeApply,
   summarizeUndo,
@@ -76,6 +80,26 @@ describe("exact preview rows", () => {
       { action: "Rename", from: "notes/b.md", to: "notes/2026-b.md" },
       { action: "Rename", from: "notes/c.md", to: "notes/2026-c.md" },
     ]);
+  });
+
+  it("names a deleted file and calls the result a deletion", () => {
+    const deletion: ActionPlan = {
+      ...PLAN,
+      operations: [
+        {
+          kind: "delete",
+          documentId: "w:notes/a.md",
+          relativePath: "notes/a.md",
+          expectedContentHash: "a".repeat(64),
+        },
+      ],
+    };
+    expect(deletion.operations.map(planRow)).toEqual([
+      { action: "Delete", from: "notes/a.md" },
+    ]);
+    expect(summarizeApply(deletion, report(["succeeded"])).headline).toBe(
+      "Deleted 1 file.",
+    );
   });
 });
 
@@ -243,5 +267,65 @@ describe("a change saved without its Undo record", () => {
     expect(summary.headline).toMatch(/^Saved 2 of 3 changes\./);
     expect(summary.details.join(" ")).toMatch(/Earlier changes were kept/);
     expect(summary.undoable).toBe(true);
+  });
+});
+
+describe("Ripple candidates", () => {
+  function impact(
+    relativePath: string,
+    fields: Partial<ImpactCandidate> = {},
+  ): ImpactCandidate {
+    return {
+      documentId: `w:${relativePath}`,
+      relativePath,
+      reason: "Mentions “October 20”.",
+      evidence: [],
+      strength: "evidence",
+      ...fields,
+    };
+  }
+
+  const LINK = impact("notes/links-here.md", {
+    relationshipType: "explicitReference",
+    provenance: "documentLink",
+  });
+  const COPY = impact("backup/plan.md", { strength: "similarityOnly" });
+  const SIMILAR = impact("notes/similar.md", {
+    strength: "similarityOnly",
+    relationshipType: "similarity",
+    provenance: "embedding",
+  });
+  const SHARED_FACT = impact("notes/same-fact.md", {
+    relationshipType: "sharedFactCandidate",
+    provenance: "model",
+  });
+  const UNSAID = impact("notes/unsaid.md");
+
+  it("groups candidates by how Folio knows they're related", () => {
+    expect(impactGroups([SIMILAR, LINK, COPY, SHARED_FACT, UNSAID])).toEqual({
+      links: [LINK],
+      copies: [COPY],
+      inferred: [SIMILAR, SHARED_FACT],
+      other: [UNSAID],
+    });
+  });
+
+  it("never labels a link or an identical copy as AI", () => {
+    for (const candidate of [LINK, COPY]) {
+      expect(impactKind(candidate)).not.toBe("inferred");
+      expect(impactProvenance(candidate).ai).toBe(false);
+      expect(impactProvenance(candidate).label).not.toMatch(/AI|model/);
+    }
+    // A link is a link, whichever field says so.
+    expect(impactKind(impact("a.md", { provenance: "documentLink" }))).toBe(
+      "links",
+    );
+    expect(impactProvenance(SHARED_FACT)).toMatchObject({ ai: true });
+    expect(impactProvenance(SIMILAR)).toMatchObject({ ai: true });
+  });
+
+  it("doesn't call a candidate a copy unless it's similarity-only and names no relationship", () => {
+    expect(impactKind(UNSAID)).toBe("other");
+    expect(impactProvenance(UNSAID).ai).toBe(false);
   });
 });
