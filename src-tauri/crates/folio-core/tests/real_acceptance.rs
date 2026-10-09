@@ -681,10 +681,17 @@ fn r8_evidence_gate() {
         calls: AtomicUsize::new(0),
     };
     let unrelated_query = queries[3].1;
+    // The passages the gate actually let through, so this phase measures the
+    // gate: if it admits evidence, the generator is called and the phase fails.
+    let gated_passages = unrelated
+        .iter()
+        .flat_map(|result| result.passages.clone())
+        .take(folio_core::generation::MAX_PASSAGES)
+        .collect::<Vec<_>>();
     let answer = grounding::answer_question(
         Some(&counting),
         unrelated_query,
-        Vec::new(),
+        gated_passages,
         Language::En,
         &cancel,
     )
