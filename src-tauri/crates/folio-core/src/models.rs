@@ -263,10 +263,7 @@ impl ModelStore {
         let descriptor = self.model(id)?.clone();
         let root = self.model_root(id)?;
         fs::create_dir_all(&root)?;
-        let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::limited(5))
-            .timeout(DOWNLOAD_TIMEOUT)
-            .build()?;
+        let client = download_client()?;
         for file in descriptor.files {
             if cancel.load(Ordering::Relaxed) {
                 return Err(provider(
@@ -294,50 +291,22 @@ impl ModelStore {
                     "Refusing to write through a model partial-file symlink.",
                 ));
             }
-            let mut response = client.get(url).send()?.error_for_status()?;
-            let mut output = OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(&partial)?;
-            let mut hasher = Sha256::new();
-            let mut received = 0_u64;
-            let mut buffer = [0_u8; 64 * 1024];
-            loop {
-                if cancel.load(Ordering::Relaxed) {
-                    let _ = fs::remove_file(&partial);
-                    return Err(provider(
-                        ProviderErrorCode::Cancelled,
-                        "Model installation cancelled.",
-                    ));
-                }
-                let count = response.read(&mut buffer)?;
-                if count == 0 {
-                    break;
-                }
-                output.write_all(&buffer[..count])?;
-                hasher.update(&buffer[..count]);
-                received += count as u64;
-                on_progress(DownloadProgress {
-                    item_id: id.into(),
-                    file: file.path.clone(),
-                    received_bytes: received,
-                    total_bytes: file.bytes,
-                });
-            }
-            output.flush()?;
-            output.sync_all()?;
-            let digest = hex::encode(hasher.finalize());
-            if received != file.bytes || digest != file.sha256 {
-                let _ = fs::remove_file(&partial);
-                return Err(provider(
-                    ProviderErrorCode::ModelCorrupt,
-                    format!(
-                        "Downloaded {} failed size or SHA-256 verification.",
-                        file.path
-                    ),
-                ));
-            }
+            download_verified(
+                &client,
+                &url,
+                &partial,
+                &file,
+                cancel,
+                "Model installation cancelled.",
+                |received| {
+                    on_progress(DownloadProgress {
+                        item_id: id.into(),
+                        file: file.path.clone(),
+                        received_bytes: received,
+                        total_bytes: file.bytes,
+                    })
+                },
+            )?;
             fs::rename(partial, destination)?;
         }
         let state = self.model_state(id)?;
@@ -448,10 +417,7 @@ impl ModelStore {
         let descriptor = self.runtime(id)?.clone();
         let root = self.runtime_root(id)?;
         fs::create_dir_all(&root)?;
-        let client = Client::builder()
-            .redirect(reqwest::redirect::Policy::limited(5))
-            .timeout(DOWNLOAD_TIMEOUT)
-            .build()?;
+        let client = download_client()?;
         for file in descriptor.files {
             let url = file.download_url.clone().ok_or_else(|| {
                 CoreError::Message(format!("Manifest has no download URL for {}.", file.path))
@@ -466,42 +432,22 @@ impl ModelStore {
                     "Refusing to write through a runtime archive symlink.",
                 ));
             }
-            let mut response = client.get(url).send()?.error_for_status()?;
-            let mut output = File::create(&partial)?;
-            let mut hasher = Sha256::new();
-            let mut received = 0_u64;
-            let mut buffer = [0_u8; 64 * 1024];
-            loop {
-                if cancel.load(Ordering::Relaxed) {
-                    let _ = fs::remove_file(&partial);
-                    return Err(provider(
-                        ProviderErrorCode::Cancelled,
-                        "Runtime installation cancelled.",
-                    ));
-                }
-                let count = response.read(&mut buffer)?;
-                if count == 0 {
-                    break;
-                }
-                output.write_all(&buffer[..count])?;
-                hasher.update(&buffer[..count]);
-                received += count as u64;
-                on_progress(DownloadProgress {
-                    item_id: id.into(),
-                    file: file.path.clone(),
-                    received_bytes: received,
-                    total_bytes: file.bytes,
-                });
-            }
-            output.flush()?;
-            output.sync_all()?;
-            if received != file.bytes || hex::encode(hasher.finalize()) != file.sha256 {
-                let _ = fs::remove_file(&partial);
-                return Err(provider(
-                    ProviderErrorCode::ModelCorrupt,
-                    format!("Downloaded runtime {} failed verification.", file.path),
-                ));
-            }
+            download_verified(
+                &client,
+                &url,
+                &partial,
+                &file,
+                cancel,
+                "Runtime installation cancelled.",
+                |received| {
+                    on_progress(DownloadProgress {
+                        item_id: id.into(),
+                        file: file.path.clone(),
+                        received_bytes: received,
+                        total_bytes: file.bytes,
+                    })
+                },
+            )?;
             fs::rename(partial, &archive)?;
             extract_runtime_archive(&archive, &root)?;
             fs::remove_file(archive)?;
@@ -538,6 +484,91 @@ pub struct RuntimeStatus {
 pub struct VerifiedModelFile {
     pub descriptor: ModelDescriptor,
     pub path: PathBuf,
+}
+
+/// HTTPS-only client for pinned public downloads; integrity comes from the
+/// manifest size and SHA-256, never from the host.
+fn download_client() -> CoreResult<Client> {
+    Ok(Client::builder()
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::limited(5))
+        .timeout(DOWNLOAD_TIMEOUT)
+        .build()?)
+}
+
+/// Stream `url` into `partial`, never accepting more bytes than the manifest
+/// pins, and verify size and SHA-256. On any error, including cancellation
+/// and I/O failures, the partial file is removed.
+fn download_verified<F>(
+    client: &Client,
+    url: &str,
+    partial: &Path,
+    expected: &ModelFile,
+    cancel: &AtomicBool,
+    cancelled_message: &str,
+    mut on_received: F,
+) -> CoreResult<()>
+where
+    F: FnMut(u64),
+{
+    let mut attempt = || -> CoreResult<()> {
+        let mut response = client.get(url).send()?.error_for_status()?;
+        if let Some(length) = response.content_length() {
+            if length != expected.bytes {
+                return Err(provider(
+                    ProviderErrorCode::ModelCorrupt,
+                    format!(
+                        "The server reported {length} bytes for {}; the manifest pins {}.",
+                        expected.path, expected.bytes
+                    ),
+                ));
+            }
+        }
+        let mut output = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(partial)?;
+        let mut hasher = Sha256::new();
+        let mut received = 0_u64;
+        let mut buffer = [0_u8; 64 * 1024];
+        loop {
+            if cancel.load(Ordering::Relaxed) {
+                return Err(provider(ProviderErrorCode::Cancelled, cancelled_message));
+            }
+            let count = response.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            received += count as u64;
+            if received > expected.bytes {
+                return Err(provider(
+                    ProviderErrorCode::ModelCorrupt,
+                    format!("{} is larger than the manifest allows.", expected.path),
+                ));
+            }
+            output.write_all(&buffer[..count])?;
+            hasher.update(&buffer[..count]);
+            on_received(received);
+        }
+        output.flush()?;
+        output.sync_all()?;
+        if received != expected.bytes || hex::encode(hasher.finalize()) != expected.sha256 {
+            return Err(provider(
+                ProviderErrorCode::ModelCorrupt,
+                format!(
+                    "Downloaded {} failed size or SHA-256 verification.",
+                    expected.path
+                ),
+            ));
+        }
+        Ok(())
+    };
+    let result = attempt();
+    if result.is_err() {
+        let _ = fs::remove_file(partial);
+    }
+    result
 }
 
 fn provider(code: ProviderErrorCode, message: impl Into<String>) -> CoreError {
@@ -874,6 +905,32 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    #[test]
+    fn failed_downloads_remove_their_partial_file_and_refuse_plain_http() {
+        let temp = tempfile::tempdir().unwrap();
+        let partial = temp.path().join("model.bin.partial");
+        fs::write(&partial, b"stale bytes from an earlier attempt").unwrap();
+        let expected = ModelFile {
+            path: "model.bin".into(),
+            sha256: sha256_bytes(b"x"),
+            bytes: 1,
+            download_url: None,
+        };
+        let client = download_client().unwrap();
+        // Plain HTTP is refused by the client before any byte is accepted.
+        assert!(download_verified(
+            &client,
+            "http://127.0.0.1:9/model.bin",
+            &partial,
+            &expected,
+            &AtomicBool::new(false),
+            "cancelled",
+            |_| {},
+        )
+        .is_err());
+        assert!(!partial.exists());
     }
 
     #[test]
