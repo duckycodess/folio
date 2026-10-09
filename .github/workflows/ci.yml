@@ -20,6 +20,8 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run build
+      - name: Test provider and Model Lab core
+        run: cargo test --manifest-path src-tauri/crates/folio-core/Cargo.toml
   desktop-check:
     strategy:
       fail-fast: false
