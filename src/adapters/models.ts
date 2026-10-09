@@ -3,30 +3,20 @@ import type {
   ModelDescriptor,
   ModelInstallState,
   ModelRole,
-  NativeProviderError,
   RuntimeStatus,
 } from "../domain/contracts";
+import { folioError, toFolioError } from "../domain/errors";
 
 export function isAvailable(): boolean {
   return isTauri();
 }
 
-export class NativeAdapterError extends Error {
-  readonly native: NativeProviderError;
-
-  constructor(native: NativeProviderError) {
-    super(native.message);
-    this.name = "NativeAdapterError";
-    this.native = native;
-  }
-}
-
 function unavailable(): never {
-  throw new NativeAdapterError({
-    code: "runtimeMissing",
-    message: "Local model adapters are available in the Folio desktop app.",
-    detail: "browser-preview",
-  });
+  throw folioError(
+    "modelNotInstalled",
+    "Local model adapters are available in the Folio desktop app.",
+    { component: "runtime", reason: "browserPreview" },
+  );
 }
 
 async function call<T>(
@@ -37,18 +27,7 @@ async function call<T>(
   try {
     return await invoke<T>(command, args);
   } catch (cause) {
-    if (
-      cause &&
-      typeof cause === "object" &&
-      "code" in cause &&
-      "message" in cause
-    ) {
-      throw new NativeAdapterError(cause as NativeProviderError);
-    }
-    throw new NativeAdapterError({
-      code: "ioError",
-      message: String(cause),
-    });
+    throw toFolioError(cause);
   }
 }
 

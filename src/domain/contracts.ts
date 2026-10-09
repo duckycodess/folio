@@ -402,25 +402,6 @@ export interface GenerationProvider {
 
 /* ---------------------------------------------------------- issue #4 models */
 
-export type ProviderErrorCode =
-  | "modelNotInstalled"
-  | "modelCorrupt"
-  | "runtimeMissing"
-  | "runtimeStartFailed"
-  | "generationBusy"
-  | "cancelled"
-  | "contextLimit"
-  | "invalidModelOutput"
-  | "embeddingSpaceMismatch"
-  | "noEvidence"
-  | "ioError";
-
-export interface NativeProviderError {
-  code: ProviderErrorCode;
-  message: string;
-  detail?: string;
-}
-
 export type ModelRole = "embedding" | "generation";
 
 export interface ModelFile {
@@ -449,7 +430,7 @@ export interface ModelInstallState {
   id: string;
   status: ModelInstallStatus;
   modelFileBytes?: number;
-  error?: NativeProviderError;
+  error?: FolioErrorPayload;
 }
 
 export interface RuntimeStatus {

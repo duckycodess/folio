@@ -3,10 +3,9 @@ import type {
   GroundedAnswer,
   IndexStatus,
   InterpretationResult,
-  NativeProviderError,
   SearchResult,
 } from "../domain/contracts";
-import { NativeAdapterError } from "./models";
+import { folioError, toFolioError } from "../domain/errors";
 
 export function isAvailable(): boolean {
   return isTauri();
@@ -17,24 +16,16 @@ async function call<T>(
   args?: Record<string, unknown>,
 ): Promise<T> {
   if (!isAvailable()) {
-    throw new NativeAdapterError({
-      code: "runtimeMissing",
-      message: "Local AI adapters are available in the Folio desktop app.",
-      detail: "browser-preview",
-    });
+    throw folioError(
+      "modelNotInstalled",
+      "Local AI adapters are available in the Folio desktop app.",
+      { component: "runtime", reason: "browserPreview" },
+    );
   }
   try {
     return await invoke<T>(command, args);
   } catch (cause) {
-    if (
-      cause &&
-      typeof cause === "object" &&
-      "code" in cause &&
-      "message" in cause
-    ) {
-      throw new NativeAdapterError(cause as NativeProviderError);
-    }
-    throw new NativeAdapterError({ code: "ioError", message: String(cause) });
+    throw toFolioError(cause);
   }
 }
 

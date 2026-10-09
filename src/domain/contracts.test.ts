@@ -7,7 +7,7 @@ import type {
   GroundedAnswer,
   InterpretationResult,
   ModelDescriptor,
-  NativeProviderError,
+  FolioErrorPayload,
 } from "./contracts";
 
 function hasOnlyCamelCaseKeys(value: unknown): boolean {
@@ -21,9 +21,10 @@ function hasOnlyCamelCaseKeys(value: unknown): boolean {
 
 describe("native contract goldens", () => {
   it("keeps provider and model keys typed and camelCase", () => {
-    const error = providerError as NativeProviderError;
+    const error = providerError as FolioErrorPayload;
     const descriptor = modelDescriptor as ModelDescriptor;
     expect(error.code).toBe("modelNotInstalled");
+    expect(error.details?.modelId).toBe("generation");
     expect(descriptor.files[0].sha256).toHaveLength(64);
     expect(hasOnlyCamelCaseKeys(error)).toBe(true);
     expect(hasOnlyCamelCaseKeys(descriptor)).toBe(true);
