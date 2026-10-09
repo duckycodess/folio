@@ -14,12 +14,17 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
+import {
+  isAvailable as aiAvailable,
+  summarizeRelationships,
+} from "../adapters/ai";
 import { folderChoices } from "../app/fileActions";
 import type { RelationshipsState } from "../app/useRelationships";
 import type { WorkspaceState } from "../app/useWorkspace";
 import { describeConnection } from "../domain/connections";
 import { hasSearchWords } from "../domain/discovery";
-import type { DocumentRecord } from "../domain/contracts";
+import type { DocumentRecord, GroundedResult } from "../domain/contracts";
+import { toFolioError, type FolioError } from "../domain/errors";
 import {
   folderSpread,
   graphPairs,
@@ -28,6 +33,7 @@ import {
   type GraphStart,
 } from "../domain/graphScope";
 import { Badge } from "../ui/Badge";
+import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { FileTypeIcon } from "../ui/FileTypeIcon";
 import { Panel } from "../ui/Panel";
@@ -38,6 +44,9 @@ import {
   originalLocation,
 } from "./Connections";
 import { ConceptMap } from "./graph/ConceptMap";
+import { CitedSentences } from "./CitedSentences";
+import { Notice } from "../ui/Notice";
+import { RecoveryNotice } from "../ui/RecoveryNotice";
 
 type StartKind = GraphStart["kind"];
 type GraphMode = "map" | "list";
@@ -240,6 +249,37 @@ export function GraphView({
   const confirmed = pairs.filter((pair) => isConfirmed(pair.connection));
   const suggested = pairs.filter((pair) => !isConfirmed(pair.connection));
   const spread = folderSpread(pairs);
+  const summaryDocumentIds = useMemo(
+    () => [...new Set(pairs.flatMap(({ from, to }) => [from.id, to.id]))],
+    [pairs],
+  );
+  const summaryScopeKey = summaryDocumentIds.join("|");
+  const [summary, setSummary] = useState<GroundedResult | null>(null);
+  const [summaryBusy, setSummaryBusy] = useState(false);
+  const [summaryError, setSummaryError] = useState<FolioError | null>(null);
+  useEffect(() => {
+    setSummary(null);
+    setSummaryError(null);
+  }, [summaryScopeKey, start.kind === "file" ? start.documentId : ""]);
+  async function writeRelationshipSummary() {
+    const folderId = workspace.workspace?.id;
+    if (!folderId || summaryDocumentIds.length === 0) return;
+    setSummaryBusy(true);
+    setSummaryError(null);
+    try {
+      setSummary(
+        await summarizeRelationships(
+          folderId,
+          summaryDocumentIds,
+          start.kind === "file" ? start.documentId : undefined,
+        ),
+      );
+    } catch (cause) {
+      setSummaryError(toFolioError(cause));
+    } finally {
+      setSummaryBusy(false);
+    }
+  }
   const [mode, setMode] = useState<GraphMode>(rememberedMode);
   function choose(next: GraphMode) {
     rememberedMode = next;
@@ -457,11 +497,49 @@ export function GraphView({
               </li>
             ))}
           </ul>
-          <p className="muted">
-            A written relationship summary needs a local AI model, which isn't
-            available in this version yet. The connections and evidence above
-            don't need one.
-          </p>
+          <div className="form-actions">
+            <Button
+              variant="primary"
+              disabled={summaryBusy || !aiAvailable()}
+              onClick={() => void writeRelationshipSummary()}
+            >
+              {summaryBusy
+                ? "Writing relationship summary…"
+                : "Write relationship summary"}
+            </Button>
+          </div>
+          {!aiAvailable() && (
+            <p className="muted">
+              Relationship summaries are available in the Folio desktop app
+              through its local model boundary. The connections and evidence
+              above do not need a model.
+            </p>
+          )}
+          {summaryError && (
+            <RecoveryNotice
+              error={summaryError}
+              actions={{ retry: () => void writeRelationshipSummary() }}
+            />
+          )}
+          {summary && summary.kind === "insufficientEvidence" && (
+            <Notice tone="info">
+              There is not enough relationship evidence for a summary.
+            </Notice>
+          )}
+          {summary && summary.kind !== "insufficientEvidence" && (
+            <div className="summary">
+              <div className="summary-head">
+                <Badge>Relationship summary</Badge>
+                <Badge>Generated preview, not saved</Badge>
+              </div>
+              <p className="muted">
+                Made by the local model {summary.modelId} (revision{" "}
+                {summary.revision.slice(0, 12)}). Not reviewed for accuracy:
+                each point links to its evidence.
+              </p>
+              <CitedSentences result={summary} onOpen={relations.openPassage} />
+            </div>
+          )}
         </Panel>
       )}
     </div>

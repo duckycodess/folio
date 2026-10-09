@@ -4,8 +4,10 @@ import {
   useId,
   useMemo,
   useRef,
+  useState,
   type RefObject,
 } from "react";
+import { explainImpact } from "../adapters/ai";
 import { hasUndoableChange } from "../app/planAction";
 import {
   impactGroups,
@@ -24,10 +26,11 @@ import type {
   ApplyReport,
   DocumentId,
   FileOperation,
+  GroundedResult,
   ImpactCandidate,
   UndoPreflight,
 } from "../domain/contracts";
-import type { FolioError } from "../domain/errors";
+import { toFolioError, type FolioError } from "../domain/errors";
 import { diffLines, type DiffLine } from "../domain/textDiff";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
@@ -193,7 +196,15 @@ const IMPACT_HEADINGS: Record<ImpactKind, string> = {
  * Folio Ripple: related passages that may need a look. They are review
  * candidates only; this list never says a file was or will be updated.
  */
-export function ImpactList({ impacts }: { impacts: ImpactCandidate[] }) {
+export function ImpactList({
+  impacts,
+  workspaceId,
+  planId,
+}: {
+  impacts: ImpactCandidate[];
+  workspaceId?: string;
+  planId?: string;
+}) {
   const groups = impactGroups(impacts);
   const headingId = useId();
   return (
@@ -218,7 +229,12 @@ export function ImpactList({ impacts }: { impacts: ImpactCandidate[] }) {
               <h4 className="impact-group-title">{IMPACT_HEADINGS[kind]}</h4>
               <ul className="impact-list">
                 {groups[kind].map((impact) => (
-                  <ImpactItem key={impact.documentId} impact={impact} />
+                  <ImpactItem
+                    key={impact.documentId}
+                    impact={impact}
+                    workspaceId={workspaceId}
+                    planId={planId}
+                  />
                 ))}
               </ul>
             </div>
@@ -234,8 +250,33 @@ export function ImpactList({ impacts }: { impacts: ImpactCandidate[] }) {
   );
 }
 
-function ImpactItem({ impact }: { impact: ImpactCandidate }) {
+function ImpactItem({
+  impact,
+  workspaceId,
+  planId,
+}: {
+  impact: ImpactCandidate;
+  workspaceId?: string;
+  planId?: string;
+}) {
   const provenance = impactProvenance(impact);
+  const [explanation, setExplanation] = useState<GroundedResult | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<FolioError | null>(null);
+  async function explain() {
+    if (!workspaceId || !planId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      setExplanation(
+        await explainImpact(workspaceId, planId, impact.documentId),
+      );
+    } catch (cause) {
+      setError(toFolioError(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
     <li className="impact">
       <div className="impact-head">
@@ -256,6 +297,37 @@ function ImpactItem({ impact }: { impact: ImpactCandidate }) {
             </li>
           ))}
         </ul>
+      )}
+      {workspaceId && planId && (
+        <>
+          <Button
+            variant="ghost"
+            disabled={busy}
+            onClick={() => void explain()}
+          >
+            {busy ? "Explaining…" : "Explain with local AI"}
+          </Button>
+          {error && (
+            <RecoveryNotice
+              error={error}
+              actions={{ retry: () => void explain() }}
+            />
+          )}
+          {explanation && explanation.kind === "insufficientEvidence" && (
+            <Notice tone="info">
+              There is not enough current evidence for an explanation.
+            </Notice>
+          )}
+          {explanation && explanation.kind !== "insufficientEvidence" && (
+            <div className="impact-explanation">
+              <p className="muted">
+                Generated preview, not saved. Made by {explanation.modelId}{" "}
+                (revision {explanation.revision.slice(0, 12)}).
+              </p>
+              <p>{explanation.text}</p>
+            </div>
+          )}
+        </>
       )}
     </li>
   );
@@ -386,6 +458,7 @@ export function PlanReview({
   approveLabel,
   backLabel = "Back",
   inModal = false,
+  workspaceId,
   onPreviewAgain,
   onBack,
   onDone,
@@ -396,6 +469,8 @@ export function PlanReview({
   approveLabel?: string;
   backLabel?: string;
   inModal?: boolean;
+  /** Authorized workspace for the display-only Ripple explanation command. */
+  workspaceId?: string;
 }) {
   const { state } = action;
   const heading = useRef<HTMLHeadingElement>(null);
@@ -460,7 +535,11 @@ export function PlanReview({
           ),
         )}
         {(edits.length > 0 || plan.impacts.length > 0) && (
-          <ImpactList impacts={plan.impacts} />
+          <ImpactList
+            impacts={plan.impacts}
+            workspaceId={workspaceId}
+            planId={plan.id}
+          />
         )}
         {state.error && (
           <RecoveryNotice

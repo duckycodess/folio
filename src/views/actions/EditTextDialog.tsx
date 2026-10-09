@@ -197,6 +197,7 @@ export function EditTextDialog({
         <PlanReview
           action={action}
           inModal
+          workspaceId={workspace.workspace?.id}
           beforeText={{ [base.documentId]: base.content }}
           approveLabel="Approve and save"
           backLabel="Back to editing"
