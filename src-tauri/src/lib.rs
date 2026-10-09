@@ -1882,6 +1882,27 @@ mod tests {
     }
 
     #[test]
+    fn every_managed_state_has_its_own_type() {
+        use std::any::TypeId;
+        // Tauri keeps one managed state per type, and a second `.manage` of the
+        // same type panics before any window opens. Keep this list in step
+        // with `run()` and its `setup`.
+        let managed = [
+            ("IndexState", TypeId::of::<IndexState>()),
+            ("EmbeddingState", TypeId::of::<EmbeddingState>()),
+            ("GenerationState", TypeId::of::<GenerationState>()),
+            ("InstallState", TypeId::of::<InstallState>()),
+            ("LabState", TypeId::of::<lab_commands::LabState>()),
+            ("Folio", TypeId::of::<Folio>()),
+        ];
+        for (index, (name, id)) in managed.iter().enumerate() {
+            for (other, other_id) in &managed[index + 1..] {
+                assert_ne!(id, other_id, "{name} and {other} are the same type");
+            }
+        }
+    }
+
+    #[test]
     fn persistent_embedding_sync_refuses_an_active_model_lab_run() {
         let lab_state = lab_commands::LabState::default();
         assert!(refuse_during_lab(&lab_state).is_ok());
@@ -1930,6 +1951,8 @@ pub fn run() {
         .manage(EmbeddingState::default())
         .manage(GenerationState::default())
         .manage(InstallState::default())
+        // Each managed state must be its own type (see
+        // `every_managed_state_has_its_own_type`).
         .manage(lab_commands::LabState::default())
         .setup(|app| {
             let directory = app.path().app_data_dir()?;
