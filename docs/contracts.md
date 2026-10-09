@@ -3,7 +3,10 @@
 This is the agreed boundary between the UI, the native core and the provider
 adapters. `src/domain/contracts.ts` and `src-tauri/src/contracts.rs` declare the
 same shapes; `fixtures/contracts/contract-cases.json` pins the encodings that
-both languages must produce.
+both languages must produce. That file is produced by
+`fixtures/contracts/generate-contract-cases.py`, a third implementation written
+from this document, so the two languages are checked against the rules rather
+than against each other.
 
 Change this file, both declarations and the fixtures together, and tell the
 other owners before merging. TJ coordinates contract changes.
@@ -14,10 +17,16 @@ Every failure crossing the boundary is `{ code, message, details? }`. Native
 commands return it from `Result::Err`, so the UI receives a code instead of a
 sentence to parse. `code` is one of `FolioErrorCode` / `ErrorCode`; `message` is
 English prose for the user; `details` is a flat map of strings for context such
-as `path`, `planId` or `blockingRelativePath`.
+as `path`, `planId` or `blockingRelativePath`. Both sides carry details as
+strings — `Record<string, string>` and `BTreeMap<String, String>` — so numbers
+and absent values are stringified where they are reported rather than crossing
+the boundary in two different shapes.
 
 Callers branch on `code`, never on `message`. The fixture file carries the
-complete code list in wire order.
+complete code list in wire order. A code this build does not know becomes
+`internal`, keeping the reported one under `details.reportedCode`, so a newer
+native core can never have an unrecognized failure treated as a specific,
+actionable one.
 
 ## Identity
 
@@ -101,10 +110,19 @@ the digest it was shown. A UI-generated plan identity is `planUnknown`; a
 UI-generated digest is `planDigestMismatch`; a plan whose operations changed is
 `approvalStale`.
 
-**Preflight** checks every operation before any file changes: containment,
-supported media type, duplicate targets within the batch, the expected content
-hash of each target, and the absence of every destination. `expectedDestination:
-"absent"` is explicit, so a rename never overwrites an existing file.
+**Preflight** checks every operation before any file changes, in two passes.
+The whole batch is validated structurally first — containment, supported media
+type, and duplicate targets within the batch — so a plan that can never be valid
+is refused the same way whatever the current files happen to be. Only then is it
+compared against the filesystem: the expected content hash of each target, that
+each target is a file, and the absence of every destination.
+`expectedDestination: "absent"` is explicit, so a rename never overwrites an
+existing file.
+
+Duplicate detection compares paths case-insensitively, because Windows and macOS
+folders are usually case-insensitive and two operations naming the same file in
+different cases are one file in practice. A rename whose destination differs
+from its source only in case is refused for the same reason.
 
 **Durable outcomes.** A batch records one `OperationOutcome` per operation:
 
@@ -121,7 +139,8 @@ stopped the batch. No universal filesystem atomicity is promised.
 
 **Cancellation** lets the running operation finish and records its outcome, then
 stops before the next one. Completed changes are retained and offered to Undo;
-nothing is rolled back automatically.
+nothing is rolled back automatically. A cancellation reported with no attempts
+is refused on both sides: nothing began, so there is no outcome to record.
 
 **Undo** is whole-batch. Every applied entry is checked against the current file
 state first. If anything conflicts — `externallyModified`, `missing`,
