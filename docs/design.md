@@ -2,7 +2,7 @@
 
 Folio's visual direction is **Golden Daylight**: warm ivory surfaces, a charcoal sidebar, gold reserved for primary actions and brand moments, Inter for all UI text, and **Olio** — a folder-shaped owl — as the mascot. This document turns the brandbook into rules for the replacement UI (#6, #16 and the tickets that build on it).
 
-![Golden Daylight brandbook](assets/brandbook-golden-daylight.png)
+![Golden Daylight brandbook](assets/brandbook-golden-daylight.jpg)
 
 The brandbook is a direction, not a spec of shipped features. Its screens contain illustrative files and features; [Product truth](#product-truth-in-the-mockups) lists where the MVP must differ. Product rules in `AGENTS.md` and `docs/product.md` win over this document.
 
@@ -28,30 +28,30 @@ The brandbook is a direction, not a spec of shipped features. Its screens contai
 
 ### Semantic tokens (light theme)
 
-| Token                    | Value     | Use                                                   |
-| ------------------------ | --------- | ----------------------------------------------------- |
-| `--color-bg`             | `#FFFCF3` | Window canvas                                         |
-| `--color-surface`        | `#FFFFFF` | Cards, tables, panels, inputs                         |
-| `--color-surface-muted`  | `#FAF7EE` | Table header, hovered rows, secondary panels          |
-| `--color-selected`       | `#FFF6D6` | Selected row and selected card background             |
-| `--color-border`         | `#ECE8DC` | Dividers, card and input borders (decorative)         |
-| `--color-border-strong`  | `#8A8C86` | Borders that identify a control, such as checkboxes   |
-| `--color-text`           | `#20231F` | Primary text                                          |
-| `--color-text-secondary` | `#5C5F59` | Metadata: sizes, dates, paths                         |
-| `--color-text-tertiary`  | `#6B6E68` | Placeholders, captions, helper text                   |
-| `--color-text-on-gold`   | `#20231F` | Text and icons on gold, sunflower or honey            |
-| `--color-link`           | `#8A6500` | Text links and gold-tinted text on light surfaces     |
-| `--color-success`        | `#2E7D32` | Success text and icons                                |
-| `--color-success-dot`    | `#57B947` | "Ready" status dot (always paired with a text label)  |
-| `--color-danger`         | `#B42318` | Errors, destructive actions                           |
-| `--color-danger-bg`      | `#FEF3F2` | Error notice background                               |
-| `--color-warning-bg`     | `#FFF6D6` | Warning notice background (text stays `--color-text`) |
-| `--color-focus`          | `#20231F` | Focus ring on light surfaces                          |
-| `--sidebar-bg`           | `#20231F` | Sidebar                                               |
-| `--sidebar-item-active`  | `#2E312C` | Active nav item background                            |
-| `--sidebar-text`         | `#FFFCF3` | Sidebar labels                                        |
-| `--sidebar-text-muted`   | `#B8BAB4` | Sidebar secondary text                                |
-| `--sidebar-focus`        | `#F5BF18` | Focus ring inside the sidebar                         |
+| Token                    | Value     | Use                                                  |
+| ------------------------ | --------- | ---------------------------------------------------- |
+| `--color-bg`             | `#FFFCF3` | Window canvas                                        |
+| `--color-surface`        | `#FFFFFF` | Cards, tables, panels, inputs                        |
+| `--color-surface-muted`  | `#FAF7EE` | Table header, hovered rows, secondary panels         |
+| `--color-selected`       | `#FFF6D6` | Selected row and selected card background            |
+| `--color-border`         | `#ECE8DC` | Dividers, card and input borders (decorative)        |
+| `--color-border-strong`  | `#8A8C86` | Borders that identify a control, such as checkboxes  |
+| `--color-text`           | `#20231F` | Primary text                                         |
+| `--color-text-secondary` | `#5C5F59` | Metadata: sizes, dates, paths                        |
+| `--color-text-tertiary`  | `#6B6E68` | Placeholders, captions, helper text                  |
+| `--color-text-on-gold`   | `#20231F` | Text and icons on gold, sunflower or honey           |
+| `--color-link`           | `#8A6500` | Text links and gold-tinted text on light surfaces    |
+| `--color-success`        | `#2E7D32` | Success text and icons                               |
+| `--color-success-dot`    | `#57B947` | "Ready" status dot (always paired with a text label) |
+| `--color-danger`         | `#B42318` | Errors, destructive actions                          |
+| `--color-danger-bg`      | `#FEF3F2` | Error notice background                              |
+| `--color-warning-bg`     | `#FFF6D6` | Warning notice background, with `--color-text`       |
+| `--color-focus`          | `#20231F` | Focus ring on light surfaces                         |
+| `--sidebar-bg`           | `#20231F` | Sidebar                                              |
+| `--sidebar-item-active`  | `#2E312C` | Active nav item background                           |
+| `--sidebar-text`         | `#FFFCF3` | Sidebar labels                                       |
+| `--sidebar-text-muted`   | `#B8BAB4` | Sidebar secondary text                               |
+| `--sidebar-focus`        | `#F5BF18` | Focus ring inside the sidebar                        |
 
 ### Contrast rules
 
@@ -74,29 +74,57 @@ Never put white text on gold. Never rely on color alone: status dots, collection
 
 ### Dark theme (derived, not in the brandbook)
 
-The brandbook only shows a light theme. #16 requires dark mode, so these values are a proposal to review visually before shipping:
+The brandbook only shows a light theme. #16 requires dark mode, so these values are a proposal to review visually before shipping. Every light-theme token has an entry; "unchanged" means the light value is reused on purpose.
 
-| Token                    | Value     |
-| ------------------------ | --------- |
-| `--color-bg`             | `#161815` |
-| `--color-surface`        | `#20231F` |
-| `--color-surface-muted`  | `#2A2D28` |
-| `--color-selected`       | `#3A3220` |
-| `--color-border`         | `#3A3D37` |
-| `--color-text`           | `#FFFCF3` |
-| `--color-text-secondary` | `#B8BAB4` |
-| `--color-text-tertiary`  | `#A3A59F` |
-| `--color-link`           | `#F5BF18` |
-| `--color-focus`          | `#F5BF18` |
-| `--sidebar-bg`           | `#111310` |
+| Token                    | Dark value | Note                                       |
+| ------------------------ | ---------- | ------------------------------------------ |
+| `--color-bg`             | `#161815`  |                                            |
+| `--color-surface`        | `#20231F`  |                                            |
+| `--color-surface-muted`  | `#2A2D28`  |                                            |
+| `--color-selected`       | `#3A3220`  |                                            |
+| `--color-border`         | `#3A3D37`  |                                            |
+| `--color-border-strong`  | `#8A8C86`  | Unchanged                                  |
+| `--color-text`           | `#FFFCF3`  |                                            |
+| `--color-text-secondary` | `#B8BAB4`  |                                            |
+| `--color-text-tertiary`  | `#A3A59F`  |                                            |
+| `--color-text-on-gold`   | `#20231F`  | Unchanged: gold buttons keep charcoal text |
+| `--color-link`           | `#F5BF18`  |                                            |
+| `--color-success`        | `#6CC66F`  |                                            |
+| `--color-success-dot`    | `#57B947`  | Unchanged                                  |
+| `--color-danger`         | `#F97066`  |                                            |
+| `--color-danger-bg`      | `#3D1F1C`  |                                            |
+| `--color-warning-bg`     | `#3A3220`  | Same as dark `--color-selected`            |
+| `--color-focus`          | `#F5BF18`  |                                            |
+| `--sidebar-bg`           | `#111310`  |                                            |
+| `--sidebar-item-active`  | `#2A2D28`  |                                            |
+| `--sidebar-text`         | `#FFFCF3`  | Unchanged                                  |
+| `--sidebar-text-muted`   | `#B8BAB4`  | Unchanged                                  |
+| `--sidebar-focus`        | `#F5BF18`  | Unchanged                                  |
 
-Gold buttons keep charcoal text in both themes. Define dark values under `@media (prefers-color-scheme: dark)` and a `data-theme="dark"` override, and re-check every pair in the contrast table.
+Dark-theme contrast, measured with the same formula:
+
+| Pair (dark)                                       | Ratio          | Allowed for                    |
+| ------------------------------------------------- | -------------- | ------------------------------ |
+| `#FFFCF3` on bg / surface / muted                 | ≥13.61:1       | All text                       |
+| `#FFFCF3` on selected and warning-bg `#3A3220`    | 12.35:1        | Selected rows, warning notices |
+| `#FFFCF3` on danger-bg `#3D1F1C`                  | 14.51:1        | Error notice body text         |
+| `#B8BAB4` on surface / muted / selected           | ≥6.47:1        | Secondary text                 |
+| `#A3A59F` on surface / muted / selected           | ≥5.09:1        | Tertiary text and placeholders |
+| Gold on surface / muted / selected                | ≥7.45:1        | Links, focus ring              |
+| `#F97066` on surface / muted / danger-bg          | ≥5.01:1        | Error text                     |
+| `#6CC66F` on surface / muted                      | ≥6.61:1        | Success text                   |
+| `#8A8C86` on surface / muted                      | ≥4.11:1        | Control borders                |
+| Charcoal on gold                                  | 9.34:1         | Button labels and icons        |
+| `#FFFCF3` / `#B8BAB4` on sidebar-active `#2A2D28` | 13.61 / 7.13:1 | Active nav item                |
+| Gold on sidebar `#111310` / active `#2A2D28`      | 10.98 / 8.21:1 | Sidebar indicator and focus    |
+
+Define dark values under `@media (prefers-color-scheme: dark)` and a `data-theme="dark"` override. Any new token or pair must be added to both contrast tables.
 
 ## Typography
 
 **Inter** for all UI text, bundled with the app (for example via `@fontsource/inter` or font files in `src/assets/fonts/`). Never load fonts from Google Fonts or another CDN — the app must work offline.
 
-The **folio wordmark** is a custom heavy rounded logotype, not Inter. Use it only as an SVG asset; do not try to recreate it with CSS.
+The **folio wordmark** is a custom heavy rounded logotype, not Inter. Use it only as an SVG asset (`src/assets/brand/folio-wordmark.svg`, still to be exported — see [Assets](#assets)); do not try to recreate it with CSS.
 
 | Token             | Size / line height                   | Weight  | Use                                                  |
 | ----------------- | ------------------------------------ | ------- | ---------------------------------------------------- |
@@ -130,6 +158,7 @@ Desktop window, three regions as in the brandbook:
 - At **1024×768**, the detail panel stays visible and the sidebar collapses to icons with tooltips. The file list and selected document must both be on the first screen (#17).
 - At the **700px minimum** and **200% zoom**, the detail panel becomes a full-width view with a Back control; the sidebar becomes an icon rail or a menu button. The workspace/folder action stays reachable.
 - The page header (mascot + "Your workspace") is compact: at most ~96px tall on Home and absent on other pages.
+- Below **768px height**, down to the **600px minimum** in `tauri.conf.json`, the Home page header is hidden and the collection cards collapse to one horizontally scrolling row. The search field and file table tabs stay, and the file table keeps at least five rows visible.
 
 The phone frame in the brandbook is a future direction. Phone packaging is outside the MVP.
 
@@ -148,7 +177,7 @@ The brandbook sidebar shows Home · Files · Collections · Graph · Assistant. 
 
 Summarize lives where documents are: the **Summarize** row action and the detail panel's Summary tab. Global search is always in the main header.
 
-> Open decision: the brandbook labels this item "Collections". This document uses **Organize** so the SOS area stays identifiable. Confirm before #16 ships.
+The brandbook labels this item "Collections". Folio uses **Organize** so the nav names the SOS capabilities (`docs/product.md`); "Collections" is the section heading inside the Organize page.
 
 Active item: `--sidebar-item-active` background, 3px gold bar on the left edge, `aria-current="page"`.
 
@@ -201,11 +230,14 @@ Olio is a yellow folder-owl with ivory face mask, black eyes and wings, and oran
 
 ### Assets
 
-The source sheets are in `olio-asset-pack.zip` (repo root, untracked): `olio-main-design.png`, `olio-angles-and-actions.png` and `olio-more-actions.png`. Before use:
+The source sheets are in `olio-asset-pack.zip`: `olio-main-design.png`, `olio-angles-and-actions.png` and `olio-more-actions.png`. The pack is kept outside Git and is ignored by `.gitignore` until the team decides whether source sheets belong in the repository; get it from the design owner and do not commit it.
 
-1. The sheets have noisy alpha backgrounds (red and yellow speckle). Clean them and slice each pose into its own transparent PNG or SVG.
-2. Export at 1× and 2× for 48, 96 and 160px. Keep each file small; target well under 100 KB per pose.
-3. Store them under `src/assets/olio/` with pose names (`olio-waving.png` and so on). Decide whether the source sheets belong in Git before committing them.
+Assets to produce before #16 uses them:
+
+1. **Olio poses.** The sheets have noisy alpha backgrounds (red and yellow speckle). Clean them and slice each pose into its own transparent PNG or SVG.
+2. Export poses at 1× and 2× for 48, 96 and 160px. Keep each file small; target well under 100 KB per pose.
+3. Store them under `src/assets/olio/` with pose names (`olio-waving.png` and so on).
+4. **Wordmark.** Export the folio wordmark from the brandbook as `src/assets/brand/folio-wordmark.svg`, in a charcoal version for light surfaces and an ivory version for the sidebar.
 
 ### Poses and where they appear
 
@@ -255,7 +287,7 @@ The brandbook shows illustrative content. The MVP must stay within product scope
 
 ## Accessibility checklist
 
-- Text contrast at least 4.5:1; control boundaries, icons and focus indicators at least 3:1.
+- Text contrast at least 4.5:1; control boundaries, icons and focus indicators at least 3:1. Status dots (`--color-success-dot` is 2.49:1 on white) are exempt only because they always have a text label; never drop the label or change the dot away from the brand green to tidy it up.
 - Visible 2px focus ring with 2px offset on every interactive element (charcoal on light, gold on the sidebar).
 - Keyboard: Tab order follows layout; arrow keys move through table rows and tabs; Escape closes panels and modals; focus returns to the trigger.
 - Programmatic state: `aria-current` for nav, `aria-selected` for rows and tabs, `aria-sort` for sorted columns.
