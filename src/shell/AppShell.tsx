@@ -102,10 +102,11 @@ export function AppShell() {
     kind: FileActionKind;
     document: DocumentRecord;
   } | null>(null);
-  // "Show related" opens the document on its Related tab.
+  // "Show related" opens the document on its Related tab, and Ask & Act
+  // can open one on its Summary tab.
   const [panelTab, setPanelTab] = useState<{
     documentId: string;
-    tab: "Related";
+    tab: "Related" | "Summary";
     /** Reopens the panel on that tab even if the file is already open. */
     request: number;
   } | null>(null);
@@ -398,7 +399,21 @@ export function AppShell() {
                 <GraphView workspace={workspace} relations={relations} />
               )}
               {view === "assistant" && (
-                <AssistantView drafts={drafts} onNavigate={setView} />
+                <AssistantView
+                  workspace={workspace}
+                  relations={relations}
+                  drafts={drafts}
+                  onNavigate={setView}
+                  onOpenFile={(document, tab) => {
+                    if (tab)
+                      setPanelTab((current) => ({
+                        documentId: document.id,
+                        tab,
+                        request: (current?.request ?? 0) + 1,
+                      }));
+                    void workspace.selectDocument(document);
+                  }}
+                />
               )}
               {view === "modelLab" && <ModelLabView />}
             </AnnouncerProvider>
