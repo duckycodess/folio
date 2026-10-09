@@ -38,6 +38,10 @@ pub struct GenerationBudget {
     pub max_output_tokens: usize,
     pub temperature: f32,
     pub seed: i64,
+    /// `None` sends nothing, so the runtime keeps its own default. Model Lab
+    /// sets `Some(false)` so an identical repeat is not served from reused
+    /// prompt state; product requests leave it `None`.
+    pub cache_prompt: Option<bool>,
 }
 
 impl Default for GenerationBudget {
@@ -46,6 +50,7 @@ impl Default for GenerationBudget {
             max_output_tokens: MAX_OUTPUT_TOKENS,
             temperature: 0.0,
             seed: 7,
+            cache_prompt: None,
         }
     }
 }
@@ -288,6 +293,19 @@ impl LlamaServerProvider {
             .map(|status| status.to_string())
     }
 
+    /// The running server's process id, or `None` when none is running.
+    pub fn server_pid(&self) -> Option<u32> {
+        let state = self.state.lock().ok()?;
+        state.running.as_ref().map(|running| running.child.id())
+    }
+
+    /// Starts the server if none is running and returns once it answers
+    /// `/health`, without sending a request. Lets a caller time startup apart
+    /// from the first request.
+    pub fn ensure_started(&self, cancel: &AtomicBool) -> CoreResult<()> {
+        self.endpoint(cancel).map(|_| ())
+    }
+
     pub fn cancel_active(&self) -> CoreResult<()> {
         let mut state = self
             .state
@@ -329,19 +347,7 @@ impl GenerationProvider for LlamaServerProvider {
         }
         let _active = ActiveGuard(&self.active);
         let (base_url, api_key) = self.endpoint(cancel)?;
-        let payload = json!({
-            "model": self.model.descriptor.id,
-            "messages": messages,
-            "stream": true,
-            "temperature": budget.temperature,
-            "seed": budget.seed,
-            "max_tokens": budget.max_output_tokens.min(MAX_OUTPUT_TOKENS),
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": { "name": "folio_output", "strict": true, "schema": schema }
-            },
-            "chat_template_kwargs": { "enable_thinking": false }
-        });
+        let payload = chat_payload(&self.model.descriptor.id, schema, messages, budget);
         let started = Instant::now();
         let mut response = self
             .client
@@ -448,6 +454,32 @@ impl Drop for LlamaServerProvider {
         }
         let _ = self.unload();
     }
+}
+
+/// The chat request body. `cache_prompt` is included only when the budget sets it.
+fn chat_payload(
+    model_id: &str,
+    schema: &Value,
+    messages: &[ChatMessage],
+    budget: &GenerationBudget,
+) -> Value {
+    let mut payload = json!({
+        "model": model_id,
+        "messages": messages,
+        "stream": true,
+        "temperature": budget.temperature,
+        "seed": budget.seed,
+        "max_tokens": budget.max_output_tokens.min(MAX_OUTPUT_TOKENS),
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": { "name": "folio_output", "strict": true, "schema": schema }
+        },
+        "chat_template_kwargs": { "enable_thinking": false }
+    });
+    if let Some(cache_prompt) = budget.cache_prompt {
+        payload["cache_prompt"] = json!(cache_prompt);
+    }
+    payload
 }
 
 fn spawn_idle_reaper(
@@ -642,6 +674,7 @@ fn provider(code: ProviderErrorCode, message: impl Into<String>) -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::contracts::{ModelDescriptor, ModelRole};
 
     #[test]
     fn over_context_responses_and_long_requests_are_context_limits() {
@@ -663,6 +696,58 @@ mod tests {
         }
         assert!(check_request_length(&"a".repeat(MAX_REQUEST_CHARS)).is_ok());
         assert!(check_request_length(&"ñ".repeat(MAX_REQUEST_CHARS + 1)).is_err());
+    }
+
+    #[test]
+    fn prompt_caching_is_untouched_unless_a_budget_sets_it() {
+        let schema = json!({"type": "object"});
+        let messages = [ChatMessage {
+            role: "user".into(),
+            content: "hi".into(),
+        }];
+        let default = chat_payload("m", &schema, &messages, &GenerationBudget::default());
+        assert!(default.get("cache_prompt").is_none());
+
+        let lab = GenerationBudget {
+            cache_prompt: Some(false),
+            ..GenerationBudget::default()
+        };
+        let payload = chat_payload("m", &schema, &messages, &lab);
+        assert_eq!(payload["cache_prompt"], json!(false));
+        // Everything else about the request is the same.
+        let mut without = payload.clone();
+        without.as_object_mut().unwrap().remove("cache_prompt");
+        assert_eq!(without, default);
+    }
+
+    #[test]
+    fn a_provider_that_has_not_started_has_no_server_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("llama-server");
+        let model_path = dir.path().join("model.gguf");
+        fs::write(&executable, b"not a real server").unwrap();
+        fs::write(&model_path, b"not a real model").unwrap();
+        let descriptor = ModelDescriptor {
+            id: "test-model".into(),
+            role: ModelRole::Generation,
+            repo: "test/test".into(),
+            revision: "test".into(),
+            files: vec![],
+            quantization: "test".into(),
+            license: "test".into(),
+            runtime: "test".into(),
+            optional_pack: false,
+        };
+        let provider = LlamaServerProvider::from_verified_model(
+            &executable,
+            VerifiedModelFile {
+                descriptor,
+                path: model_path,
+            },
+            1,
+        )
+        .unwrap();
+        assert_eq!(provider.server_pid(), None);
     }
 
     #[test]
