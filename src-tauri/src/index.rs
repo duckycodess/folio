@@ -721,11 +721,19 @@ pub fn refresh_paths(conn: &mut Connection, root: &ScopedRoot, relative_paths: &
 }
 
 /// Reads the documents the user asked Folio to check again, whatever their retry backoff,
-/// and returns them as now indexed. A document whose file is gone is removed and left out.
-/// Every id must belong to this folder's index. Files are read in batches, like a scan.
+/// and returns them as now indexed. A document whose file is gone is removed and left out,
+/// as is one already gone from the index (a concurrent scan removed it). Every id must
+/// belong to this folder. Files are read in batches, like a scan.
 pub fn recheck_documents(conn: &mut Connection, root: &ScopedRoot, document_ids: &[String], now: u64) -> NativeResult<Vec<IndexedDocument>> {
     let mut paths = Vec::with_capacity(document_ids.len());
-    for id in document_ids { paths.push(get_document(conn, &root.id, id)?.relative_path); }
+    let prefix = document_id(&root.id, "");
+    for id in document_ids {
+        match get_document(conn, &root.id, id) {
+            Ok(document) => paths.push(document.relative_path),
+            Err(missing) if missing.code == ErrorCode::DocumentUnavailable && id.starts_with(&prefix) => continue,
+            Err(missing) => return Err(missing),
+        }
+    }
     paths.sort();
     paths.dedup();
     let options = ScanOptions { recheck_ids: document_ids.iter().cloned().collect(), now_ms: now, ..Default::default() };
@@ -1314,11 +1322,11 @@ pub fn put_embeddings(conn: &mut Connection, workspace_id: &str, fingerprint: &s
     Ok(items.len())
 }
 
-/// Chunks of indexed documents that have no vector in this space yet, for the embedding provider to process. A stale document keeps its old chunks for Local Sync, but they are never embedded.
+/// Chunks of indexed and stale documents that have no vector in this space yet, for the embedding provider to process. A stale document keeps its last good chunks, and AI discovery compares it, so it needs vectors in every space; its text still never reaches a prompt (the read paths below take `indexed` only).
 pub fn pending_embedding_chunks(conn: &Connection, workspace_id: &str, fingerprint: &str, limit: usize) -> NativeResult<Vec<PendingChunk>> {
     space_dimensions(conn, fingerprint)?;
     let mut statement = conn.prepare(
-        "SELECT c.chunk_id, c.document_id, COALESCE(d.title, d.name), d.relative_path, c.chunk_text, c.content_hash FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.workspace_id = ?1 AND d.status = 'indexed' AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.chunk_id = c.chunk_id AND e.space_id = ?2) ORDER BY c.chunk_id LIMIT ?3",
+        "SELECT c.chunk_id, c.document_id, COALESCE(d.title, d.name), d.relative_path, c.chunk_text, c.content_hash FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.workspace_id = ?1 AND d.status IN ('indexed','stale') AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.chunk_id = c.chunk_id AND e.space_id = ?2) ORDER BY c.chunk_id LIMIT ?3",
     )?;
     let rows = statement.query_map(params![workspace_id, fingerprint, limit.clamp(1, 512) as i64], |row| Ok(PendingChunk { chunk_id: row.get(0)?, document_id: row.get(1)?, title: row.get(2)?, relative_path: row.get(3)?, text: row.get(4)?, content_hash: row.get(5)? }))?;
     Ok(rows.collect::<Result<_, _>>()?)
@@ -1472,11 +1480,11 @@ pub fn document_chunks(conn: &Connection, workspace_id: &str, document_id: &str)
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
-/// `(chunks with a vector in this space, all chunks)` over indexed documents: how much of the
-/// index a semantic search can see.
+/// `(chunks with a vector in this space, all chunks)` over the chunks `pending_embedding_chunks`
+/// embeds (indexed and stale documents): whether the embedding fill is complete.
 pub fn embedding_coverage(conn: &Connection, workspace_id: &str, fingerprint: &str) -> NativeResult<(usize, usize)> {
     let (embedded, total): (i64, i64) = conn.query_row(
-        "SELECT count(e.chunk_id), count(*) FROM chunks c JOIN documents d ON d.id = c.document_id LEFT JOIN embeddings e ON e.chunk_id = c.chunk_id AND e.space_id = ?2 WHERE d.workspace_id = ?1 AND d.status = 'indexed'",
+        "SELECT count(e.chunk_id), count(*) FROM chunks c JOIN documents d ON d.id = c.document_id LEFT JOIN embeddings e ON e.chunk_id = c.chunk_id AND e.space_id = ?2 WHERE d.workspace_id = ?1 AND d.status IN ('indexed','stale')",
         params![workspace_id, fingerprint],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
@@ -1876,7 +1884,7 @@ pub mod tests {
     }
 
     #[test]
-    fn pending_embeddings_skip_stale_documents_but_keep_their_chunks() {
+    fn pending_embeddings_include_stale_documents_and_keep_their_chunks() {
         let (folder, mut conn, root) = fixture_workspace();
         scan(&mut conn, &root);
         let provider = EmbeddingSpace { model_id: "test".into(), revision: "r1".into(), quantization: "test".into(), dimensions: 2, preprocessing_fingerprint: "p".into() };
@@ -1891,7 +1899,7 @@ pub mod tests {
         scan(&mut conn, &root);
         assert_eq!(status_of(&conn, &root, "notes/paalala.md").0, "stale");
         let pending = pending_embedding_chunks(&conn, &root.id, &fingerprint, 512).unwrap();
-        assert!(pending.iter().all(|chunk| chunk.document_id != id), "a stale document's chunks are never embedded");
+        assert!(pending.iter().any(|chunk| chunk.document_id == id), "a stale document's last good chunks are still embedded (discovery compares it)");
         assert!(chunk_count(&conn, &id) > 0, "its chunks stay for Local Sync");
     }
 
@@ -2389,9 +2397,8 @@ pub mod tests {
         fs::write(other_folder.path().join("a.md"), "another folder").unwrap();
         let other = authorize(&conn, other_folder.path());
         scan(&mut conn, &other);
-        for refused in [format!("{}:missing.md", root.id), id_of(&other, "a.md")] {
-            assert_eq!(recheck_documents(&mut conn, &root, &[refused], T0).unwrap_err().code, ErrorCode::DocumentUnavailable);
-        }
+        assert_eq!(recheck_documents(&mut conn, &root, &[id_of(&other, "a.md")], T0).unwrap_err().code, ErrorCode::DocumentUnavailable);
+        assert!(recheck_documents(&mut conn, &root, &[format!("{}:missing.md", root.id)], T0).unwrap().is_empty(), "an id this folder no longer indexes is left out");
     }
 
     #[test]
@@ -2432,6 +2439,22 @@ pub mod tests {
         assert_eq!(paths(&search(&conn, &root.id, "keep", 5).unwrap()), vec!["sub/a.md"]);
         let readable = recheck_documents(&mut conn, &root, &[id], T0).unwrap();
         assert_eq!(readable[0].status, "indexed");
+    }
+
+    // PR #108 review: a document a concurrent scan removed must not stop the others.
+    #[test]
+    fn check_again_skips_a_document_already_removed_and_reads_the_rest() {
+        let (folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let gone = id_of(&root, "personal/grocery-list.md");
+        let kept = id_of(&root, "notes/paalala.md");
+        fs::remove_file(folder.path().join("personal/grocery-list.md")).unwrap();
+        scan(&mut conn, &root);
+        assert_eq!(get_document(&conn, &root.id, &gone).unwrap_err().code, ErrorCode::DocumentUnavailable);
+        fs::write(folder.path().join("notes/paalala.md"), "Rechecked marigold text.").unwrap();
+        let checked = recheck_documents(&mut conn, &root, &[gone, kept.clone()], T0).unwrap();
+        assert_eq!(checked.iter().map(|document| document.id.as_str()).collect::<Vec<_>>(), vec![kept.as_str()]);
+        assert_eq!(paths(&search(&conn, &root.id, "marigold", 5).unwrap()), vec!["notes/paalala.md"]);
     }
 
     #[test]
@@ -2569,6 +2592,36 @@ pub mod tests {
         assert!(paalala_chunks.is_empty());
         let removed: i64 = conn.query_row("SELECT count(*) FROM embeddings e LEFT JOIN chunks c ON c.chunk_id = e.chunk_id WHERE c.chunk_id IS NULL", [], |row| row.get(0)).unwrap();
         assert_eq!(removed, 0, "a deleted document leaves no orphan vectors");
+    }
+
+    // PR #108 review: a document stale when the stored space changes must still get vectors
+    // there, or discovery (which compares stale documents) never sees full coverage.
+    #[test]
+    fn a_stale_document_is_embedded_but_its_text_never_reaches_a_prompt() {
+        let (folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let plan = id_of(&root, "projects/project-plan.md");
+        let plan_chunks: Vec<i64> = conn.prepare("SELECT chunk_id FROM chunks WHERE document_id = ?1").unwrap().query_map([&plan], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+        assert!(!plan_chunks.is_empty());
+        fs::write(folder.path().join("projects/project-plan.md"), [0xff, 0xfe, 0xfd, 0x00]).unwrap();
+        scan(&mut conn, &root);
+        assert_eq!(status_of(&conn, &root, "projects/project-plan.md").0, "stale");
+
+        let fingerprint = stored_space(&conn, 2);
+        let pending: Vec<i64> = pending_embedding_chunks(&conn, &root.id, &fingerprint, 512).unwrap().iter().map(|chunk| chunk.chunk_id).collect();
+        assert!(plan_chunks.iter().all(|chunk| pending.contains(chunk)), "a stale document's chunks are embedded");
+        assert!(embedding_coverage(&conn, &root.id, &fingerprint).unwrap().1 >= pending.len());
+        fill(&mut conn, &root, &fingerprint, |_| vec![1.0, 0.0]);
+        assert!(pending_embedding_chunks(&conn, &root.id, &fingerprint, 512).unwrap().is_empty());
+        let (embedded, total) = embedding_coverage(&conn, &root.id, &fingerprint).unwrap();
+        assert_eq!(embedded, total, "coverage counts the chunks that are embedded");
+
+        assert!(vector_scores(&conn, &root.id, &fingerprint, &[1.0, 0.0], None).unwrap().iter().all(|score| !plan_chunks.contains(&score.chunk_id)));
+        assert!(vector_scores(&conn, &root.id, &fingerprint, &[1.0, 0.0], Some(&plan)).unwrap().is_empty());
+        assert!(stored_chunks(&conn, &root.id, &plan_chunks).unwrap().is_empty());
+        assert!(leading_chunks(&conn, &root.id, &plan, 5).unwrap().is_empty());
+        let terms = vec!["project".to_owned(), "plan".to_owned()];
+        assert!(keyword_hits(&conn, &root.id, &terms, None, 50).unwrap().iter().all(|hit| hit.passage.document_id != plan));
     }
 
     #[test]
