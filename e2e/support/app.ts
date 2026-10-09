@@ -66,8 +66,8 @@ export { expect };
 /** Adds the workspace folder through the UI, exactly as a person would. */
 export async function addFolder(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Add folder" }).first().click();
-  await expect(page.locator(".workspace-source-title")).toHaveText(
-    "Your folder",
+  await expect(page.locator(".topbar-badge")).toContainText(
+    "Community Learning Project",
   );
 }
 

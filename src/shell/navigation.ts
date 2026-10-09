@@ -1,5 +1,11 @@
 export type ViewId =
-  "home" | "organize" | "graph" | "assistant" | "activity" | "modelLab";
+  | "home"
+  | "organize"
+  | "graph"
+  | "assistant"
+  | "activity"
+  | "modelLab"
+  | "settings";
 
 export interface NavItem {
   id: ViewId;
@@ -7,19 +13,22 @@ export interface NavItem {
 }
 
 /**
- * Search, Organize and Summarize stay reachable without the assistant:
- * search lives in every header, Summarize in the document panel.
+ * The brandkit mockup's navigation (docs/assets/Folio-Brandkit), with
+ * Organize in the mockup's second slot: Search, Organize and Summarize stay
+ * reachable without the assistant. Search lives on Home, Summarize in the
+ * document panel.
  */
 export const PRIMARY_NAV: NavItem[] = [
   { id: "home", label: "Home" },
   { id: "organize", label: "Organize" },
   { id: "graph", label: "Graph" },
-  { id: "assistant", label: "Ask & Act" },
+  { id: "assistant", label: "Ask & Search" },
   { id: "activity", label: "Activity" },
 ];
 
+/** At the foot of the sidebar; Model Lab is reached from Settings & style. */
 export const SECONDARY_NAV: NavItem[] = [
-  { id: "modelLab", label: "Model Lab" },
+  { id: "settings", label: "Settings & style" },
 ];
 
 export function isApplePlatform(platform: string): boolean {

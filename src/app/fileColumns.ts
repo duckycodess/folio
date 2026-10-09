@@ -1,30 +1,23 @@
 /**
  * Which of the file table's columns fit at a given width, and in what order
- * they give way. Size drops first, then Modified, then Type, then Location
- * (#67): the file name is never the column that gets crushed, because it's
- * the one column these never touch.
+ * they give way. The brandkit mockup's table has Name, Folder and Modified;
+ * Modified drops first, then Folder, which moves under the name (#67): the
+ * file name is never the column that gets crushed.
  */
 
-export type FileColumn = "location" | "type" | "modified" | "size";
+export type FileColumn = "location" | "modified";
 
 /** Drop order: the first entry is the first column to go. */
-export const COLUMN_DROP_ORDER: FileColumn[] = [
-  "size",
-  "modified",
-  "type",
-  "location",
-];
+export const COLUMN_DROP_ORDER: FileColumn[] = ["modified", "location"];
 
 /** Roughly what each column needs to show its longest usual value. */
 export const COLUMN_WIDTH: Record<FileColumn, number> = {
-  location: 160,
-  type: 96,
-  modified: 112,
-  size: 80,
+  location: 140,
+  modified: 110,
 };
 
-/** Gap between columns, matching `--space-4` in tokens.css. */
-export const COLUMN_GAP = 16;
+/** Gap between columns: the mockup's 10px cell padding on each side. */
+export const COLUMN_GAP = 20;
 
 /** The name column's own minimum, below which it would start truncating hard. */
 export const NAME_MIN_WIDTH = 160;
@@ -52,7 +45,7 @@ function widthFor(columns: FileColumn[], nameWidth: number): number {
   );
 }
 
-const ALL_COLUMNS: FileColumn[] = ["location", "type", "modified", "size"];
+const ALL_COLUMNS: FileColumn[] = ["location", "modified"];
 
 /**
  * The columns that fit a row of `rowWidth` (the grid's own width, after the
@@ -71,12 +64,7 @@ export function visibleColumns(
   return shown;
 }
 
-const COLUMN_HEAD_ORDER: FileColumn[] = [
-  "location",
-  "type",
-  "modified",
-  "size",
-];
+const COLUMN_HEAD_ORDER: FileColumn[] = ["location", "modified"];
 
 /** The grid template for the table head and each row, name column first. */
 export function fileColumnsTemplate(shown: FileColumn[]): string {

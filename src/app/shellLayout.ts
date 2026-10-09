@@ -7,16 +7,19 @@
  */
 
 /** docs/design.md's "Layout" table. */
-export const SIDEBAR_FULL_WIDTH = 240;
+export const SIDEBAR_FULL_WIDTH = 222;
 export const SIDEBAR_RAIL_WIDTH = 64;
 export const MAIN_MIN_WIDTH = 480;
 
 /** The list keeps at least this much room beside the reader. */
 export const LIST_MIN_WIDTH = 420;
 /** The reader itself never gets narrower or (relatively) wider than this. */
-export const READER_MIN_WIDTH = 320;
+export const READER_MIN_WIDTH = 280;
 export const READER_MAX_RATIO = 0.6;
-export const READER_DEFAULT_WIDTH = 380;
+/** The brandkit mockup's 300px inspector. */
+export const READER_DEFAULT_WIDTH = 300;
+/** The page gutter to the right of the reader's card in split view. */
+export const READER_GUTTER = 36;
 
 export type SidebarMode = "full" | "rail";
 export type ReaderMode = "none" | "split" | "overlay";
@@ -38,7 +41,8 @@ export interface ShellLayout {
  */
 export function readerMaxWidth(windowWidth: number): number {
   const byRatio = Math.floor(windowWidth * READER_MAX_RATIO);
-  const beside = windowWidth - SIDEBAR_RAIL_WIDTH - LIST_MIN_WIDTH;
+  const beside =
+    windowWidth - SIDEBAR_RAIL_WIDTH - LIST_MIN_WIDTH - READER_GUTTER;
   const max = beside >= READER_MIN_WIDTH ? Math.min(byRatio, beside) : byRatio;
   return Math.max(READER_MIN_WIDTH, max);
 }
@@ -86,7 +90,9 @@ export function computeShellLayout(
     ["rail", SIDEBAR_RAIL_WIDTH],
   ];
   for (const [sidebarMode, sidebarWidth] of candidates) {
-    if (windowWidth - sidebarWidth - LIST_MIN_WIDTH - readerWidth >= 0) {
+    const room =
+      windowWidth - sidebarWidth - LIST_MIN_WIDTH - readerWidth - READER_GUTTER;
+    if (room >= 0) {
       return { sidebarMode, sidebarWidth, readerMode: "split", readerWidth };
     }
   }

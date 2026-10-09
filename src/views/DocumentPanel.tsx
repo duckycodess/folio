@@ -1,4 +1,4 @@
-import { ArrowLeft, CornerUpLeft, X } from "lucide-react";
+import { ArrowLeft, CornerUpLeft, Sparkles, X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import type { RelationshipsState } from "../app/useRelationships";
 import type { WorkspaceState } from "../app/useWorkspace";
@@ -12,9 +12,16 @@ import { Progress } from "../ui/Progress";
 import { RowMenu, type RowMenuItem } from "../ui/RowMenu";
 import { RelatedList } from "./Connections";
 import { SummaryTab } from "./SummaryTab";
-import { fileKind, formatBytes, formatModified, languageLabel } from "./format";
+import {
+  fileKind,
+  folderOf,
+  formatBytes,
+  formatModified,
+  languageLabel,
+} from "./format";
 
-const TABS = ["Summary", "Details", "Related"] as const;
+/** "Preview" is the brandkit mockup's inspector tab: the file itself. */
+const TABS = ["Preview", "Summary", "Related"] as const;
 type Tab = (typeof TABS)[number];
 
 interface DocumentPanelProps {
@@ -45,13 +52,13 @@ export function DocumentPanel({
   onNavigate,
   isOverlay = false,
 }: DocumentPanelProps) {
-  // Evidence opened from Related or Graph shows the passage in Details.
+  // Evidence opened from Related or Graph shows the passage in Preview.
   const focus =
     relations.focus?.documentId === document.id ? relations.focus : null;
   const [tab, setTab] = useState<Tab>(
     relations.returnedTo === document.id
       ? "Related"
-      : (initialTab ?? "Details"),
+      : (initialTab ?? "Preview"),
   );
   const mark = useRef<HTMLElement>(null);
   const origin = relations.trail[relations.trail.length - 1];
@@ -62,12 +69,12 @@ export function DocumentPanel({
 
   useEffect(() => {
     if (!focus) return;
-    setTab("Details");
+    setTab("Preview");
   }, [focus]);
 
   // Once the passage is on screen, bring it into view and move focus to it.
   useEffect(() => {
-    if (!range || tab !== "Details") return;
+    if (!range || tab !== "Preview") return;
     mark.current?.scrollIntoView({ block: "center" });
     mark.current?.focus({ preventScroll: true });
   }, [range?.[0], range?.[1], tab]);
@@ -137,7 +144,7 @@ export function DocumentPanel({
             {document.name}
           </h2>
           <p className="document-meta tabular">
-            {fileKind(document)} · {formatBytes(document.sizeBytes)}
+            {formatBytes(document.sizeBytes)}
             {document.modifiedAtMs !== undefined &&
               ` · ${formatModified(document.modifiedAtMs)}`}
           </p>
@@ -209,18 +216,42 @@ export function DocumentPanel({
           />
         )}
 
-        {tab === "Details" && (
+        {tab === "Preview" && (
           <>
+            {workspace.busy && document.content === undefined ? (
+              <Progress label="Reading file" />
+            ) : document.content !== undefined ? (
+              <>
+                {focus && !range && (
+                  <p className="muted">
+                    {passageState(focus, document) === "changed"
+                      ? "This file has changed since the connection was found, so the passage can't be highlighted."
+                      : "The passage can't be shown in this file."}
+                  </p>
+                )}
+                <div className="doc-preview">
+                  <ReaderText
+                    document={{ ...document, content: document.content }}
+                    range={range}
+                    markRef={mark}
+                    focusPage={focus?.page}
+                  />
+                </div>
+              </>
+            ) : (
+              <p className="muted">
+                {document.mediaType === "application/pdf"
+                  ? workspace.nativeAvailable
+                    ? "Folio couldn't read this PDF's text."
+                    : "PDF text is read in the desktop app; this preview can't read PDFs."
+                  : "This file hasn't been read yet."}
+              </p>
+            )}
+            <div className="subsection-header">
+              <h3 className="inspector-heading">At a glance</h3>
+              <Badge>Read-only</Badge>
+            </div>
             <dl className="details-list">
-              {/* The full path wraps here; lists truncate it. */}
-              <dt>Path</dt>
-              <dd>{document.relativePath}</dd>
-              <dt>{workspace.workspace ? "In folder" : "Source"}</dt>
-              <dd>
-                {workspace.workspace
-                  ? workspace.workspace.rootPath
-                  : "Sample file bundled with Folio"}
-              </dd>
               <dt>Type</dt>
               <dd>{fileKind(document)}</dd>
               <dt>Language</dt>
@@ -234,37 +265,23 @@ export function DocumentPanel({
                   : formatModified(document.modifiedAtMs)}
               </dd>
             </dl>
-            <div className="subsection-header">
-              <h3 className="subsection-title">Contents</h3>
-              <Badge>Read-only</Badge>
+            <h3 className="inspector-heading">Location</h3>
+            {/* The full path wraps here; lists truncate it. */}
+            <p className="inspector-text">
+              {workspace.workspace ? "Workspace" : "Sample files"} /{" "}
+              {folderOf(document.relativePath)}
+              <span className="inspector-path">{document.relativePath}</span>
+            </p>
+            <div className="inspector-actions">
+              <button
+                type="button"
+                className="button button-secondary"
+                onClick={() => onNavigate("assistant")}
+              >
+                <Sparkles size={14} aria-hidden="true" />
+                Discuss with Olio
+              </button>
             </div>
-            {workspace.busy && document.content === undefined ? (
-              <Progress label="Reading file" />
-            ) : document.content !== undefined ? (
-              <>
-                {focus && !range && (
-                  <p className="muted">
-                    {passageState(focus, document) === "changed"
-                      ? "This file has changed since the connection was found, so the passage can't be highlighted."
-                      : "The passage can't be shown in this file."}
-                  </p>
-                )}
-                <ReaderText
-                  document={{ ...document, content: document.content }}
-                  range={range}
-                  markRef={mark}
-                  focusPage={focus?.page}
-                />
-              </>
-            ) : (
-              <p className="muted">
-                {document.mediaType === "application/pdf"
-                  ? workspace.nativeAvailable
-                    ? "Folio couldn't read this PDF's text."
-                    : "PDF text is read in the desktop app; this preview can't read PDFs."
-                  : "This file hasn't been read yet."}
-              </p>
-            )}
           </>
         )}
 

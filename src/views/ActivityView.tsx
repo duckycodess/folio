@@ -44,9 +44,10 @@ export function ActivityView({
   return (
     <div className="view">
       <header className="page-header page-header-compact">
-        <h1 className="page-title">Activity</h1>
+        <h1 className="page-title">A clear trail.</h1>
         <p className="page-tagline">
-          Every change Folio made to your files, newest first.
+          Every change Folio made to your files, newest first, with the option
+          to put things back.
         </p>
       </header>
       {activity.undoResult.status === "succeeded" && (

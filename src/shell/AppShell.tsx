@@ -1,16 +1,14 @@
 import {
-  Compass,
   FlaskConical,
   History,
   Folders,
   House,
-  Monitor,
-  Moon,
+  Settings,
   Sparkles,
-  Sun,
   Waypoints,
   type LucideIcon,
 } from "lucide-react";
+import wordmark from "../assets/brand/folio-wordmark.png";
 import {
   useEffect,
   useLayoutEffect,
@@ -22,9 +20,7 @@ import {
 import {
   applyTheme,
   loadTheme,
-  nextTheme,
   saveTheme,
-  THEME_LABELS,
   type ThemePreference,
 } from "../app/theme";
 import {
@@ -49,7 +45,11 @@ import {
 import { shouldStartOnboarding } from "../domain/onboarding";
 import { OnboardingView } from "../views/OnboardingView";
 import { hasFilters, passesFilters } from "../domain/homeFilters";
-import { useWorkspace, type WorkspaceSourceKind } from "../app/useWorkspace";
+import {
+  folderName,
+  useWorkspace,
+  type WorkspaceSourceKind,
+} from "../app/useWorkspace";
 import { simulatedCode } from "../adapters/simulate";
 import { useDrafts } from "../app/drafts";
 import { useOrganize } from "../app/useOrganize";
@@ -71,6 +71,7 @@ import { HomeView } from "../views/HomeView";
 import { ActivityView } from "../views/ActivityView";
 import { ModelLabView } from "../views/ModelLabView";
 import { OrganizeView } from "../views/OrganizeView";
+import { SettingsView } from "../views/SettingsView";
 import {
   currentPlatform,
   isSearchShortcut,
@@ -89,12 +90,7 @@ const ICONS: Record<ViewId, LucideIcon> = {
   assistant: Sparkles,
   activity: History,
   modelLab: FlaskConical,
-};
-
-const THEME_ICONS: Record<ThemePreference, LucideIcon> = {
-  system: Monitor,
-  light: Sun,
-  dark: Moon,
+  settings: Settings,
 };
 
 const SOURCE_LABELS: Record<WorkspaceSourceKind, string> = {
@@ -104,12 +100,13 @@ const SOURCE_LABELS: Record<WorkspaceSourceKind, string> = {
 };
 
 const TITLES: Record<ViewId, string> = {
-  home: "Overview",
+  home: "Home",
   organize: "Organize",
   graph: "Graph",
-  assistant: "Ask & Act",
+  assistant: "Ask & Search",
   activity: "Activity",
   modelLab: "Model Lab",
+  settings: "Settings & style",
 };
 
 /** Escape in a text field belongs to the field (a search box clears itself). */
@@ -194,11 +191,18 @@ export function AppShell() {
   const [appRef, appWidth] = useElementWidth<HTMLDivElement>(1280);
   const [requestedReaderWidth, setRequestedReaderWidth] =
     useState(loadReaderWidth);
-  const layout = computeShellLayout(
+  // Home keeps the mockup's inspector column even before a file is chosen,
+  // as long as it fits beside the list; otherwise there's no empty card.
+  const withInspector = computeShellLayout(
     appWidth,
-    showsDocument,
+    showsDocument || view === "home",
     requestedReaderWidth,
   );
+  const layout =
+    showsDocument || withInspector.readerMode === "split"
+      ? withInspector
+      : computeShellLayout(appWidth, false, requestedReaderWidth);
+  const emptyInspector = !showsDocument && layout.readerMode === "split";
   function resizeReader(next: number) {
     // Kept within this window's range, so a drag past the edge doesn't
     // leave a width that jumps open in a larger window later.
@@ -330,15 +334,11 @@ export function AppShell() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [platform]);
 
-  function cycleTheme() {
-    const next = nextTheme(theme);
+  function chooseTheme(next: ThemePreference) {
     setTheme(next);
     saveTheme(next);
     applyTheme(next, document.documentElement);
   }
-  const ThemeIcon = THEME_ICONS[theme];
-  const themeLabel = `Theme: ${THEME_LABELS[theme]}`;
-  const themeAction = `${themeLabel}. Switch to ${THEME_LABELS[nextTheme(theme)]}.`;
 
   // Closing the reader returns focus to the list row that opened it.
   function closeDocument() {
@@ -403,15 +403,15 @@ export function AppShell() {
           Skip to content
         </a>
         <aside className="sidebar">
-          {/* Interim text wordmark until the logo SVG is exported. */}
-          <span className="wordmark" role="img" aria-label="Folio">
-            <span className="wordmark-full" aria-hidden="true">
-              folio
-            </span>
-            <span className="wordmark-short" aria-hidden="true">
-              f
-            </span>
-          </span>
+          <button
+            type="button"
+            className="brand"
+            title="Folio home"
+            onClick={() => setView("home")}
+          >
+            <img className="brand-wordmark" src={wordmark} alt="Folio" />
+            <span className="brand-motto">Search. Organize. Summarize</span>
+          </button>
           <nav aria-label="Main" className="nav">
             <NavList items={PRIMARY_NAV} current={view} onSelect={setView} />
           </nav>
@@ -423,35 +423,9 @@ export function AppShell() {
                 onSelect={setView}
               />
             </nav>
-            {workspace.nativeAvailable && (
-              <button
-                type="button"
-                className="nav-item"
-                aria-label="Setup guide"
-                title="Setup guide"
-                onClick={() => setWelcome(true)}
-              >
-                <Compass size={20} aria-hidden="true" />
-                <span className="nav-label" aria-hidden="true">
-                  Setup guide
-                </span>
-              </button>
-            )}
             <button
               type="button"
-              className="nav-item theme-switch"
-              aria-label={themeAction}
-              title={themeAction}
-              onClick={cycleTheme}
-            >
-              <ThemeIcon size={20} aria-hidden="true" />
-              <span className="nav-label" aria-hidden="true">
-                {themeLabel}
-              </span>
-            </button>
-            <button
-              type="button"
-              className="status-pill"
+              className="status-line"
               data-status={aiStatus}
               onClick={() => setView("modelLab")}
               aria-label={`${aiLabel}. Open Model Lab.`}
@@ -463,6 +437,37 @@ export function AppShell() {
           </div>
         </aside>
 
+        <header className="topbar">
+          <nav aria-label="Breadcrumb" className="breadcrumb">
+            <span>Workspace</span>
+            <span className="breadcrumb-slash" aria-hidden="true">
+              /
+            </span>
+            <span aria-current="page">{TITLES[view]}</span>
+          </nav>
+          <div className="topbar-end">
+            <span
+              className="topbar-badge"
+              title={workspace.workspace?.rootPath}
+            >
+              {workspace.workspace
+                ? folderName(workspace.workspace.rootPath)
+                : SOURCE_LABELS[workspace.source]}
+              {" · "}
+              {aiStatus === "ready" ? "Local AI" : "No local AI yet"}
+            </span>
+            <button
+              type="button"
+              className="avatar"
+              aria-label="Open settings"
+              title="Settings & style"
+              onClick={() => setView("settings")}
+            >
+              <Settings size={16} aria-hidden="true" />
+            </button>
+          </div>
+        </header>
+
         <div
           className="main-column"
           // While the reader overlays the list, the list behind it can't be
@@ -471,14 +476,6 @@ export function AppShell() {
           // tree rather than removed.
           inert={layout.readerMode === "overlay" ? true : undefined}
         >
-          <header className="topbar">
-            <nav aria-label="Breadcrumb" className="breadcrumb">
-              <span>{SOURCE_LABELS[workspace.source]}</span>
-              <span aria-hidden="true">/</span>
-              <span aria-current="page">{TITLES[view]}</span>
-            </nav>
-          </header>
-
           <main
             id="main"
             ref={mainRef}
@@ -579,11 +576,26 @@ export function AppShell() {
                 <ActivityView workspace={workspace} activity={activity} />
               )}
               {view === "modelLab" && <ModelLabView />}
+              {view === "settings" && (
+                <SettingsView
+                  workspace={workspace}
+                  theme={theme}
+                  onTheme={chooseTheme}
+                  aiStatus={aiStatus}
+                  aiLabel={aiLabel}
+                  onOpenModelLab={() => setView("modelLab")}
+                  onOpenSetup={
+                    workspace.nativeAvailable
+                      ? () => setWelcome(true)
+                      : undefined
+                  }
+                />
+              )}
             </AnnouncerProvider>
           </main>
         </div>
 
-        {layout.readerMode === "split" && (
+        {reading && layout.readerMode === "split" && (
           <ResizeHandle
             label="Resize the reader"
             value={layout.readerWidth}
@@ -591,6 +603,14 @@ export function AppShell() {
             max={readerMaxWidth(appWidth)}
             onChange={resizeReader}
           />
+        )}
+        {emptyInspector && (
+          <aside className="inspector-empty" aria-label="Preview">
+            <p className="inspector-empty-title">Preview</p>
+            <p className="inspector-empty-text">
+              Choose a file to see its contents, details and location here.
+            </p>
+          </aside>
         )}
         {reading && (
           <DocumentPanel
@@ -662,7 +682,7 @@ function NavList({
               title={item.label}
               onClick={() => onSelect(item.id)}
             >
-              <Icon size={20} aria-hidden="true" />
+              <Icon size={18} aria-hidden="true" />
               <span className="nav-label" aria-hidden="true">
                 {item.label}
               </span>

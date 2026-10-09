@@ -15,8 +15,8 @@ test.describe("Keyboard and announcements", () => {
     // Tab on to the file list and open a file. No click, no programmatic focus.
     await tabUntil(folio, 'button:text-is("Add folder")');
     await folio.keyboard.press("Enter");
-    await expect(folio.locator(".workspace-source-title")).toHaveText(
-      "Your folder",
+    await expect(folio.locator(".topbar-badge")).toContainText(
+      "Community Learning Project",
     );
 
     await tabUntil(folio, ".file-list .list-row");

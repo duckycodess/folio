@@ -14,7 +14,8 @@ test.describe("Journey A: explore and understand", () => {
     await expect(folio.getByText("Add a folder to get started")).toBeVisible();
     await addFolder(folio);
 
-    await expect(folio.locator(".workspace-source-detail")).toHaveText(
+    await expect(folio.locator(".topbar-badge")).toHaveAttribute(
+      "title",
       "/Users/folio/Documents/Community Learning Project",
     );
     await expect(fileRow(folio, "projects/project-plan.md")).toBeVisible();
@@ -22,11 +23,11 @@ test.describe("Journey A: explore and understand", () => {
     await expect(
       fileRow(folio, "research/consent-form-guide.pdf"),
     ).toBeVisible();
-    // A row is spoken as the columns it shows: name, location, type, modified
-    // and size, with no second wording a voice-control user could not say.
+    // A row is spoken as the columns it shows: name, folder and modified,
+    // with no second wording a voice-control user could not say.
     await expect(
       fileRow(folio, "projects/project-plan.md"),
-    ).toHaveAccessibleName(/project-plan\.md.*projects.*Markdown.*B$/s);
+    ).toHaveAccessibleName(/project-plan\.md.*projects.*modified/s);
   });
 
   test("reads a Filipino document and keeps it read-only", async ({
@@ -34,7 +35,7 @@ test.describe("Journey A: explore and understand", () => {
   }) => {
     await addFolder(folio);
     const panel = await openFile(folio, "notes/tala-sa-proyekto.md");
-    await expect(panel.getByRole("tab", { name: "Details" })).toHaveAttribute(
+    await expect(panel.getByRole("tab", { name: "Preview" })).toHaveAttribute(
       "aria-selected",
       "true",
     );

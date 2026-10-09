@@ -69,23 +69,25 @@ describe("search shortcut", () => {
 });
 
 describe("navigation", () => {
-  it("lists the main destinations, with Model Lab kept in settings", () => {
+  it("lists the main destinations, with settings at the foot", () => {
     expect(PRIMARY_NAV.map((item) => item.label)).toEqual([
       "Home",
       "Organize",
       "Graph",
-      "Ask & Act",
+      "Ask & Search",
       "Activity",
     ]);
-    expect(SECONDARY_NAV.map((item) => item.label)).toEqual(["Model Lab"]);
+    expect(SECONDARY_NAV.map((item) => item.label)).toEqual([
+      "Settings & style",
+    ]);
   });
 
   it("keeps Organize as its own destination beside the assistant", () => {
     const labels = PRIMARY_NAV.map((item) => item.label);
     expect(labels).toContain("Organize");
-    expect(labels).toContain("Ask & Act");
+    expect(labels).toContain("Ask & Search");
     expect(labels.indexOf("Organize")).toBeLessThan(
-      labels.indexOf("Ask & Act"),
+      labels.indexOf("Ask & Search"),
     );
   });
 });

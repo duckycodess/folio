@@ -3,8 +3,8 @@ import { useId } from "react";
 import type { HomeState } from "../app/useHome";
 import type { DocumentRecord } from "../domain/contracts";
 import {
-  hasFilters,
   NO_FILTERS,
+  passesFilters,
   type HomeFilters,
   type ModifiedFilter,
   type TypeFilter,
@@ -12,7 +12,7 @@ import {
 import { FileTypeIcon } from "../ui/FileTypeIcon";
 
 const TYPES: [TypeFilter, string][] = [
-  ["any", "Any type"],
+  ["any", "File type"],
   ["text/plain", "Text"],
   ["text/markdown", "Markdown"],
   ["application/pdf", "PDF"],
@@ -35,13 +35,20 @@ export function emptyFolderLabel(folder: string): string {
   return `${folderLabel(folder)} (no files)`;
 }
 
-/** Folder, File type and Modified filters, plus pinning the chosen folder. */
+/**
+ * Folder, File type and Modified filters, plus pinning the chosen folder and
+ * Reset, as the brandkit mockup's compact row under search. Labels are
+ * spoken, not shown: each select's first option names it.
+ */
 export function HomeFilterBar({
   home,
   folders,
+  onReset,
 }: {
   home: HomeState;
   folders: string[];
+  /** Clears the filters and the search. */
+  onReset: () => void;
 }) {
   const id = useId();
   const { filters } = home;
@@ -55,7 +62,7 @@ export function HomeFilterBar({
   return (
     <div className="home-filters" role="group" aria-label="Filters">
       <div className="filter">
-        <label className="filter-label" htmlFor={`${id}-folder`}>
+        <label className="visually-hidden" htmlFor={`${id}-folder`}>
           Folder
         </label>
         <select
@@ -81,7 +88,7 @@ export function HomeFilterBar({
         </select>
       </div>
       <div className="filter">
-        <label className="filter-label" htmlFor={`${id}-type`}>
+        <label className="visually-hidden" htmlFor={`${id}-type`}>
           File type
         </label>
         <select
@@ -98,7 +105,7 @@ export function HomeFilterBar({
         </select>
       </div>
       <div className="filter">
-        <label className="filter-label" htmlFor={`${id}-modified`}>
+        <label className="visually-hidden" htmlFor={`${id}-modified`}>
           Modified
         </label>
         <select
@@ -116,60 +123,74 @@ export function HomeFilterBar({
           ))}
         </select>
       </div>
-      {hasFilters(filters) && (
-        <div className="filter-actions">
-          {filters.folder !== null && (
-            <button
-              type="button"
-              className="button button-ghost"
-              aria-pressed={pinned}
-              onClick={() => home.togglePin(filters.folder!)}
-            >
-              {pinned ? (
-                <PinOff size={16} aria-hidden="true" />
-              ) : (
-                <Pin size={16} aria-hidden="true" />
-              )}
-              {pinned ? "Unpin folder" : "Pin folder"}
-            </button>
-          )}
-          {hasFilters(filters) && (
-            <button
-              type="button"
-              className="link-button"
-              onClick={() => home.setFilters(NO_FILTERS)}
-            >
-              Clear filters
-            </button>
-          )}
-        </div>
-      )}
+      <div className="filter-actions">
+        {filters.folder !== null && (
+          <button
+            type="button"
+            className="button button-ghost"
+            aria-pressed={pinned}
+            onClick={() => home.togglePin(filters.folder!)}
+          >
+            {pinned ? (
+              <PinOff size={16} aria-hidden="true" />
+            ) : (
+              <Pin size={16} aria-hidden="true" />
+            )}
+            {pinned ? "Unpin folder" : "Pin folder"}
+          </button>
+        )}
+        <button type="button" className="filter-reset" onClick={onReset}>
+          Reset
+        </button>
+      </div>
     </div>
   );
 }
 
-/** Pinned folders as quick filters. Shown only once something is pinned. */
+/**
+ * The brandkit mockup's folder cards: pinned folders, or, until something is
+ * pinned, the three folders with the most files. Each one filters the list
+ * to that folder.
+ */
 export function PinnedFolders({
   home,
   folders,
+  documents,
 }: {
   home: HomeState;
   folders: string[];
+  documents: DocumentRecord[];
 }) {
-  if (!home.pins.length) return null;
+  // The same files the folder filter shows: subfolders included.
+  const now = Date.now();
+  const count = (folder: string) =>
+    documents.filter((document) =>
+      passesFilters(document, { ...NO_FILTERS, folder }, now),
+    ).length;
+  const pinned = home.pins.length > 0;
+  const shown = pinned
+    ? home.pins
+    : [...folders].sort((a, b) => count(b) - count(a)).slice(0, 3);
+  if (!shown.length) return null;
   return (
-    <section className="home-strip" aria-labelledby="pinned-heading">
-      <h2 id="pinned-heading" className="strip-title">
-        Pinned folders
-      </h2>
-      <ul className="chip-list">
-        {home.pins.map((folder) => {
+    <section className="home-folders" aria-labelledby="pinned-heading">
+      <div className="section-head">
+        <h2 id="pinned-heading" className="section-head-title">
+          {pinned ? "Pinned folders" : "Folders"}
+        </h2>
+        <span className="section-head-note">
+          {pinned ? "Your everyday spaces" : "Pin one to keep it here"}
+        </span>
+      </div>
+      <ul className="folder-cards">
+        {shown.map((folder) => {
           const active = home.filters.folder === folder;
+          const files = count(folder);
           return (
-            <li key={folder} className="chip-item">
+            <li key={folder} className="folder-card-item">
               <button
                 type="button"
-                className={`chip${active ? " is-active" : ""}`}
+                className={`folder-card${active ? " is-active" : ""}`}
                 aria-pressed={active}
                 onClick={() =>
                   home.setFilters({
@@ -178,20 +199,29 @@ export function PinnedFolders({
                   })
                 }
               >
-                <Pin size={14} aria-hidden="true" />
-                {folder === "" || folders.includes(folder)
-                  ? folderLabel(folder)
-                  : emptyFolderLabel(folder)}
+                <span className="folder-icon" aria-hidden="true" />
+                <span className="folder-card-name">
+                  {folder === "" || folders.includes(folder)
+                    ? folderLabel(folder)
+                    : emptyFolderLabel(folder)}
+                </span>
+                <span className="folder-card-meta">
+                  {files === 1 ? "1 file" : `${files} files`} ·{" "}
+                  {active ? "Showing" : "Open folder"}{" "}
+                  <span aria-hidden="true">↗</span>
+                </span>
               </button>
-              <button
-                type="button"
-                className="chip-remove"
-                aria-label={`Unpin ${folderLabel(folder)}`}
-                title="Unpin"
-                onClick={() => home.togglePin(folder)}
-              >
-                <X size={14} aria-hidden="true" />
-              </button>
+              {pinned && (
+                <button
+                  type="button"
+                  className="folder-card-unpin"
+                  aria-label={`Unpin ${folderLabel(folder)}`}
+                  title="Unpin"
+                  onClick={() => home.togglePin(folder)}
+                >
+                  <X size={14} aria-hidden="true" />
+                </button>
+              )}
             </li>
           );
         })}

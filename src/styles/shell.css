@@ -6,8 +6,22 @@
 .app {
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  /* The header spans the list and the reader, as in the brandkit mockup. */
+  grid-template-rows: var(--header-height) minmax(0, 1fr);
   height: 100vh;
   overflow: hidden;
+}
+.sidebar {
+  grid-column: 1;
+  grid-row: 1 / -1;
+}
+.topbar {
+  grid-column: 2 / -1;
+  grid-row: 1;
+}
+.resize-handle {
+  grid-column: 3;
+  grid-row: 2;
 }
 .app.sidebar-rail {
   grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr);
@@ -16,14 +30,19 @@
    separator between them (--detail-width is set inline from the resized,
    clamped width). */
 .app.reader-split {
-  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) 6px var(
-      --detail-width
-    );
+  grid-template-columns:
+    var(--sidebar-width) minmax(0, 1fr) 6px
+    calc(var(--detail-width) + var(--page-gutter));
 }
 .app.sidebar-rail.reader-split {
-  grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr) 6px var(
-      --detail-width
-    );
+  grid-template-columns:
+    var(--sidebar-rail-width) minmax(0, 1fr) 6px
+    calc(var(--detail-width) + var(--page-gutter));
+}
+/* The mockup's 26px between the list and the inspector: 20px of padding and
+   the 6px separator. */
+.app.reader-split .main {
+  padding-right: 20px;
 }
 .resize-handle {
   position: relative;
@@ -55,32 +74,50 @@
   top: var(--space-2);
 }
 
-/* Sidebar */
+/* Sidebar: the brandkit mockup's (docs/assets/Folio-Brandkit). */
 .sidebar {
   display: flex;
   flex-direction: column;
-  gap: var(--space-6);
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-6) var(--space-3) var(--space-4);
+  padding: 30px 18px;
   background: var(--sidebar-bg);
-  color: var(--sidebar-text);
+  color: var(--sidebar-text-muted);
 }
 .sidebar :focus-visible {
-  outline-color: var(--sidebar-focus);
+  outline: 3px solid #dfad16;
+  outline-offset: 3px;
 }
-.wordmark {
-  padding: 0 var(--space-3);
-  font: 800 2rem/1 var(--font-heading);
-  letter-spacing: -0.04em;
+.brand {
+  display: block;
+  width: 178px;
+  margin: 0 4px 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  line-height: 0;
+  transition: transform 0.2s;
 }
-.wordmark-short {
-  display: none;
+.brand:hover {
+  transform: translateY(-1px);
+}
+.brand-wordmark {
+  display: block;
+  width: 178px;
+  height: 65px;
+}
+.brand-motto {
+  display: block;
+  margin-top: 9px;
+  color: var(--sidebar-motto);
+  font: 400 10px/1.5 var(--font-sans);
+  letter-spacing: 0.1px;
+  text-align: center;
+  white-space: nowrap;
 }
 .nav-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
   margin: 0;
   padding: 0;
   list-style: none;
@@ -89,68 +126,70 @@
   position: relative;
   display: flex;
   align-items: center;
-  gap: var(--space-3);
+  gap: 13px;
   width: 100%;
-  min-height: 40px;
-  padding: 0 var(--space-3);
+  margin: 4px 0;
+  padding: 13px 16px;
   border: 0;
-  border-radius: var(--radius-md);
+  border-radius: 8px;
   background: transparent;
   color: var(--sidebar-text-muted);
-  font: var(--text-label);
+  font: 400 14px/1.2 var(--font-sans);
   text-align: left;
 }
 .nav-item:hover {
   color: var(--sidebar-text);
-  background: var(--sidebar-item-active);
 }
 .nav-item.is-active {
-  color: var(--sidebar-text);
+  color: #fff;
   background: var(--sidebar-item-active);
-}
-.nav-item.is-active::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 3px;
-  border-radius: 0 3px 3px 0;
-  background: var(--brand-gold);
+  box-shadow: inset 3px 0 var(--brand-gold);
 }
 .sidebar-footer {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
   margin-top: auto;
+  padding: 16px;
+  border-top: 1px solid var(--sidebar-border);
 }
-.status-pill {
+.sidebar-footer .nav-item {
+  margin: 0 -16px;
+  width: calc(100% + 32px);
+  padding: 8px 16px;
+  font-size: 12px;
+}
+.sidebar-footer .nav-item.is-active {
+  box-shadow: none;
+}
+.status-line {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--sidebar-border);
-  border-radius: var(--radius-pill);
+  gap: 7px;
+  margin-top: 6px;
+  padding: 2px 0;
+  border: 0;
   background: transparent;
   color: var(--sidebar-text-muted);
-  font: var(--text-small);
+  font: 400 12px/1.4 var(--font-sans);
   text-align: left;
 }
-.status-pill:hover {
+.status-line:hover {
   color: var(--sidebar-text);
 }
-/* Gray, not green: green is reserved for a model that is actually ready. */
+/* Gray, not gold or green: green is reserved for a model that is actually
+   ready, red for a check that failed. */
 .status-dot {
-  width: 8px;
-  height: 8px;
+  display: inline-block;
+  width: 7px;
+  height: 7px;
   flex: none;
   border-radius: 50%;
   background: var(--sidebar-text-muted);
 }
-.status-pill[data-status="ready"] .status-dot {
+[data-status="ready"] .status-dot,
+.status-dot[data-status="ready"] {
   background: var(--color-success-dot);
 }
-.status-pill[data-status="unavailable"] .status-dot {
+[data-status="unavailable"] .status-dot,
+.status-dot[data-status="unavailable"] {
   background: var(--color-danger);
 }
 
@@ -159,7 +198,7 @@
   /* Placed explicitly: the overlay reader shares this cell, and grid places
      explicit items first, so auto-placement would push the list out of it. */
   grid-column: 2;
-  grid-row: 1;
+  grid-row: 2;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -168,26 +207,59 @@
 .topbar {
   display: flex;
   align-items: center;
-  gap: var(--space-6);
-  padding: var(--space-3) var(--space-8);
+  justify-content: space-between;
+  gap: var(--space-4);
+  height: var(--header-height);
+  flex: none;
+  padding: 0 var(--page-gutter);
   border-bottom: 1px solid var(--color-border);
-  background: var(--color-bg);
+  background: var(--color-surface);
 }
 .breadcrumb {
   display: flex;
-  gap: var(--space-2);
+  align-items: center;
   flex: none;
-  color: var(--color-text-secondary);
-  font: var(--text-label);
+  color: var(--color-text-tertiary);
+  font: 400 12px/1.4 var(--font-sans);
+}
+.breadcrumb-slash {
+  padding: 0 12px;
 }
 .breadcrumb [aria-current] {
+  color: var(--color-text);
+  font-weight: 700;
+}
+.topbar-end {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+.topbar-badge {
+  overflow: hidden;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: #f2f2ed;
+  font: 400 11px/1.3 var(--font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  background: #ecece5;
   color: var(--color-text);
 }
 .main {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-6) var(--space-8) var(--space-8);
+  padding: 35px var(--page-gutter) 160px;
 }
 .main:focus {
   outline: none;
@@ -200,16 +272,17 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
-  max-width: 1080px;
+  max-width: 1500px;
+  margin: 0 auto;
 }
 .page-header {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 10px;
 }
 .page-title {
-  font: var(--text-display);
-  letter-spacing: -0.02em;
+  font: 800 34px/1.15 var(--font-heading);
+  letter-spacing: -1.1px;
 }
 /* Home header: at most ~96px tall (docs/design.md). */
 .page-header-home {
@@ -230,16 +303,10 @@
     display: none;
   }
 }
-.page-header-compact .page-title {
-  font: var(--text-title);
-  font-size: 1.5rem;
-  line-height: 2rem;
-}
+
 .page-tagline {
-  font: var(--text-heading);
-  font-weight: 400;
-  letter-spacing: 0.04em;
-  color: var(--color-text-secondary);
+  color: var(--color-text-tertiary);
+  font: 400 14px/1.6 var(--font-sans);
 }
 .section {
   display: flex;
@@ -284,25 +351,38 @@
 }
 
 /* Document panel */
-.document-panel {
+/* The mockup's inspector: a 300px card beside the list, below the header. */
+.document-panel,
+.inspector-empty {
+  grid-column: 4;
+  grid-row: 2;
+  align-self: start;
   display: flex;
   flex-direction: column;
   min-width: 0;
   min-height: 0;
-  border-left: 1px solid var(--color-border);
+  max-height: calc(100% - 35px - var(--page-gutter));
+  margin: 35px var(--page-gutter) 0 0;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
   background: var(--color-surface);
+  overflow: hidden;
 }
 /* Overlay: shares the main column's grid cell instead of a column of its
    own, floats over the list (which stays mounted behind it, scroll position
    and all), and respects reduced motion for its one-time slide-in. */
 .app.reader-overlay .document-panel {
   grid-column: 2;
-  grid-row: 1;
+  grid-row: 2;
   justify-self: end;
   align-self: stretch;
   width: var(--detail-width);
   max-width: 100%;
-  border-left: 0;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  border-left: 1px solid var(--color-border);
+  border-radius: 0;
   z-index: 5;
   box-shadow: var(--shadow-float);
   animation: reader-slide-in 0.18s ease-out;
@@ -318,11 +398,12 @@
     animation: none;
   }
 }
+/* The mockup's inspector: icon, name and "size · date" on top. */
 .document-panel-header {
   display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  padding: var(--space-5) var(--space-4) var(--space-4);
+  align-items: center;
+  gap: 12px;
+  padding: 22px 22px 18px;
 }
 .document-back {
   display: none;
@@ -338,12 +419,79 @@
   min-width: 0;
 }
 .document-title {
-  font: var(--text-title);
+  font: 700 15px/1.3 var(--font-heading);
+  letter-spacing: -0.8px;
   overflow-wrap: anywhere;
 }
 .document-meta {
-  font: var(--text-small);
-  color: var(--color-text-secondary);
+  color: var(--color-text-tertiary);
+  font: 400 12px/1.4 var(--font-sans);
+}
+.document-panel > .tabs {
+  margin: 0 22px;
+  padding: 0;
+}
+.document-panel .tab-panel {
+  gap: 0;
+  padding: 20px 22px 22px;
+}
+.doc-preview {
+  max-height: 260px;
+  overflow-y: auto;
+  margin-bottom: 4px;
+  padding: 24px 18px;
+  border-radius: 6px;
+  background: var(--color-surface-muted);
+  font:
+    12px/1.8 Georgia,
+    "Times New Roman",
+    serif;
+}
+.doc-preview .source-text {
+  padding: 0;
+  background: transparent;
+  font: inherit;
+}
+.inspector-heading {
+  margin: 22px 0 10px;
+  font: 700 15px/1.3 var(--font-heading);
+  letter-spacing: -0.8px;
+}
+.document-panel .subsection-header .inspector-heading {
+  margin-bottom: 0;
+}
+.document-panel .subsection-header {
+  margin: 22px 0 10px;
+}
+.document-panel .subsection-header .inspector-heading {
+  margin: 0;
+}
+.document-panel .details-list,
+.inspector-text {
+  color: var(--color-text-tertiary);
+  font: 400 12px/1.8 var(--font-sans);
+}
+.document-panel .details-list dd {
+  color: var(--color-text);
+}
+.inspector-path {
+  display: block;
+  overflow-wrap: anywhere;
+}
+.inspector-actions {
+  margin-top: 18px;
+}
+.inspector-empty {
+  padding: 24px 22px;
+}
+.inspector-empty-title {
+  font: 700 15px/1.3 var(--font-heading);
+  letter-spacing: -0.8px;
+}
+.inspector-empty-text {
+  margin-top: 8px;
+  color: var(--color-text-tertiary);
+  font: 400 12px/1.8 var(--font-sans);
 }
 .tab-panel {
   flex: 1;
@@ -560,68 +708,66 @@
    a fixed breakpoint, so a wide window keeps labels even with the reader
    open and a narrow one collapses sooner than it used to (#67 item 5). */
 .app.sidebar-rail .sidebar {
-  padding-inline: var(--space-2);
+  padding: 20px 8px;
   align-items: center;
 }
-.app.sidebar-rail .wordmark {
-  padding: 0;
-  font-size: 1.5rem;
+.app.sidebar-rail .brand {
+  width: 48px;
+  margin: 0 0 24px;
+  overflow: hidden;
 }
-.app.sidebar-rail .wordmark-full {
-  display: none;
+.app.sidebar-rail .brand-wordmark {
+  /* The "f" of the wordmark. */
+  width: 178px;
+  max-width: none;
+  transform: scale(0.27);
+  transform-origin: left center;
 }
-.app.sidebar-rail .wordmark-short {
-  display: inline;
-}
-.app.sidebar-rail .nav-item {
-  justify-content: center;
-  padding: 0;
-  width: 44px;
-}
+.app.sidebar-rail .brand-motto,
 .app.sidebar-rail .nav-label,
 .app.sidebar-rail .status-text {
   display: none;
 }
-.app.sidebar-rail .status-pill {
+.app.sidebar-rail .nav-item {
+  justify-content: center;
+  gap: 0;
+  width: 44px;
+  margin: 4px auto;
+  padding: 14px 0;
+}
+.app.sidebar-rail .sidebar-footer {
+  padding: 16px 0 0;
+}
+.app.sidebar-rail .sidebar-footer .nav-item {
+  margin: 0 auto;
+  width: 44px;
+}
+.app.sidebar-rail .status-line {
   justify-content: center;
   width: 44px;
-  padding: var(--space-3) 0;
-}
-
-@media (max-width: 1180px) {
-  .topbar,
-  .main {
-    padding-inline: var(--space-6);
-  }
+  margin: 8px auto 0;
 }
 
 @media (max-width: 860px) {
-  .topbar {
-    flex-wrap: wrap;
-    gap: var(--space-2);
-  }
-  .topbar,
-  .main {
-    padding-inline: var(--space-4);
-  }
   .list-row-meta {
     display: none;
   }
 }
 
-/* While a file is open, Home's mascot, tagline, pinned/recent strips, the
-   empty collections placeholder and the workspace source banner give way to
-   the file list and the reader, so both are on the first screen together at
-   1024×768 and 1280×850 (#67 item 3) — not only in short windows. */
-.app.has-document .page-header-home .olio,
-.app.has-document .page-header-home .page-tagline,
-.app.has-document .home-strip,
-.app.has-document .home-collections-empty,
-.app.has-document .workspace-source {
-  display: none;
-}
-.app.has-document .view {
-  gap: var(--space-4);
+/* The mockup's narrow layout. */
+@media (max-width: 700px) {
+  .topbar {
+    padding: 0 20px;
+  }
+  .main {
+    padding: 28px 20px 170px;
+  }
+  .page-title {
+    font-size: 28px;
+  }
+  .topbar-badge {
+    display: none;
+  }
 }
 
 /* Short windows, down to the 600px minimum height: keep at least five file
@@ -771,27 +917,6 @@
   color: var(--color-text-secondary);
 }
 
-/* Home's search (#43): centred under the header, full width when narrow. */
-.home-search {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: var(--space-2);
-}
-.home-search .search-field {
-  max-width: 640px;
-}
-/* Narrow Home (#67 item 6): the ⌘K / Ctrl K hint gives up its room so the
-   placeholder ("Search files, ideas, or projects") isn't cut off. */
-@media (max-width: 480px) {
-  .home-search .search-field-shortcut {
-    display: none;
-  }
-  .home-search .search-field input {
-    padding-right: var(--space-3);
-  }
-}
-
 /* Model Lab: model setup cards and per-task results. */
 .model-list {
   display: flex;
@@ -865,45 +990,6 @@
   vertical-align: top;
 }
 
-/* Home filters, pinned folders and recent files (#33) */
-.home-filters {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  align-items: center;
-  gap: var(--space-3);
-}
-.filter {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-width: 0;
-}
-.filter .select {
-  max-width: 14rem;
-}
-.filter-label {
-  font: var(--text-small);
-  font-weight: 600;
-  color: var(--color-text-secondary);
-}
-/* Narrow Home (#67 item 6): each filter wraps as a label-above-control pair
-   instead of a label-beside-select row that ends up centred as a whole. */
-@media (max-width: 480px) {
-  .home-filters {
-    justify-content: stretch;
-    align-items: stretch;
-  }
-  .filter {
-    flex: 1 1 100%;
-    flex-direction: column;
-    align-items: stretch;
-    gap: var(--space-1);
-  }
-  .filter .select {
-    max-width: none;
-  }
-}
 .select {
   min-height: 36px;
   padding: 0 var(--space-3);
@@ -1621,4 +1707,283 @@
   min-height: 16rem;
   font: var(--text-body);
   white-space: pre-wrap;
+}
+
+/* Home, as the brandkit mockup's (docs/assets/Folio-Brandkit). Spacing is
+   the mockup's own: 28px under the tagline, 12px to the filters, 34px to
+   the folder cards and again to the tabs. */
+.view-home {
+  gap: 0;
+}
+.view-home .page-header {
+  margin-bottom: 28px;
+}
+.home-search .search-field {
+  border: 1px solid var(--color-border-input);
+  border-radius: 12px;
+  background: var(--color-surface);
+  box-shadow: 0 4px 16px rgb(35 38 32 / 0.024);
+}
+.home-search .search-field input {
+  min-height: 0;
+  padding: 17px 76px 17px 52px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  font-size: 17px;
+}
+.home-search .search-field input:focus-visible {
+  outline: 3px solid #dfad16;
+  outline-offset: 3px;
+}
+.home-search .search-field-icon {
+  left: 19px;
+  width: 20px;
+  height: 20px;
+}
+.home-search .search-field-shortcut {
+  right: 19px;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: #f3f3ee;
+  color: #6b6e68;
+  font: 400 11px/1.2 var(--font-sans);
+}
+@media (max-width: 480px) {
+  .home-search .search-field-shortcut {
+    display: none;
+  }
+  .home-search .search-field input {
+    padding-right: 19px;
+  }
+}
+
+.home-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 34px;
+}
+.filter {
+  display: flex;
+  min-width: 0;
+}
+.home-filters .select {
+  min-height: 0;
+  max-width: 14rem;
+  padding: 7px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background-color: transparent;
+  color: var(--color-text-tertiary);
+  font: 400 12px/1.3 var(--font-sans);
+}
+.filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.filter-actions .button {
+  min-height: 0;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.filter-reset {
+  padding: 7px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font: 400 12px/1.3 var(--font-sans);
+}
+.filter-reset:hover {
+  color: var(--color-text);
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: 16px;
+}
+.section-head-title {
+  font: 700 17px/1.3 var(--font-heading);
+  letter-spacing: -0.3px;
+}
+.section-head-note {
+  color: var(--color-text-tertiary);
+  font: 400 12px/1.4 var(--font-sans);
+}
+.home-folders {
+  margin-bottom: 34px;
+}
+.folder-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.folder-card-item {
+  position: relative;
+  min-width: 0;
+}
+.folder-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  height: 100%;
+  padding: 20px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  text-align: left;
+  transition:
+    transform 0.2s,
+    border-color 0.2s;
+}
+.folder-card:hover {
+  transform: translateY(-3px);
+  border-color: #e3bb48;
+}
+.folder-card.is-active {
+  border-color: var(--brand-honey);
+  box-shadow: inset 0 0 0 1px var(--brand-honey);
+}
+.folder-icon {
+  position: relative;
+  display: block;
+  width: 34px;
+  height: 25px;
+  margin: 6px 0 16px;
+  border-radius: 3px;
+  background: #ffcb29;
+  box-shadow: inset 0 4px #efb315;
+}
+.folder-icon::before {
+  content: "";
+  position: absolute;
+  top: -5px;
+  width: 16px;
+  height: 8px;
+  border-radius: 3px;
+  background: #efb315;
+}
+.folder-card-name {
+  max-width: 100%;
+  overflow: hidden;
+  font: 700 15px/1.3 var(--font-heading);
+  letter-spacing: -0.8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.folder-card-meta {
+  margin-top: 5px;
+  color: var(--color-text-tertiary);
+  font: 400 11px/1.4 var(--font-sans);
+}
+.folder-card-unpin {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-tertiary);
+}
+.folder-card-unpin:hover {
+  background: var(--color-bg);
+  color: var(--color-text);
+}
+@media (max-width: 700px) {
+  .folder-cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+.home-tabs {
+  margin: 0 0 4px;
+  padding: 0;
+}
+.home-results-head {
+  margin: 0 0 4px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+.file-count {
+  margin-top: 12px;
+  color: var(--color-text-tertiary);
+  font: 400 12px/1.4 var(--font-sans);
+}
+.empty {
+  padding: 45px;
+  color: var(--color-text-tertiary);
+  text-align: center;
+}
+.pill {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 4px 9px;
+  border-radius: 20px;
+  background: #f0f1ec;
+  color: var(--color-text);
+  font: 400 10px/1.3 var(--font-sans);
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+:root[data-theme="dark"] .pill,
+:root[data-theme="dark"] .topbar-badge {
+  background: #3c4235;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .pill,
+  :root:not([data-theme="light"]) .topbar-badge {
+    background: #3c4235;
+  }
+}
+
+/* Settings & style: the mockup's setting rows. */
+.setting {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: 20px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface);
+}
+.setting-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 18rem;
+  min-width: 0;
+}
+.setting-title {
+  font: 700 17px/1.3 var(--font-heading);
+  letter-spacing: -0.3px;
+}
+.setting-detail {
+  color: var(--color-text-tertiary);
+  font: 400 12px/1.6 var(--font-sans);
+}
+.setting-detail .status-dot {
+  margin-right: 7px;
+  vertical-align: middle;
+}
+.setting-path {
+  overflow-wrap: anywhere;
 }

@@ -77,14 +77,14 @@ for (const viewport of VIEWPORTS)
       await expectNoHorizontalScroll(folio);
       await expectNoAxeViolations(folio);
 
-      // Graph, Ask & Act and Model Lab.
-      for (const view of ["Graph", "Ask & Act", "Activity", "Model Lab"]) {
+      // Graph, Ask & Search and Model Lab.
+      for (const view of ["Graph", "Ask & Search", "Activity", "Model Lab"]) {
         await openView(folio, view);
         if (view === "Model Lab")
           await expect(
             folio.getByRole("button", { name: /^Download / }).first(),
           ).toBeVisible();
-        if (view === "Ask & Act")
+        if (view === "Ask & Search")
           await expect(
             folio.getByRole("textbox", { name: "Your request", exact: true }),
           ).toBeVisible();

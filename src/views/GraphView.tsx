@@ -266,9 +266,9 @@ export function GraphView({
   return (
     <div className="view">
       <header className="page-header page-header-compact">
-        <h1 className="page-title">Graph</h1>
+        <h1 className="page-title">See the connections.</h1>
         <p className="page-tagline">
-          How your files connect, with the evidence.
+          A map of your workspace: how your files connect, with the evidence.
         </p>
       </header>
 

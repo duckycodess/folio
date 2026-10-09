@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   LIST_MIN_WIDTH,
   READER_DEFAULT_WIDTH,
+  READER_GUTTER,
   READER_MIN_WIDTH,
   SIDEBAR_FULL_WIDTH,
   SIDEBAR_RAIL_WIDTH,
@@ -25,13 +26,15 @@ describe("clampReaderWidth", () => {
   });
 
   it("never grows so wide that it has to overlay the list", () => {
-    // At 1024px, 60% would be 614px, but only 540px fits beside the list.
+    // At 1024px, 60% would be 614px, but only 504px fits beside the list
+    // and the gutter right of the reader.
     expect(clampReaderWidth(4000, 1024)).toBe(
-      1024 - SIDEBAR_RAIL_WIDTH - LIST_MIN_WIDTH,
+      1024 - SIDEBAR_RAIL_WIDTH - LIST_MIN_WIDTH - READER_GUTTER,
     );
-    expect(readerMaxWidth(1024)).toBe(540);
+    expect(readerMaxWidth(1024)).toBe(504);
     // From the first width where both minimums fit beside the rail.
-    const fits = SIDEBAR_RAIL_WIDTH + LIST_MIN_WIDTH + READER_MIN_WIDTH;
+    const fits =
+      SIDEBAR_RAIL_WIDTH + LIST_MIN_WIDTH + READER_MIN_WIDTH + READER_GUTTER;
     for (const width of [fits, 900, 1024, 1100, 1210, 1280]) {
       const layout = computeShellLayout(width, true, readerMaxWidth(width));
       expect(layout.readerMode).toBe("split");
@@ -42,7 +45,7 @@ describe("clampReaderWidth", () => {
     const remembered = clampReaderWidth(4000, 1440);
     const layout = computeShellLayout(1024, true, remembered);
     expect(layout.readerMode).toBe("split");
-    expect(layout.readerWidth).toBe(540);
+    expect(layout.readerWidth).toBe(504);
   });
 
   it("falls back to the default for a non-finite request", () => {
@@ -51,9 +54,9 @@ describe("clampReaderWidth", () => {
   });
 
   it("follows the window down to 60%, never below the minimum", () => {
-    // 600 * 0.6 = 360, still above the 320 floor.
-    expect(clampReaderWidth(380, 600)).toBe(360);
-    expect(clampReaderWidth(380, 500)).toBe(READER_MIN_WIDTH);
+    // 500 * 0.6 = 300, still above the 280 floor.
+    expect(clampReaderWidth(380, 500)).toBe(300);
+    expect(clampReaderWidth(380, 400)).toBe(READER_MIN_WIDTH);
   });
 });
 
@@ -66,8 +69,9 @@ describe("computeShellLayout without a reader", () => {
   });
 
   it("collapses to the icon rail only once the main area would be squeezed", () => {
-    expect(computeShellLayout(719, false).sidebarMode).toBe("rail");
-    expect(computeShellLayout(720, false).sidebarMode).toBe("full");
+    // 222 + 480: the mockup's own rail breakpoint is 700px.
+    expect(computeShellLayout(701, false).sidebarMode).toBe("rail");
+    expect(computeShellLayout(702, false).sidebarMode).toBe("full");
   });
 
   it("reports no reader", () => {
@@ -88,7 +92,11 @@ describe("computeShellLayout with a reader", () => {
   it("collapses the sidebar to the rail before giving up the split", () => {
     // Full sidebar leaves no room, but the rail does.
     const width =
-      SIDEBAR_RAIL_WIDTH + LIST_MIN_WIDTH + READER_DEFAULT_WIDTH + 10;
+      SIDEBAR_RAIL_WIDTH +
+      LIST_MIN_WIDTH +
+      READER_DEFAULT_WIDTH +
+      READER_GUTTER +
+      10;
     const layout = computeShellLayout(width, true, READER_DEFAULT_WIDTH);
     expect(layout.sidebarMode).toBe("rail");
     expect(layout.readerMode).toBe("split");
@@ -104,13 +112,18 @@ describe("computeShellLayout with a reader", () => {
     for (const width of [600, 794, 900, 1024, 1180, 1280, 1440, 1920]) {
       const layout = computeShellLayout(width, true, READER_DEFAULT_WIDTH);
       if (layout.readerMode !== "split") continue;
-      const listWidth = width - layout.sidebarWidth - layout.readerWidth;
+      const listWidth =
+        width - layout.sidebarWidth - layout.readerWidth - READER_GUTTER;
       expect(listWidth).toBeGreaterThanOrEqual(LIST_MIN_WIDTH);
     }
   });
 
   it("is idempotent at the exact boundary width", () => {
-    const boundary = SIDEBAR_FULL_WIDTH + LIST_MIN_WIDTH + READER_DEFAULT_WIDTH;
+    const boundary =
+      SIDEBAR_FULL_WIDTH +
+      LIST_MIN_WIDTH +
+      READER_DEFAULT_WIDTH +
+      READER_GUTTER;
     expect(computeShellLayout(boundary, true).readerMode).toBe("split");
     expect(computeShellLayout(boundary, true).sidebarMode).toBe("full");
     expect(computeShellLayout(boundary - 1, true).sidebarMode).toBe("rail");

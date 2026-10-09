@@ -14,9 +14,7 @@ base.describe("Browser practice mode", () => {
       0,
     );
     // The preview says plainly that it has sample files, not a folder.
-    await expect(page.locator(".workspace-source-title")).toHaveText(
-      "Showing sample files",
-    );
+    await expect(page.locator(".topbar-badge")).toContainText("Sample files");
     await expect(
       page.getByText("Folder access works in the desktop app.", {
         exact: false,

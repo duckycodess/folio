@@ -17,8 +17,14 @@ export function sidebar(page: Page, label: string): Locator {
   return page.getByRole("button", { name: label, exact: true });
 }
 
-export function openView(page: Page, label: string): Promise<void> {
-  return sidebar(page, label).click();
+export async function openView(page: Page, label: string): Promise<void> {
+  // Model Lab is reached from Settings & style, as in the brandkit mockup.
+  if (label === "Model Lab") {
+    await sidebar(page, "Settings & style").click();
+    await page.getByRole("button", { name: "Open Model Lab" }).click();
+    return;
+  }
+  await sidebar(page, label).click();
 }
 
 export function reader(page: Page, name: string): Locator {

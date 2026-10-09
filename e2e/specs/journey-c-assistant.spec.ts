@@ -15,7 +15,7 @@ test.describe("Journey C: ask and act", () => {
     folio,
   }) => {
     await addFolder(folio);
-    await openView(folio, "Ask & Act");
+    await openView(folio, "Ask & Search");
     const instruction = folio.getByRole("textbox", {
       name: "Your request",
       exact: true,
@@ -39,7 +39,7 @@ test.describe("Journey C: ask and act", () => {
     ).toBeVisible();
 
     // The instruction survived the trip to Model Lab.
-    await openView(folio, "Ask & Act");
+    await openView(folio, "Ask & Search");
     await expect(
       folio.getByRole("textbox", { name: "Your request", exact: true }),
     ).toHaveValue(TAGLISH);
@@ -53,9 +53,9 @@ test.describe("Journey C: ask and act", () => {
       "Home",
       "Organize",
       "Graph",
-      "Ask & Act",
+      "Ask & Search",
       "Activity",
-      "Model Lab",
+      "Settings & style",
     ])
       await expect(
         folio.getByRole("button", { name: view, exact: true }),

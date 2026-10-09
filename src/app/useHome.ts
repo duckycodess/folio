@@ -7,13 +7,21 @@ import {
 } from "../domain/homeFilters";
 import type { WorkspaceState } from "./useWorkspace";
 
+/** The brandkit mockup's tabs over Home's file table. */
+export type HomeTab = "recent" | "starred" | "all";
+
 /**
- * Home's filters, pinned folders and recently opened files. Filters live
- * above the views, so leaving Home and coming back keeps them. Pins and
- * recent files are this device's preferences for one folder; a pin is not a
- * permission.
+ * Home's filters, tab, pinned folders, starred files and recently opened
+ * files. Filters live above the views, so leaving Home and coming back keeps
+ * them. Pins, stars and recent files are this device's preferences for one
+ * folder; a pin or a star is not a permission.
  */
 export interface HomeState {
+  tab: HomeTab;
+  setTab: (tab: HomeTab) => void;
+  /** Files starred on this device. */
+  starIds: string[];
+  toggleStar: (id: string) => void;
   filters: HomeFilters;
   setFilters: (filters: HomeFilters) => void;
   pins: string[];
@@ -25,9 +33,10 @@ export interface HomeState {
 interface Stored {
   pins: string[];
   recent: string[];
+  stars: string[];
 }
 
-const EMPTY: Stored = { pins: [], recent: [] };
+const EMPTY: Stored = { pins: [], recent: [], stars: [] };
 
 function key(workspace: WorkspaceState): string | null {
   if (workspace.workspace) return `folio.home.${workspace.workspace.id}`;
@@ -43,7 +52,11 @@ function load(storageKey: string | null): Stored {
       Array.isArray(value)
         ? value.filter((item): item is string => typeof item === "string")
         : [];
-    return { pins: strings(parsed?.pins), recent: strings(parsed?.recent) };
+    return {
+      pins: strings(parsed?.pins),
+      recent: strings(parsed?.recent),
+      stars: strings(parsed?.stars),
+    };
   } catch {
     return EMPTY;
   }
@@ -61,6 +74,7 @@ function save(storageKey: string | null, stored: Stored) {
 export function useHome(workspace: WorkspaceState): HomeState {
   const storageKey = key(workspace);
   const [filters, setFilters] = useState<HomeFilters>(NO_FILTERS);
+  const [tab, setTab] = useState<HomeTab>("recent");
   const [stored, setStored] = useState<Stored>(() => load(storageKey));
 
   // Another folder: its own preferences, and filters that fit it.
@@ -89,6 +103,16 @@ export function useHome(workspace: WorkspaceState): HomeState {
   }, [selectedId, storageKey]);
 
   return {
+    tab,
+    setTab,
+    starIds: stored.stars,
+    toggleStar: (id) =>
+      update({
+        ...stored,
+        stars: stored.stars.includes(id)
+          ? stored.stars.filter((item) => item !== id)
+          : [...stored.stars, id],
+      }),
     filters,
     setFilters,
     pins: stored.pins,

@@ -173,17 +173,31 @@
   list-style: none;
 }
 .file-row {
-  border-top: 1px solid var(--color-border);
-}
-.file-row:first-child {
-  border-top: 0;
+  border-bottom: 1px solid var(--color-border);
 }
 .file-row:hover {
-  background: var(--color-surface-muted);
+  background: var(--color-row-hover);
 }
+/* The brandkit mockup's chosen file: solid gold, a honey edge, dark text. */
 .file-row:has(.list-row.is-selected) {
-  background: var(--color-selected);
-  box-shadow: inset 3px 0 0 var(--brand-gold);
+  background: var(--brand-gold);
+  border-bottom-color: #e3ad10;
+  box-shadow: inset 3px 0 0 var(--brand-honey);
+  color: var(--color-text-on-gold);
+}
+.file-row:has(.list-row.is-selected) .list-row-title {
+  font-weight: 600;
+}
+.file-row:has(.list-row.is-selected) .list-row-cells > span,
+.file-row:has(.list-row.is-selected) .list-row-subtitle,
+.file-row:has(.list-row.is-selected) .file-row-detail,
+.file-row:has(.list-row.is-selected) .star-button,
+.file-row:has(.list-row.is-selected) .row-menu-button {
+  color: #4e471e;
+}
+.file-row:has(.list-row.is-selected) .pill {
+  background: rgb(255 255 255 / 0.4);
+  color: #34351f;
 }
 .file-row-line {
   display: flex;
@@ -348,43 +362,63 @@
    FileList.tsx (../../app/fileColumns.ts) and set as --file-columns, so
    columns drop one at a time — size, then modified, then type, then
    location — and the name is never the one that gets crushed (#67). */
-.file-table {
-  margin: calc(var(--space-4) * -1);
-}
 .file-table-head,
 .file-table .list-row {
   display: grid;
-  grid-template-columns: var(
-    --file-columns,
-    minmax(0, 1fr) 160px 96px 112px 80px
-  );
+  grid-template-columns: var(--file-columns, minmax(0, 1fr) 140px 110px);
   align-items: center;
-  gap: var(--space-4);
+  gap: 20px;
 }
+/* The mockup's table: 11px muted headings, 14px/10px cells. */
 .file-table-head {
-  padding: var(--space-2) var(--space-4);
+  padding: 15px 10px;
+  color: var(--color-text-tertiary);
+  font: 500 11px/1.3 var(--font-sans);
 }
-/* Leaves room above each row's ⋯ menu. */
+/* Leaves room above each row's star and ⋯ menu. */
 .file-table.has-actions .file-table-head {
-  padding-right: calc(var(--space-4) + 40px);
+  padding-right: calc(10px + 40px);
 }
-.file-table-head {
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface-muted);
-  color: var(--color-text-secondary);
-  font: var(--text-small);
-  font-weight: 600;
+.file-table.has-stars .file-table-head {
+  padding-right: calc(10px + 40px);
+}
+.file-table.has-actions.has-stars .file-table-head {
+  padding-right: calc(10px + 80px);
 }
 .file-table .list-row {
-  min-height: 48px;
+  min-height: 0;
+  padding: 14px 10px;
+}
+.file-table .list-row-main {
+  gap: 12px;
+}
+.file-table .list-row-title {
+  font: 500 13px/1.3 var(--font-sans);
 }
 .file-table .list-row-cells > span {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font: var(--text-small);
-  color: var(--color-text-secondary);
+  font: 400 12px/1.3 var(--font-sans);
+  color: var(--color-text-tertiary);
+}
+.star-button {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text);
+}
+.star-button.is-starred {
+  color: var(--brand-honey);
+}
+.file-row:has(.list-row.is-selected) .star-button.is-starred {
+  color: var(--color-text-on-gold);
 }
 /* The location has its own column while there's room for it; once it drops,
    FileList.tsx adds .file-table-compact and it moves under the name. */
@@ -468,24 +502,33 @@
   display: inline-flex;
 }
 
-/* File-type tile */
+/* File-type badge: the brandkit mockup's 28×32 tile with the type's name. */
 .file-type-icon {
-  display: inline-flex;
+  display: inline-grid;
+  place-items: center;
   flex: none;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-sm);
-  color: #ffffff;
+  width: 28px;
+  height: 32px;
+  border-radius: 5px;
+  font: 700 9px/1 var(--font-sans);
+  letter-spacing: 0.02em;
+}
+.file-type-small {
+  width: 22px;
+  height: 26px;
+  font-size: 8px;
 }
 .file-type-pdf {
-  background: var(--file-pdf);
+  background: #fbe9e2;
+  color: #b9432a;
 }
 .file-type-text {
-  background: var(--file-text);
+  background: #e5edfb;
+  color: #3a68b5;
 }
 .file-type-markdown {
-  background: var(--file-markdown-bg);
-  color: var(--file-markdown-fg);
+  background: #e9ece6;
+  color: #4a5242;
 }
 
 /* Notice */
@@ -615,23 +658,28 @@
 }
 
 /* Tabs */
+/* The brandkit mockup's tabs: muted labels, a gold underline under the
+   chosen one. */
 .tabs {
   display: flex;
-  gap: var(--space-4);
+  gap: 24px;
   padding: 0 var(--space-4);
   border-bottom: 1px solid var(--color-border);
 }
 .tab {
-  padding: var(--space-3) 0;
+  padding: 12px 0;
   border: 0;
-  border-bottom: 2px solid transparent;
   background: none;
-  color: var(--color-text-secondary);
-  font: var(--text-label);
+  color: var(--color-text-tertiary);
+  font: 400 14px/1.3 var(--font-sans);
+}
+.tab:hover {
+  color: var(--color-text);
 }
 .tab.is-active {
   color: var(--color-text);
-  border-bottom-color: var(--color-text);
+  font-weight: 700;
+  box-shadow: 0 2px var(--brand-gold);
 }
 
 /* Form fields */

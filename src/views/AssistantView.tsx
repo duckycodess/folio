@@ -86,7 +86,7 @@ export function AssistantView({
     return (
       <div className="view">
         <header className="page-header page-header-compact">
-          <h1 className="page-title">Ask &amp; Act</h1>
+          <h1 className="page-title">A hand with your files.</h1>
         </header>
         <Panel title="Ask Olio about your files">
           <EmptyState
@@ -126,10 +126,9 @@ export function AssistantView({
       <header className="page-header page-header-compact ask-header">
         <OlioSprite state={ask.busy ? "thinking" : "idle"} size={130} />
         <div>
-          <h1 className="page-title">Ask &amp; Act</h1>
+          <h1 className="page-title">A hand with your files.</h1>
           <p className="page-tagline">
-            Ask Olio to find, explain or summarize your files. Nothing changes
-            without your approval.
+            Search deeper. Connect ideas. Review every change.
           </p>
         </div>
       </header>

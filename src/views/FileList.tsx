@@ -13,12 +13,13 @@ import {
   nameColumnWidth,
   visibleColumns,
 } from "../app/fileColumns";
+import { Star } from "lucide-react";
 import { useElementWidth } from "../app/useElementWidth";
 import type { DocumentRecord, SearchResult } from "../domain/contracts";
 import { FileTypeIcon } from "../ui/FileTypeIcon";
 import { ListRow } from "../ui/ListRow";
 import { RowMenu, type RowMenuItem } from "../ui/RowMenu";
-import { fileKind, folderOf, formatBytes, formatDate } from "./format";
+import { folderOf, formatDate } from "./format";
 
 interface FileListProps {
   label: string;
@@ -37,14 +38,17 @@ interface FileListProps {
   ) => ReactNode;
   /** The search results behind `documents`, passed to `renderDetail`. */
   results?: SearchResult[];
+  /** Starred files; with `onToggleStar`, each row gets a star button. */
+  isStarred?: (document: DocumentRecord) => boolean;
+  onToggleStar?: (document: DocumentRecord) => void;
 }
 
 /**
- * The file table: name, location, type, modified and size. Columns drop out
- * one at a time, in priority order (size, then modified, then type, then
- * location — see `../app/fileColumns.ts`), as the table's own width shrinks,
- * so the name is never the column that gets crushed (#67). Once location
- * drops, it moves under the name instead.
+ * The file table, as in the brandkit mockup: name, folder, modified and a
+ * star. Columns drop out one at a time (modified, then folder — see
+ * `../app/fileColumns.ts`) as the table's own width shrinks, so the name is
+ * never the column that gets crushed (#67). Once the folder drops, it moves
+ * under the name instead.
  *
  * Arrow keys, Home and End move between rows; Enter or Space opens one. The
  * single Tab stop follows the focused row, so Tab and Shift+Tab come back to
@@ -64,6 +68,8 @@ export function FileList({
   actions,
   renderDetail,
   results,
+  isStarred,
+  onToggleStar,
 }: FileListProps) {
   const [focusedId, setFocusedId] = useState<string>();
   const detailPrefix = useId();
@@ -102,9 +108,8 @@ export function FileList({
   });
   const shown = visibleColumns(tableWidth - fit.chrome, fit.name);
   const showLocationColumn = shown.includes("location");
-  const showType = shown.includes("type");
   const showModified = shown.includes("modified");
-  const showSize = shown.includes("size");
+  const stars = Boolean(isStarred && onToggleStar);
   const columnsStyle = {
     "--file-columns": fileColumnsTemplate(shown),
   } as CSSProperties;
@@ -148,18 +153,16 @@ export function FileList({
   return (
     <div
       ref={tableRef}
-      className={`file-table${actions ? " has-actions" : ""}${showLocationColumn ? "" : " file-table-compact"}`}
+      className={`file-table${actions ? " has-actions" : ""}${stars ? " has-stars" : ""}${showLocationColumn ? "" : " file-table-compact"}`}
       style={columnsStyle}
     >
       {/* Visual column headings; each row's spoken name carries the same facts. */}
       <div className="file-table-head" aria-hidden="true">
         <span className="file-col-name">Name</span>
         {showLocationColumn && (
-          <span className="file-col-location">Location</span>
+          <span className="file-col-location">Folder</span>
         )}
-        {showType && <span className="file-col-type">Type</span>}
         {showModified && <span className="file-col-modified">Modified</span>}
-        {showSize && <span className="file-col-size">Size</span>}
       </div>
       <ul
         className="file-list"
@@ -169,8 +172,7 @@ export function FileList({
       >
         {documents.map((document, index) => {
           const location = folderOf(document.relativePath);
-          const kind = fileKind(document);
-          const size = formatBytes(document.sizeBytes);
+          const starred = isStarred?.(document) ?? false;
           const modified =
             document.modifiedAtMs === undefined
               ? undefined
@@ -192,10 +194,9 @@ export function FileList({
                   cells={
                     <>
                       {showLocationColumn && (
-                        <span className="file-col-location">{location}</span>
-                      )}
-                      {showType && (
-                        <span className="file-col-type">{kind}</span>
+                        <span className="file-col-location">
+                          <span className="pill">{location}</span>
+                        </span>
                       )}
                       {/* The heading row is hidden from assistive tech, so a
                           date carries its column in words that are spoken,
@@ -217,9 +218,6 @@ export function FileList({
                           )}
                         </span>
                       )}
-                      {showSize && (
-                        <span className="file-col-size tabular">{size}</span>
-                      )}
                     </>
                   }
                   tooltip={document.relativePath}
@@ -229,6 +227,23 @@ export function FileList({
                   dataId={document.id}
                   onSelect={() => onSelect(document)}
                 />
+                {stars && (
+                  <button
+                    type="button"
+                    className={`star-button${starred ? " is-starred" : ""}`}
+                    aria-pressed={starred}
+                    aria-label={`Star ${document.name}`}
+                    title={starred ? "Starred" : "Star"}
+                    tabIndex={tabbable ? 0 : -1}
+                    onClick={() => onToggleStar?.(document)}
+                  >
+                    <Star
+                      size={16}
+                      aria-hidden="true"
+                      fill={starred ? "currentColor" : "none"}
+                    />
+                  </button>
+                )}
                 {actions && (
                   <RowMenu
                     label={`Actions for ${document.name}`}

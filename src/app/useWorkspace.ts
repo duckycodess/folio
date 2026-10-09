@@ -251,6 +251,6 @@ export function useWorkspace(): WorkspaceState {
 }
 
 /** The last segment of a folder path, on Windows or macOS. */
-function folderName(rootPath: string): string {
+export function folderName(rootPath: string): string {
   return rootPath.split(/[\\/]/).filter(Boolean).at(-1) ?? rootPath;
 }

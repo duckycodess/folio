@@ -10,12 +10,7 @@ import {
 
 describe("visibleColumns", () => {
   it("shows every column when there's plenty of room", () => {
-    expect(visibleColumns(1200)).toEqual([
-      "location",
-      "type",
-      "modified",
-      "size",
-    ]);
+    expect(visibleColumns(1200)).toEqual(["location", "modified"]);
   });
 
   it("drops columns one at a time, in priority order, as the width shrinks", () => {
@@ -33,7 +28,7 @@ describe("visibleColumns", () => {
       }
     }
     // Each step removes exactly the next column in the documented drop
-    // order (size, then modified, then type, then location).
+    // order (modified, then location).
     const droppedInOrder = seen
       .slice(0, -1)
       .map((columns, index) =>
@@ -42,10 +37,10 @@ describe("visibleColumns", () => {
     expect(droppedInOrder).toEqual(COLUMN_DROP_ORDER);
   });
 
-  it("never drops the name column (it isn't one of the four)", () => {
+  it("never drops the name column (it isn't one of the droppable ones)", () => {
     expect(visibleColumns(0)).toEqual([]);
-    // Name is implicit/always present; these four are the only droppable
-    // ones, and at width 0 all four are gone, leaving just the name.
+    // Name is implicit/always present; at width 0 every droppable column is
+    // gone, leaving just the name.
   });
 
   it("keeps at least the name's minimum width available once every column is dropped", () => {
@@ -55,9 +50,9 @@ describe("visibleColumns", () => {
 
 describe("name column width", () => {
   it("drops a column sooner when the longest name needs more room", () => {
-    // 160 + 4 columns (448) + 5 gaps (80) = 688 fits a short name only.
-    expect(visibleColumns(688, NAME_MIN_WIDTH)).toHaveLength(4);
-    expect(visibleColumns(688, 200)).toEqual(["location", "type", "modified"]);
+    // 160 + 2 columns (250) + 3 gaps (60) = 470 fits a short name only.
+    expect(visibleColumns(470, NAME_MIN_WIDTH)).toHaveLength(2);
+    expect(visibleColumns(470, 200)).toEqual(["location"]);
   });
 
   it("follows the longest name, within its minimum and maximum", () => {
@@ -73,9 +68,9 @@ describe("fileColumnsTemplate", () => {
     expect(fileColumnsTemplate([])).toBe("minmax(0, 1fr)");
   });
 
-  it("orders tracks as Location, Type, Modified, Size regardless of input order", () => {
-    expect(fileColumnsTemplate(["size", "location"])).toBe(
-      "minmax(0, 1fr) 160px 80px",
+  it("orders tracks as Folder, then Modified, regardless of input order", () => {
+    expect(fileColumnsTemplate(["modified", "location"])).toBe(
+      "minmax(0, 1fr) 140px 110px",
     );
   });
 });
