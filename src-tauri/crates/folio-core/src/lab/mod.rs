@@ -14,4 +14,4 @@ pub mod suite;
 pub mod workspace;
 
 pub use record::*;
-pub use sink::{LabSink, MemorySink};
+pub use sink::{JsonFileSink, LabExport, LabSink, MemorySink};
