@@ -37,6 +37,7 @@ struct IndexSnapshot {
     chunks: Vec<Chunk>,
     retriever: HybridRetriever,
     embedding_space: Option<EmbeddingSpace>,
+    skipped_documents: Vec<SkippedDocument>,
 }
 
 type IndexState = Arc<Mutex<Option<IndexSnapshot>>>;
@@ -72,6 +73,14 @@ struct IndexStatus {
     chunk_count: usize,
     method: String,
     embedding_space_id: Option<String>,
+    skipped_documents: Vec<SkippedDocument>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SkippedDocument {
+    relative_path: String,
+    reason: String,
 }
 
 fn authorized(state: &WorkspaceState, workspace_id: &str) -> Result<ScopedRoot, String> {
@@ -391,11 +400,20 @@ fn runtime_id_for_host() -> &'static str {
 
 fn load_corpus(
     root: &Path,
-) -> Result<(Vec<DocumentRecord>, HashMap<String, String>, Vec<Chunk>), String> {
+) -> Result<
+    (
+        Vec<DocumentRecord>,
+        HashMap<String, String>,
+        Vec<Chunk>,
+        Vec<SkippedDocument>,
+    ),
+    String,
+> {
     let metadata = workspace::list_documents(root)?;
     let mut documents = Vec::new();
     let mut contents = HashMap::new();
     let mut text_documents = Vec::new();
+    let mut skipped_documents = Vec::new();
     for row in metadata {
         let extension = Path::new(&row.relative_path)
             .extension()
@@ -405,7 +423,16 @@ fn load_corpus(
         if !matches!(extension.as_str(), "txt" | "md") {
             continue;
         }
-        let content = workspace::read_text(root, &row.relative_path)?;
+        let content = match workspace::read_text(root, &row.relative_path) {
+            Ok(content) => content,
+            Err(reason) => {
+                skipped_documents.push(SkippedDocument {
+                    relative_path: row.relative_path,
+                    reason,
+                });
+                continue;
+            }
+        };
         let record = DocumentRecord {
             id: row.id.clone(),
             relative_path: row.relative_path.clone(),
@@ -423,7 +450,7 @@ fn load_corpus(
     let chunks = InterimTextChunker::new(text_documents)
         .all_chunks()
         .map_err(|error| error.to_string())?;
-    Ok((documents, contents, chunks))
+    Ok((documents, contents, chunks, skipped_documents))
 }
 
 fn with_embedding_provider<T, F>(
@@ -527,7 +554,7 @@ fn build_snapshot(
     workspace_id: &str,
     root: &Path,
 ) -> Result<IndexSnapshot, NativeProviderError> {
-    let (documents, _contents, chunks) =
+    let (documents, _contents, chunks, skipped_documents) =
         load_corpus(root).map_err(|error| NativeProviderError {
             code: folio_core::contracts::ProviderErrorCode::IoError,
             message: error,
@@ -557,6 +584,7 @@ fn build_snapshot(
         chunks,
         retriever,
         embedding_space,
+        skipped_documents,
     })
 }
 
@@ -600,6 +628,7 @@ fn snapshot_status(snapshot: &IndexSnapshot) -> IndexStatus {
             .embedding_space
             .as_ref()
             .map(folio_core::retrieval::embedding_space_id),
+        skipped_documents: snapshot.skipped_documents.clone(),
     }
 }
 
@@ -617,6 +646,7 @@ fn index_status(index_state: State<'_, IndexState>) -> Result<IndexStatus, Nativ
             chunk_count: 0,
             method: "keyword".into(),
             embedding_space_id: None,
+            skipped_documents: Vec::new(),
         },
         snapshot_status,
     ))
@@ -992,7 +1022,7 @@ async fn interpret_request(
                 message,
                 detail: None,
             })?;
-        let (documents, contents, chunks) =
+        let (documents, contents, chunks, _skipped_documents) =
             load_corpus(&root.path).map_err(|message| NativeProviderError {
                 code: folio_core::contracts::ProviderErrorCode::IoError,
                 message,
@@ -1026,6 +1056,27 @@ fn unload_generation_now(generation_state: &GenerationState) -> Result<(), Nativ
         slot.provider.unload().map_err(native_error)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn corpus_loading_skips_and_reports_unreadable_text() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("valid.md"), "valid content").unwrap();
+        fs::write(root.path().join("invalid.md"), [0xff, 0xfe]).unwrap();
+
+        let (documents, contents, chunks, skipped) = load_corpus(root.path()).unwrap();
+        assert_eq!(documents.len(), 1);
+        assert_eq!(contents.len(), 1);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(skipped.len(), 1);
+        assert_eq!(skipped[0].relative_path, "invalid.md");
+        assert!(skipped[0].reason.contains("valid UTF-8"));
+    }
 }
 
 #[tauri::command]
