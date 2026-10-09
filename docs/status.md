@@ -31,6 +31,7 @@
 - Home as the file browser ([#42](https://github.com/duckycodess/folio/issues/42), [#43](https://github.com/duckycodess/folio/issues/43), ADR 0010). The Files tab is gone. Home lists every file, sorted by path, with a count. Each row has a keyboard-accessible ⋯ menu (Open, Rename…, Move to folder…, Show related), and the document panel has the same menu. Rename and Move use the exact preview, Approve and Undo flow from #22, in a dialog. The search field is only on Home, centred, and ⌘K / Ctrl K from any page opens Home and focuses it. Rows take an optional `renderDetail` slot for #19's search evidence. With the sample files, Rename and Move explain that a folder is needed. In practice mode (`?simulate=<code>`), they show the simulated refusal instead.
 - Organize flow ([issue #22](https://github.com/duckycodess/folio/issues/22)), desktop only. Analyze re-indexes the open folder, with live progress and Stop, then lists exact duplicates (by content, never moved or deleted) and filename suggestions to tick. The exact preview shows every from → to path from the native plan. Approve echoes that plan's digest and applies it. The result is worded from the per-file outcomes, so a batch that stopped partway never says nothing changed. It shows what was recorded in history and offers a Preview Undo. A refused apply keeps the preview, with Preview again. The Rename form uses the same native plan with a folder open. With the sample files, Organize explains that a folder is needed. Virtual collections are still not available.
 - Search evidence ([issue #19](https://github.com/duckycodess/folio/issues/19)): each Home search result shows how it matched (words in the text or in the name; "Similar meaning" only for semantic results) and up to two excerpts with the query words highlighted, case- and accent-insensitive, plus page labels for PDFs. Selecting an excerpt opens the reader at that highlighted passage. In an open folder, text search uses the persistent index (FTS5 keyword search), merged with file-name matches. An unindexed folder says that only names are searched and offers **Index this folder**, with progress and Stop. A file kept open outside the results is labelled, and a note says that finding files by meaning needs a local AI model.
+- Text-PDF pages in the reader ([issue #47](https://github.com/duckycodess/folio/issues/47)): `read_document` additionally returns each PDF page's UTF-8 byte range (`pages`) and the pages whose text couldn't be extracted (`unreadablePages`). Both are omitted for TXT and Markdown; the content, offsets and hash are unchanged. The reader shows a PDF page by page under "Page N" headings, lists unreadable pages as "Page N couldn't be read", highlights a cited passage on its page, and scrolls to a cited page whose passage can't be highlighted. Ranges that don't fit the text fall back to one block instead of mislabelling pages.
 - Home filters, pinned folders and recent files ([issue #33](https://github.com/duckycodess/folio/issues/33)):
   - Folder, File type and Modified filters under the search field combine with the query. A folder includes its subfolders, and files with no recorded time pass only "Any time". The panel shows "N of M files", and an empty result offers Clear filters.
   - The reader follows the filters as it follows search: a file the filters hide closes the reader, and a labelled note offers Clear filters.
@@ -38,6 +39,18 @@
   - Filters are kept when leaving Home and coming back.
   - The empty Collections placeholder gives way once pins or recent files exist, so the file list stays on the first screen.
   - The heading stays "Your workspace", per #43.
+- Activity tab ([issue #34](https://github.com/duckycodess/folio/issues/34)): the main navigation is Home, Organize, Graph, Ask & Act and Activity, with Model Lab in the sidebar's settings area. Activity lists what Folio actually changed, from the native history only, one entry per approved plan, newest first. Each entry shows what changed (moved, renamed, edited, created, deleted, or "changed" for a mix), the time, its status (applied, partly undone, undone), and each file's before and after paths.
+  - Undo first previews exactly which files go back.
+  - It names the blocking file and changes nothing when the preview refuses it, and it's absent when the earlier version wasn't kept.
+  - Success is shown only from the native Undo report; a partial Undo uses the partial-Undo wording.
+  - Failed attempts and the action's source aren't recorded by the native history yet (#35), and the page says so.
+- First-run onboarding ([issue #14](https://github.com/duckycodess/folio/issues/14), partly): in the desktop app, five skippable steps, shown until completed or skipped and reopened from the sidebar's "Setup guide".
+  1. Welcome.
+  2. Choose a folder: nothing is read before the system picker returns one, and a cancelled picker changes nothing.
+  3. Local AI: explains what it's for and that Model Lab shows sizes before any download. Nothing downloads here.
+  4. Index: real phases, Stop, and "Continue to Home while indexing".
+  5. What Folio found: exact duplicates and links between files from the indexed folder, with paths and the linking text, or an honest empty state with Search, Organize and Ask & Act.
+  - The model recommendation (device RAM, disk, exact size and revision) is not built yet; it waits on #24 (PR #52).
 - Keyword filtering (explicitly labelled), actual Markdown-link discovery in fixture text, source content views, and a list of those explicit links with their evidence (Graph view).
 - Graph concept map, read-only ([issue #45](https://github.com/duckycodess/folio/issues/45), first of three PRs): Graph opens on a Map, with a Map / List switch; both show the connections for the chosen starting point (all files, a file, a folder or a topic, from #40), and the list keeps Confirmed and Suggested apart. Map and list come from the same pairs (`src/domain/graphScope.ts`). Every file is a node, connected or not. Links are solid with arrowheads, identical copies a double line; dashed lines labelled "AI" are drawn only for embedding or model provenance, which nothing produces yet, so the legend says AI connections will appear when a model produces them. A legend checkbox hides each kind. The layout is deterministic d3-force run synchronously (no animation). Pan, zoom (+ / − / 0, Ctrl or ⌘ + wheel, trackpad or touch pinch; a plain wheel scrolls the page), and dragging a file (it stays pinned and its neighbours settle) work. Keyboard: one Tab stop, arrows follow connections within 60°, preferring the file straight ahead (lowest distance / cos(angle)), Page Up/Down and Home/End go through every file by path, Enter opens the file in the reader, Escape closes it. Selecting a file lists its connections with evidence under the map. Above 400 files the map shows the selected (or most connected) file's neighbourhood with a note. Rename, move, edit and delete from the map, and Shift+F10, are not built yet.
 - Tauri folder picker and scoped native listing/TXT/Markdown reading commands.
@@ -147,6 +160,36 @@ Checked on Linux (x86-64 VM, 8 vCPUs, 7 GiB RAM) with Rust 1.99.0 and Node.js 24
 - `npm run format:check`, `npm run check`, `npm test` (169 passed, 9 todo after the rebase; 165 before it) and `npm run build`: passed. The new cases cover the delete digest against the fixture, preflight of a delete (PDF refused, changed target refused), the Undo preflight for a deletion (free name, occupied name, not recoverable) and the paths it observes, and the Organize preview row and "Deleted 1 file." headline.
 - After review: deleting through a symbolic link (the file, or a folder on the way) and deleting a read-only file are refused, with the file kept, and Undo restores a deleted file's Unix permission bits (`before_mode`, stored by migration 005). Native tests: 182 passed, 2 ignored on Linux, including these three cases.
 
+### Onboarding (2026-10-10, issue #14)
+
+Checked on macOS with Node.js 26.10.0:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 183 passed, 9 todo. The new cases:
+  - onboarding starts once, in the desktop app only;
+  - step order doesn't run off either end;
+  - findings put duplicates first, then cross-folder links;
+  - files the folder no longer lists are ignored, and nothing is invented;
+  - the limit is respected.
+- Headless Chrome, with the desktop commands stood in for by a browser mock:
+  - the browser preview never shows onboarding;
+  - in desktop mode each step's heading takes focus, and no native command runs before the folder is picked;
+  - a cancelled picker leaves Continue disabled;
+  - the chosen folder and its file count show, and the AI step offers no download;
+  - indexing shows its phase with Stop and "Continue to Home while indexing";
+  - "What Folio found" lists the folder's link with both paths and the linking text;
+  - finishing opens Home, the Setup guide reopens it, and it doesn't return after a reload;
+  - no horizontal scroll at 700px.
+
+After Gab's review:
+
+- the local AI step says model setup is coming in a later version, instead of describing a Model Lab that doesn't exist yet;
+- a failed read of the index's links shows the recovery notice with the workflow buttons, not "nothing found" (checked in the browser with the read mocked to fail);
+- a link written both ways counts once;
+- the storage helper is now `src/app/onboardingStorage.ts`.
+
+Not verified: the real picker and index in the desktop app, offline use after setup, model setup (waits on #24), screen readers, and the Tauri webview.
+
 ### Ask & Act workspace (2026-10-10, issue #36)
 
 Checked on macOS with Node.js 26.10.0, on #20's branch (#48 with #15 merged in):
@@ -199,6 +242,73 @@ Checked on macOS with Node.js 26.10.0, on #48 with #15 (`FOLIO-4`) merged in:
   - nothing scrolls sideways at 700px.
 
 Not verified: a real model's summaries, which #15 still marks "Not reviewed"; cancellation against llama.cpp; Filipino and Taglish output; screen readers.
+
+### Navigation and workflow docs (2026-10-10, issue #39)
+
+Documentation only:
+
+- [ADR 0011](adr/0011-activity-organize-and-model-lab-in-navigation.md) records the navigation (Home, Organize, Graph, Ask & Act and Activity, with Model Lab in settings) and keeps Organize as its own page; removing Files and Home-only search are ADR 0010.
+- `docs/workflows.md` keeps journeys A–C and adds the named workflows.
+- `GLOSSARY.md` adds Activity, Olio, Recent Files and Pinned Folder.
+- `docs/design.md` updates the navigation table and the Home layout.
+
+Each item links the issue that builds it. At the time of writing, Activity (#34), Home filters (#33), search evidence (#19), onboarding (#14) and the Home browser (#42, #43) are open PRs, not yet on `main`. Prettier passed; the app checks weren't rerun for this docs-only change.
+
+### Text-PDF pages (2026-10-10, issue #47)
+
+Checked on macOS with Node.js 26.10.0. There's no Rust toolchain on this host, so the native change was compiled and tested only by CI's `desktop-check` jobs on macOS and Windows; see the PR's checks.
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 175 passed, 9 todo. The new cases:
+  - UTF-8 page ranges map onto text with non-ASCII characters;
+  - unreadable pages appear in page order;
+  - ranges that overrun, reorder or split a character are refused (one block instead);
+  - a passage is found on its page.
+- New Rust tests (CI):
+  - a two-page text PDF returns pages 1 and 2 whose ranges slice the right text, with the file-byte hash unchanged and no `unreadablePages` key;
+  - a Markdown file has no `pages` or `unreadablePages` keys.
+- Browser preview with the desktop commands stood in for by a mock, at 1280×850 and 640×425 at device scale 2. The mock PDF has pages 1, 2 and 4 readable and page 3 unreadable:
+  - the reader shows "Page 1" to "Page 4" as headings, page 3 as "Page 3 couldn't be read.", and the passage from a "Page 4" search result highlighted;
+  - a TXT file stays one block;
+  - no horizontal scroll.
+
+After Gab's review:
+
+- page ranges are converted in one pass (a 600-page layout test must finish in under 0.5 s; it took 13.8 s before);
+- a PDF the desktop app can't read says "Folio couldn't read this PDF's text." instead of blaming the browser preview;
+- a Rust test pins the `unreadablePages` key;
+- the unused `pageAt` is removed.
+
+Not verified: a real PDF read by the desktop app, a real PDF with a page that fails extraction, screen readers, and the Tauri webview.
+
+### Activity (2026-10-10, issue #34)
+
+Checked on macOS with Node.js 26.10.0:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 169 passed, 9 todo. The new cases cover:
+  - telling moves, renames, edits, creates and deletes apart;
+  - one entry per plan, newest first, with operations in order;
+  - "Changed N files" for a mix;
+  - applied, partly undone and undone status;
+  - no Undo for unrecoverable changes;
+  - the navigation's destinations, with Model Lab in settings.
+- Headless Chrome, browser preview:
+  - with sample files, Activity says the samples are never changed;
+  - with the native history and Undo commands mocked, entries read "Moved 3 files" and "Renamed 1 file" with their paths, and an unrecoverable change has no Undo and says why;
+  - a refused Undo names the newer edit, offers no confirm button, and returns focus on Escape;
+  - a confirmed Undo shows "Undone. 3 files are back as they were." and marks the entry undone;
+  - a partial Undo shows the partial-Undo message and "Partly undone";
+  - no horizontal scroll at 700px.
+
+After Gab's review:
+
+- the Undo dialog counts from the native preview ("Undo 5 changes") and says how many files it can't list ("and 2 more files from this change, not listed here"), so a plan larger than the history limit is never under-counted;
+- an Undo from Activity also refreshes Related and Graph;
+- a folder change clears the previous folder's Undo state;
+- the page says when only the most recent changes are shown.
+
+Not verified: the real native history and Undo, failed or cancelled batches (not recorded until #35), screen readers, and the Tauri webview.
 
 ### Home filters, pins and recent files (2026-10-10, issue #33)
 

@@ -111,3 +111,15 @@ _Avoid_: A promise that every file changes or none does.
 
 **Undo Conflict**: A file that no longer matches what Folio saved, which stops the whole Undo.
 _Avoid_: Reversing part of a batch, or discarding a newer external edit.
+
+**Activity**: The record of changes Folio actually made to files, one entry per approved plan, with Undo when it is safe.
+_Avoid_: Listing previews, suggestions, summaries or analyses as changes.
+
+**Olio**: Folio's mascot and the name of its assistant in Ask & Act.
+_Avoid_: Attributing an answer to Olio that no retrieved passage supports.
+
+**Recent Files**: Files opened in Folio on this device, newest first.
+_Avoid_: Recently modified files, or activity Folio didn't observe.
+
+**Pinned Folder**: A folder inside the workspace that the user keeps as a quick filter on Home, remembered on this device.
+_Avoid_: A permission, or a folder outside the workspace.
