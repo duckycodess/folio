@@ -665,9 +665,14 @@ export interface VectorCandidate {
 
 /* ------------------------------------------------------------ native writer */
 
-/** What `apply_plan` reports: the durable batch record and whether the index caught up. */
+/**
+ * What `apply_plan` reports once any operation has run: the durable batch record, whether
+ * the plan's record was stored after the files changed, and whether the index caught up.
+ * `historySettled: false` does not undo the outcomes in `batch`; those files did change.
+ */
 export interface ApplyReport {
   batch: BatchResult;
+  historySettled: boolean;
   indexRefreshed: boolean;
 }
 

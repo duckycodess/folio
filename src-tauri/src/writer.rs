@@ -47,18 +47,50 @@ pub trait FileSystem {
 pub struct RealFileSystem;
 
 static TEMPORARY: AtomicU64 = AtomicU64::new(0);
+/// Temporary files are named `.<file><TEMPORARY_MARK><pid>-<n>.tmp`.
+const TEMPORARY_MARK: &str = ".folio-";
+/// A temporary file this old belongs to a save that was interrupted (a crash or a kill).
+const ABANDONED_AFTER: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// Whether `name` is one of the writer's own temporary files.
+fn is_temporary_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix('.').and_then(|rest| rest.strip_suffix(".tmp")) else { return false };
+    let Some((file, counters)) = rest.rsplit_once(TEMPORARY_MARK) else { return false };
+    let numbered = counters.split_once('-').is_some_and(|(pid, n)| [pid, n].iter().all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())));
+    !file.is_empty() && numbered
+}
+
+/// Removes a temporary file an interrupted save left beside a document. Only the writer's
+/// own naming pattern, only regular files, and only once it is old enough that no save
+/// can still be using it. Returns whether `path` was removed.
+pub fn remove_if_abandoned(path: &Path, metadata: &fs::Metadata) -> bool {
+    let name = path.file_name().map(|name| name.to_string_lossy()).unwrap_or_default();
+    let old_enough = metadata.modified().ok().and_then(|modified| modified.elapsed().ok()).is_some_and(|age| age >= ABANDONED_AFTER);
+    metadata.is_file() && is_temporary_name(&name) && old_enough && fs::remove_file(path).is_ok()
+}
 
 impl FileSystem for RealFileSystem {
-    /// Writes a hidden temporary file beside the target, re-hashes the target just before
-    /// swapping, then renames the temporary file over it. The remaining window between
-    /// that re-hash and the rename is the only unguarded moment; it is not claimed atomic.
+    /// Writes a hidden temporary file beside the target with the target's permissions,
+    /// re-hashes the target just before swapping, then renames the temporary file over it.
+    /// A file Folio may not write is refused on every platform, because on Unix renaming
+    /// over it only needs write access to the folder. Ownership, ACLs and extended
+    /// attributes are not carried over. The window between the re-hash and the rename is
+    /// the only unguarded moment; it is not claimed atomic.
     fn replace_checked(&self, path: &Path, bytes: &[u8], expected: &str) -> Result<(), FolioError> {
+        let permissions = fs::metadata(path).map_err(|cause| unreadable(cause, path))?.permissions();
+        // Opening for writing without truncating changes nothing; it asks the OS whether
+        // this process may write the file itself, which `readonly()` alone does not.
+        let refused = if permissions.readonly() { Some("readOnly".to_owned()) } else { OpenOptions::new().write(true).open(path).err().map(|cause| cause.to_string()) };
+        if let Some(cause) = refused {
+            return Err(error(ErrorCode::DocumentUnavailable, "Folio is not allowed to change this file, so it left it as it is.").with_detail("file", path.to_string_lossy()).with_detail("cause", cause));
+        }
         let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-        let temporary = path.with_file_name(format!(".{name}.folio-{}-{}.tmp", std::process::id(), TEMPORARY.fetch_add(1, Ordering::SeqCst)));
+        let temporary = path.with_file_name(format!(".{name}{TEMPORARY_MARK}{}-{}.tmp", std::process::id(), TEMPORARY.fetch_add(1, Ordering::SeqCst)));
         let written = (|| {
             let mut file = OpenOptions::new().write(true).create_new(true).open(&temporary)?;
             file.write_all(bytes)?;
-            file.sync_all()
+            file.sync_all()?;
+            fs::set_permissions(&temporary, permissions)
         })();
         if let Err(cause) = written {
             let _ = fs::remove_file(&temporary);
@@ -113,12 +145,14 @@ impl FileSystem for RealFileSystem {
     }
 }
 
-/// What the writer reports for an apply: the frozen per-operation record, plus whether
+/// What the writer reports for an apply: the frozen per-operation record, whether the
+/// plan's own record and history pruning were stored after the files changed, and whether
 /// the local index caught up with the files that changed.
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ApplyReport {
     pub batch: BatchResult,
+    pub history_settled: bool,
     pub index_refreshed: bool,
 }
 
@@ -245,6 +279,9 @@ fn perform(root: &ScopedRoot, operation: &FileOperation, files: &dyn FileSystem)
         FileOperation::Rename { document_id, relative_path, expected_content_hash, destination_relative_path, .. }
         | FileOperation::Move { document_id, relative_path, expected_content_hash, destination_relative_path, .. } => {
             let source = workspace::resolve_document(&root.path, relative_path)?;
+            if hash_of(&source).as_deref() != Some(expected_content_hash.as_str()) {
+                return Err(error(ErrorCode::TargetChanged, "This file changed since the preview was prepared. It was left as it is.").with_detail("path", relative_path.as_str()));
+            }
             let destination = plan::resolve_destination(&root.path, destination_relative_path)?;
             files.rename_no_replace(&source, &destination)?;
             Ok(Record {
@@ -274,16 +311,24 @@ fn record_history(conn: &Connection, plan_id: &str, index: usize, record: &Recor
 /// Each operation re-checks its own target as it runs; the first failure stops the
 /// batch, a cancellation stops it before the next operation, and every completed
 /// change keeps its history entry. The index is refreshed for the files that changed.
+///
+/// An `Err` means no file was changed. Once the first operation has run, the report is
+/// always returned, and bookkeeping that fails afterwards is reported as
+/// `history_settled: false` rather than as a failure of changes that did happen.
 pub fn apply_plan(conn: &mut Connection, root: &ScopedRoot, plan: &ActionPlan, approval: &Approval, now: i64, files: &dyn FileSystem, cancel: &AtomicBool) -> NativeResult<ApplyReport> {
-    let recorded: Option<i64> = conn.query_row("SELECT 1 FROM action_plans WHERE id = ?1", [&plan.id], |row| row.get(0)).optional()?;
+    // The duplicate check and both records commit together before the first write, so a
+    // failed setup never leaves a plan that looks applied when nothing changed.
+    let setup = conn.transaction()?;
+    let recorded: Option<i64> = setup.query_row("SELECT 1 FROM action_plans WHERE id = ?1", [&plan.id], |row| row.get(0)).optional()?;
     if recorded.is_some() {
         return Err(error(ErrorCode::PlanStateInvalid, "This plan has already been applied. Review a fresh preview.").with_detail("planId", plan.id.as_str()));
     }
-    conn.execute(
+    setup.execute(
         "INSERT INTO action_plans (id, workspace_id, plan_json, plan_digest, status, created_at, expires_at, applied_at) VALUES (?1, ?2, ?3, ?4, 'approved', ?5, ?6, ?7)",
         params![plan.id, plan.workspace_id, serde_json::to_string(&summarize(plan))?, plan.digest, plan.created_at.to_string(), plan.expires_at.to_string(), now.to_string()],
     )?;
-    conn.execute("INSERT INTO approvals (plan_id, plan_digest, approved_at) VALUES (?1, ?2, ?3)", params![plan.id, approval.plan_digest, approval.approved_at.to_string()])?;
+    setup.execute("INSERT INTO approvals (plan_id, plan_digest, approved_at) VALUES (?1, ?2, ?3)", params![plan.id, approval.plan_digest, approval.approved_at.to_string()])?;
+    setup.commit()?;
 
     let mut attempts = Vec::new();
     let mut cancelled_after = None;
@@ -316,17 +361,25 @@ pub fn apply_plan(conn: &mut Connection, root: &ScopedRoot, plan: &ActionPlan, a
         }
     }
 
-    let batch = plan::settle_batch(plan, approval, &attempts, cancelled_after, now, now)?;
-    let status = match batch.stop_reason {
-        crate::contracts::BatchStopReason::Failed => "failed",
-        _ => "applied",
-    };
-    let stop_reason = serde_json::to_value(batch.stop_reason)?.as_str().unwrap_or_default().to_owned();
-    conn.execute("UPDATE action_plans SET status = ?1, stop_reason = ?2 WHERE id = ?3", params![status, stop_reason, plan.id])?;
-    prune_history(conn, &root.id, RECOVERABLE_PLANS)?;
+    // The attempts were built above in exactly the shape `settle_batch` accepts (one per
+    // operation run, stopping at the first failure, a cancellation only after a finished
+    // operation), and `assert_can_apply` matched the approval before this ran.
+    let batch = plan::settle_batch(plan, approval, &attempts, cancelled_after, now, now).expect("the writer reports attempts in the shape settle_batch requires");
+    let settled = (|| -> NativeResult<()> {
+        let status = match batch.stop_reason {
+            crate::contracts::BatchStopReason::Failed => "failed",
+            _ => "applied",
+        };
+        let stop_reason = serde_json::to_value(batch.stop_reason)?.as_str().unwrap_or_default().to_owned();
+        conn.execute("UPDATE action_plans SET status = ?1, stop_reason = ?2 WHERE id = ?3", params![status, stop_reason, plan.id])?;
+        prune_history(conn, &root.id, RECOVERABLE_PLANS)
+    })();
+    if let Err(failure) = &settled {
+        eprintln!("Folio applied plan {} but could not finish recording it: {}", plan.id, failure.message);
+    }
     changed_paths.dedup();
     let index_refreshed = changed_paths.is_empty() || index::refresh_paths(conn, root, &changed_paths).is_ok();
-    Ok(ApplyReport { batch, index_refreshed })
+    Ok(ApplyReport { batch, history_settled: settled.is_ok(), index_refreshed })
 }
 
 /// Keeps the previous content of edits for the most recent `keep` plans. Older edits stay
@@ -790,6 +843,129 @@ mod tests {
         let (gone_plan, _) = approved(&gone_conn, &gone_root, &mut gone_registry, vec![create("notes/x.md", "x")]);
         drop(gone_folder);
         assert!(gone_registry.assert_can_apply(&gone_root.path, &gone_plan.id, NOW + 2).is_err(), "a folder that disappeared is refused before any write");
+    }
+
+    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn edit_and_undo_keep_a_private_file_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let (folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let target = folder.path().join("projects/project-plan.md");
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        let operation = edit(&conn, &root, "projects/project-plan.md", "October 20", "October 23");
+        let report = apply_with(&mut conn, &root, vec![operation], &RealFileSystem);
+        assert_eq!(statuses(&report), vec![OperationStatus::Succeeded]);
+        assert_eq!(mode(&target), 0o600);
+        undo_all(&mut conn, &root, &report.batch.plan_id, &RealFileSystem).unwrap();
+        assert_eq!(mode(&target), 0o600, "Undo keeps them too");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn edit_refuses_a_read_only_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let (folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let target = folder.path().join("projects/project-plan.md");
+        let original = fs::read(&target).unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o444)).unwrap();
+        let operation = edit(&conn, &root, "projects/project-plan.md", "October 20", "October 23");
+        let report = apply_with(&mut conn, &root, vec![operation], &RealFileSystem);
+        assert_eq!(statuses(&report), vec![OperationStatus::Failed]);
+        assert_eq!(report.batch.outcomes[0].error.as_ref().unwrap().code, ErrorCode::DocumentUnavailable);
+        assert_eq!(fs::read(&target).unwrap(), original, "a read-only file is never replaced");
+        assert_eq!(mode(&target), 0o444);
+        assert!(fs::read_dir(target.parent().unwrap()).unwrap().all(|entry| !entry.unwrap().file_name().to_string_lossy().ends_with(".tmp")), "no temporary file is left behind");
+    }
+
+    #[test]
+    fn a_rename_or_move_whose_source_changed_after_preflight_is_refused() {
+        let (folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let mut registry = PlanRegistry::new();
+        let (plan, approval) = approved(&conn, &root, &mut registry, vec![relocate(&conn, &root, "notes/paalala.md", "archive/paalala.md", false)]);
+        registry.assert_can_apply(&root.path, &plan.id, NOW + 2).unwrap();
+        fs::write(folder.path().join("notes/paalala.md"), "edited elsewhere").unwrap();
+        let report = apply_plan(&mut conn, &root, &plan, &approval, NOW + 2, &RealFileSystem, &AtomicBool::new(false)).unwrap();
+        assert_eq!(report.batch.outcomes[0].error.as_ref().unwrap().code, ErrorCode::TargetChanged);
+        assert!(!folder.path().join("archive/paalala.md").exists());
+        assert_eq!(fs::read_to_string(folder.path().join("notes/paalala.md")).unwrap(), "edited elsewhere");
+        assert!(list_history(&conn, &root.id, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_failed_setup_changes_nothing_and_leaves_the_plan_free_to_apply() {
+        let (folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let mut registry = PlanRegistry::new();
+        let (plan, approval) = approved(&conn, &root, &mut registry, vec![edit(&conn, &root, "projects/project-plan.md", "October 20", "October 23")]);
+        let untouched = hash_all(folder.path());
+        conn.execute_batch("CREATE TEMP TRIGGER refuse_approval BEFORE INSERT ON approvals BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+        assert!(apply_plan(&mut conn, &root, &plan, &approval, NOW + 2, &RealFileSystem, &AtomicBool::new(false)).is_err());
+        assert_eq!(hash_all(folder.path()), untouched, "nothing was written");
+        let recorded: i64 = conn.query_row("SELECT count(*) FROM action_plans WHERE id = ?1", [&plan.id], |row| row.get(0)).unwrap();
+        assert_eq!(recorded, 0, "the plan record was rolled back with the approval");
+        conn.execute_batch("DROP TRIGGER refuse_approval;").unwrap();
+        let report = apply_plan(&mut conn, &root, &plan, &approval, NOW + 2, &RealFileSystem, &AtomicBool::new(false)).unwrap();
+        assert_eq!(statuses(&report), vec![OperationStatus::Succeeded]);
+    }
+
+    #[test]
+    fn bookkeeping_that_fails_after_the_writes_still_reports_what_changed() {
+        let (folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let mut registry = PlanRegistry::new();
+        let (plan, approval) = approved(&conn, &root, &mut registry, vec![edit(&conn, &root, "projects/project-plan.md", "October 20", "October 23")]);
+        conn.execute_batch("CREATE TEMP TRIGGER refuse_settling BEFORE UPDATE ON action_plans BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+        let report = apply_plan(&mut conn, &root, &plan, &approval, NOW + 2, &RealFileSystem, &AtomicBool::new(false)).unwrap();
+        assert_eq!(statuses(&report), vec![OperationStatus::Succeeded]);
+        assert!(!report.history_settled && report.index_refreshed);
+        assert!(report.batch.outcomes[0].history_entry_id.is_some(), "the caller still learns which entry Undo reverses");
+        assert!(fs::read_to_string(folder.path().join("projects/project-plan.md")).unwrap().contains("October 23"));
+        assert_eq!(list_history(&conn, &root.id, 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_scan_removes_only_temporary_files_an_interrupted_save_left_behind() {
+        let (folder, mut conn, root) = fixture_workspace();
+        let notes = folder.path().join("notes");
+        let abandoned = notes.join(".paalala.md.folio-4242-0.tmp");
+        let recent = notes.join(".paalala.md.folio-4242-1.tmp");
+        let users = notes.join(".paalala.md.tmp");
+        for path in [&abandoned, &recent, &users] {
+            fs::write(path, "partial").unwrap();
+        }
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 60);
+        for path in [&abandoned, &users] {
+            fs::File::options().write(true).open(path).unwrap().set_modified(old).unwrap();
+        }
+        scan(&mut conn, &root);
+        assert!(!abandoned.exists());
+        assert!(recent.exists(), "a save may still be using a recent one");
+        assert!(users.exists(), "only the writer's own naming pattern is removed");
+        assert!(is_temporary_name(".project-plan.md.folio-12-3.tmp"));
+        assert!(!is_temporary_name(".folio-12-3.tmp") && !is_temporary_name(".notes.folio-x-3.tmp") && !is_temporary_name("notes.folio-12-3.tmp"));
+    }
+
+    #[test]
+    fn ripple_does_not_read_the_filipino_word_may_as_the_month() {
+        let (folder, mut conn, root) = fixture_workspace();
+        fs::write(folder.path().join("notes/klase.md"), "# Klase\n\nAng klase ay may 20 estudyante. Tingnan ang [plano](../projects/project-plan.md).\n").unwrap();
+        fs::write(folder.path().join("notes/pasahan.md"), "# Pasahan\n\nAng pasahan ay sa May 20. Tingnan ang [plano](../projects/project-plan.md).\n").unwrap();
+        scan(&mut conn, &root);
+        let target = index::get_document(&conn, &root.id, &id_of(&root, "projects/project-plan.md")).unwrap();
+        let flagged = |phrase: &str| ripple::impacts(&conn, &root.id, &target, phrase).unwrap().into_iter().map(|impact| impact.relative_path).collect::<Vec<_>>();
+        let may = flagged("May 20");
+        assert!(may.contains(&"notes/pasahan.md".to_owned()));
+        assert!(!may.contains(&"notes/klase.md".to_owned()), "\"may 20 estudyante\" means there are 20 students");
+        assert!(flagged("may 20").contains(&"notes/klase.md".to_owned()), "the Filipino phrase itself still matches when it is what changed");
     }
 
     #[test]

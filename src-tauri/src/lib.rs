@@ -41,7 +41,7 @@ const PLAN_LIFETIME_MS: i64 = 5 * 60 * 1000;
 
 struct Folio {
     workspaces: Mutex<WorkspaceRegistry>,
-    plans: Mutex<PlanRegistry>,
+    plans: Arc<Mutex<PlanRegistry>>,
     /// The persistent index in the OS application-data directory.
     index: Mutex<Connection>,
     index_path: PathBuf,
@@ -49,19 +49,19 @@ struct Folio {
     scanning: Arc<Mutex<()>>,
     cancel_indexing: Arc<AtomicBool>,
     /// Stops an apply before its next operation; the running one finishes.
-    cancel_apply: AtomicBool,
+    cancel_apply: Arc<AtomicBool>,
 }
 
 impl Folio {
     fn open(index_path: PathBuf) -> Result<Self, FolioError> {
         Ok(Self {
             workspaces: Mutex::new(WorkspaceRegistry::new()),
-            plans: Mutex::new(PlanRegistry::new()),
+            plans: Arc::new(Mutex::new(PlanRegistry::new())),
             index: Mutex::new(db::open(&index_path)?),
             index_path,
             scanning: Arc::new(Mutex::new(())),
             cancel_indexing: Arc::new(AtomicBool::new(false)),
-            cancel_apply: AtomicBool::new(false),
+            cancel_apply: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -337,7 +337,9 @@ async fn approve_plan(
 
 /// Applies an approved plan through the native writer. The approval, digest, expiry
 /// and every target are checked again first; each operation's outcome is durable, and
-/// the plan is retired so its approval cannot be used twice.
+/// the plan is retired so its approval cannot be used twice. It runs off the async
+/// workers on its own index connection: waiting for a running scan, writing files and
+/// re-indexing them can take a while.
 #[tauri::command]
 async fn apply_plan(
     state: State<'_, Folio>,
@@ -345,19 +347,29 @@ async fn apply_plan(
     plan_id: String,
 ) -> Result<ApplyReport, FolioError> {
     let root = state.root(&workspace_id)?;
-    let mut plans = state.plans.lock().map_err(|_| unavailable_state())?;
-    let plan = plan_in_workspace(&plans, &plan_id, &workspace_id)?;
-    let now = now_ms();
-    plans.assert_can_apply(&root.path, &plan_id, now)?;
-    let approval = plans.approval(&plan_id).cloned().ok_or_else(|| {
-        error(ErrorCode::ApprovalRequired, "Approve this exact plan before any file changes.").with_detail("planId", plan_id.as_str())
-    })?;
-    // A scan must not read files halfway through a batch.
-    let _scanning = state.scanning.lock().map_err(|_| unavailable_state())?;
-    state.cancel_apply.store(false, Ordering::SeqCst);
-    let report = writer::apply_plan(&mut *state.index()?, &root, &plan, &approval, now, &RealFileSystem, &state.cancel_apply)?;
-    plans.finish(&plan_id);
-    Ok(report)
+    let (plans, scanning, cancel, index_path) = (state.plans.clone(), state.scanning.clone(), state.cancel_apply.clone(), state.index_path.clone());
+    blocking(move || -> Result<ApplyReport, FolioError> {
+        // A scan must not read files halfway through a batch. Waiting for it comes first,
+        // so the plan registry is not held meanwhile and expiry is judged after the wait.
+        let _scanning = scanning.lock().map_err(|_| unavailable_state())?;
+        let (plan, approval, now) = {
+            let plans = plans.lock().map_err(|_| unavailable_state())?;
+            let plan = plan_in_workspace(&plans, &plan_id, &workspace_id)?;
+            let now = now_ms();
+            plans.assert_can_apply(&root.path, &plan_id, now)?;
+            let approval = plans.approval(&plan_id).cloned().ok_or_else(|| {
+                error(ErrorCode::ApprovalRequired, "Approve this exact plan before any file changes.").with_detail("planId", plan_id.as_str())
+            })?;
+            (plan, approval, now)
+        };
+        // Applies are serialized by the scan lock, and an applied plan is refused by its
+        // durable record, so the registry need not stay locked while files are written.
+        cancel.store(false, Ordering::SeqCst);
+        let report = writer::apply_plan(&mut db::open(&index_path)?, &root, &plan, &approval, now, &RealFileSystem, &cancel)?;
+        plans.lock().map_err(|_| unavailable_state())?.finish(&plan_id);
+        Ok(report)
+    })
+    .await?
 }
 
 /// Stops a running apply before its next operation. Finished changes are kept.
@@ -387,8 +399,12 @@ async fn undo_plan(
     entry_ids: Vec<String>,
 ) -> Result<UndoReport, FolioError> {
     let root = state.root(&workspace_id)?;
-    let _scanning = state.scanning.lock().map_err(|_| unavailable_state())?;
-    writer::undo_plan(&mut *state.index()?, &root, &plan_id, &entry_ids, now_ms(), &RealFileSystem)
+    let (scanning, index_path) = (state.scanning.clone(), state.index_path.clone());
+    blocking(move || {
+        let _scanning = scanning.lock().map_err(|_| unavailable_state())?;
+        writer::undo_plan(&mut db::open(&index_path)?, &root, &plan_id, &entry_ids, now_ms(), &RealFileSystem)
+    })
+    .await?
 }
 
 #[tauri::command]

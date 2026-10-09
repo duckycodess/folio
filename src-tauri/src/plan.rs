@@ -660,16 +660,6 @@ pub fn assert_undoable(preflight: &UndoPreflight) -> Result<(), FolioError> {
     .with_detail("blockingHistoryEntryId", blocking.history_entry_id.as_str()))
 }
 
-/// The native writer is issue #5. Until it exists, an apply request is refused
-/// here rather than being answered with a success the filesystem never saw.
-pub fn apply_not_implemented(plan_id: &str) -> FolioError {
-    error(
-        ErrorCode::WriterNotImplemented,
-        "Saving approved changes is not connected yet. No file was changed.",
-    )
-    .with_detail("planId", plan_id)
-}
-
 /// Read-only helper used by preflight tests and by the UI's preview.
 pub fn current_hash(root: &Path, relative: &str) -> Result<String, FolioError> {
     resolve_document(root, relative)?;
@@ -815,16 +805,12 @@ mod tests {
             .registry
             .assert_can_apply(&harness.path, &plan.id, NOW + 2)
             .unwrap();
-        // Nothing has been written: the writer is issue #5.
+        // The gate only checks; the writer (`writer.rs`) is what changes files.
         assert_eq!(
             read_text(&harness.path, "projects/project-plan.md")
                 .unwrap()
                 .content,
             PLAN_TEXT
-        );
-        assert_eq!(
-            apply_not_implemented(&plan.id).code,
-            ErrorCode::WriterNotImplemented
         );
     }
 
@@ -1621,12 +1607,8 @@ mod tests {
         );
     }
 
-    // Reported as ignored, never as passing. A mock that answered "saved" here
-    // would make the suite green without any file ever changing, which is the
-    // one claim this repository must not make. Issue #5 implements the writer
-    // and replaces these with real filesystem assertions.
-    // The writer cases that were pending here (an approved edit applied to a
-    // real file, earlier successes kept when a later write fails, and a real
-    // batch reversed through Undo) are exercised against real temporary
-    // folders in `writer.rs`.
+    // The writer cases (an approved edit applied to a real file, earlier
+    // successes kept when a later write fails, and a real batch reversed
+    // through Undo) are exercised against real temporary folders in
+    // `writer.rs`, never through a mock that answers "saved".
 }

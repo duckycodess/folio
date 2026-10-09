@@ -172,9 +172,14 @@ partway keeps what it reversed and leaves the rest pending, so a fresh preview
 can finish it.
 
 **The writer** (`src-tauri/src/writer.rs`, issue #5) applies an approved plan
-and returns `{ batch: BatchResult, indexRefreshed }`. A rename or move never
-replaces an existing file, and an edit re-checks the target's hash immediately
-before swapping in the new content. Edits keep their previous content for the
+and returns `{ batch: BatchResult, historySettled, indexRefreshed }`. An error
+from `apply_plan` means no file changed; once any operation has run, the report
+is always returned, and `historySettled: false` says that bookkeeping after the
+writes failed, not that the writes did. A rename or move never replaces an
+existing file. Every operation re-checks its source's hash immediately before
+running, and an edit checks it again just before swapping in the new content.
+An edit keeps the file's permissions, and a file Folio may not write (read-only,
+or owned by someone else) is refused rather than replaced. Edits keep their previous content for the
 100 most recent applied plans; older edit entries remain listed with
 `recoverable: false`.
 

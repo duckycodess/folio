@@ -32,6 +32,22 @@ fn month_index(word: &str) -> Option<usize> {
     MONTHS.iter().position(|names| names.contains(&word.as_str()))
 }
 
+/// Filipino "may" means "there is" ("may 20 estudyante"), so only a capitalised "May"
+/// names the month. A sentence that starts with "May 20 ..." still reads as the month.
+fn is_lowercase_may(word: &str) -> bool {
+    word.trim_end_matches('.').eq_ignore_ascii_case("may") && !word.starts_with('M')
+}
+
+/// The month a word of the original (unfolded) text names, if any.
+fn month_of(word: &str) -> Option<usize> {
+    if is_lowercase_may(word) { None } else { month_index(word) }
+}
+
+/// Whether `phrase` is a date in May ("May 20"), whose matches must then be capitalised.
+fn is_may_date(phrase: &str) -> bool {
+    matches!(phrase.split_whitespace().collect::<Vec<_>>().as_slice(), [month, day] if month_of(month) == Some(4) && day.chars().all(|ch| ch.is_ascii_digit()))
+}
+
 /// Lowercases character by character where that keeps the byte length, so offsets in
 /// the folded text are offsets in the original.
 fn fold(text: &str) -> String {
@@ -51,9 +67,9 @@ fn fold(text: &str) -> String {
 pub fn variants(phrase: &str) -> Vec<String> {
     let base = fold(phrase.trim());
     let mut found = vec![base.clone()];
-    let words: Vec<&str> = base.split_whitespace().collect();
+    let words: Vec<&str> = phrase.split_whitespace().collect();
     if let [month, day] = words.as_slice() {
-        if let (Some(index), true) = (month_index(month), day.chars().all(|ch| ch.is_ascii_digit()) && day.len() <= 2) {
+        if let (Some(index), true) = (month_of(month), day.chars().all(|ch| ch.is_ascii_digit()) && day.len() <= 2) {
             for name in MONTHS[index] {
                 let variant = format!("{name} {day}");
                 if !found.contains(&variant) { found.push(variant); }
@@ -91,8 +107,8 @@ pub fn replaced_phrase(before: &str, after: &str) -> Option<String> {
         // "20" in "October 20" is the date "October 20".
         let lead = before[..start].trim_end_matches(' ');
         let word_start = lead.rfind(|ch: char| !ch.is_alphanumeric() && ch != '.').map_or(0, |index| index + 1);
-        if lead.len() < start && month_index(&lead[word_start..]).is_some() { start = word_start; }
-    } else if month_index(phrase).is_some() {
+        if lead.len() < start && month_of(&lead[word_start..]).is_some() { start = word_start; }
+    } else if month_of(phrase).is_some() {
         let rest = &before[end..];
         let digits: usize = rest.strip_prefix(' ').map_or(0, |tail| tail.chars().take_while(|ch| ch.is_ascii_digit()).count());
         if (1..=2).contains(&digits) { end += 1 + digits; }
@@ -125,6 +141,7 @@ fn provenance(value: &str) -> RelationshipProvenance {
 /// - a document that merely shares the value, with no relationship: not reported.
 pub fn impacts(conn: &Connection, workspace_id: &str, target: &IndexedDocument, replaced: &str) -> NativeResult<Vec<ImpactCandidate>> {
     let phrases = variants(replaced);
+    let may_date = is_may_date(replaced.trim());
     let mut neighbors: BTreeMap<String, Neighbor> = BTreeMap::new();
     {
         let mut statement = conn.prepare("SELECT source_document_id, target_document_id, relationship_type, provenance FROM relationships WHERE source_document_id = ?1 OR target_document_id = ?1")?;
@@ -146,7 +163,7 @@ pub fn impacts(conn: &Connection, workspace_id: &str, target: &IndexedDocument, 
     let mut candidates = Vec::new();
     let mention = format!("\u{201c}{}\u{201d}", replaced.trim());
     for (document_id, neighbor) in &neighbors {
-        let evidence = occurrences(conn, document_id, &phrases)?;
+        let evidence = occurrences(conn, document_id, &phrases, may_date)?;
         if evidence.is_empty() { continue; }
         let (strength, kind, origin, reason) = match neighbor {
             Neighbor { links_to_target: true, linked_from_target: true, .. } => (ImpactStrength::Evidence, RelationshipKind::ExplicitReference, RelationshipProvenance::DocumentLink, "Links to and is linked from the target"),
@@ -173,7 +190,7 @@ pub fn impacts(conn: &Connection, workspace_id: &str, target: &IndexedDocument, 
         if candidates.iter().any(|candidate| candidate.document_id == document_id) { continue; }
         let document = index::get_document(conn, workspace_id, &document_id)?;
         candidates.push(ImpactCandidate {
-            evidence: occurrences(conn, &document_id, &phrases)?,
+            evidence: occurrences(conn, &document_id, &phrases, may_date)?,
             document_id,
             relative_path: document.relative_path,
             reason: "Byte-identical copy of the target before this edit; this plan does not change it.".into(),
@@ -212,14 +229,19 @@ pub fn plan_impacts(conn: &Connection, root: &ScopedRoot, operations: &[FileOper
 }
 
 /// The lines of a document's indexed text that mention any of `phrases` as whole phrases.
-fn occurrences(conn: &Connection, document_id: &str, phrases: &[String]) -> NativeResult<Vec<SourcePassage>> {
+/// For a date in May, a lowercase "may" in the text is the Filipino word, not the month.
+fn occurrences(conn: &Connection, document_id: &str, phrases: &[String], may_date: bool) -> NativeResult<Vec<SourcePassage>> {
     let mut statement = conn.prepare("SELECT c.chunk_text, c.start_offset, c.page, d.content_hash FROM chunks c JOIN documents d ON d.id = c.document_id WHERE c.document_id = ?1 ORDER BY c.ordinal")?;
     let rows = statement.query_map([document_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, Option<u32>>(2)?, row.get::<_, String>(3)?)))?;
     let mut passages: Vec<SourcePassage> = Vec::new();
     for row in rows {
         let (text, chunk_start, page, hash) = row?;
         let folded = fold(&text);
-        let mut hits: Vec<(usize, usize)> = phrases.iter().flat_map(|phrase| phrase_positions(&folded, phrase).into_iter().map(move |start| (start, start + phrase.len()))).collect();
+        let mut hits: Vec<(usize, usize)> = phrases
+            .iter()
+            .flat_map(|phrase| phrase_positions(&folded, phrase).into_iter().map(move |start| (start, start + phrase.len())))
+            .filter(|&(start, _)| !(may_date && text[start..].split_whitespace().next().is_some_and(is_lowercase_may)))
+            .collect();
         hits.sort_unstable();
         for (start, end) in hits {
             let (from, to) = line_bounds(&text, start, end);
@@ -253,6 +275,15 @@ mod tests {
         let text = fold("Ang huling araw ay Oktubre 20. Ang kumperensya ay October 2026.");
         let hits: Vec<usize> = phrases.iter().flat_map(|phrase| phrase_positions(&text, phrase)).collect();
         assert_eq!(hits.len(), 1, "October 2026 is a different value");
+    }
+
+    #[test]
+    fn only_a_capitalised_may_is_the_month() {
+        assert_eq!(replaced_phrase("Due May 20.", "Due May 25.").as_deref(), Some("May 20"));
+        assert_eq!(replaced_phrase("Ang klase ay may 20 estudyante.", "Ang klase ay may 25 estudyante.").as_deref(), Some("20"), "\"there are 20\", not a date");
+        assert!(variants("May 20").contains(&"mayo 20".to_owned()));
+        assert_eq!(variants("may 20"), vec!["may 20".to_owned()]);
+        assert!(is_may_date("May 20") && !is_may_date("may 20") && !is_may_date("Mayo"));
     }
 
     #[test]
