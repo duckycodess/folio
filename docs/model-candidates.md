@@ -5,6 +5,7 @@ Research for issue #8, 2026-10-10. **These are evaluation-only candidates, not s
 - The default models and the under-1-GB default-install target are unchanged.
 - Nothing here was downloaded or run. File facts come from the Hugging Face API (`/api/models/<repo>?blobs=true`, LFS `sha256`) on the date above. Language and evaluation statements come from each model's own card.
 - **Weights, runtime RAM, speed and Filipino/Taglish task quality are unmeasured.**
+- **Catalog.** The pins are in `src-tauri/resources/model-evaluation-candidates.json`, a catalog apart from the product manifest. Candidates install only through Model Lab into `<app data>/model-lab/candidates`, are never listed by `list_models` or accepted by `select_model`, and are labelled `evaluationOnly` in every result. On 2026-10-10 each pin's commit, file size and LFS SHA-256 were re-checked against the Hugging Face revision API and each download URL answered a HEAD request (no weights downloaded); the license tags read Apache-2.0 for both Qwen entries and MIT for SEA-LION.
 
 ## Shortlist
 
