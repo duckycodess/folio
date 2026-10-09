@@ -487,7 +487,9 @@ fn candidate_results(
             space_fingerprint: None,
         })
         .collect::<Vec<_>>();
-    for result in HybridRetriever::default().keyword(documents, chunks, target_description, 5) {
+    for result in
+        HybridRetriever::default().keyword_term_overlap(documents, chunks, target_description, 5)
+    {
         if !candidates
             .iter()
             .any(|candidate| candidate.document.id == result.document.id)

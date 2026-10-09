@@ -7,15 +7,23 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
-const RRF_K: f32 = 60.0;
 const DEFAULT_PASSAGES_PER_DOCUMENT: usize = 3;
 
 /// Provisional cosine gate calibrated only against the development corpus.
 /// Revisit it when #3 supplies persisted retrieval evaluation data.
 pub const MIN_SEMANTIC_SCORE: f32 = 0.35;
-/// Keyword evidence may supplement semantic hits only when at least half of
-/// the query terms occur in a chunk. This remains an interim fallback floor.
+/// Keyword evidence may supplement semantic hits only when a chunk carries at
+/// least half of the query's IDF-weighted BM25 mass. This remains an interim
+/// fallback floor until #3 supplies FTS5.
 pub const MIN_KEYWORD_SCORE: f32 = 0.5;
+/// Keyword evidence only reorders semantic near-ties. Multilingual E5 cosine
+/// scores for one query usually differ by a few hundredths, so a bounded
+/// weight keeps lexical overlap from outranking stronger semantic evidence
+/// (for example a distractor that repeats the query words in a negated
+/// sentence). This is a design bound, not a value fitted to any query.
+pub const KEYWORD_TIEBREAK_WEIGHT: f32 = 0.01;
+const BM25_K1: f32 = 1.2;
+const BM25_B: f32 = 0.75;
 
 #[derive(Clone, Debug)]
 struct IndexedSpace {
@@ -129,8 +137,65 @@ impl Default for HybridRetriever {
     }
 }
 
+/// Per-chunk ranking evidence for one query. Diagnostic only: it lets an
+/// acceptance record show why a document did or did not rank.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChunkScore {
+    pub document_id: String,
+    pub ordinal: usize,
+    pub cosine: f32,
+    pub keyword: f32,
+    pub fused: f32,
+}
+
 impl HybridRetriever {
+    /// Keyword-only retrieval with BM25 scores normalized to the query's
+    /// IDF-weighted maximum. Labelled `keyword`, never `semantic`.
     pub fn keyword(
+        &self,
+        documents: &[DocumentRecord],
+        chunks: &[Chunk],
+        query: &str,
+        limit: usize,
+    ) -> Vec<SearchResult> {
+        self.keyword_scoped(documents, chunks, query, None, limit)
+    }
+
+    fn keyword_scoped(
+        &self,
+        documents: &[DocumentRecord],
+        chunks: &[Chunk],
+        query: &str,
+        document_id: Option<&str>,
+        limit: usize,
+    ) -> Vec<SearchResult> {
+        let terms = terms(query);
+        if terms.is_empty() {
+            return Vec::new();
+        }
+        let scores = bm25_scores(chunks, &terms);
+        let scored = chunks
+            .iter()
+            .zip(scores)
+            .filter(|(chunk, score)| {
+                *score > 0.0 && document_id.is_none_or(|id| chunk.document_id == id)
+            })
+            .map(|(chunk, score)| (chunk, score, score))
+            .collect();
+        self.to_results(
+            documents_by_id(documents),
+            scored,
+            SearchMethod::Keyword,
+            None,
+            limit,
+        )
+    }
+
+    /// The fraction of distinct query terms that occur in a chunk. Kept for
+    /// interpretation target resolution, whose ambiguity margins are defined
+    /// on this scale; search ranking uses BM25 instead.
+    pub fn keyword_term_overlap(
         &self,
         documents: &[DocumentRecord],
         chunks: &[Chunk],
@@ -141,10 +206,6 @@ impl HybridRetriever {
         if terms.is_empty() {
             return Vec::new();
         }
-        let by_id = documents
-            .iter()
-            .map(|document| (document.id.as_str(), document))
-            .collect::<HashMap<_, _>>();
         let mut scored = Vec::new();
         for chunk in chunks {
             let searchable = chunk.text.to_lowercase();
@@ -156,14 +217,11 @@ impl HybridRetriever {
                 continue;
             }
             let score = matched as f32 / terms.len() as f32;
-            scored.push((chunk, score));
+            scored.push((chunk, score, score));
         }
         self.to_results(
-            by_id,
-            scored
-                .into_iter()
-                .map(|(chunk, score)| (chunk, score, score))
-                .collect(),
+            documents_by_id(documents),
+            scored,
             SearchMethod::Keyword,
             None,
             limit,
@@ -181,6 +239,10 @@ impl HybridRetriever {
         self.search_scoped(documents, chunks, query, semantic, None, limit)
     }
 
+    /// Semantic-primary hybrid retrieval. Every chunk in scope is scored by
+    /// cosine; BM25 keyword evidence adds at most `KEYWORD_TIEBREAK_WEIGHT`.
+    /// A chunk is a candidate when it passes the semantic floor or carries
+    /// strong keyword evidence on its own.
     pub fn search_scoped(
         &self,
         documents: &[DocumentRecord],
@@ -191,72 +253,18 @@ impl HybridRetriever {
         limit: usize,
     ) -> CoreResult<Vec<SearchResult>> {
         let Some(query_embedding) = semantic else {
-            return Ok(self
-                .keyword(documents, chunks, query, chunks.len())
-                .into_iter()
-                .filter(|result| document_id.is_none_or(|id| result.document.id == id))
-                .take(limit)
-                .collect());
+            return Ok(self.keyword_scoped(documents, chunks, query, document_id, limit));
         };
-        let keyword = self
-            .keyword(documents, chunks, query, chunks.len())
-            .into_iter()
-            .filter(|result| result.score >= MIN_KEYWORD_SCORE)
-            .filter(|result| document_id.is_none_or(|id| result.document.id == id))
-            .collect::<Vec<_>>();
-        let semantic =
-            self.vector_index
-                .search_scoped(query_embedding, document_id, chunks.len())?;
-        let semantic = semantic
-            .into_iter()
-            .filter(|(_, score)| *score >= MIN_SEMANTIC_SCORE)
-            .collect::<Vec<_>>();
-        let keyword_ranks = rank_by_chunk(&keyword, chunks);
-        let mut combined = Vec::new();
-        let mut seen = HashSet::new();
-        for (rank, (chunk, score)) in semantic.iter().enumerate() {
-            let key = (chunk.document_id.clone(), chunk.ordinal);
-            seen.insert(key.clone());
-            let keyword_score = keyword_ranks
-                .get(&key)
-                .map_or(0.0, |(keyword_rank, score)| {
-                    let _ = keyword_rank;
-                    *score
-                });
-            let keyword_rank_score = keyword_ranks.get(&key).map_or(0.0, |(keyword_rank, _)| {
-                1.0 / (RRF_K + *keyword_rank as f32)
-            });
-            let semantic_rank_score = 1.0 / (RRF_K + (rank + 1) as f32);
-            combined.push((
-                chunk,
-                *score,
-                semantic_rank_score + keyword_rank_score + keyword_score * 0.001,
-            ));
-        }
-        for (chunk, score) in keyword.iter().flat_map(|result| {
-            result.passages.iter().filter_map(|passage| {
-                chunks
-                    .iter()
-                    .find(|chunk| {
-                        chunk.document_id == passage.document_id
-                            && chunk.start == passage.start
-                            && chunk.end == passage.end
-                    })
-                    .map(|chunk| (chunk, result.score))
-            })
-        }) {
-            let key = (chunk.document_id.clone(), chunk.ordinal);
-            if seen.insert(key) {
-                combined.push((chunk, score, 1.0 / (RRF_K + 1.0) + score * 0.001));
-            }
-        }
-        combined.sort_by(|a, b| b.2.total_cmp(&a.2));
-        let by_id = documents
+        let scores = self.score_chunks(chunks, query, query_embedding, document_id)?;
+        let combined = scores
             .iter()
-            .map(|document| (document.id.as_str(), document))
-            .collect::<HashMap<_, _>>();
+            .filter(|(_, score)| {
+                score.cosine >= MIN_SEMANTIC_SCORE || score.keyword >= MIN_KEYWORD_SCORE
+            })
+            .map(|(chunk, score)| (chunk, score.cosine, score.fused))
+            .collect::<Vec<_>>();
         Ok(self.to_results(
-            by_id,
+            documents_by_id(documents),
             combined,
             SearchMethod::Hybrid,
             Some(space_fingerprint(&query_embedding.space)),
@@ -264,16 +272,73 @@ impl HybridRetriever {
         ))
     }
 
+    /// Cosine, keyword and fused scores for every chunk in scope, highest
+    /// fused score first.
+    pub fn explain(
+        &self,
+        chunks: &[Chunk],
+        query: &str,
+        query_embedding: &QueryEmbedding,
+    ) -> CoreResult<Vec<ChunkScore>> {
+        Ok(self
+            .score_chunks(chunks, query, query_embedding, None)?
+            .into_iter()
+            .map(|(_, score)| score)
+            .collect())
+    }
+
+    fn score_chunks(
+        &self,
+        chunks: &[Chunk],
+        query: &str,
+        query_embedding: &QueryEmbedding,
+        document_id: Option<&str>,
+    ) -> CoreResult<Vec<(Chunk, ChunkScore)>> {
+        let terms = terms(query);
+        let keyword_by_key = chunks
+            .iter()
+            .zip(bm25_scores(chunks, &terms))
+            .map(|(chunk, score)| ((chunk.document_id.clone(), chunk.ordinal), score))
+            .collect::<HashMap<_, _>>();
+        let semantic =
+            self.vector_index
+                .search_scoped(query_embedding, document_id, chunks.len())?;
+        let mut scored = semantic
+            .into_iter()
+            .map(|(chunk, cosine)| {
+                let keyword = keyword_by_key
+                    .get(&(chunk.document_id.clone(), chunk.ordinal))
+                    .copied()
+                    .unwrap_or(0.0);
+                let score = ChunkScore {
+                    document_id: chunk.document_id.clone(),
+                    ordinal: chunk.ordinal,
+                    cosine,
+                    keyword,
+                    fused: cosine + KEYWORD_TIEBREAK_WEIGHT * keyword,
+                };
+                (chunk, score)
+            })
+            .collect::<Vec<_>>();
+        scored.sort_by(|a, b| b.1.fused.total_cmp(&a.1.fused));
+        Ok(scored)
+    }
+
+    /// Group scored chunks into documents. `limit` counts distinct document
+    /// contents: a byte-identical copy is listed next to its original without
+    /// using another result slot, so duplicates cannot crowd out other
+    /// evidence. Exact-duplicate reporting itself stays with Organize.
     fn to_results<'a>(
         &self,
         by_id: HashMap<&'a str, &'a DocumentRecord>,
-        scored: Vec<(&'a Chunk, f32, f32)>,
+        mut scored: Vec<(&'a Chunk, f32, f32)>,
         method: SearchMethod,
         space_fingerprint: Option<String>,
         limit: usize,
     ) -> Vec<SearchResult> {
+        scored.sort_by(|a, b| b.2.total_cmp(&a.2));
         let mut grouped: HashMap<String, (f32, Vec<SourcePassage>)> = HashMap::new();
-        for (chunk, raw_score, result_score) in scored {
+        for (chunk, _raw_score, result_score) in scored {
             let entry = grouped
                 .entry(chunk.document_id.clone())
                 .or_insert_with(|| (result_score, Vec::new()));
@@ -289,7 +354,6 @@ impl HybridRetriever {
                     page: None,
                 });
             }
-            let _ = raw_score;
         }
         let mut results = grouped
             .into_iter()
@@ -310,40 +374,112 @@ impl HybridRetriever {
                 .total_cmp(&a.score)
                 .then_with(|| a.document.relative_path.cmp(&b.document.relative_path))
         });
-        results.truncate(limit);
-        results
+        limit_distinct_contents(results, limit)
     }
 }
 
-fn rank_by_chunk(
-    results: &[SearchResult],
-    chunks: &[Chunk],
-) -> HashMap<(String, usize), (usize, f32)> {
-    let mut rank = HashMap::new();
-    for (result_rank, result) in results.iter().enumerate() {
-        for passage in &result.passages {
-            if let Some(chunk) = chunks.iter().find(|chunk| {
-                chunk.document_id == passage.document_id
-                    && chunk.start == passage.start
-                    && chunk.end == passage.end
-            }) {
-                rank.insert(
-                    (chunk.document_id.clone(), chunk.ordinal),
-                    (result_rank + 1, result.score),
-                );
+fn documents_by_id(documents: &[DocumentRecord]) -> HashMap<&str, &DocumentRecord> {
+    documents
+        .iter()
+        .map(|document| (document.id.as_str(), document))
+        .collect()
+}
+
+fn content_identity(result: &SearchResult) -> Option<String> {
+    result.document.content_hash.clone().or_else(|| {
+        result
+            .passages
+            .first()
+            .map(|passage| passage.document_content_hash.clone())
+    })
+}
+
+fn limit_distinct_contents(results: Vec<SearchResult>, limit: usize) -> Vec<SearchResult> {
+    let mut seen = HashSet::new();
+    let mut distinct = 0_usize;
+    let mut kept = Vec::new();
+    for result in results {
+        let identity = content_identity(&result);
+        let duplicate = identity.as_ref().is_some_and(|hash| seen.contains(hash));
+        if !duplicate {
+            if distinct >= limit {
+                continue;
+            }
+            distinct += 1;
+            if let Some(hash) = identity {
+                seen.insert(hash);
             }
         }
+        kept.push(result);
     }
-    rank
+    kept
+}
+
+fn tokens(text: &str) -> Vec<String> {
+    text.split(|character: char| !character.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(str::to_lowercase)
+        .collect()
 }
 
 fn terms(query: &str) -> Vec<String> {
-    query
-        .split(|character: char| !character.is_alphanumeric())
-        .filter(|term| !term.is_empty())
-        .map(str::to_lowercase)
+    let mut terms = tokens(query)
+        .into_iter()
         .collect::<HashSet<_>>()
         .into_iter()
+        .collect::<Vec<_>>();
+    terms.sort();
+    terms
+}
+
+/// BM25 over the supplied chunks, normalized by the summed IDF weights of the
+/// query terms (the score of a chunk of average length containing every term
+/// once), so a chunk matching only common words scores low. Returns one score
+/// in [0, 1] per chunk, aligned with `chunks`.
+fn bm25_scores(chunks: &[Chunk], terms: &[String]) -> Vec<f32> {
+    if chunks.is_empty() || terms.is_empty() {
+        return vec![0.0; chunks.len()];
+    }
+    let documents = chunks
+        .iter()
+        .map(|chunk| tokens(&chunk.text))
+        .collect::<Vec<_>>();
+    let count = documents.len() as f32;
+    let average_length = (documents.iter().map(Vec::len).sum::<usize>() as f32 / count).max(1.0);
+    let weights = terms
+        .iter()
+        .map(|term| {
+            let frequency = documents
+                .iter()
+                .filter(|tokens| tokens.iter().any(|token| token == term))
+                .count() as f32;
+            (1.0 + (count - frequency + 0.5) / (frequency + 0.5)).ln()
+        })
+        .collect::<Vec<_>>();
+    let maximum = weights.iter().sum::<f32>();
+    documents
+        .iter()
+        .map(|tokens| {
+            let length_norm =
+                BM25_K1 * (1.0 - BM25_B + BM25_B * tokens.len() as f32 / average_length);
+            let score = terms
+                .iter()
+                .zip(&weights)
+                .map(|(term, weight)| {
+                    let frequency = tokens.iter().filter(|token| *token == term).count() as f32;
+                    if frequency == 0.0 {
+                        0.0
+                    } else {
+                        weight * frequency * (BM25_K1 + 1.0) / (frequency + length_norm)
+                    }
+                })
+                .sum::<f32>();
+            if maximum > 0.0 {
+                (score / maximum).min(1.0)
+            } else {
+                0.0
+            }
+        })
         .collect()
 }
 
@@ -437,6 +573,113 @@ mod tests {
             .unwrap();
         assert_eq!(results[0].method, SearchMethod::Keyword);
         assert!(results[0].passages[0].text.contains("Biyernes"));
+    }
+
+    #[test]
+    fn bm25_gives_common_words_little_weight() {
+        let source = InterimTextChunker::new(vec![
+            document("a.md", "the plan is in the folder and the notes"),
+            document("b.md", "the budget is for the bus and the cake"),
+            document("c.md", "the schedule is the same as the plan"),
+        ]);
+        let documents = source.documents();
+        let chunks = source.all_chunks().unwrap();
+        let retriever = HybridRetriever::default();
+        // Only common words match a.md; the rare words appear nowhere.
+        let results = retriever.keyword(&documents, &chunks, "what is the chocolate recipe", 5);
+        assert!(results
+            .iter()
+            .all(|result| result.score < MIN_KEYWORD_SCORE));
+        // A rare word carries most of the weight.
+        let results = retriever.keyword(&documents, &chunks, "the budget", 5);
+        assert_eq!(results[0].document.id, "b.md");
+        assert!(results[0].score >= MIN_KEYWORD_SCORE);
+    }
+
+    #[test]
+    fn byte_identical_documents_do_not_use_extra_result_slots() {
+        let source = InterimTextChunker::new(vec![
+            document("archive/plan-copy.md", "deadline plan"),
+            document("projects/plan.md", "deadline plan"),
+            document("notes/tala.md", "deadline tala"),
+        ]);
+        let documents = source.documents();
+        let chunks = source.all_chunks().unwrap();
+        let mut retriever = HybridRetriever::default();
+        let space = space("dedupe");
+        let vectors = chunks
+            .iter()
+            .map(|chunk| {
+                if chunk.document_id == "notes/tala.md" {
+                    vec![0.8, 0.6]
+                } else {
+                    vec![1.0, 0.0]
+                }
+            })
+            .collect::<Vec<_>>();
+        retriever
+            .vector_index
+            .replace(space.clone(), chunks.clone(), vectors)
+            .unwrap();
+        let results = retriever
+            .search(
+                &documents,
+                &chunks,
+                "deadline",
+                Some(&QueryEmbedding {
+                    space,
+                    vector: vec![1.0, 0.0],
+                }),
+                2,
+            )
+            .unwrap();
+        let paths = results
+            .iter()
+            .map(|result| result.document.relative_path.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            paths,
+            ["archive/plan-copy.md", "projects/plan.md", "notes/tala.md"]
+        );
+    }
+
+    #[test]
+    fn keyword_overlap_cannot_outrank_a_clearly_stronger_semantic_match() {
+        let source = InterimTextChunker::new(vec![
+            document("distractor.md", "submission deadline project"),
+            document("semantic.md", "huling araw ng pagpasa"),
+        ]);
+        let documents = source.documents();
+        let chunks = source.all_chunks().unwrap();
+        let mut retriever = HybridRetriever::default();
+        let space = space("fusion");
+        let vectors = chunks
+            .iter()
+            .map(|chunk| {
+                if chunk.document_id == "semantic.md" {
+                    vec![0.9, 0.435_889_9]
+                } else {
+                    vec![0.85, 0.526_782_7]
+                }
+            })
+            .collect::<Vec<_>>();
+        retriever
+            .vector_index
+            .replace(space.clone(), chunks.clone(), vectors)
+            .unwrap();
+        let results = retriever
+            .search(
+                &documents,
+                &chunks,
+                "submission deadline project",
+                Some(&QueryEmbedding {
+                    space,
+                    vector: vec![1.0, 0.0],
+                }),
+                2,
+            )
+            .unwrap();
+        assert_eq!(results[0].document.id, "semantic.md");
     }
 
     #[test]
