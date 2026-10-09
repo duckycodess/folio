@@ -14,8 +14,10 @@ import type {
   SearchResult,
 } from "../domain/contracts";
 import { toFolioError, type FolioError } from "../domain/errors";
+import { mergeFolderResults } from "../domain/searchEvidence";
 import {
   inScope,
+  namedFiles,
   summaryTarget,
   targetsChosenFile,
   type AskOutcome,
@@ -184,11 +186,32 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
     }
   }
 
+  /**
+   * The index's matches, with files the request names by file name first:
+   * the index scores only file text, so it can't find a file by its name.
+   */
   async function search(
     folder: string,
     query: string,
   ): Promise<SearchResult[]> {
-    return inScope(await semanticSearch(folder, query, RESULT_LIMIT), scope);
+    const { named, partial } = namedFiles(workspace.documents, query);
+    let indexed: SearchResult[];
+    try {
+      indexed = await semanticSearch(folder, query, RESULT_LIMIT);
+    } catch (cause) {
+      // A name still finds its file while the index can't answer (not yet
+      // prepared, no embedding model); with no name match, the error stands.
+      if (!named.length && !partial.length) throw cause;
+      indexed = [];
+    }
+    return inScope(
+      mergeFolderResults(
+        workspace.documents,
+        [...named, ...indexed],
+        partial,
+      ),
+      scope,
+    ).slice(0, RESULT_LIMIT);
   }
 
   async function interpret(
@@ -211,7 +234,13 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
         const results = await search(folder, query);
         if (meaning.intent === "search")
           return { type: "results", query, results };
-        const target = summaryTarget(results);
+        const { exact } = namedFiles(workspace.documents, request);
+        const target = summaryTarget(
+          results,
+          exact.filter((document) =>
+            results.some((result) => result.document.id === document.id),
+          ),
+        );
         if (!target)
           return {
             type: "chooseFile",

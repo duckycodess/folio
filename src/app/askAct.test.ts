@@ -7,6 +7,7 @@ import {
   MAX_TURNS,
   matchReason,
   methodLabel,
+  namedFiles,
   summaryTarget,
   targetsChosenFile,
   updateTurn,
@@ -176,5 +177,68 @@ describe("the file the user chose", () => {
         "workspace:projects/plan.md",
       ),
     ).toBe(true);
+  });
+});
+
+describe("namedFiles", () => {
+  function doc(relativePath: string): DocumentRecord {
+    return {
+      id: relativePath,
+      relativePath,
+      name: relativePath.split("/").at(-1)!,
+    } as DocumentRecord;
+  }
+  const documents = [
+    doc("career/VILAR_Resume.pdf"),
+    doc("career/cover-letter.md"),
+    doc("notes/resume-tips.md"),
+    doc("notes/budget.txt"),
+  ];
+
+  it("finds a file by the name written in the request, whatever else it says", () => {
+    const { named, exact } = namedFiles(
+      documents,
+      "VILAR_Resume.pdf fine files",
+    );
+    expect(named.map((each) => each.document.relativePath)).toEqual([
+      "career/VILAR_Resume.pdf",
+    ]);
+    expect(exact.map((each) => each.relativePath)).toEqual([
+      "career/VILAR_Resume.pdf",
+    ]);
+  });
+
+  it("names a file without its extension or case, but only exact names are written out", () => {
+    const { named, exact } = namedFiles(documents, "find vilar resume");
+    expect(named.map((each) => each.document.name)).toEqual([
+      "VILAR_Resume.pdf",
+    ]);
+    expect(exact).toEqual([]);
+  });
+
+  it("lists files sharing a word with the request after named ones", () => {
+    const { named, partial } = namedFiles(documents, "my resume");
+    expect(named).toEqual([]);
+    expect(partial.map((each) => each.document.name)).toEqual([
+      "VILAR_Resume.pdf",
+      "resume-tips.md",
+    ]);
+    expect(partial.every((each) => each.method === "keyword")).toBe(true);
+  });
+
+  it("ignores short shared words", () => {
+    expect(namedFiles([doc("a/to-do.md")], "go to the store").partial).toEqual(
+      [],
+    );
+  });
+});
+
+describe("summaryTarget with a file written out by name", () => {
+  it("uses the one exact name even among several candidates", () => {
+    const candidates = [result("a.md", "hybrid"), result("b.md", "hybrid")];
+    expect(summaryTarget(candidates, [candidates[1].document])?.id).toBe(
+      "b.md",
+    );
+    expect(summaryTarget(candidates, [])).toBeNull();
   });
 });
