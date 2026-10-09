@@ -1,9 +1,11 @@
 //! Cross-language contract checks.
 //!
-//! `fixtures/contracts/contract-cases.json` is produced by an implementation
-//! that is neither this one nor the TypeScript one, and the TypeScript suite
-//! reads the same file. Both languages are therefore pinned to one wire
-//! encoding rather than to each other's bugs.
+//! `fixtures/contracts/contract-cases.json` is produced by
+//! `fixtures/contracts/generate-contract-cases.py`, a third implementation
+//! written from `docs/contracts.md` rather than from this crate or the
+//! TypeScript one, and the TypeScript suite reads the same file. Both
+//! languages are therefore pinned to one wire encoding rather than to each
+//! other's bugs.
 
 #[cfg(test)]
 mod tests {
