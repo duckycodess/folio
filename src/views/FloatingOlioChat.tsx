@@ -217,7 +217,7 @@ export function FloatingOlioChat({
         <div className="olio-chat-launcher">
           {greeting && (
             <p className="olio-chat-greeting">
-              Hello! Ask Olio about your files.
+              <strong>Hey, I&rsquo;m Olio.</strong> Ask about your files.
               <button
                 type="button"
                 className="icon-button olio-chat-greeting-dismiss"
@@ -235,10 +235,10 @@ export function FloatingOlioChat({
             ref={launcherRef}
             type="button"
             className="olio-chat-launcher-button"
+            aria-label="Ask Olio"
             onClick={launch}
           >
-            <OlioSprite state="idle" size={48} />
-            Ask Olio
+            <OlioSprite state="idle" size={150} />
           </button>
         </div>
       )}
@@ -253,7 +253,7 @@ export function FloatingOlioChat({
           onKeyDown={trapTabWithin}
         >
           <header className="olio-chat-head">
-            <OlioSprite state={ask.busy ? "thinking" : "idle"} size={48} />
+            <OlioSprite state={ask.busy ? "thinking" : "idle"} size={64} />
             <div className="olio-chat-head-text">
               <h2 id={headingId} className="olio-chat-title">
                 Olio
