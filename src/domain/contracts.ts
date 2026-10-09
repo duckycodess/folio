@@ -417,6 +417,12 @@ export interface ImpactCandidate {
   reason: string;
   evidence: SourcePassage[];
   strength: "evidence" | "similarityOnly";
+  /**
+   * The relationship that connected this candidate to the target, when one
+   * did. Absent for a byte-identical copy, which is related by content alone.
+   */
+  relationshipType?: RelationshipType;
+  provenance?: RelationshipProvenance;
 }
 
 export interface ActionPlan {
@@ -655,4 +661,41 @@ export interface VectorCandidate {
   score: number;
   spaceFingerprint: EmbeddingSpaceFingerprint;
   passage: SourcePassage;
+}
+
+/* ------------------------------------------------------------ native writer */
+
+/**
+ * What `apply_plan` reports once any operation has run: the durable batch record, whether
+ * the plan's record was stored after the files changed, and whether the index caught up.
+ * `historySettled: false` does not undo the outcomes in `batch`; those files did change.
+ */
+export interface ApplyReport {
+  batch: BatchResult;
+  historySettled: boolean;
+  indexRefreshed: boolean;
+}
+
+/** An Undo that stops partway leaves `remainingEntryIds` pending; preview again to finish. */
+export interface UndoReport {
+  planId: string;
+  undoneEntryIds: string[];
+  remainingEntryIds: string[];
+  error?: FolioErrorPayload;
+  indexRefreshed: boolean;
+}
+
+/** An Organization Suggestion for a filename; `operation` still needs a preview and approval. */
+export interface OrganizationSuggestion {
+  documentId: DocumentId;
+  relativePath: RelativePath;
+  suggestedRelativePath: RelativePath;
+  reason: string;
+  operation: FileOperation;
+}
+
+/** Duplicate groups are evidence only: nothing is moved or deleted because of them. */
+export interface OrganizationSuggestions {
+  duplicateGroups: DuplicateGroup[];
+  filenames: OrganizationSuggestion[];
 }

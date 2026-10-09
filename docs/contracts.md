@@ -82,6 +82,13 @@ A relationship is a discriminated union carrying evidence typed for its kind:
 - `sharedFactCandidate` — passages in both documents and an optional confidence.
   It is never a confirmed contradiction.
 
+A Ripple `ImpactCandidate` may carry the `relationshipType` and `provenance` of
+the relationship that connected it to the edited document. Both are optional
+and absent for a byte-identical copy, which is related by content alone. A
+`sharedFactCandidate` that mentions the replaced value is `evidence`; a
+`similarity` relationship is only ever `similarityOnly`. (Added with issue #5;
+older payloads without these fields remain valid.)
+
 Vectors are compared only within one embedding space, identified by
 `folio-space-v1/<modelId>/<revision>/<quantization>/<dimensions>/<preprocessing>`
 with `%` and `/` escaped.
@@ -157,11 +164,27 @@ file is named through `undoConflict` details. Newer external edits survive.
 revalidates folder access, drops every approval and resumes no mutation.
 `RestoredPreview.requiresFreshApproval` is always true.
 
+**Undo needs a confirmed preview.** `preview_undo` returns the
+`UndoPreflight` for a plan without writing. `undo_plan` takes the `entryIds` of
+the preview the user confirmed; if the pending entries are no longer exactly
+those, it refuses with `approvalStale` and changes nothing. An Undo that stops
+partway keeps what it reversed and leaves the rest pending, so a fresh preview
+can finish it.
+
+**The writer** (`src-tauri/src/writer.rs`, issue #5) applies an approved plan
+and returns `{ batch: BatchResult, historySettled, indexRefreshed }`. An error
+from `apply_plan` means no file changed; once any operation has run, the report
+is always returned, and `historySettled: false` says that bookkeeping after the
+writes failed, not that the writes did. A rename or move never replaces an
+existing file. Every operation re-checks its source's hash immediately before
+running, and an edit checks it again just before swapping in the new content.
+An edit keeps the file's permissions, and a file Folio may not write (read-only,
+or owned by someone else) is refused rather than replaced. Edits keep their previous content for the
+100 most recent applied plans; older edit entries remain listed with
+`recoverable: false`.
+
 ## What is not implemented yet
 
-The native writer, history persistence and real Undo are
-[issue #5](https://github.com/duckycodess/folio/issues/5). `apply_plan` refuses
-with `writerNotImplemented` rather than reporting a save that never happened.
-Local embedding and generation are issues #4 and #8. The pending cases are
-listed, not mocked, in `src/domain/pending.test.ts` and as ignored tests in
-`src-tauri/src/plan.rs`.
+Local embedding and generation are issues #4 and #8, including model-generated
+Ripple explanations. The pending cases are listed, not mocked, in
+`src/domain/pending.test.ts`.

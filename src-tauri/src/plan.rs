@@ -111,7 +111,7 @@ pub fn verify_plan_digest(plan: &ActionPlan) -> Result<(), FolioError> {
 
 /// Resolve a path the plan would create. The parent folder must already resolve
 /// inside the authorized folder, so a symlinked parent cannot redirect a write.
-fn resolve_destination(root: &Path, relative: &str) -> Result<PathBuf, FolioError> {
+pub fn resolve_destination(root: &Path, relative: &str) -> Result<PathBuf, FolioError> {
     let relative = assert_portable_destination(relative)?;
     let root = root.canonicalize().map_err(|_| {
         error(
@@ -316,10 +316,13 @@ impl PlanRegistry {
             ));
         }
         self.issued += 1;
+        // The counter restarts with the app, so the creation time keeps an identity
+        // from colliding with a plan recorded in an earlier session's history.
         let mut plan = ActionPlan {
             id: format!(
-                "plan-{}-{}",
+                "plan-{}-{}-{}",
                 workspace_id.get(..8).unwrap_or(""),
+                created_at,
                 self.issued
             ),
             workspace_id: workspace_id.to_string(),
@@ -378,6 +381,13 @@ impl PlanRegistry {
 
     pub fn approval(&self, plan_id: &str) -> Option<&Approval> {
         self.approvals.get(plan_id)
+    }
+
+    /// Retire a plan once the writer has run it, so its approval can never be
+    /// used a second time. Its durable record is the history, not this registry.
+    pub fn finish(&mut self, plan_id: &str) {
+        self.plans.remove(plan_id);
+        self.approvals.remove(plan_id);
     }
 
     /// The last gate before any file would change.
@@ -650,16 +660,6 @@ pub fn assert_undoable(preflight: &UndoPreflight) -> Result<(), FolioError> {
     .with_detail("blockingHistoryEntryId", blocking.history_entry_id.as_str()))
 }
 
-/// The native writer is issue #5. Until it exists, an apply request is refused
-/// here rather than being answered with a success the filesystem never saw.
-pub fn apply_not_implemented(plan_id: &str) -> FolioError {
-    error(
-        ErrorCode::WriterNotImplemented,
-        "Saving approved changes is not connected yet. No file was changed.",
-    )
-    .with_detail("planId", plan_id)
-}
-
 /// Read-only helper used by preflight tests and by the UI's preview.
 pub fn current_hash(root: &Path, relative: &str) -> Result<String, FolioError> {
     resolve_document(root, relative)?;
@@ -805,16 +805,12 @@ mod tests {
             .registry
             .assert_can_apply(&harness.path, &plan.id, NOW + 2)
             .unwrap();
-        // Nothing has been written: the writer is issue #5.
+        // The gate only checks; the writer (`writer.rs`) is what changes files.
         assert_eq!(
             read_text(&harness.path, "projects/project-plan.md")
                 .unwrap()
                 .content,
             PLAN_TEXT
-        );
-        assert_eq!(
-            apply_not_implemented(&plan.id).code,
-            ErrorCode::WriterNotImplemented
         );
     }
 
@@ -1611,25 +1607,8 @@ mod tests {
         );
     }
 
-    // Reported as ignored, never as passing. A mock that answered "saved" here
-    // would make the suite green without any file ever changing, which is the
-    // one claim this repository must not make. Issue #5 implements the writer
-    // and replaces these with real filesystem assertions.
-    #[test]
-    #[ignore = "pending issue #5: the native writer does not exist yet"]
-    fn pending_applies_an_approved_edit_to_a_real_file() {
-        unimplemented!("native writer, issue #5");
-    }
-
-    #[test]
-    #[ignore = "pending issue #5: the native writer does not exist yet"]
-    fn pending_keeps_earlier_successes_durable_when_a_later_write_fails() {
-        unimplemented!("native writer, issue #5");
-    }
-
-    #[test]
-    #[ignore = "pending issue #5: the native writer does not exist yet"]
-    fn pending_reverses_a_real_batch_through_undo() {
-        unimplemented!("native writer, issue #5");
-    }
+    // The writer cases (an approved edit applied to a real file, earlier
+    // successes kept when a later write fails, and a real batch reversed
+    // through Undo) are exercised against real temporary folders in
+    // `writer.rs`, never through a mock that answers "saved".
 }
