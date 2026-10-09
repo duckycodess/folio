@@ -34,7 +34,7 @@ jobs:
       # Generation model under test: a manifest model id with one pinned GGUF.
       # Changing it is a user decision (Q1 smallest passing pair); results are
       # recorded per model and never substituted silently.
-      FOLIO_R8_GENERATION_MODEL: qwen3-0.6b-q4-k-m
+      FOLIO_R8_GENERATION_MODEL: qwen3-0.6b-q8-0
     steps:
       - name: Check out source
         uses: actions/checkout@v4
