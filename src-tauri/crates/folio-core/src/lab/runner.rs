@@ -648,14 +648,14 @@ impl LabRunner<'_> {
             SuiteCase::Retrieval { .. } => return Ok(Flow::Continue),
         };
         let restart_started = Instant::now();
-        match handle.generator.restart(self.cancel) {
+        let restart_pid = match handle.generator.restart(self.cancel) {
             Err(error) if is_cancelled(&error) => return Ok(Flow::Cancelled),
             // A model that cannot start is a measurement: it is recorded for
             // this case and the run moves on to the next case and model.
             Err(error) => {
                 return self.startup_failure(case, task, handle, &error, restart_started);
             }
-            Ok(_) => {}
+            Ok(pid) => pid,
         };
         let process_start_ms = restart_started.elapsed().as_millis() as u64;
 
@@ -667,6 +667,14 @@ impl LabRunner<'_> {
         .into_iter()
         .enumerate()
         {
+            // The repeat is only a repeat on the same process. If the server
+            // exited or was stopped (a timeout stops it), no repeat is run: a
+            // lab request never starts a process, so none would be timed warm.
+            if pass > 0 && !(restart_pid.is_some() && handle.generator.server_pid() == restart_pid)
+            {
+                self.repeat_not_run(case, task, handle, process_start_ms, requests_before)?;
+                break;
+            }
             lab.take_requests();
             let started = Instant::now();
             let attempt = self.run_task(case, lab, loaded, workspace, expected);
@@ -677,14 +685,19 @@ impl LabRunner<'_> {
                 Err(error) => Self::failure(task, &error),
                 Ok(done) => done,
             };
-            let pid = handle.generator.server_pid();
+            // Only the process the lab restarted for this case is measured; a
+            // peak read from any other pid would belong to a different process.
+            let pid = restart_pid;
             let reading = match pid {
-                Some(pid) => self.probe.process_peak(pid),
-                None => PeakReading {
+                Some(pid) if handle.generator.server_pid() == Some(pid) => {
+                    self.probe.process_peak(pid)
+                }
+                _ => PeakReading {
                     peak_bytes: None,
                     method: "none".into(),
                     unavailable_reason: Some(
-                        "no llama-server process was running when the peak was read".into(),
+                        "the llama-server process started for this case had exited or been replaced when the peak was read, so no peak is attributed"
+                            .into(),
                     ),
                 },
             };
@@ -722,6 +735,58 @@ impl LabRunner<'_> {
             requests_before += requests_in_task;
         }
         Ok(Flow::Continue)
+    }
+
+    /// The repeat was not run because the server process was lost after the
+    /// first request. Nothing was timed or measured, and the record says so.
+    fn repeat_not_run(
+        &mut self,
+        case: &SuiteCase,
+        task: BenchmarkTask,
+        handle: &GeneratorHandle,
+        process_start_ms: u64,
+        requests_before: u32,
+    ) -> CoreResult<()> {
+        let reason =
+            "the server process was lost after the first request, so no immediate repeat was run";
+        let (failed, mut output) = Self::failure(task, &CoreError::Message(reason.into()));
+        output["stage"] = json!("repeat");
+        let measured = Measured {
+            case_id: case.id().to_string(),
+            task,
+            model: handle.model.clone(),
+            runtime: observed_runtime(&handle.runtime, handle.generator.server_log().as_deref()),
+            prompt_sha256: prompt_fingerprint(),
+            conditions: self.base_conditions(),
+            server_settings: Some(ServerSettings {
+                startup_warmup: StartupWarmup::DefaultOn,
+                cache_prompt: false,
+            }),
+            timing: Timing {
+                process_start_ms: Some(process_start_ms),
+                requests_in_task: 0,
+                requests_since_process_start: requests_before,
+                request_position: RequestPosition::ImmediateRepeat,
+            },
+            task_duration_ms: 0,
+            evaluation: Evaluation {
+                outcome: failed.outcome,
+                correctness: failed.correctness,
+                checks: vec![Check {
+                    name: "repeatRun".into(),
+                    passed: Some(false),
+                    detail: reason.into(),
+                }],
+            },
+            memory: vec![PeakReading {
+                peak_bytes: None,
+                method: "none".into(),
+                unavailable_reason: Some("no repeat was run, so nothing was measured".into()),
+            }
+            .into_entry(MemoryProcess::LlamaServer, None, "no repeat was run")],
+            output,
+        };
+        self.emit(measured)
     }
 
     /// Records that the server did not start for a case. No request was made,
@@ -946,6 +1011,8 @@ mod tests {
         restarts: AtomicUsize,
         requests: AtomicUsize,
         saw_cache_prompt_off: AtomicBool,
+        /// The scripted server process has exited ("dying-" ids after one request).
+        dead: AtomicBool,
     }
 
     impl GenerationProvider for ScriptedGenerator {
@@ -965,6 +1032,15 @@ mod tests {
             _cancel: &AtomicBool,
         ) -> CoreResult<Value> {
             self.requests.fetch_add(1, Ordering::SeqCst);
+            if self.dead.load(Ordering::SeqCst) {
+                // The lab never respawns: a request after the process died fails.
+                return Err(CoreError::Provider(
+                    crate::error::NativeProviderErrorError::new(
+                        ProviderErrorCode::RuntimeStartFailed,
+                        "The Model Lab server is not running; the lab restarts it explicitly.",
+                    ),
+                ));
+            }
             if self.id.starts_with("timeout-") {
                 return Err(CoreError::Provider(
                     crate::error::NativeProviderErrorError::new(
@@ -975,6 +1051,9 @@ mod tests {
             }
             if budget.cache_prompt == Some(false) {
                 self.saw_cache_prompt_off.store(true, Ordering::SeqCst);
+            }
+            if self.id.starts_with("dying-") {
+                self.dead.store(true, Ordering::SeqCst);
             }
             if schema["properties"].get("intent").is_some() {
                 Ok(json!({
@@ -999,6 +1078,7 @@ mod tests {
     impl LabGenerator for ScriptedGenerator {
         fn restart(&self, _cancel: &AtomicBool) -> CoreResult<Option<u32>> {
             self.restarts.fetch_add(1, Ordering::SeqCst);
+            self.dead.store(false, Ordering::SeqCst);
             if self.id.starts_with("broken-") {
                 return Err(CoreError::Provider(
                     crate::error::NativeProviderErrorError::new(
@@ -1011,7 +1091,11 @@ mod tests {
         }
 
         fn server_pid(&self) -> Option<u32> {
-            Some(4242)
+            if self.dead.load(Ordering::SeqCst) {
+                None
+            } else {
+                Some(4242)
+            }
         }
 
         fn server_log(&self) -> Option<String> {
@@ -1049,6 +1133,7 @@ mod tests {
                     restarts: AtomicUsize::new(0),
                     requests: AtomicUsize::new(0),
                     saw_cache_prompt_off: AtomicBool::new(false),
+                    dead: AtomicBool::new(false),
                 }),
             })
         }
@@ -1309,6 +1394,7 @@ mod tests {
             restarts: AtomicUsize::new(0),
             requests: AtomicUsize::new(0),
             saw_cache_prompt_off: AtomicBool::new(false),
+            dead: AtomicBool::new(false),
         };
         generator.live.now.store(1, Ordering::SeqCst);
         let lab = LabProvider::new(&generator);
@@ -1355,6 +1441,54 @@ mod tests {
                 "the embedding model is a product model"
             );
         }
+    }
+
+    #[test]
+    fn a_server_lost_after_the_first_request_is_never_timed_as_a_warm_repeat() {
+        let harness = harness();
+        let mut sink = MemorySink::default();
+        let cancel = AtomicBool::new(false);
+        let (result, _) = run_with(&harness, &["dying-x"], &cancel, &mut sink);
+        assert_eq!(result.unwrap(), RunEnd::Completed);
+        let records: Vec<&BenchmarkRecord> = sink
+            .records
+            .iter()
+            .filter(|r| r.model_id == "dying-x")
+            .collect();
+        assert_eq!(
+            records.len(),
+            6,
+            "a first record and a not-run repeat per case"
+        );
+        for pair in records.chunks(2) {
+            let (first, repeat) = (pair[0], pair[1]);
+            assert!(first.cold);
+            assert_eq!(first.outcome_kind, OutcomeKind::Valid);
+            // The first record's process had exited when its peak would be read.
+            assert_eq!(first.memory[0].peak_bytes, None);
+            assert!(first.memory[0]
+                .unavailable_reason
+                .as_deref()
+                .unwrap()
+                .contains("exited or been replaced"));
+
+            assert!(!repeat.cold);
+            assert_eq!(
+                repeat.timing.request_position,
+                RequestPosition::ImmediateRepeat
+            );
+            assert_eq!(repeat.timing.requests_in_task, 0, "nothing ran");
+            assert_eq!(repeat.task_duration_ms, 0);
+            assert_eq!(repeat.outcome_kind, OutcomeKind::RuntimeError);
+            assert!(repeat.retry_needed);
+            assert_eq!(repeat.objective_checks[0].name, "repeatRun");
+            assert_eq!(repeat.objective_checks[0].passed, Some(false));
+            assert_eq!(repeat.peak_process_ram_bytes, None);
+        }
+        // No record claims a measured repeat on a process the lab did not restart.
+        assert!(records
+            .iter()
+            .all(|r| r.cold || r.timing.requests_in_task == 0));
     }
 
     #[test]
