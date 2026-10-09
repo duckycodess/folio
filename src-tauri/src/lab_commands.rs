@@ -6,6 +6,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use folio_core::contracts::{
     ModelDescriptor, ModelInstallStatus, ModelRole, NativeProviderError, ProviderErrorCode,
@@ -524,6 +525,42 @@ pub(crate) async fn run_model_lab(
     .await
 }
 
+/// Marks runs an earlier session left `running` as interrupted. Called once at
+/// startup, when no run can be in progress, so the list never shows a run that
+/// will not end.
+pub(crate) fn mark_interrupted_runs(state: &Folio) {
+    let marked = state.index().and_then(|mut connection| {
+        lab_store::fail_interrupted_runs(&mut connection, system_clock_ms())
+    });
+    if let Err(failure) = marked {
+        eprintln!(
+            "Model Lab could not mark interrupted runs: {}",
+            failure.message
+        );
+    }
+}
+
+/// Asks a lab run to stop and waits up to `limit` for it to end. Its
+/// llama-server stops when the run ends; without this wait, quitting during a
+/// run could leave that server running on macOS and Linux, where no job object
+/// ties it to Folio. Returns whether no run is left.
+pub(crate) fn stop_lab_and_wait(lab_state: &LabState, limit: Duration) -> bool {
+    let deadline = Instant::now() + limit;
+    loop {
+        match lab_state.lock() {
+            Ok(lab) => match lab.as_ref() {
+                None => return true,
+                Some(cancel) => cancel.store(true, Ordering::Release),
+            },
+            Err(_) => return false,
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Stops between cases. Finished results are kept and the run is marked cancelled.
 #[tauri::command]
 pub(crate) fn cancel_model_lab(lab_state: State<'_, LabState>) -> Result<(), FolioError> {
@@ -854,6 +891,33 @@ mod tests {
         assert!(generation.lock().unwrap().active_cancel.is_none());
         assert!(lab.lock().unwrap().is_none());
         begin_lab_exclusive(&generation, &lab).unwrap();
+    }
+
+    #[test]
+    fn exit_stops_a_run_and_waits_for_it_to_end() {
+        let generation = GenerationState::default();
+        let lab = LabState::default();
+        assert!(stop_lab_and_wait(&lab, Duration::from_millis(10)));
+
+        let cancel = begin_lab_exclusive(&generation, &lab).unwrap();
+        // The run's thread ends once it sees the cancel, as a real run does.
+        let worker = {
+            let (generation, lab, cancel) = (generation.clone(), lab.clone(), cancel.clone());
+            std::thread::spawn(move || {
+                while !cancel.load(Ordering::Acquire) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                finish_lab(&generation, &lab, &cancel).unwrap();
+            })
+        };
+        assert!(stop_lab_and_wait(&lab, Duration::from_secs(5)));
+        worker.join().unwrap();
+        assert!(cancel.load(Ordering::Acquire));
+
+        // A run that doesn't end in time is reported, not waited on forever.
+        let stuck = begin_lab_exclusive(&generation, &lab).unwrap();
+        assert!(!stop_lab_and_wait(&lab, Duration::from_millis(60)));
+        assert!(stuck.load(Ordering::Acquire));
     }
 
     #[test]

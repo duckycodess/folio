@@ -1744,7 +1744,9 @@ pub fn run() {
         .setup(|app| {
             let directory = app.path().app_data_dir()?;
             std::fs::create_dir_all(&directory)?;
-            app.manage(Folio::open(directory.join("folio.sqlite"))?);
+            let folio = Folio::open(directory.join("folio.sqlite"))?;
+            lab_commands::mark_interrupted_runs(&folio);
+            app.manage(folio);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1810,6 +1812,13 @@ pub fn run() {
         ) {
             if let Some(generation_state) = app_handle.try_state::<GenerationState>() {
                 let _ = unload_generation_now(generation_state.inner());
+            }
+            // A lab run's server lives in the run's thread, outside the slot.
+            if let Some(lab_state) = app_handle.try_state::<lab_commands::LabState>() {
+                let _ = lab_commands::stop_lab_and_wait(
+                    lab_state.inner(),
+                    std::time::Duration::from_secs(10),
+                );
             }
         }
     });
