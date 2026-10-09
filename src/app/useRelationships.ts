@@ -17,7 +17,7 @@ import type {
   Relationship,
   SourcePassage,
 } from "../domain/contracts";
-import { toFolioError } from "../domain/errors";
+import { toFolioError, type FolioError } from "../domain/errors";
 import { NO_NAVIGATION, relatedNavigation } from "./relatedNavigation";
 import type { WorkspaceState } from "./useWorkspace";
 
@@ -30,8 +30,8 @@ export type RelationshipCoverage =
 
 export interface RelationshipsState {
   coverage: RelationshipCoverage;
-  /** Plain-language reason when the index couldn't be read. */
-  error: string;
+  /** Why the index couldn't be read, for the shared recovery notice. */
+  failure: FolioError | null;
   /** Index and opened-file relationships, merged without repeats. */
   relationships: Relationship[];
   duplicates: DuplicateSet[];
@@ -59,7 +59,7 @@ interface IndexSnapshot {
   coverage: "indexed" | "notIndexed" | "failed";
   relationships: Relationship[];
   duplicates: DuplicateSet[];
-  error: string;
+  failure: FolioError | null;
 }
 
 export function useRelationships(
@@ -87,7 +87,7 @@ export function useRelationships(
           coverage: documents.length ? "indexed" : "notIndexed",
           relationships,
           duplicates,
-          error: "",
+          failure: null,
         });
       })
       .catch((cause) => {
@@ -97,7 +97,7 @@ export function useRelationships(
           coverage: "failed",
           relationships: [],
           duplicates: [],
-          error: toFolioError(cause).message,
+          failure: toFolioError(cause),
         });
       });
     return () => {
@@ -143,7 +143,7 @@ export function useRelationships(
 
   return {
     coverage,
-    error: current?.error ?? "",
+    failure: current?.failure ?? null,
     relationships,
     duplicates,
     connectionsOf: (documentId) =>

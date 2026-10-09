@@ -7,7 +7,7 @@ import type { DocumentRecord, SourcePassage } from "../domain/contracts";
 import { Badge } from "../ui/Badge";
 import { EmptyState } from "../ui/EmptyState";
 import { FileTypeIcon } from "../ui/FileTypeIcon";
-import { Notice } from "../ui/Notice";
+import { RecoveryNotice } from "../ui/RecoveryNotice";
 
 const EXCERPT_LENGTH = 160;
 
@@ -85,10 +85,18 @@ export function CoverageNote({ relations }: { relations: RelationshipsState }) {
       return <p className="muted">Checking the folder index…</p>;
     case "failed":
       return (
-        <Notice tone="warning">
-          Folio couldn't read this folder's index, so only links in files you've
-          opened are shown. {relations.error}
-        </Notice>
+        <>
+          {relations.failure && (
+            <RecoveryNotice
+              error={relations.failure}
+              actions={{ retry: relations.refresh }}
+            />
+          )}
+          <p className="muted">
+            Folio couldn't read this folder's index, so only links in files
+            you've opened are shown.
+          </p>
+        </>
       );
     default:
       return null;

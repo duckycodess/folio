@@ -113,6 +113,8 @@ Checked on macOS with Node.js 26.10.0:
   - in the rename preview, 8 Tabs and 8 Shift+Tabs stay inside the dialog, and Escape closes it and returns focus to Preview rename;
   - the rendered text of all six views contains none of "Track T…", "docs/", "engine", "adapter", "fixture", "payload", "null" or "undefined".
 
+After #32 merged: `useWorkspace` no longer exposes the unused `neighbors`, and the Related and Graph views show a folder-index read failure through the shared recovery notice, with Try again re-reading the index. This was checked by `npm run check` and `npm test` (140 passed, 9 todo). It wasn't rendered, because it needs a real indexed folder.
+
 After the #31 review:
 
 - Change-related wording now depends on when the error arrived: refused before any write, partway through a batch, or partway through an Undo.
