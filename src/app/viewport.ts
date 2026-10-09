@@ -62,8 +62,10 @@ export function zoomAt(
 /**
  * Room kept around the outermost files: file names are drawn centred under
  * their node, so they need more space to the sides than above and below.
+ * `y` covers the label below the bottom-most node, not just the node itself
+ * (#67 item 7: a bottom node's label was getting clipped).
  */
-export const FIT_PADDING: Point = { x: 88, y: 44 };
+export const FIT_PADDING: Point = { x: 88, y: 56 };
 
 /**
  * Shows all of `bounds` centred in `size`. A small map is spread out to at

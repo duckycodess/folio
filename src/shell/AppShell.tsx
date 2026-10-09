@@ -11,7 +11,14 @@ import {
   Waypoints,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import {
   applyTheme,
   loadTheme,
@@ -20,6 +27,16 @@ import {
   THEME_LABELS,
   type ThemePreference,
 } from "../app/theme";
+import {
+  clampReaderWidth,
+  computeShellLayout,
+  loadReaderWidth,
+  READER_MIN_WIDTH,
+  readerMaxWidth,
+  saveReaderWidth,
+} from "../app/shellLayout";
+import { useElementWidth } from "../app/useElementWidth";
+import { ResizeHandle } from "../ui/ResizeHandle";
 import { useRelationships } from "../app/useRelationships";
 import { useActivity } from "../app/useActivity";
 import { useHome } from "../app/useHome";
@@ -40,8 +57,7 @@ import { AnnouncerProvider } from "../ui/Announcer";
 import type { RowMenuItem } from "../ui/RowMenu";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
 import { Notice } from "../ui/Notice";
-import { prefillAskScope } from "../app/useAskAct";
-import { AssistantView } from "../views/AssistantView";
+import { AssistantView, type OpenFile } from "../views/AssistantView";
 import { DocumentPanel } from "../views/DocumentPanel";
 import {
   FileActionDialog,
@@ -50,6 +66,7 @@ import {
 import { DeleteDialog } from "../views/DeleteDialog";
 import { EditTextDialog } from "../views/actions/EditTextDialog";
 import type { GraphActionKind } from "../app/graphActions";
+import { FloatingOlioChat } from "../views/FloatingOlioChat";
 import { GraphView } from "../views/GraphView";
 import { HomeView } from "../views/HomeView";
 import { ActivityView } from "../views/ActivityView";
@@ -174,6 +191,25 @@ export function AppShell() {
   const reading = readerDocument(view, workspace.selected, listed);
   const showsDocument = reading !== undefined;
 
+  // The sidebar, the list and the reader all follow the app's own measured
+  // width, not a fixed window breakpoint (#67): a wide window keeps sidebar
+  // labels even with the reader open, and a narrow one collapses sooner.
+  const [appRef, appWidth] = useElementWidth<HTMLDivElement>(1280);
+  const [requestedReaderWidth, setRequestedReaderWidth] =
+    useState(loadReaderWidth);
+  const layout = computeShellLayout(
+    appWidth,
+    showsDocument,
+    requestedReaderWidth,
+  );
+  function resizeReader(next: number) {
+    // Kept within this window's range, so a drag past the edge doesn't
+    // leave a width that jumps open in a larger window later.
+    const width = clampReaderWidth(next, appWidth);
+    setRequestedReaderWidth(width);
+    saveReaderWidth(width);
+  }
+
   // "Show related" is for that one opening: once another file (or none) is
   // shown, opening the file again starts on its usual tab.
   const readingId = reading?.id;
@@ -184,12 +220,31 @@ export function AppShell() {
   }, [readingId]);
 
   // The listener is added once and reads the latest render through this ref.
-  const latest = useRef({ showsDocument, closeDocument, openHome });
-  latest.current = { showsDocument, closeDocument, openHome };
+  const overlay = layout.readerMode === "overlay";
+  function closeOverlay() {
+    setPanelTab(null);
+    workspace.clearSelection();
+  }
+  const latest = useRef({
+    showsDocument,
+    closeDocument,
+    openHome,
+    overlay,
+    closeOverlay,
+  });
+  latest.current = {
+    showsDocument,
+    closeDocument,
+    openHome,
+    overlay,
+    closeOverlay,
+  };
 
   function openHome() {
-    if (view === "home") focusHomeSearch();
-    else setView("home");
+    if (view !== "home") setView("home");
+    else if (!overlay) focusHomeSearch();
+    // Otherwise the effect below focuses search once the overlay has closed:
+    // the list behind it, search included, is inert until then.
   }
 
   function focusHomeSearch() {
@@ -199,8 +254,8 @@ export function AppShell() {
   }
 
   useEffect(() => {
-    if (view === "home" && focusSearch.current) focusHomeSearch();
-  }, [view]);
+    if (view === "home" && !overlay && focusSearch.current) focusHomeSearch();
+  }, [view, overlay]);
 
   function fileActions(document: DocumentRecord): RowMenuItem[] {
     return [
@@ -290,8 +345,10 @@ export function AppShell() {
       }
       if (!isSearchShortcut(event, platform)) return;
       event.preventDefault();
-      // Search lives on Home (#43): go there, then focus it.
+      // Search lives on Home (#43): go there, then focus it. A reader that
+      // overlays the list makes search inert, so it closes first.
       focusSearch.current = true;
+      if (latest.current.overlay) latest.current.closeOverlay();
       latest.current.openHome();
     }
     window.addEventListener("keydown", onKeyDown);
@@ -321,11 +378,22 @@ export function AppShell() {
     );
   }
 
+  // Shared by Ask & Act and the floating Olio chat (#66): both open a file
+  // from a turn's result the same way.
+  const openFromAsk: OpenFile = (document, tab) => {
+    if (tab)
+      setPanelTab((current) => ({
+        documentId: document.id,
+        tab,
+        request: (current?.request ?? 0) + 1,
+      }));
+    void workspace.selectDocument(document);
+  };
+
   function onSearch(query: string) {
     workspace.setQuery(query);
-    // In narrow windows the reader covers the list; show the results instead.
-    if (window.matchMedia("(max-width: 860px)").matches)
-      workspace.clearSelection();
+    // When the reader overlays the list, show the results instead.
+    if (layout.readerMode === "overlay") workspace.clearSelection();
   }
 
   if (welcome)
@@ -339,9 +407,23 @@ export function AppShell() {
       </AnnouncerProvider>
     );
 
+  const appClassName = [
+    "app",
+    showsDocument && "has-document",
+    layout.sidebarMode === "rail" && "sidebar-rail",
+    layout.readerMode === "split" && "reader-split",
+    layout.readerMode === "overlay" && "reader-overlay",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
     <AnnouncerProvider>
-      <div className={`app${showsDocument ? " has-document" : ""}`}>
+      <div
+        ref={appRef}
+        className={appClassName}
+        style={{ "--detail-width": `${layout.readerWidth}px` } as CSSProperties}
+      >
         <a className="skip-link" href="#main">
           Skip to content
         </a>
@@ -405,7 +487,14 @@ export function AppShell() {
           </div>
         </aside>
 
-        <div className="main-column">
+        <div
+          className="main-column"
+          // While the reader overlays the list, the list behind it can't be
+          // reached (it keeps its scroll position and focus for when the
+          // overlay closes), so it's taken out of tab order and the a11y
+          // tree rather than removed.
+          inert={layout.readerMode === "overlay" ? true : undefined}
+        >
           <header className="topbar">
             <nav aria-label="Breadcrumb" className="breadcrumb">
               <span>{SOURCE_LABELS[workspace.source]}</span>
@@ -493,15 +582,6 @@ export function AppShell() {
                   fileActions={fileActions}
                   onOpenPassage={relations.openPassage}
                   home={home}
-                  onAskOlio={() => {
-                    const query = workspace.query.trim();
-                    if (query) drafts.setInstruction(query);
-                    prefillAskScope(
-                      workspace.workspace?.id,
-                      home.filters.folder ?? "",
-                    );
-                    setView("assistant");
-                  }}
                 />
               )}
               {view === "organize" && (
@@ -522,15 +602,7 @@ export function AppShell() {
                   relations={relations}
                   drafts={drafts}
                   onNavigate={setView}
-                  onOpenFile={(document, tab) => {
-                    if (tab)
-                      setPanelTab((current) => ({
-                        documentId: document.id,
-                        tab,
-                        request: (current?.request ?? 0) + 1,
-                      }));
-                    void workspace.selectDocument(document);
-                  }}
+                  onOpenFile={openFromAsk}
                 />
               )}
               {view === "activity" && (
@@ -541,6 +613,15 @@ export function AppShell() {
           </main>
         </div>
 
+        {layout.readerMode === "split" && (
+          <ResizeHandle
+            label="Resize the reader"
+            value={layout.readerWidth}
+            min={READER_MIN_WIDTH}
+            max={readerMaxWidth(appWidth)}
+            onChange={resizeReader}
+          />
+        )}
         {reading && (
           <DocumentPanel
             key={
@@ -557,6 +638,7 @@ export function AppShell() {
             actions={fileActions(reading).filter((item) => item.id !== "open")}
             onClose={closeDocument}
             onNavigate={setView}
+            isOverlay={layout.readerMode === "overlay"}
           />
         )}
         {actionDialog && (
@@ -598,6 +680,17 @@ export function AppShell() {
             onClose={closeGraphDialog}
           />
         )}
+        {/* Its own live region: independent of whichever view is showing. */}
+        <AnnouncerProvider>
+          <FloatingOlioChat
+            workspace={workspace}
+            relations={relations}
+            view={view}
+            onNavigate={setView}
+            onOpenFile={openFromAsk}
+            currentFile={reading}
+          />
+        </AnnouncerProvider>
       </div>
     </AnnouncerProvider>
   );

@@ -46,7 +46,9 @@
 }
 .graph-canvas {
   position: relative;
-  height: clamp(300px, 56vh, 640px);
+  /* Uses more of a tall window instead of capping out early (#67 item 7;
+     full label-collision work is coordinated with #45). */
+  height: clamp(320px, 70vh, 820px);
   overflow: hidden;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);

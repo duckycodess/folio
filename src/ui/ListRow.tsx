@@ -7,7 +7,13 @@ interface ListRowProps {
   /** Table cells after the title; laid out by the surrounding table. */
   cells?: ReactNode;
   meta?: ReactNode;
-  /** Spoken name, when the visible text alone reads poorly (dashes, units). */
+  /**
+   * Spoken name, for a row whose visible text alone reads poorly. Leave it out
+   * where the row has `cells`: a name that is not the visible text word for
+   * word leaves a voice-control user naming a control the browser will not
+   * match (axe's `label-content-name-mismatch`), and the columns a row shows
+   * change with the window's width, so no single sentence can match them all.
+   */
   label?: string;
   /** Hover text; defaults to the title and subtitle. */
   tooltip?: string;

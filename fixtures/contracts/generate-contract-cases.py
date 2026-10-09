@@ -252,6 +252,82 @@ for plan in (plan_a, plan_b, plan_c):
         "digest": digest,
     })
 
+# --------------------------------------------------------------- activity ---
+# `list_activity` batches as they cross the boundary. An optional field is
+# absent, never null, so both languages must omit exactly these keys.
+activity_history = {
+    "id": "history-1",
+    "planId": "plan-batch-filipino",
+    "operationIndex": 0,
+    "operationKind": "edit",
+    "appliedAt": 1760000001000,
+    "documentId": WS + ":projects/project-plan.md",
+    "beforeRelativePath": "projects/project-plan.md",
+    "afterRelativePath": "projects/project-plan.md",
+    "beforeContentHash": content_hash(plan_a_target),
+    "afterContentHash": content_hash("Deadline: October 23\n"),
+    "recoverable": True,
+}
+activity = [
+    {
+        "label": "stopped partway: a change, a failure and one never started",
+        "batch": {
+            "planId": "plan-batch-filipino",
+            "source": "organize",
+            "appliedAt": 1760000001000,
+            "finishedAt": 1760000001500,
+            "stopReason": "failed",
+            "operations": [
+                {
+                    "operationIndex": 0,
+                    "operationKind": "edit",
+                    "beforeRelativePath": "projects/project-plan.md",
+                    "afterRelativePath": "projects/project-plan.md",
+                    "status": "succeeded",
+                    "history": activity_history,
+                },
+                {
+                    "operationIndex": 1,
+                    "operationKind": "rename",
+                    "beforeRelativePath": "notes/paalala.md",
+                    "afterRelativePath": "notes/paalala-oktubre.md",
+                    "status": "failed",
+                    "error": {
+                        "code": "destinationExists",
+                        "message": "A file already uses that name.",
+                        "details": {"path": "notes/paalala-oktubre.md"},
+                    },
+                },
+                {
+                    "operationIndex": 2,
+                    "operationKind": "create",
+                    "afterRelativePath": NFC_PATH,
+                    "status": "notStarted",
+                },
+            ],
+        },
+        "changed": 1,
+        "unrecorded": 0,
+    },
+    {
+        "label": "recorded before sources and outcomes were stored",
+        "batch": {
+            "planId": "plan-delete-pagsasanay",
+            "source": "unknown",
+            "appliedAt": 1760000002000,
+            "operations": [
+                {
+                    "operationIndex": 0,
+                    "operationKind": "delete",
+                    "beforeRelativePath": NFC_PATH,
+                },
+            ],
+        },
+        "changed": 0,
+        "unrecorded": 1,
+    },
+]
+
 # ----------------------------------------------------------------- hashes ---
 hashes = [
     {"text": "", "expected": content_hash("")},
@@ -277,6 +353,8 @@ bundle = {
     "identity": identity,
     "offsets": {"cases": offsets, "invalid": offsets_invalid},
     "plans": plans,
+    "planSources": ["home", "organize", "graph", "assistant", "summary"],
+    "activity": activity,
     "hashes": hashes,
     "errorCodes": error_codes,
     "operationStatuses": ["succeeded", "failed", "cancelled", "notStarted"],

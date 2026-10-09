@@ -554,9 +554,15 @@ pub fn list_activity(conn: &Connection, workspace_id: &str, limit: usize, before
     for (plan_id, source, applied_at, stop_reason, outcome_json, plan_json) in plans {
         let history: Vec<HistoryEntry> = entries.query_map([&plan_id], entry_from_row)?.collect::<Result<_, _>>()?;
         // Unreadable stored JSON leaves only what history recorded; it never
-        // stops the rest of Activity from loading.
-        let summary: Option<PlanSummary> = serde_json::from_str(&plan_json).ok();
-        let outcome: Option<BatchResult> = outcome_json.as_deref().and_then(|json| serde_json::from_str(json).ok());
+        // stops the rest of Activity from loading, but it is not silent either.
+        let summary: Option<PlanSummary> = serde_json::from_str(&plan_json)
+            .inspect_err(|failure| eprintln!("Activity: plan {plan_id} has an unreadable summary, so only its history is listed: {failure}"))
+            .ok();
+        let outcome: Option<BatchResult> = outcome_json.as_deref().and_then(|json| {
+            serde_json::from_str(json)
+                .inspect_err(|failure| eprintln!("Activity: plan {plan_id} has unreadable outcomes, so they are listed as unknown: {failure}"))
+                .ok()
+        });
         let count = summary
             .as_ref()
             .map(|summary| summary.operations.len())
@@ -567,6 +573,8 @@ pub fn list_activity(conn: &Connection, workspace_id: &str, limit: usize, before
             let entry = history.iter().find(|entry| entry.operation_index == index).cloned();
             let summarized = summary.as_ref().and_then(|summary| summary.operations.get(index));
             let Some(kind) = entry.as_ref().map(|entry| entry.operation_kind).or_else(|| summarized.and_then(|summary| Kind::parse(&summary.kind))) else {
+                // Without a kind there is nothing honest to show for this operation.
+                eprintln!("Activity: plan {plan_id} operation {index} has no recorded kind and is not listed");
                 continue;
             };
             let (before_relative_path, after_relative_path) = match (&entry, summarized) {
@@ -1020,6 +1028,50 @@ mod tests {
         assert_eq!(batches[1].stop_reason, Some(BatchStopReason::Failed));
         assert_eq!(activity_statuses(&batches[1]), vec![Some(OperationStatus::Failed)]);
         assert!(batches[1].operations[0].history.is_none(), "nothing was changed");
+    }
+
+    #[test]
+    fn activity_keeps_a_write_whose_history_could_not_be_stored_and_an_unrun_delete() {
+        let (folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let operations = vec![
+            edit(&conn, &root, "projects/project-plan.md", "October 20", "October 23"),
+            relocate(&conn, &root, "notes/paalala.md", "notes/mga-paalala.md", true),
+            remove(&conn, &root, "personal/grocery-list.md"),
+        ];
+        // The rename's file is moved, then storing its history fails.
+        conn.execute_batch("CREATE TEMP TRIGGER refuse_history BEFORE INSERT ON history WHEN NEW.operation_index = 1 BEGIN SELECT RAISE(ABORT, 'disk full'); END;").unwrap();
+        apply_with(&mut conn, &root, operations, &RealFileSystem);
+        assert!(folder.path().join("notes/mga-paalala.md").is_file(), "the rename did happen");
+
+        let batch = &activity(&conn, &root)[0];
+        assert_eq!(activity_statuses(batch), vec![Some(OperationStatus::Succeeded), Some(OperationStatus::Failed), Some(OperationStatus::NotStarted)]);
+        let written = &batch.operations[1];
+        assert_eq!(written.error.as_ref().map(|error| error.code), Some(ErrorCode::HistoryRequired));
+        assert!(written.history.is_none());
+        assert_eq!((written.before_relative_path.as_deref(), written.after_relative_path.as_deref()), (Some("notes/paalala.md"), Some("notes/mga-paalala.md")));
+        let unrun = &batch.operations[2];
+        assert_eq!((unrun.operation_kind, unrun.before_relative_path.as_deref(), unrun.after_relative_path.as_deref()), (Kind::Delete, Some("personal/grocery-list.md"), None));
+        assert!(folder.path().join("personal/grocery-list.md").is_file());
+    }
+
+    #[test]
+    fn activity_rebuilds_a_plan_with_an_unreadable_summary_from_its_history() {
+        let (_folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let operations = vec![
+            edit(&conn, &root, "projects/project-plan.md", "October 20", "October 23"),
+            create("notes/second.md", "x"),
+            create("notes/third.md", "x"),
+        ];
+        let report = apply_with(&mut conn, &root, operations, &Failing::on(3));
+        conn.execute("UPDATE action_plans SET plan_json = '{}', outcome_json = 'not json' WHERE id = ?1", [&report.batch.plan_id]).unwrap();
+        // Only history says what happened, so only the operations that left history
+        // can be shown; their outcome is what history proves, nothing more.
+        let batch = &activity(&conn, &root)[0];
+        assert_eq!(batch.operations.iter().map(|operation| operation.operation_index).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(activity_statuses(batch), vec![Some(OperationStatus::Succeeded); 2]);
+        assert_eq!((batch.finished_at, batch.stop_reason), (None, Some(BatchStopReason::Failed)));
     }
 
     #[test]

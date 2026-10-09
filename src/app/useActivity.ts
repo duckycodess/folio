@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { listActivity, previewUndo, undoPlan } from "../adapters/actions";
-import { fromActivity, type ActivityBatch } from "../domain/activity";
+import { activityPage, type ActivityEntry } from "../domain/activity";
 import type { UndoPreflight, UndoReport } from "../domain/contracts";
 import { toFolioError, type FolioError } from "../domain/errors";
 import { actionReducer, IDLE, type ActionState } from "./actionState";
@@ -9,7 +9,7 @@ import type { WorkspaceState } from "./useWorkspace";
 export interface ActivityState {
   /** `idle` without a folder; history is only read for an open folder. */
   status: "idle" | "loading" | "ready" | "failed";
-  batches: ActivityBatch[];
+  batches: ActivityEntry[];
   /** True when older batches may exist beyond the ones loaded. */
   hasOlder: boolean;
   loadingOlder: boolean;
@@ -18,13 +18,13 @@ export interface ActivityState {
   failure: FolioError | null;
   reload: () => void;
   /** The batch whose Undo is being previewed or confirmed. */
-  undoTarget: ActivityBatch | null;
+  undoTarget: ActivityEntry | null;
   undoPreview: UndoPreflight | null;
   undoBusy: boolean;
   undoFailure: FolioError | null;
   /** True when the failed Undo had already reversed some files. */
   undoPartial: boolean;
-  startUndo: (batch: ActivityBatch) => void;
+  startUndo: (batch: ActivityEntry) => void;
   confirmUndo: () => void;
   closeUndo: () => void;
   /** Settles only from the native Undo report. */
@@ -32,7 +32,10 @@ export interface ActivityState {
   dismissUndoResult: () => void;
 }
 
-/** Batches per page; a page never splits a batch. */
+/**
+ * Batches per page; a page never splits a batch. Each request asks for one
+ * more, so "Show older changes" only appears when older batches exist.
+ */
 const PAGE = 50;
 
 /**
@@ -45,12 +48,12 @@ export function useActivity(
 ): ActivityState {
   const folderId = workspace.workspace?.id;
   const [status, setStatus] = useState<ActivityState["status"]>("idle");
-  const [batches, setBatches] = useState<ActivityBatch[]>([]);
+  const [batches, setBatches] = useState<ActivityEntry[]>([]);
   const [hasOlder, setHasOlder] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [failure, setFailure] = useState<FolioError | null>(null);
   const [generation, setGeneration] = useState(0);
-  const [undoTarget, setUndoTarget] = useState<ActivityBatch | null>(null);
+  const [undoTarget, setUndoTarget] = useState<ActivityEntry | null>(null);
   const [undoPreview, setUndoPreview] = useState<UndoPreflight | null>(null);
   const [undoBusy, setUndoBusy] = useState(false);
   const [undoFailure, setUndoFailure] = useState<FolioError | null>(null);
@@ -81,11 +84,12 @@ export function useActivity(
       return;
     }
     setStatus("loading");
-    listActivity(folderId, PAGE)
+    listActivity(folderId, PAGE + 1)
       .then((recorded) => {
         if (current !== listingRequest.current) return;
-        setBatches(fromActivity(recorded));
-        setHasOlder(recorded.length === PAGE);
+        const page = activityPage(recorded, PAGE);
+        setBatches(page.batches);
+        setHasOlder(page.hasOlder);
         setStatus("ready");
       })
       .catch((cause) => {
@@ -111,10 +115,11 @@ export function useActivity(
     setLoadingOlder(true);
     setFailure(null);
     try {
-      const recorded = await listActivity(forFolder, PAGE, last.planId);
+      const recorded = await listActivity(forFolder, PAGE + 1, last.planId);
       if (current !== listingRequest.current) return;
-      setBatches((current) => [...current, ...fromActivity(recorded)]);
-      setHasOlder(recorded.length === PAGE);
+      const page = activityPage(recorded, PAGE);
+      setBatches((loaded) => [...loaded, ...page.batches]);
+      setHasOlder(page.hasOlder);
     } catch (cause) {
       if (current === listingRequest.current) setFailure(toFolioError(cause));
     } finally {
@@ -122,7 +127,7 @@ export function useActivity(
     }
   }
 
-  async function startUndo(batch: ActivityBatch) {
+  async function startUndo(batch: ActivityEntry) {
     if (!folderId) return;
     setUndoTarget(batch);
     setUndoPreview(null);

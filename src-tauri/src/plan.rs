@@ -8,10 +8,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::contracts::{
-    ActionPlan, Approval, BatchResult, PlanSource, BatchStopReason, FileOperation, FileOperationKind,
-    HistoryEntry,
-    ImpactCandidate, OperationOutcome, OperationStatus, RestoredPreview, UndoConflict,
-    UndoConflictReason, UndoPreflight,
+    ActionPlan, Approval, BatchResult, BatchStopReason, FileOperation, FileOperationKind,
+    HistoryEntry, ImpactCandidate, OperationOutcome, OperationStatus, PlanSource,
+    RestoredPreview, UndoConflict, UndoConflictReason, UndoPreflight,
 };
 use crate::error::{error, ErrorCode, FolioError};
 use crate::identity::{

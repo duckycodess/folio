@@ -10,7 +10,7 @@ import type { OrganizeStage } from "../app/organizeFlow";
 import { planRow, summarizeApply, summarizeUndo } from "../app/planReview";
 import type { OrganizeController } from "../app/useOrganize";
 import type { WorkspaceState } from "../app/useWorkspace";
-import type { IndexProgress } from "../domain/contracts";
+import type { DocumentRecord, IndexProgress } from "../domain/contracts";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { Notice } from "../ui/Notice";
@@ -76,9 +76,12 @@ function Steps({ stage }: { stage: OrganizeStage }) {
 export function OrganizeFlowPanel({
   workspace,
   organize,
+  onOpenFile,
 }: {
   workspace: WorkspaceState;
   organize: OrganizeController;
+  /** Opens a suggestion's or duplicate's file in the reader (#67). */
+  onOpenFile: (document: DocumentRecord) => void;
 }) {
   const { state } = organize;
   const heading = useRef<HTMLHeadingElement>(null);
@@ -178,9 +181,18 @@ export function OrganizeFlowPanel({
                           <Copy size={16} aria-hidden="true" />
                           <span>
                             {group.documents.length} identical copies:{" "}
-                            {group.documents
-                              .map((document) => document.relativePath)
-                              .join(", ")}
+                            {group.documents.map((document, index) => (
+                              <span key={document.id}>
+                                {index > 0 && ", "}
+                                <button
+                                  type="button"
+                                  className="link-button plan-path"
+                                  onClick={() => onOpenFile(document)}
+                                >
+                                  {document.relativePath}
+                                </button>
+                              </span>
+                            ))}
                           </span>
                         </li>
                       ))}
@@ -195,29 +207,44 @@ export function OrganizeFlowPanel({
                 <legend className="subsection-title">Name suggestions</legend>
                 {suggestions.filenames.length ? (
                   <ul className="suggestion-list">
-                    {suggestions.filenames.map((item) => (
-                      <li key={item.documentId}>
-                        <label className="suggestion">
-                          <input
-                            type="checkbox"
-                            checked={state.chosen.includes(item.documentId)}
-                            onChange={() => organize.toggle(item.documentId)}
-                          />
-                          <span className="suggestion-text">
-                            <span className="suggestion-paths">
-                              <span className="plan-path">
-                                {item.relativePath}
+                    {suggestions.filenames.map((item) => {
+                      const document = workspace.documents.find(
+                        (candidate) => candidate.id === item.documentId,
+                      );
+                      return (
+                        <li key={item.documentId}>
+                          <label className="suggestion">
+                            <input
+                              type="checkbox"
+                              checked={state.chosen.includes(item.documentId)}
+                              onChange={() => organize.toggle(item.documentId)}
+                            />
+                            <span className="suggestion-text">
+                              <span className="suggestion-paths">
+                                {document ? (
+                                  <button
+                                    type="button"
+                                    className="link-button plan-path"
+                                    onClick={() => onOpenFile(document)}
+                                  >
+                                    {item.relativePath}
+                                  </button>
+                                ) : (
+                                  <span className="plan-path">
+                                    {item.relativePath}
+                                  </span>
+                                )}
+                                <ArrowRight size={14} aria-label="to" />
+                                <span className="plan-path">
+                                  {item.suggestedRelativePath}
+                                </span>
                               </span>
-                              <ArrowRight size={14} aria-label="to" />
-                              <span className="plan-path">
-                                {item.suggestedRelativePath}
-                              </span>
+                              <span className="muted">{item.reason}</span>
                             </span>
-                            <span className="muted">{item.reason}</span>
-                          </span>
-                        </label>
-                      </li>
-                    ))}
+                          </label>
+                        </li>
+                      );
+                    })}
                   </ul>
                 ) : (
                   <p className="muted">No name changes to suggest.</p>

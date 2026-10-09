@@ -9,9 +9,14 @@ import {
   SOURCE_LABELS,
   STATUS_LABELS,
   stopSummary,
-  type ActivityBatch,
+  type ActivityEntry,
 } from "../domain/activity";
-import type { ActivityOperation, HistoryEntry } from "../domain/contracts";
+import type {
+  ActivityOperation,
+  DocumentRecord,
+  HistoryEntry,
+  OperationStatus,
+} from "../domain/contracts";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
@@ -64,7 +69,11 @@ export function ActivityView({
         </Notice>
       )}
       <Panel title="Changes" actions={<Badge>Folio's changes only</Badge>}>
-        <ActivityBody workspace={workspace} activity={activity} />
+        <ActivityBody
+          workspace={workspace}
+          activity={activity}
+          onOpenFile={workspace.selectDocument}
+        />
       </Panel>
       <UndoDialog activity={activity} />
     </div>
@@ -74,9 +83,11 @@ export function ActivityView({
 function ActivityBody({
   workspace,
   activity,
+  onOpenFile,
 }: {
   workspace: WorkspaceState;
   activity: ActivityState;
+  onOpenFile: (document: DocumentRecord) => void;
 }) {
   if (workspace.source !== "folder")
     return (
@@ -112,6 +123,8 @@ function ActivityBody({
           <ActivityItem
             key={batch.planId}
             batch={batch}
+            documents={workspace.documents}
+            onOpenFile={onOpenFile}
             onUndo={() => activity.startUndo(batch)}
           />
         ))}
@@ -139,9 +152,13 @@ function ActivityBody({
 
 function ActivityItem({
   batch,
+  documents,
+  onOpenFile,
   onUndo,
 }: {
-  batch: ActivityBatch;
+  batch: ActivityEntry;
+  documents: DocumentRecord[];
+  onOpenFile: (document: DocumentRecord) => void;
   onUndo: () => void;
 }) {
   const title = batchTitle(batch);
@@ -177,7 +194,17 @@ function ActivityItem({
         {shown.map((operation) => (
           <li key={operation.operationIndex}>
             {operation.history ? (
-              <ChangeLine entry={operation.history} />
+              <ChangeLine
+                entry={operation.history}
+                // The link shows the path after the change, so it opens the
+                // file now at that path. A rename's history keeps the old
+                // path's identity, which is gone once the folder is rescanned.
+                document={documentAt(
+                  documents,
+                  operation.history.afterRelativePath,
+                )}
+                onOpenFile={onOpenFile}
+              />
             ) : (
               <OperationLine operation={operation} />
             )}
@@ -200,23 +227,67 @@ function ActivityItem({
   );
 }
 
-function ChangeLine({ entry }: { entry: HistoryEntry }) {
+function documentAt(
+  documents: DocumentRecord[],
+  path: string | undefined,
+): DocumentRecord | undefined {
+  return path === undefined
+    ? undefined
+    : documents.find((document) => document.relativePath === path);
+}
+
+/** The file's current path, as a button that opens it when it still exists. */
+function PathMention({
+  path,
+  document,
+  onOpenFile,
+}: {
+  path: string;
+  document: DocumentRecord | undefined;
+  onOpenFile: (document: DocumentRecord) => void;
+}) {
+  if (!document) return <span>{path}</span>;
+  return (
+    <button
+      type="button"
+      className="link-button change-line-path"
+      onClick={() => onOpenFile(document)}
+    >
+      {path}
+    </button>
+  );
+}
+
+function ChangeLine({
+  entry,
+  document,
+  onOpenFile,
+}: {
+  entry: HistoryEntry;
+  /** The file at its current path, if it still exists (deletes have none). */
+  document: DocumentRecord | undefined;
+  onOpenFile: (document: DocumentRecord) => void;
+}) {
   const kind = changeKind(entry);
   const before = entry.beforeRelativePath;
   const after = entry.afterRelativePath;
+  const mention = (path: string | undefined) =>
+    path && (
+      <PathMention path={path} document={document} onOpenFile={onOpenFile} />
+    );
   return (
     <span className={`change-line${entry.undoneAt ? " is-undone" : ""}`}>
       {kind === "create" ? (
-        <>Created {after}</>
+        <>Created {mention(after)}</>
       ) : kind === "delete" ? (
         <>Deleted {before}</>
       ) : kind === "edit" ? (
-        <>Edited {after}</>
+        <>Edited {mention(after)}</>
       ) : (
         <>
           <span>{before}</span>
           <ArrowRight size={14} aria-label="became" />
-          <span>{after}</span>
+          {mention(after)}
         </>
       )}
       {entry.undoneAt !== undefined && <span className="muted"> (undone)</span>}
@@ -224,7 +295,7 @@ function ChangeLine({ entry }: { entry: HistoryEntry }) {
   );
 }
 
-const NOT_CHANGED: Record<string, string> = {
+const NOT_CHANGED: Record<Exclude<OperationStatus, "succeeded">, string> = {
   failed: "failed",
   cancelled: "cancelled, not started",
   notStarted: "not started",
@@ -246,7 +317,9 @@ function OperationLine({ operation }: { operation: ActivityOperation }) {
   const outcome = changed
     ? "changed, Undo unavailable"
     : operation.status
-      ? (NOT_CHANGED[operation.status] ?? "not changed")
+      ? operation.status === "succeeded"
+        ? "changed"
+        : NOT_CHANGED[operation.status]
       : "outcome not recorded";
   return (
     <span className={`change-line${changed ? "" : " is-unchanged"}`}>
@@ -310,12 +383,16 @@ function UndoDialog({ activity }: { activity: ActivityState }) {
           <ul className="activity-files">
             {restoring.map((entry) => (
               <li key={entry.id}>
+                {/* A preview of what Undo would do: nothing has changed yet,
+                    so the path isn't open-able here. */}
                 <ChangeLine
                   entry={{
                     ...entry,
                     beforeRelativePath: entry.afterRelativePath,
                     afterRelativePath: entry.beforeRelativePath,
                   }}
+                  document={undefined}
+                  onOpenFile={() => {}}
                 />
               </li>
             ))}

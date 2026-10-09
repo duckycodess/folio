@@ -3,10 +3,25 @@ import type { ViewId } from "./navigation";
 
 /**
  * Views whose main content is a document list, so the reader sits beside it
- * (or, in narrow windows, takes its place). Organize is not one: it works on
- * its own plan rather than on the chosen file.
+ * (or, where there isn't room, overlays it). Home filters its list, so the
+ * reader there follows the search and filters; Graph, Ask & Act, Activity
+ * and Organize show every file they mention, so an opened one always shows.
  */
-const DOCUMENT_VIEWS = new Set<ViewId>(["home", "graph", "assistant"]);
+const DOCUMENT_VIEWS = new Set<ViewId>([
+  "home",
+  "graph",
+  "assistant",
+  "activity",
+  "organize",
+]);
+
+/** Views whose file mentions aren't narrowed by a search or filter list. */
+const UNFILTERED_VIEWS = new Set<ViewId>([
+  "graph",
+  "assistant",
+  "activity",
+  "organize",
+]);
 
 /**
  * The chosen file, if the current search results include it. A search that
@@ -35,6 +50,6 @@ export function readerDocument(
   results: SearchResult[],
 ): DocumentRecord | undefined {
   if (!selected || !DOCUMENT_VIEWS.has(view)) return undefined;
-  if (view === "graph" || view === "assistant") return selected;
+  if (UNFILTERED_VIEWS.has(view)) return selected;
   return listedSelection(selected, results);
 }

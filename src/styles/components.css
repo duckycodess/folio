@@ -354,17 +354,21 @@
   color: var(--color-text-secondary);
 }
 
-/* File table: a listbox laid out as columns. The columns follow the table's
-   own width, so they fit beside the document panel as well as without it. */
+/* File table: a listbox laid out as columns. Which columns show, and the
+   grid they form, is computed from the table's own measured width in
+   FileList.tsx (../../app/fileColumns.ts) and set as --file-columns, so
+   columns drop one at a time — size, then modified, then type, then
+   location — and the name is never the one that gets crushed (#67). */
 .file-table {
-  container: file-table / inline-size;
   margin: calc(var(--space-4) * -1);
 }
 .file-table-head,
 .file-table .list-row {
-  --file-columns: minmax(0, 1fr) minmax(0, 10rem) 6rem 8rem 5rem;
   display: grid;
-  grid-template-columns: var(--file-columns);
+  grid-template-columns: var(
+    --file-columns,
+    minmax(0, 1fr) 160px 96px 112px 80px
+  );
   align-items: center;
   gap: var(--space-4);
 }
@@ -393,32 +397,13 @@
   font: var(--text-small);
   color: var(--color-text-secondary);
 }
-/* The location has its own column while there's room for it. */
+/* The location has its own column while there's room for it; once it drops,
+   FileList.tsx adds .file-table-compact and it moves under the name. */
 .file-table .list-row-subtitle {
   display: none;
 }
-@container file-table (max-width: 680px) {
-  .file-table-head,
-  .file-table .list-row {
-    --file-columns: minmax(0, 1fr) minmax(0, 9rem) 7rem;
-  }
-  .file-table .file-col-type,
-  .file-table .file-col-size {
-    display: none;
-  }
-}
-@container file-table (max-width: 460px) {
-  .file-table-head,
-  .file-table .list-row {
-    --file-columns: minmax(0, 1fr);
-  }
-  .file-table .file-col-location,
-  .file-table .file-col-modified {
-    display: none;
-  }
-  .file-table .list-row-subtitle {
-    display: block;
-  }
+.file-table.file-table-compact .list-row-subtitle {
+  display: block;
 }
 
 /* Empty state */

@@ -5,6 +5,7 @@ import type {
   HistoryEntry,
 } from "./contracts";
 import {
+  activityPage,
   batchTitle,
   changeKind,
   fromActivity,
@@ -273,5 +274,24 @@ describe("failed and cancelled batches", () => {
     expect(stopSummary(earlier)).toBe(
       "Folio didn't record what happened to 1 file in this change.",
     );
+  });
+});
+
+describe("activity pages", () => {
+  const recorded = (count: number) =>
+    Array.from({ length: count }, (_, index) =>
+      batch([moved(0)], { planId: `p${index}` }),
+    );
+
+  it("offers older changes only when the extra batch came back", () => {
+    const full = activityPage(recorded(3), 2);
+    expect(full.batches.map((entry) => entry.planId)).toEqual(["p0", "p1"]);
+    expect(full.hasOlder).toBe(true);
+  });
+
+  it("doesn't offer older changes when the last page is exactly full", () => {
+    const exact = activityPage(recorded(2), 2);
+    expect(exact.batches).toHaveLength(2);
+    expect(exact.hasOlder).toBe(false);
   });
 });

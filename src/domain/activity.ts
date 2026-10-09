@@ -23,8 +23,12 @@ export type BatchStatus =
   | "nothingChanged"
   | "unknown";
 
-/** One approved plan Folio ran, as the Activity timeline shows it. */
-export interface ActivityBatch {
+/**
+ * One approved plan Folio ran, as the Activity timeline shows it. The native
+ * listing carries each operation's outcome; the batch's kind, status and
+ * counts are derived here, deterministically, so they never disagree.
+ */
+export interface ActivityEntry {
   planId: string;
   /** When Folio started running it, in epoch milliseconds. */
   appliedAt: number;
@@ -34,6 +38,10 @@ export interface ActivityBatch {
   /** Changes with recorded history and their current Undo state. */
   entries: HistoryEntry[];
   kinds: ChangeKind[];
+  /** Files that changed, with or without recoverable history. */
+  changed: number;
+  /** Operations from before outcomes were stored, with no known outcome. */
+  unrecorded: number;
   status: BatchStatus;
   stopReason?: BatchStopReason;
   /** True when some change can still be reversed; Undo's preview has the final say. */
@@ -81,7 +89,7 @@ export function changeKind(entry: HistoryEntry): ChangeKind {
  * Only plans Folio ran appear, so previews and analyses never do. A failure
  * or cancellation is shown as it was recorded; nothing is guessed.
  */
-export function fromActivity(recorded: RecordedBatch[]): ActivityBatch[] {
+export function fromActivity(recorded: RecordedBatch[]): ActivityEntry[] {
   return recorded.map((batch) => {
     const entries = batch.operations.flatMap((operation) =>
       operation.history ? [operation.history] : [],
@@ -90,8 +98,9 @@ export function fromActivity(recorded: RecordedBatch[]): ActivityBatch[] {
     const stopped =
       batch.stopReason === "failed" || batch.stopReason === "cancelled";
     const changed = changedCount(batch.operations);
+    const unrecorded = unrecordedCount(batch.operations);
     const status: BatchStatus =
-      unrecordedCount(batch.operations) > 0
+      unrecorded > 0
         ? "unknown"
         : changed === 0
           ? "nothingChanged"
@@ -113,6 +122,8 @@ export function fromActivity(recorded: RecordedBatch[]): ActivityBatch[] {
           batch.operations.map((operation) => operation.operationKind),
         ),
       ],
+      changed,
+      unrecorded,
       status,
       stopReason: batch.stopReason,
       canUndo: entries.some(
@@ -130,14 +141,6 @@ const VERBS: Record<ChangeKind, string> = {
   delete: "Deleted",
 };
 
-const ATTEMPTS: Record<ChangeKind, string> = {
-  rename: "rename",
-  move: "move",
-  edit: "edit",
-  create: "create",
-  delete: "delete",
-};
-
 function files(count: number): string {
   return `${count} ${count === 1 ? "file" : "files"}`;
 }
@@ -146,14 +149,13 @@ function files(count: number): string {
  * "Moved 3 files", "Changed 4 files" for a mix, "Moved 1 of 3 files" when it
  * stopped partway, and "Couldn't move 1 file" when nothing changed.
  */
-export function batchTitle(batch: ActivityBatch): string {
+export function batchTitle(batch: ActivityEntry): string {
   const single = batch.kinds.length === 1 ? batch.kinds[0] : null;
   const total = batch.operations.length;
-  const changed = changedCount(batch.operations);
+  const changed = batch.changed;
   if (batch.status === "unknown")
-    return `Attempted to ${single ? ATTEMPTS[single] : "change"} ${files(total)}`;
-  if (changed === 0)
-    return `Couldn't ${single ? ATTEMPTS[single] : "change"} ${files(total)}`;
+    return `Attempted to ${single ?? "change"} ${files(total)}`;
+  if (changed === 0) return `Couldn't ${single ?? "change"} ${files(total)}`;
   const verb = single ? VERBS[single] : "Changed";
   return changed < total
     ? `${verb} ${changed} of ${files(total)}`
@@ -191,10 +193,9 @@ function operationPath(operation: ActivityOperation): string {
  * Why a batch ended early, in words, or `null` when it ran to the end. For
  * batches recorded before outcomes were kept, says what wasn't recorded.
  */
-export function stopSummary(batch: ActivityBatch): string | null {
+export function stopSummary(batch: ActivityEntry): string | null {
   const total = batch.operations.length;
-  const changed = changedCount(batch.operations);
-  const unrecorded = unrecordedCount(batch.operations);
+  const { changed, unrecorded } = batch;
   const unknownNotice =
     unrecorded > 0
       ? `Folio didn't record what happened to ${files(unrecorded)} in this change.`
@@ -219,6 +220,20 @@ export function stopSummary(batch: ActivityBatch): string | null {
   if (batch.stopReason === "cancelled")
     return `Cancelled after ${changed} of ${total} changes. The rest weren't started.`;
   return null;
+}
+
+/**
+ * One page of Activity from a listing asked for one batch more than `size`:
+ * the extra batch only says that older ones exist.
+ */
+export function activityPage(
+  recorded: RecordedBatch[],
+  size: number,
+): { batches: ActivityEntry[]; hasOlder: boolean } {
+  return {
+    batches: fromActivity(recorded.slice(0, size)),
+    hasOlder: recorded.length > size,
+  };
 }
 
 /** Why Undo can't reverse a file, in words. */

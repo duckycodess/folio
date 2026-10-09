@@ -7,8 +7,33 @@ import {
   type ReactNode,
 } from "react";
 
-const FOCUSABLE =
+export const FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * Wraps Tab and Shift+Tab inside `event.currentTarget`, so focus can't leave
+ * a panel that isn't a native `<dialog>` (which does this on its own).
+ */
+export function trapTabWithin(event: KeyboardEvent<HTMLElement>) {
+  if (event.key !== "Tab") return;
+  const items = [
+    ...event.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE),
+  ];
+  if (!items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  const active = document.activeElement;
+  if (
+    event.shiftKey &&
+    (active === first || !items.includes(active as HTMLElement))
+  ) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && active === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
 
 interface ModalProps {
   open: boolean;
@@ -43,27 +68,6 @@ export function Modal({
   const opener = useRef<Element | null>(null);
   const titleId = useId();
 
-  function trapTab(event: KeyboardEvent<HTMLDialogElement>) {
-    if (event.key !== "Tab") return;
-    const items = [
-      ...event.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE),
-    ];
-    if (!items.length) return;
-    const first = items[0];
-    const last = items[items.length - 1];
-    const active = document.activeElement;
-    if (
-      event.shiftKey &&
-      (active === first || !items.includes(active as HTMLElement))
-    ) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && active === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
-
   useEffect(() => {
     const element = dialog.current;
     if (!element) return;
@@ -79,7 +83,7 @@ export function Modal({
       ref={dialog}
       className={`modal${className ? ` ${className}` : ""}`}
       aria-labelledby={titleId}
-      onKeyDown={trapTab}
+      onKeyDown={trapTabWithin}
       onCancel={(event) => {
         if (!dismissible) event.preventDefault();
       }}

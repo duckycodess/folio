@@ -8,4 +8,12 @@ Activity first listed only history rows, so it could show what changed but not w
 
 **Nothing is guessed for older plans.** Plans recorded before this read as `unknown`; an operation with history succeeded, and one without has no status. Batch rows are small and are kept; only file contents are pruned, as before.
 
+**The native listing carries facts; the UI derives the batch's kind, status and counts.** `list_activity` returns each operation's kind, paths, status, error and history, and `src/domain/activity.ts` derives the batch's title, status and changed count from them deterministically. One derivation keeps the counts and the per-file lines from disagreeing, and the derived wording can change without a contract change.
+
+**Known edges, recorded rather than hidden:**
+
+- The plan row is committed with its `applied_at` before the first write. If Folio stops before storing outcomes (a crash), the plan is listed with no outcomes: whatever history proves succeeded, the rest is "outcome not recorded".
+- A cancellation is only honoured after the first operation, so "cancelled, nothing changed" can't occur.
+- A stored summary that can't be read (only corruption: every plan since migration 003 stores one) leaves only history to rebuild from, so operations without history can't be listed. Native logs it rather than failing Activity.
+
 Decided by Gab on 2026-10-10 for issue #35.

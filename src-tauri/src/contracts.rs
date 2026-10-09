@@ -281,7 +281,6 @@ impl PlanSource {
 pub struct ActionPlan {
     pub id: String,
     pub workspace_id: String,
-    #[serde(default)]
     pub source: PlanSource,
     pub created_at: i64,
     pub expires_at: i64,
