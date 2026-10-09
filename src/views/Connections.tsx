@@ -18,14 +18,24 @@ function excerpt(text: string): string {
     : flat;
 }
 
+/** Where a folder inside the open folder is, on disk or in the samples. */
+export function folderLocation(
+  folder: string,
+  workspace: WorkspaceState,
+): string {
+  const root = workspace.workspace?.rootPath ?? "Sample files";
+  return folder ? `${root}/${folder}` : root;
+}
+
 /** The folder a file lives in on disk, or in the bundled samples. */
 export function originalLocation(
   document: DocumentRecord,
   workspace: WorkspaceState,
 ): string {
-  const folder = document.relativePath.split("/").slice(0, -1).join("/");
-  const root = workspace.workspace?.rootPath ?? "Sample files";
-  return folder ? `${root}/${folder}` : root;
+  return folderLocation(
+    document.relativePath.split("/").slice(0, -1).join("/"),
+    workspace,
+  );
 }
 
 /** Evidence excerpts; each opens its own document at the passage. */
@@ -103,7 +113,7 @@ export function CoverageNote({ relations }: { relations: RelationshipsState }) {
   }
 }
 
-function ConnectionItem({
+export function ConnectionItem({
   connection,
   origin,
   other,
