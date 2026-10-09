@@ -15,6 +15,9 @@ pub enum CoreError {
     Http(#[from] reqwest::Error),
     #[error("archive error: {0}")]
     Archive(String),
+    /// A caller's Stop was honoured at a safe point; completed work is kept.
+    #[error("relationship discovery cancelled")]
+    Cancelled,
 }
 
 #[derive(Debug, Error)]

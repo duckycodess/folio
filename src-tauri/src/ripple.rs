@@ -139,13 +139,18 @@ fn provenance(value: &str) -> RelationshipProvenance {
 /// - a shared-fact candidate mentioning the value: `evidence`;
 /// - a similarity relationship or a byte-identical copy: `similarityOnly`;
 /// - a document that merely shares the value, with no relationship: not reported.
-pub fn impacts(conn: &Connection, workspace_id: &str, target: &IndexedDocument, replaced: &str) -> NativeResult<Vec<ImpactCandidate>> {
+///
+/// `active_space` is the selected model's active persistent space (see
+/// `active_space`). Link rows are always read; AI rows only when they are
+/// *displayed* edges of that space (`index::displayed_ai_cte`), so Ripple never
+/// uses rows from a superseded embedding space or stored-but-hidden candidates.
+pub fn impacts(conn: &Connection, workspace_id: &str, target: &IndexedDocument, replaced: &str, active_space: Option<&str>) -> NativeResult<Vec<ImpactCandidate>> {
     let phrases = variants(replaced);
     let may_date = is_may_date(replaced.trim());
     let mut neighbors: BTreeMap<String, Neighbor> = BTreeMap::new();
     {
-        let mut statement = conn.prepare("SELECT source_document_id, target_document_id, relationship_type, provenance FROM relationships WHERE source_document_id = ?1 OR target_document_id = ?1")?;
-        let rows = statement.query_map([&target.id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)))?;
+        let mut statement = conn.prepare(&format!("{}SELECT r.source_document_id, r.target_document_id, r.relationship_type, r.provenance FROM relationships r WHERE (r.source_document_id = ?1 OR r.target_document_id = ?1) AND (r.relationship_type = 'explicitReference' OR (?2 != '' AND r.space_fingerprint = ?2 AND r.id IN (SELECT id FROM displayed)))", index::displayed_ai_cte()))?;
+        let rows = statement.query_map(params![&target.id, active_space.unwrap_or("")], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?)))?;
         for row in rows {
             let (source, destination, kind, origin) = row?;
             let (other, outgoing) = if source == target.id { (destination, true) } else { (source, false) };
@@ -240,12 +245,12 @@ fn passages_in(evidence_json: &str, document_id: &str) -> Vec<SourcePassage> {
 /// - a shared-fact candidate: `evidence`, with its own passages and stored provenance;
 /// - a similarity relationship or a byte-identical copy: `similarityOnly`;
 /// - a document the target only links to: not reported.
-pub fn deletion_impacts(conn: &Connection, workspace_id: &str, target: &IndexedDocument) -> NativeResult<Vec<ImpactCandidate>> {
+pub fn deletion_impacts(conn: &Connection, workspace_id: &str, target: &IndexedDocument, active_space: Option<&str>) -> NativeResult<Vec<ImpactCandidate>> {
     // Strongest relation per document: a link, then a shared fact, then similarity.
     let mut related: BTreeMap<String, (u8, RelationshipKind, RelationshipProvenance, Vec<SourcePassage>)> = BTreeMap::new();
     {
-        let mut statement = conn.prepare("SELECT source_document_id, target_document_id, relationship_type, provenance, evidence_json FROM relationships WHERE source_document_id = ?1 OR target_document_id = ?1")?;
-        let rows = statement.query_map([&target.id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?)))?;
+        let mut statement = conn.prepare(&format!("{}SELECT r.source_document_id, r.target_document_id, r.relationship_type, r.provenance, r.evidence_json FROM relationships r WHERE (r.source_document_id = ?1 OR r.target_document_id = ?1) AND (r.relationship_type = 'explicitReference' OR (?2 != '' AND r.space_fingerprint = ?2 AND r.id IN (SELECT id FROM displayed)))", index::displayed_ai_cte()))?;
+        let rows = statement.query_map(params![&target.id, active_space.unwrap_or("")], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?)))?;
         for row in rows {
             let (source, destination, kind, origin, evidence_json) = row?;
             let (other, outgoing) = if source == target.id { (destination, true) } else { (source, false) };
@@ -295,7 +300,7 @@ pub fn deletion_impacts(conn: &Connection, workspace_id: &str, target: &IndexedD
 
 /// Ripple for every edit and deletion in a plan: an edit's replaced phrase comes from its
 /// diff. Documents the plan itself changes are not listed as candidates.
-pub fn plan_impacts(conn: &Connection, root: &ScopedRoot, operations: &[FileOperation]) -> NativeResult<Vec<ImpactCandidate>> {
+pub fn plan_impacts(conn: &Connection, root: &ScopedRoot, operations: &[FileOperation], active_space: Option<&str>) -> NativeResult<Vec<ImpactCandidate>> {
     let targeted: Vec<&str> = operations.iter().filter_map(|operation| match operation {
         FileOperation::Edit { document_id, .. } | FileOperation::Rename { document_id, .. } | FileOperation::Move { document_id, .. } | FileOperation::Delete { document_id, .. } => Some(document_id.as_str()),
         FileOperation::Create { .. } => None,
@@ -307,11 +312,11 @@ pub fn plan_impacts(conn: &Connection, root: &ScopedRoot, operations: &[FileOper
                 let Ok(document) = index::get_document(conn, &root.id, document_id) else { continue };
                 let Ok(current) = workspace::read_text(&root.path, relative_path) else { continue };
                 let Some(phrase) = replaced_phrase(&current.content, after) else { continue };
-                impacts(conn, &root.id, &document, &phrase)?
+                impacts(conn, &root.id, &document, &phrase, active_space)?
             }
             FileOperation::Delete { document_id, .. } => {
                 let Ok(document) = index::get_document(conn, &root.id, document_id) else { continue };
-                deletion_impacts(conn, &root.id, &document)?
+                deletion_impacts(conn, &root.id, &document, active_space)?
             }
             _ => continue,
         };

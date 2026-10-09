@@ -7,6 +7,7 @@ import type {
 import {
   exactSize,
   installSteps,
+  isGenerationReady,
   modelGroups,
   modelName,
   progressPercent,
@@ -122,6 +123,34 @@ describe("model setup", () => {
         totalBytes: 100,
       }),
     ).toBe(25);
+  });
+
+  it("requires the selected installed writing model and its runtime", () => {
+    const installed = modelGroups(
+      [SMALL],
+      { small: { id: "small", status: "installed" } },
+      SETUP,
+    );
+    expect(isGenerationReady(installed, SETUP, RUNTIME)).toBe(true);
+    expect(isGenerationReady(installed, SETUP, NO_RUNTIME)).toBe(false);
+    expect(
+      isGenerationReady(
+        modelGroups(
+          [SMALL],
+          { small: { id: "small", status: "notInstalled" } },
+          SETUP,
+        ),
+        SETUP,
+        RUNTIME,
+      ),
+    ).toBe(false);
+    expect(
+      isGenerationReady(
+        installed,
+        { ...SETUP, selectedGeneration: null },
+        RUNTIME,
+      ),
+    ).toBe(false);
   });
 });
 

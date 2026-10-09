@@ -263,4 +263,99 @@ mod tests {
             assert_eq!(serde_json::to_value(&batch).unwrap(), entry["batch"], "{label}");
         }
     }
+
+    #[test]
+    fn agrees_on_the_ai_relationship_wire_shapes() {
+        use crate::contracts::SourcePassage;
+        use crate::index::{Relationship, SharedFactCandidateRelationship, SimilarityRelationship};
+
+        let cases = cases();
+        let ai = &cases["aiRelationships"];
+        let passages = |value: &Value| -> Vec<SourcePassage> {
+            serde_json::from_value(value.clone()).expect("fixture passages")
+        };
+        let text = |value: &Value| value.as_str().unwrap().to_owned();
+
+        let similarity = &ai["similarity"];
+        let native = Relationship::Similarity(SimilarityRelationship {
+            source_id: text(&similarity["sourceId"]),
+            target_id: text(&similarity["targetId"]),
+            source_content_hash: text(&similarity["sourceContentHash"]),
+            target_content_hash: text(&similarity["targetContentHash"]),
+            relationship_type: "similarity",
+            provenance: "embedding",
+            space_fingerprint: text(&similarity["spaceFingerprint"]),
+            score: similarity["score"].as_f64().unwrap() as f32,
+            source_evidence: passages(&similarity["sourceEvidence"]),
+            target_evidence: passages(&similarity["targetEvidence"]),
+        });
+        assert_eq!(serde_json::to_value(&native).unwrap(), *similarity);
+
+        let shared = &ai["sharedFactCandidate"];
+        let native = Relationship::SharedFactCandidate(SharedFactCandidateRelationship {
+            source_id: text(&shared["sourceId"]),
+            target_id: text(&shared["targetId"]),
+            source_content_hash: text(&shared["sourceContentHash"]),
+            target_content_hash: text(&shared["targetContentHash"]),
+            relationship_type: "sharedFactCandidate",
+            provenance: "embedding",
+            source_evidence: passages(&shared["sourceEvidence"]),
+            target_evidence: passages(&shared["targetEvidence"]),
+            confidence: None,
+        });
+        // A candidate carries no confidence: the key is absent, not null.
+        assert_eq!(serde_json::to_value(&native).unwrap(), *shared);
+        assert!(shared.get("confidence").is_none());
+    }
+
+    #[test]
+    fn agrees_on_the_ai_coverage_and_refresh_wire_shapes() {
+        use crate::ai_discovery::{CoverageState, RelationshipCoverage, RunEnd};
+
+        let cases = cases();
+        let ai = &cases["aiRelationships"];
+        let state_name = |state: CoverageState| {
+            serde_json::to_value(state).unwrap().as_str().unwrap().to_owned()
+        };
+        let states: Vec<String> = [
+            CoverageState::NoActiveSpace,
+            CoverageState::EmbeddingIncomplete,
+            CoverageState::Partial,
+            CoverageState::Complete,
+        ]
+        .into_iter()
+        .map(state_name)
+        .collect();
+        assert_eq!(serde_json::to_value(&states).unwrap(), ai["coverageStates"]);
+
+        let ends: Vec<String> = [
+            RunEnd::Complete,
+            RunEnd::BudgetExhausted,
+            RunEnd::Cancelled,
+            RunEnd::SpaceChanged,
+        ]
+        .into_iter()
+        .map(|end| serde_json::to_value(end).unwrap().as_str().unwrap().to_owned())
+        .collect();
+        assert_eq!(serde_json::to_value(&ends).unwrap(), ai["refreshEnds"]);
+
+        for entry in ai["coverage"].as_array().unwrap() {
+            let state = match entry["state"].as_str().unwrap() {
+                "noActiveSpace" => CoverageState::NoActiveSpace,
+                "embeddingIncomplete" => CoverageState::EmbeddingIncomplete,
+                "partial" => CoverageState::Partial,
+                _ => CoverageState::Complete,
+            };
+            let native = RelationshipCoverage {
+                state,
+                space_fingerprint: entry.get("spaceFingerprint").map(|value| value.as_str().unwrap().to_owned()),
+                eligible_documents: entry["eligibleDocuments"].as_u64().unwrap() as usize,
+                indexed_documents: entry["indexedDocuments"].as_u64().unwrap() as usize,
+                pairs_considered: entry["pairsConsidered"].as_u64().unwrap(),
+                pairs_remaining: entry["pairsRemaining"].as_u64().unwrap(),
+                overflow_documents: entry["overflowDocuments"].as_u64().unwrap() as usize,
+            };
+            assert_eq!(serde_json::to_value(&native).unwrap(), *entry);
+        }
+    }
 }

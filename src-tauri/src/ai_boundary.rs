@@ -150,6 +150,7 @@ pub(crate) fn core_failure(failure: CoreError) -> FolioError {
         CoreError::Json(failure) => {
             error(ErrorCode::Internal, failure.to_string()).with_detail("reportedCode", "ioError")
         }
+        CoreError::Cancelled => error(ErrorCode::Cancelled, "The work was stopped."),
         CoreError::Archive(message) | CoreError::Message(message) => {
             error(ErrorCode::Internal, message).with_detail("reportedCode", "ioError")
         }

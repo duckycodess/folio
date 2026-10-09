@@ -1,4 +1,8 @@
+mod active_space;
 mod ai_boundary;
+mod ai_discovery;
+#[cfg(test)]
+mod ai_discovery_tests;
 mod config_guard;
 mod contract_fixtures;
 mod contracts;
@@ -12,11 +16,13 @@ mod lab_commands;
 mod lab_store;
 mod organize;
 mod plan;
+#[cfg(test)]
+mod relationship_edges_tests;
 mod ripple;
 mod workspace;
 mod writer;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -27,6 +33,7 @@ use folio_core::contracts::{
     DocumentRecord, EmbeddingSpace as ProviderEmbeddingSpace, GroundedResult,
     InterpretationResult, Language, ModelDescriptor, ModelInstallState, ModelInstallStatus,
     ModelRole, NativeProviderError, SearchResult as ProviderSearchResult,
+    SourcePassage as CoreSourcePassage,
 };
 use folio_core::embeddings::{EmbeddingKind, EmbeddingProvider, OrtE5Provider};
 use folio_core::error::CoreError;
@@ -40,11 +47,15 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
-use contracts::{ActionPlan, ActivityBatch, Approval, FileOperation, HistoryEntry, ImpactCandidate, PlanSource, UndoPreflight};
+use contracts::{
+    ActionPlan, ActivityBatch, Approval, FileOperation, HistoryEntry, ImpactCandidate,
+    ImpactStrength, PlanSource, RelationshipKind, UndoPreflight,
+};
 use error::{error, ErrorCode, FolioError};
 use index::{
-    ChunkVector, DuplicateGroup, EmbeddingSpace, ExplicitReference, IndexProgress,
-    IndexedDocument, PendingChunk, ScanOptions, ScanSummary, SearchResult, VectorCandidate,
+    AiRelationshipRefresh, ChunkVector, DuplicateGroup, EmbeddingSpace, IndexProgress,
+    IndexedDocument, PendingChunk, Relationship, ScanOptions, ScanSummary, SearchResult,
+    VectorCandidate,
 };
 use organize::OrganizationSuggestions;
 use plan::PlanRegistry;
@@ -68,12 +79,16 @@ struct Folio {
     /// One scan at a time; a second request waits and then finds little to do.
     scanning: Arc<Mutex<()>>,
     cancel_indexing: Arc<AtomicBool>,
+    /// Stops a bounded relationship refresh before its persistence step.
+    cancel_relationships: Arc<AtomicBool>,
     /// Stops an apply before its next operation; the running one finishes.
     cancel_apply: Arc<AtomicBool>,
     /// Serializes persistent embedding fills without holding the index or
     /// provider lock across the whole run.
     embedding_sync: Arc<Mutex<()>>,
     cancel_embedding_sync: Arc<AtomicBool>,
+    /// One local AI refresh (embedding sync, then relationship discovery) at a time.
+    ai_refresh: Arc<Mutex<()>>,
 }
 
 impl Folio {
@@ -85,9 +100,11 @@ impl Folio {
             index_path,
             scanning: Arc::new(Mutex::new(())),
             cancel_indexing: Arc::new(AtomicBool::new(false)),
+            cancel_relationships: Arc::new(AtomicBool::new(false)),
             cancel_apply: Arc::new(AtomicBool::new(false)),
             embedding_sync: Arc::new(Mutex::new(())),
             cancel_embedding_sync: Arc::new(AtomicBool::new(false)),
+            ai_refresh: Arc::new(Mutex::new(())),
         })
     }
 
@@ -108,6 +125,77 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_millis() as i64)
         .unwrap_or_default()
+}
+
+fn core_passage(passage: &contracts::SourcePassage) -> CoreSourcePassage {
+    CoreSourcePassage {
+        document_id: passage.document_id.clone(),
+        document_content_hash: passage.document_content_hash.clone(),
+        offset_unit: folio_core::contracts::OffsetUnit::Utf8Byte,
+        start: passage.start,
+        end: passage.end,
+        text: passage.text.clone(),
+        page: passage.page,
+    }
+}
+
+struct SelectedRelationshipSummary {
+    focus_rank: u8,
+    kind_rank: u8,
+    score: f32,
+    relationship_type: &'static str,
+    provenance: &'static str,
+    source_id: String,
+    target_id: String,
+    passages: Vec<CoreSourcePassage>,
+}
+
+fn relationship_passage_is_current(
+    passage: &CoreSourcePassage,
+    current: &DocumentText,
+) -> bool {
+    if passage.document_content_hash != current.content_hash
+        || passage.offset_unit != folio_core::contracts::OffsetUnit::Utf8Byte
+        || passage.start >= passage.end
+        || passage.end > current.content.len()
+        || !current.content.is_char_boundary(passage.start)
+        || !current.content.is_char_boundary(passage.end)
+    {
+        return false;
+    }
+    &current.content.as_bytes()[passage.start..passage.end] == passage.text.as_bytes()
+}
+
+fn relationship_passage_matches_disk(
+    root: &ScopedRoot,
+    workspace_id: &str,
+    passage: &CoreSourcePassage,
+    cache: &mut HashMap<String, Option<DocumentText>>,
+) -> bool {
+    let current = cache.entry(passage.document_id.clone()).or_insert_with(|| {
+        ai_boundary::parse_document_id(workspace_id, &passage.document_id)
+            .ok()
+            .and_then(|relative| workspace::read_text(&root.path, &relative).ok())
+    });
+    current
+        .as_ref()
+        .is_some_and(|current| relationship_passage_is_current(passage, current))
+}
+
+fn impact_relationship_label(candidate: &ImpactCandidate) -> &'static str {
+    match candidate.relationship_type {
+        Some(RelationshipKind::ExplicitReference) => "document link",
+        Some(RelationshipKind::Similarity) => "similarity",
+        Some(RelationshipKind::SharedFactCandidate) => "shared fact candidate",
+        None => "content-only relation",
+    }
+}
+
+fn impact_strength_label(strength: ImpactStrength) -> &'static str {
+    match strength {
+        ImpactStrength::Evidence => "evidence",
+        ImpactStrength::SimilarityOnly => "similarity-only review hint",
+    }
 }
 
 /// Runs blocking file work off the async workers.
@@ -284,11 +372,432 @@ async fn list_duplicates(
 
 #[tauri::command]
 async fn list_relationships(
+    app: AppHandle,
     state: State<'_, Folio>,
     workspace_id: String,
-) -> Result<Vec<ExplicitReference>, FolioError> {
+    space_fingerprint: Option<String>,
+) -> Result<Vec<Relationship>, FolioError> {
     state.root(&workspace_id)?;
-    index::list_relationships(&*state.index()?, &workspace_id)
+    // The model store is read before the index lock; one lock for both reads.
+    let selected = selected_embedding_descriptor_lenient(&app);
+    let index = state.index()?;
+    let active_space =
+        active_relationship_space_for(selected.as_ref(), &index, space_fingerprint.as_deref())?;
+    index::list_relationships(&index, &workspace_id, active_space.as_deref())
+}
+
+/// Runs progressive AI relationship discovery over the vectors #27 persisted
+/// for the active space: admission, then fair bounded tiles until nothing is
+/// left, the run's comparison budget is spent, a Stop arrives or the selected
+/// model changes. Completed tiles always stay. It never starts an embedding
+/// producer and holds no lock while comparing.
+#[tauri::command]
+async fn refresh_ai_connections(
+    app: AppHandle,
+    state: State<'_, Folio>,
+    workspace_id: String,
+    space_fingerprint: Option<String>,
+) -> Result<AiRelationshipRefresh, FolioError> {
+    state.root(&workspace_id)?;
+    let index_path = state.index_path.clone();
+    let refresh_lock = state.ai_refresh.clone();
+    let cancel = state.cancel_relationships.clone();
+    Ok(run_blocking::<_, FolioError, _>(move || {
+        // One refresh at a time, shared with `refresh_local_ai_index`: taking
+        // the lock first means this call can't clear a Stop meant for a running
+        // refresh by resetting the shared flag.
+        let _refresh = match refresh_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(error(
+                    ErrorCode::ProviderBusy,
+                    "Folio is already refreshing its local AI index.",
+                ))
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err(unavailable_state()),
+        };
+        cancel.store(false, Ordering::SeqCst);
+        let mut conn = db::open(&index_path)?;
+        let Some(active_space) =
+            active_relationship_space(&app, &conn, space_fingerprint.as_deref())?
+        else {
+            return Ok(AiRelationshipRefresh {
+                workspace_id,
+                space_fingerprint: None,
+                documents_compared: 0,
+                relationships_created: 0,
+                cancelled: false,
+            });
+        };
+        let still_active = |conn: &Connection| -> Result<bool, FolioError> {
+            Ok(active_relationship_space(&app, conn, None)?.as_deref() == Some(active_space.as_str()))
+        };
+        let summary = ai_discovery::run_discovery(
+            &mut conn,
+            &ai_discovery::RunContext {
+                workspace_id: &workspace_id,
+                space: &active_space,
+                limits: ai_discovery::DiscoveryLimits::default(),
+                cancel: cancel.as_ref(),
+                still_active: &still_active,
+            },
+            &mut |_| {},
+        )?;
+        let coverage = ai_discovery::coverage(&conn, &workspace_id, Some(&active_space))?;
+        Ok(AiRelationshipRefresh {
+            workspace_id,
+            space_fingerprint: Some(active_space),
+            documents_compared: coverage.eligible_documents,
+            relationships_created: summary.progress.edges_stored,
+            cancelled: summary.end == ai_discovery::RunEnd::Cancelled,
+        })
+    })
+    .await?)
+}
+
+#[tauri::command]
+fn cancel_ai_connections(state: State<'_, Folio>) {
+    state.cancel_relationships.store(true, Ordering::SeqCst);
+}
+
+/// Summarizes only the relationship evidence selected by the native index.
+/// The model receives passages, never document paths or filesystem capabilities.
+#[tauri::command]
+async fn summarize_relationships(
+    app: AppHandle,
+    state: State<'_, Folio>,
+    generation_state: State<'_, GenerationState>,
+    workspace_id: String,
+    document_ids: Vec<String>,
+    focus_document_id: Option<String>,
+    space_fingerprint: Option<String>,
+) -> Result<GroundedResult, FolioError> {
+    let root = state.root(&workspace_id)?;
+    if document_ids.is_empty() || document_ids.len() > 50 {
+        return Err(error(
+            ErrorCode::EvidenceInvalid,
+            "A relationship summary needs between 1 and 50 documents.",
+        ));
+    }
+    let scope = document_ids
+        .iter()
+        .map(|document_id| {
+            ai_boundary::parse_document_id(&workspace_id, document_id)?;
+            Ok::<_, FolioError>(document_id.clone())
+        })
+        .collect::<Result<HashSet<_>, _>>()?;
+    if let Some(focus) = focus_document_id.as_deref() {
+        ai_boundary::parse_document_id(&workspace_id, focus)?;
+        if !scope.contains(focus) {
+            return Err(error(
+                ErrorCode::EvidenceInvalid,
+                "The relationship-summary focus must be in the requested document scope.",
+            ));
+        }
+    }
+    let index_path = state.index_path.clone();
+    let scanning = state.scanning.clone();
+    let generation_state = generation_state.inner().clone();
+    Ok(run_blocking::<_, FolioError, _>(move || {
+        let active_space = {
+            let conn = db::open(&index_path)?;
+            active_relationship_space(&app, &conn, space_fingerprint.as_deref())?
+        };
+        let relationships = {
+            let _scanning = scanning.lock().map_err(|_| unavailable_state())?;
+            let conn = db::open(&index_path)?;
+            index::list_relationships(
+                &conn,
+                &workspace_id,
+                active_space.as_deref(),
+            )?
+        };
+        let mut selected = Vec::<SelectedRelationshipSummary>::new();
+        for relationship in relationships {
+            let (
+                source_id,
+                target_id,
+                kind_rank,
+                score,
+                relationship_type,
+                provenance,
+                passages,
+            ) = match relationship {
+                Relationship::ExplicitReference(reference) => (
+                    reference.source_id,
+                    reference.target_id,
+                    0,
+                    0.0,
+                    reference.relationship_type,
+                    reference.provenance,
+                    reference.evidence.iter().map(core_passage).collect(),
+                ),
+                Relationship::Similarity(similarity) => (
+                    similarity.source_id,
+                    similarity.target_id,
+                    2,
+                    similarity.score,
+                    similarity.relationship_type,
+                    similarity.provenance,
+                    similarity
+                        .source_evidence
+                        .iter()
+                        .chain(similarity.target_evidence.iter())
+                        .map(core_passage)
+                        .collect(),
+                ),
+                Relationship::SharedFactCandidate(shared) => (
+                    shared.source_id,
+                    shared.target_id,
+                    1,
+                    shared.confidence.unwrap_or(0.0),
+                    shared.relationship_type,
+                    shared.provenance,
+                    shared
+                        .source_evidence
+                        .iter()
+                        .chain(shared.target_evidence.iter())
+                        .map(core_passage)
+                        .collect(),
+                ),
+            };
+            if !scope.contains(&source_id) || !scope.contains(&target_id) {
+                continue;
+            }
+            let focus_rank = focus_document_id.as_deref().map_or(1, |focus| {
+                if source_id == focus || target_id == focus { 0 } else { 1 }
+            });
+            selected.push(SelectedRelationshipSummary {
+                focus_rank,
+                kind_rank,
+                score,
+                relationship_type,
+                provenance,
+                source_id,
+                target_id,
+                passages,
+            });
+        }
+        selected.sort_by(|left, right| {
+            left.focus_rank
+                .cmp(&right.focus_rank)
+                .then(left.kind_rank.cmp(&right.kind_rank))
+                .then_with(|| right.score.total_cmp(&left.score))
+                .then_with(|| left.source_id.cmp(&right.source_id))
+                .then_with(|| left.target_id.cmp(&right.target_id))
+        });
+        let coverage = {
+            let conn = db::open(&index_path)?;
+            ai_discovery::coverage(&conn, &workspace_id, active_space.as_deref())?
+        };
+        let mut current_documents = HashMap::<String, Option<DocumentText>>::new();
+        for relationship in &mut selected {
+            relationship.passages.retain(|passage| {
+                relationship_passage_matches_disk(
+                    &root,
+                    &workspace_id,
+                    passage,
+                    &mut current_documents,
+                )
+            });
+        }
+        selected.retain(|relationship| !relationship.passages.is_empty());
+        let available_connections = selected.len();
+        let mut seen = HashSet::new();
+        let mut passages = Vec::new();
+        for relationship in &selected {
+            for passage in &relationship.passages {
+                let key = (
+                    passage.document_id.clone(),
+                    passage.start,
+                    passage.end,
+                );
+                if seen.insert(key) {
+                    passages.push(passage.clone());
+                    if passages.len() >= folio_core::generation::MAX_PASSAGES {
+                        break;
+                    }
+                }
+            }
+            if passages.len() >= folio_core::generation::MAX_PASSAGES {
+                break;
+            }
+        }
+        let passage_keys = passages
+            .iter()
+            .map(|passage| {
+                (
+                    passage.document_id.clone(),
+                    passage.start,
+                    passage.end,
+                )
+            })
+            .collect::<HashSet<_>>();
+        let entries = selected
+            .into_iter()
+            .filter_map(|relationship| {
+                let passages = relationship
+                    .passages
+                    .into_iter()
+                    .filter(|passage| {
+                        passage_keys.contains(&(
+                            passage.document_id.clone(),
+                            passage.start,
+                            passage.end,
+                        ))
+                    })
+                    .collect::<Vec<_>>();
+                (!passages.is_empty()).then(|| {
+                    folio_core::grounding::RelationshipSummaryEntry {
+                        relationship_type: relationship.relationship_type.into(),
+                        provenance: relationship.provenance.into(),
+                        source_id: relationship.source_id,
+                        target_id: relationship.target_id,
+                        passages,
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        let language_text = passages
+            .iter()
+            .map(|passage| passage.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let language = grounding::detect_language(&language_text);
+        if passages.is_empty() {
+            return Ok(grounding::answer_question(
+                None,
+                grounding::RELATIONSHIP_SUMMARY_INSTRUCTION,
+                passages,
+                language,
+                &AtomicBool::new(false),
+            )?);
+        }
+        // What the model is actually given, counted here and not by the UI:
+        // incomplete when AI review wasn't finished or connections were left
+        // out to fit the prompt's passage cap.
+        let files = entries
+            .iter()
+            .flat_map(|entry| [entry.source_id.as_str(), entry.target_id.as_str()])
+            .collect::<HashSet<_>>()
+            .len();
+        let basis = folio_core::contracts::SummaryBasis {
+            connections: entries.len() as u32,
+            files: files as u32,
+            incomplete: coverage.state != ai_discovery::CoverageState::Complete
+                || coverage.overflow_documents > 0
+                || entries.len() < available_connections,
+        };
+        let (provider, cancel) = acquire_generation(&app, &generation_state)?;
+        let result = grounding::relationship_summary(
+            provider.as_ref(),
+            entries,
+            language,
+            cancel.as_ref(),
+        );
+        finish_generation(&generation_state, &cancel)?;
+        let mut result = result?;
+        if result.kind == folio_core::contracts::GroundedAnswerKind::RelationshipSummary {
+            result.basis = Some(basis);
+        }
+        Ok(result)
+    })
+    .await?)
+}
+
+/// Explains one native Ripple candidate without changing its plan or any file.
+#[tauri::command]
+async fn explain_impact(
+    app: AppHandle,
+    state: State<'_, Folio>,
+    generation_state: State<'_, GenerationState>,
+    workspace_id: String,
+    plan_id: String,
+    document_id: String,
+) -> Result<GroundedResult, FolioError> {
+    let root = state.root(&workspace_id)?;
+    let candidate = {
+        let plans = state.plans.lock().map_err(|_| unavailable_state())?;
+        let plan = plan_in_workspace(&plans, &plan_id, &workspace_id)?;
+        if now_ms() >= plan.expires_at {
+            return Err(error(
+                ErrorCode::PlanExpired,
+                "This preview is no longer current. Review a fresh preview.",
+            )
+            .with_detail("planId", plan_id));
+        }
+        plan.impacts
+            .iter()
+            .find(|impact| impact.document_id == document_id)
+            .cloned()
+            .ok_or_else(|| {
+                error(
+                    ErrorCode::EvidenceInvalid,
+                    "That Ripple candidate is not part of this preview.",
+                )
+                .with_detail("documentId", document_id.clone())
+            })?
+    };
+    let relative_path = ai_boundary::parse_document_id(&workspace_id, &document_id)?;
+    let generation_state = generation_state.inner().clone();
+    Ok(run_blocking::<_, FolioError, _>(move || {
+        for passage in &candidate.evidence {
+            if passage.document_id != document_id {
+                return Err(error(
+                    ErrorCode::EvidenceInvalid,
+                    "Ripple evidence names a different document.",
+                )
+                .with_detail("reason", "wrongEvidenceDocument"));
+            }
+        }
+        if candidate.evidence.is_empty() {
+            return Ok(grounding::answer_question(
+                None,
+                grounding::IMPACT_EXPLANATION_INSTRUCTION,
+                Vec::new(),
+                Language::Unknown,
+                &AtomicBool::new(false),
+            )?);
+        }
+        let current = workspace::read_text(&root.path, &relative_path)?;
+        for passage in &candidate.evidence {
+            if passage.document_content_hash != current.content_hash
+                || passage.start >= passage.end
+                || passage.end > current.content.len()
+                || !current.content.is_char_boundary(passage.start)
+                || !current.content.is_char_boundary(passage.end)
+                || current.content.as_bytes().get(passage.start..passage.end)
+                    != Some(passage.text.as_bytes())
+            {
+                return Err(error(
+                    ErrorCode::EvidenceInvalid,
+                    "This Ripple evidence is stale. Review the file again before asking for an explanation.",
+                )
+                .with_detail("reason", "staleEvidence"));
+            }
+        }
+        let language = grounding::detect_language(
+            &candidate
+                .evidence
+                .iter()
+                .map(|passage| passage.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let (provider, cancel) = acquire_generation(&app, &generation_state)?;
+        let result = grounding::impact_explanation(
+            provider.as_ref(),
+            impact_relationship_label(&candidate),
+            impact_strength_label(candidate.strength),
+            &candidate.reason,
+            candidate.evidence.iter().map(core_passage).collect(),
+            language,
+            cancel.as_ref(),
+        );
+        finish_generation(&generation_state, &cancel)?;
+        Ok(result?)
+    })
+    .await?)
 }
 
 /// Returns the space fingerprint; vectors are only compared within one space.
@@ -399,62 +908,256 @@ async fn sync_embeddings(
     let embedding_state = embedding_state.inner().clone();
     let lab_state = lab_state.inner().clone();
     Ok(run_blocking(move || {
-        refuse_during_lab(&lab_state)?;
-        let _sync_guard = match sync_lock.try_lock() {
-            Ok(guard) => guard,
-            Err(std::sync::TryLockError::WouldBlock) => {
-                return Err(error(
-                    ErrorCode::ProviderBusy,
-                    "Another embedding sync is already running.",
-                ))
-            }
-            Err(std::sync::TryLockError::Poisoned(_)) => return Err(unavailable_state()),
-        };
-        cancel.store(false, Ordering::Release);
-
-        let provider_space = with_embedding_provider_guarded(
-            &app,
-            &embedding_state,
-            || refuse_during_lab(&lab_state),
-            |provider| Ok(provider.space().clone()),
-        )?
-        .ok_or_else(|| {
-            error(
-                ErrorCode::ModelNotInstalled,
-                "Select a verified local embedding model first.",
-            )
-            .with_detail("component", "embedding")
-        })?;
-        let stored_space = embedding_sync::stored_index_space(&provider_space)?;
-
-        let conn = db::open(&index_path)?;
-        let space_fingerprint = index::register_space(&conn, &stored_space)?;
-        let mut store = embedding_sync::IndexChunkStore::new(
-            conn,
-            workspace_id.clone(),
-            space_fingerprint.clone(),
-        );
-        let mut embedder = NativePassageEmbedder {
+        run_embedding_sync(
             app,
+            index_path,
+            &sync_lock,
+            &cancel,
             embedding_state,
             lab_state,
-        };
-        embedding_sync::sync_embeddings(
-            &mut store,
-            &mut embedder,
-            &provider_space,
-            &space_fingerprint,
             workspace_id,
-            &cancel,
-            embedding_sync::SyncLimits::default(),
         )
     })
     .await?)
 }
 
+/// #27's persistent fill: load the selected provider's space, register the
+/// stored-chunk space it produces, then embed pending chunks. Shared by the
+/// `sync_embeddings` command and the combined local AI refresh.
+fn run_embedding_sync(
+    app: AppHandle,
+    index_path: PathBuf,
+    sync_lock: &Mutex<()>,
+    cancel: &AtomicBool,
+    embedding_state: EmbeddingState,
+    lab_state: lab_commands::LabState,
+    workspace_id: String,
+) -> Result<embedding_sync::EmbeddingSyncSummary, FolioError> {
+    refuse_during_lab(&lab_state)?;
+    let _sync_guard = match sync_lock.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return Err(error(
+                ErrorCode::ProviderBusy,
+                "Another embedding sync is already running.",
+            ))
+        }
+        Err(std::sync::TryLockError::Poisoned(_)) => return Err(unavailable_state()),
+    };
+    cancel.store(false, Ordering::Release);
+
+    let provider_space = with_embedding_provider_guarded(
+        &app,
+        &embedding_state,
+        || refuse_during_lab(&lab_state),
+        |provider| Ok(provider.space().clone()),
+    )?
+    .ok_or_else(|| {
+        error(
+            ErrorCode::ModelNotInstalled,
+            "Select a verified local embedding model first.",
+        )
+        .with_detail("component", "embedding")
+    })?;
+    let stored_space = embedding_sync::stored_index_space(&provider_space)?;
+
+    let conn = db::open(&index_path)?;
+    let space_fingerprint = index::register_space(&conn, &stored_space)?;
+    let mut store = embedding_sync::IndexChunkStore::new(
+        conn,
+        workspace_id.clone(),
+        space_fingerprint.clone(),
+    );
+    let mut embedder = NativePassageEmbedder {
+        app,
+        embedding_state,
+        lab_state,
+    };
+    embedding_sync::sync_embeddings(
+        &mut store,
+        &mut embedder,
+        &provider_space,
+        &space_fingerprint,
+        workspace_id,
+        cancel,
+        embedding_sync::SyncLimits::default(),
+    )
+}
+
 #[tauri::command]
 fn cancel_embedding_sync(state: State<'_, Folio>) {
     state.cancel_embedding_sync.store(true, Ordering::Release);
+}
+
+const AI_REFRESH_PROGRESS_EVENT: &str = "folio://ai-refresh-progress";
+/// Discovery runs one refresh may take before returning; the coverage in the
+/// result says honestly whether anything is left.
+const MAX_DISCOVERY_RUNS_PER_REFRESH: usize = 4;
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiRefreshProgress {
+    workspace_id: String,
+    /// `embedding`, `admitting` or `relationships`.
+    phase: &'static str,
+    tiles: usize,
+    pairs_completed: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalAiRefresh {
+    workspace_id: String,
+    /// The embedding phase's summary; absent when it didn't run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    embedding: Option<embedding_sync::EmbeddingSyncSummary>,
+    /// The discovery run's progress; absent when it didn't run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discovery: Option<ai_discovery::DiscoveryProgress>,
+    /// Why discovery stopped, when it did: `complete`, `budgetExhausted`,
+    /// `cancelled` or `spaceChanged`. Absent when no search model is ready.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ended: Option<ai_discovery::RunEnd>,
+    coverage: ai_discovery::RelationshipCoverage,
+}
+
+/// Refreshes Folio's local AI index for a folder: #27's embedding sync, then
+/// progressive relationship discovery in the resulting active space. One
+/// refresh at a time and one Stop (`cancel_local_ai_refresh`) for both phases.
+/// Completed work always stays, so an interrupted refresh resumes.
+#[tauri::command]
+async fn refresh_local_ai_index(
+    app: AppHandle,
+    state: State<'_, Folio>,
+    embedding_state: State<'_, EmbeddingState>,
+    lab_state: State<'_, lab_commands::LabState>,
+    workspace_id: String,
+) -> Result<LocalAiRefresh, FolioError> {
+    refuse_during_lab(lab_state.inner())?;
+    state.root(&workspace_id)?;
+    let index_path = state.index_path.clone();
+    let refresh_lock = state.ai_refresh.clone();
+    let sync_lock = state.embedding_sync.clone();
+    let cancel_sync = state.cancel_embedding_sync.clone();
+    let cancel = state.cancel_relationships.clone();
+    let embedding_state = embedding_state.inner().clone();
+    let lab_state = lab_state.inner().clone();
+    Ok(run_blocking::<_, FolioError, _>(move || {
+        let _refresh = match refresh_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(error(
+                    ErrorCode::ProviderBusy,
+                    "Folio is already refreshing its local AI index.",
+                ))
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err(unavailable_state()),
+        };
+        cancel.store(false, Ordering::SeqCst);
+        cancel_sync.store(false, Ordering::SeqCst);
+        let emit = |phase: &'static str, tiles: usize, pairs_completed: usize| {
+            let _ = app.emit(
+                AI_REFRESH_PROGRESS_EVENT,
+                AiRefreshProgress { workspace_id: workspace_id.clone(), phase, tiles, pairs_completed },
+            );
+        };
+
+        emit("embedding", 0, 0);
+        let embedding = match run_embedding_sync(
+            app.clone(),
+            index_path.clone(),
+            &sync_lock,
+            &cancel_sync,
+            embedding_state,
+            lab_state,
+            workspace_id.clone(),
+        ) {
+            Ok(summary) => Some(summary),
+            // No selected, installed search model: browsing and links keep
+            // working, and coverage says there is no active space.
+            Err(failure) if failure.code == ErrorCode::ModelNotInstalled => None,
+            Err(failure) => return Err(failure),
+        };
+        let mut conn = db::open(&index_path)?;
+        let stopped_early = embedding.as_ref().is_some_and(|summary| summary.cancelled);
+        let Some(active_space) = active_relationship_space(&app, &conn, None)? else {
+            let coverage = ai_discovery::coverage(&conn, &workspace_id, None)?;
+            return Ok(LocalAiRefresh { workspace_id, embedding, discovery: None, ended: None, coverage });
+        };
+        if stopped_early {
+            let coverage = ai_discovery::coverage(&conn, &workspace_id, Some(&active_space))?;
+            return Ok(LocalAiRefresh {
+                workspace_id,
+                embedding,
+                discovery: None,
+                ended: Some(ai_discovery::RunEnd::Cancelled),
+                coverage,
+            });
+        }
+
+        emit("admitting", 0, 0);
+        ai_discovery::purge_other_spaces(&mut conn, &workspace_id, &active_space)?;
+        let still_active = |conn: &Connection| -> Result<bool, FolioError> {
+            Ok(active_relationship_space(&app, conn, None)?.as_deref() == Some(active_space.as_str()))
+        };
+        let mut total = ai_discovery::DiscoveryProgress::default();
+        let mut ended = ai_discovery::RunEnd::Complete;
+        for _ in 0..MAX_DISCOVERY_RUNS_PER_REFRESH {
+            let before = total.clone();
+            let run = ai_discovery::run_discovery(
+                &mut conn,
+                &ai_discovery::RunContext {
+                    workspace_id: &workspace_id,
+                    space: &active_space,
+                    limits: ai_discovery::DiscoveryLimits::default(),
+                    cancel: cancel.as_ref(),
+                    still_active: &still_active,
+                },
+                &mut |progress| emit("relationships", before.tiles + progress.tiles, before.pairs_completed + progress.pairs_completed),
+            )?;
+            total.admitted += run.progress.admitted;
+            total.tiles += run.progress.tiles;
+            total.comparisons += run.progress.comparisons;
+            total.work += run.progress.work;
+            total.pairs_completed += run.progress.pairs_completed;
+            total.edges_stored += run.progress.edges_stored;
+            ended = run.end;
+            if ended != ai_discovery::RunEnd::BudgetExhausted {
+                break;
+            }
+        }
+        let coverage = ai_discovery::coverage(&conn, &workspace_id, Some(&active_space))?;
+        Ok(LocalAiRefresh {
+            workspace_id,
+            embedding,
+            discovery: Some(total),
+            ended: Some(ended),
+            coverage,
+        })
+    })
+    .await?)
+}
+
+/// One Stop for both phases of `refresh_local_ai_index`.
+#[tauri::command]
+fn cancel_local_ai_refresh(state: State<'_, Folio>) {
+    state.cancel_embedding_sync.store(true, Ordering::Release);
+    state.cancel_relationships.store(true, Ordering::SeqCst);
+}
+
+/// What Folio has compared for AI connections in the active search model's
+/// index. Reads only; never starts work.
+#[tauri::command]
+async fn relationship_coverage(
+    app: AppHandle,
+    state: State<'_, Folio>,
+    workspace_id: String,
+) -> Result<ai_discovery::RelationshipCoverage, FolioError> {
+    state.root(&workspace_id)?;
+    let selected = selected_embedding_descriptor_lenient(&app);
+    let index = state.index()?;
+    let active = active_space::resolve_installed_descriptor(&index, selected.as_ref())?;
+    ai_discovery::coverage(&index, &workspace_id, active.as_deref())
 }
 
 #[tauri::command]
@@ -482,6 +1185,7 @@ async fn read_document(
 /// current files and stored so that an approval can be bound to it.
 #[tauri::command]
 async fn prepare_plan(
+    app: AppHandle,
     state: State<'_, Folio>,
     workspace_id: String,
     source: PlanSource,
@@ -492,13 +1196,21 @@ async fn prepare_plan(
     if source == PlanSource::Unknown {
         return Err(error(ErrorCode::OperationUnsupported, "Say where in Folio this change was started.").with_detail("source", source.as_str()));
     }
+    // Read the model store before taking any lock, and only when Folio computes
+    // Ripple itself; only AI rows of the active space reach it. A store that
+    // can't be read gives links-only Ripple, never a refused preview.
+    let selected = if impacts.is_none() { selected_embedding_descriptor_lenient(&app) } else { None };
     let workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
     let root = workspaces.resolve(&workspace_id)?;
     // Ripple evidence comes from the index and each edit's diff unless the caller
     // supplies it (for example with the exact phrase an interpreter replaced).
     let impacts = match impacts {
         Some(impacts) => impacts,
-        None => ripple::plan_impacts(&*state.index()?, &root, &operations)?,
+        None => {
+            let index = state.index()?;
+            let active_space = active_space::resolve_installed_descriptor(&index, selected.as_ref())?;
+            ripple::plan_impacts(&index, &root, &operations, active_space.as_deref())?
+        }
     };
     let mut plans = state.plans.lock().map_err(|_| unavailable_state())?;
     let now = now_ms();
@@ -630,15 +1342,18 @@ async fn list_activity(
 /// Ripple for an explicit phrase, e.g. the value an interpreter knows it replaced.
 #[tauri::command]
 async fn ripple_impacts(
+    app: AppHandle,
     state: State<'_, Folio>,
     workspace_id: String,
     document_id: String,
     replaced_text: String,
 ) -> Result<Vec<ImpactCandidate>, FolioError> {
     state.root(&workspace_id)?;
+    let selected = selected_embedding_descriptor_lenient(&app);
     let index = state.index()?;
+    let active_space = active_space::resolve_installed_descriptor(&index, selected.as_ref())?;
     let document = index::get_document(&index, &workspace_id, &document_id)?;
-    ripple::impacts(&index, &workspace_id, &document, &replaced_text)
+    ripple::impacts(&index, &workspace_id, &document, &replaced_text, active_space.as_deref())
 }
 
 /// Builds the edit operation that replaces one exact passage of a document.
@@ -776,6 +1491,69 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, NativeProviderError> {
 
 fn model_store(app: &AppHandle) -> Result<ModelStore, NativeProviderError> {
     ModelStore::new(app_data_dir(app)?).map_err(native_error)
+}
+
+/// Selects the one persistent relationship space Folio is allowed to expose:
+/// #27's stored-chunk space for the selected, installed embedding model,
+/// derived from its descriptor (`active_space`) and required to be registered.
+/// The model store is read here, before any index or scan lock, and the
+/// embedding mutex is never taken. An optional webview fingerprint is an
+/// assertion, never a selector.
+fn active_relationship_space(
+    app: &AppHandle,
+    conn: &Connection,
+    requested_space: Option<&str>,
+) -> Result<Option<String>, FolioError> {
+    let selected = selected_embedding_descriptor(app)?;
+    active_relationship_space_for(selected.as_ref(), conn, requested_space)
+}
+
+/// `active_relationship_space` for a descriptor already read, so callers can
+/// read the model store before taking the index lock.
+fn active_relationship_space_for(
+    selected: Option<&ModelDescriptor>,
+    conn: &Connection,
+    requested_space: Option<&str>,
+) -> Result<Option<String>, FolioError> {
+    let active = active_space::resolve_installed_descriptor(conn, selected)?;
+    if let (Some(active), Some(requested)) = (active.as_deref(), requested_space) {
+        if active != requested {
+            return Err(error(
+                ErrorCode::EmbeddingSpaceMismatch,
+                "The requested relationship space is not the selected installed model's active space.",
+            )
+            .with_detail("requestedSpaceFingerprint", requested)
+            .with_detail("activeSpaceFingerprint", active));
+        }
+    }
+    Ok(active)
+}
+
+/// Like `selected_embedding_descriptor`, for paths that only read AI rows to
+/// display them (file previews, Ripple, Connections, coverage). A model store
+/// that can't be read means no active space, so links-only results: it never
+/// stops a user from previewing or reviewing a change.
+fn selected_embedding_descriptor_lenient(app: &AppHandle) -> Option<ModelDescriptor> {
+    lenient_descriptor(selected_embedding_descriptor(app))
+}
+
+fn lenient_descriptor(read: Result<Option<ModelDescriptor>, FolioError>) -> Option<ModelDescriptor> {
+    read.unwrap_or_else(|failure| {
+        eprintln!("Folio is showing links only: the model store could not be read: {}", failure.message);
+        None
+    })
+}
+
+/// The selected embedding model's descriptor when it is installed. Reads the
+/// model store only: no index lock, no embedding mutex, no ONNX load.
+fn selected_embedding_descriptor(app: &AppHandle) -> Result<Option<ModelDescriptor>, FolioError> {
+    let store = model_store(app)?;
+    let Some(model_id) = store.selected_model(ModelRole::Embedding)? else {
+        return Ok(None);
+    };
+    let descriptor = store.model(&model_id)?.clone();
+    let installed = matches!(store.model_state(&model_id)?.status, ModelInstallStatus::Installed);
+    Ok(installed.then_some(descriptor))
 }
 
 async fn run_blocking<T, E, F>(work: F) -> Result<T, E>
@@ -1281,40 +2059,24 @@ where
             if let Some(slot) = guard.take() {
                 slot.provider.unload().map_err(native_error)?;
             }
-            let model_file = descriptor
-                .files
-                .iter()
-                .find(|file| file.path.ends_with(".onnx"))
-                .ok_or_else(|| NativeProviderError {
-                    code: folio_core::contracts::ProviderErrorCode::ModelCorrupt,
-                    message: "The selected embedding model has no ONNX file.".into(),
-                    detail: Some(model_id.clone()),
-                })?;
-            let tokenizer_file = descriptor
-                .files
-                .iter()
-                .find(|file| file.path.ends_with("tokenizer.json"))
-                .ok_or_else(|| NativeProviderError {
-                    code: folio_core::contracts::ProviderErrorCode::ModelCorrupt,
-                    message: "The selected embedding model has no tokenizer file.".into(),
-                    detail: Some(model_id.clone()),
-                })?;
+            let e5 = folio_core::embeddings::e5_inputs_from_descriptor(&descriptor)
+                .map_err(native_error)?;
             let model_path = store
-                .verified_file_path(&model_id, &model_file.path)
+                .verified_file_path(&model_id, &e5.model_file)
                 .map_err(native_error)?;
             let tokenizer_path = store
-                .verified_file_path(&model_id, &tokenizer_file.path)
+                .verified_file_path(&model_id, &e5.tokenizer_file)
                 .map_err(native_error)?;
             let provider = OrtE5Provider::from_files(
                 model_path,
                 tokenizer_path,
-                descriptor.id.clone(),
-                descriptor.revision.clone(),
-                descriptor.quantization.clone(),
-                384,
-                &model_file.sha256,
-                &tokenizer_file.sha256,
-                folio_core::embeddings::DEFAULT_MAX_TOKENS,
+                e5.inputs.model_id.clone(),
+                e5.inputs.revision.clone(),
+                e5.inputs.quantization.clone(),
+                e5.inputs.dimensions,
+                &e5.inputs.model_sha256,
+                &e5.inputs.tokenizer_sha256,
+                e5.inputs.max_tokens,
                 folio_core::embeddings::DEFAULT_BATCH_SIZE,
                 2,
             )
@@ -1896,6 +2658,50 @@ mod tests {
     }
 
     #[test]
+    fn relationship_passages_need_current_hash_utf8_boundaries_and_exact_bytes() {
+        let current = DocumentText {
+            content: "aé b".into(),
+            content_hash: "sha256:current".into(),
+            size_bytes: 5,
+            modified_at_ms: None,
+            pages: Vec::new(),
+            unreadable_pages: Vec::new(),
+        };
+        let valid = CoreSourcePassage {
+            document_id: "workspace:notes.md".into(),
+            document_content_hash: current.content_hash.clone(),
+            offset_unit: folio_core::contracts::OffsetUnit::Utf8Byte,
+            start: 1,
+            end: 3,
+            text: "é".into(),
+            page: None,
+        };
+        assert!(relationship_passage_is_current(&valid, &current));
+        assert!(!relationship_passage_is_current(
+            &CoreSourcePassage {
+                start: 2,
+                end: 3,
+                ..valid.clone()
+            },
+            &current,
+        ));
+        assert!(!relationship_passage_is_current(
+            &CoreSourcePassage {
+                text: "x".into(),
+                ..valid.clone()
+            },
+            &current,
+        ));
+        assert!(!relationship_passage_is_current(
+            &CoreSourcePassage {
+                document_content_hash: "sha256:old".into(),
+                ..valid
+            },
+            &current,
+        ));
+    }
+
+    #[test]
     fn ai_document_reads_preserve_native_path_escape_errors() {
         let parent = tempfile::tempdir().unwrap();
         let root_path = parent.path().join("workspace");
@@ -1908,6 +2714,35 @@ mod tests {
 
         let failure = read_ai_document(&root, "../outside.md").unwrap_err();
         assert_eq!(failure.code, ErrorCode::PathEscapesWorkspace);
+    }
+
+    #[test]
+    fn an_unreadable_model_store_means_links_only_not_a_refused_preview() {
+        let unreadable = Err(error(ErrorCode::Internal, "settings.json could not be parsed"));
+        assert!(lenient_descriptor(unreadable).is_none());
+        assert!(lenient_descriptor(Ok(None)).is_none());
+    }
+
+    #[test]
+    fn a_refresh_leaves_out_the_phases_that_did_not_run() {
+        let refresh = LocalAiRefresh {
+            workspace_id: "w".into(),
+            embedding: None,
+            discovery: None,
+            ended: None,
+            coverage: ai_discovery::RelationshipCoverage {
+                state: ai_discovery::CoverageState::NoActiveSpace,
+                space_fingerprint: None,
+                eligible_documents: 0,
+                indexed_documents: 0,
+                pairs_considered: 0,
+                pairs_remaining: 0,
+                overflow_documents: 0,
+            },
+        };
+        let wire = serde_json::to_value(&refresh).unwrap();
+        let keys: Vec<&str> = wire.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["coverage", "workspaceId"], "absent, never null: {wire}");
     }
 
     #[test]
@@ -2004,12 +2839,17 @@ pub fn run() {
             search_index,
             list_duplicates,
             list_relationships,
+            refresh_ai_connections,
+            cancel_ai_connections,
             register_embedding_space,
             pending_embedding_chunks,
             put_embeddings,
             vector_candidates,
             sync_embeddings,
             cancel_embedding_sync,
+            refresh_local_ai_index,
+            cancel_local_ai_refresh,
+            relationship_coverage,
             prepare_plan,
             approve_plan,
             apply_plan,
@@ -2034,6 +2874,8 @@ pub fn run() {
             index_status,
             semantic_search,
             summarize_document,
+            summarize_relationships,
+            explain_impact,
             answer_question,
             interpret_request,
             cancel_generation,

@@ -77,10 +77,32 @@ A relationship is a discriminated union carrying evidence typed for its kind:
 - `explicitReference` — `documentLink` provenance, the raw and resolved link,
   and at least one passage in the source document.
 - `similarity` — `embedding` provenance, the `spaceFingerprint` it was computed
-  in, a score in [0, 1], and passages in both documents. It is never a claim
-  that an edit must propagate.
-- `sharedFactCandidate` — passages in both documents and an optional confidence.
-  It is never a confirmed contradiction.
+  in, a score in [0, 1], and passages in both documents. The score is an
+  uncalibrated raw cosine clamped to the contract interval; the draft's
+  discovery thresholds are development defaults, not product-quality claims.
+  It is never a claim that an edit must propagate.
+- `sharedFactCandidate` — passages in both documents and an optional confidence
+  (absent for embedding-derived candidates). A candidate needs a typed date or
+  counted-quantity anchor in a clause on each side, the same fact role, a
+  corroborated subject and no negation or contrast; an explicit link never
+  substitutes for a subject. It is a conservative, low-recall filter, not a
+  contradiction detector, and never a confirmed contradiction.
+
+**AI coverage** (issue #46). `relationship_coverage(workspaceId)` returns
+`{ state, spaceFingerprint?, eligibleDocuments, indexedDocuments,
+pairsConsidered, pairsRemaining, overflowDocuments }` with `state` one of
+`noActiveSpace`, `embeddingIncomplete`, `partial`, `complete`. `complete` means
+every pair of currently embedded files was compared; it never means a number of
+connections was found. `refresh_local_ai_index(workspaceId)` runs #27's
+embedding sync, then progressive discovery, reporting `folio://ai-refresh-progress`
+(`phase`: `embedding`, `admitting`, `relationships`) and returning
+`{ workspaceId, embedding?, discovery?, ended?, coverage }`: `embedding` is #27's
+`EmbeddingSyncSummary`, `discovery` this run's counts, and `ended` why it
+stopped (`complete`, `budgetExhausted`, `cancelled`, `spaceChanged`); each is
+absent, never `null`, when that phase didn't run. `cancel_local_ai_refresh`
+stops both phases and keeps completed work.
+`GroundedResult.basis` (`{ connections, files, incomplete }`, relationship
+summaries only) is the native count of what the model was given.
 
 A Ripple `ImpactCandidate` may carry the `relationshipType` and `provenance` of
 the relationship that connected it to the edited document. Both are optional
@@ -126,6 +148,18 @@ all-or-nothing
 `Immediate` transaction that rechecks each chunk hash before storing vectors;
 the retry loop only filters the returned `ChunkVector` batch and never
 recomputes a hash. This additive contract is for TJ review.
+
+Issue #46 stores AI relationship rows with `spaceFingerprint` and, for
+`similarity`, `score`; link rows have neither. The native discovery refresh
+reads only vectors from the requested persistent `space_id`, and hides or
+replaces rows from another space. The refresh seam consumes these persistent
+embedding APIs and does not duplicate the #27 producer. Its draft-safe active
+space resolver still requires integration with the shared stored space before
+it exposes AI rows.
+
+The new `relationshipSummary` and `impactExplanation` result kinds reuse the
+grounded result shape. They are generated display text only; they contain no
+operation or approval fields.
 
 ## Providers
 

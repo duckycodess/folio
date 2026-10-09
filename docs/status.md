@@ -1,5 +1,158 @@
 # Implementation status
 
+## Issue #46: AI relationships from the persistent index (draft, 2026-10-10)
+
+**Not merge-ready.** Native and frontend code and tests are in place; the
+real-model quality evidence, the held-out EN/FIL/Taglish set and the
+independent human factual review (Q10) are **not done**. No fixture result is
+presented as any of them.
+
+### What works (tested on Linux/WSL only)
+
+- **Active space.** The selected installed search model's descriptor is turned
+  into #27's stored space (`embedding_sync::stored_index_space`, `chunk-text-v1`)
+  by one shared helper that the embedding provider also uses
+  (`folio_core::embeddings::e5_inputs_from_descriptor`). The resolver reads the
+  model store only (no index lock, no embedding mutex, no ONNX load) and
+  requires that exact space to be registered. A webview fingerprint is only an
+  assertion. A test drives #27's real `sync_embeddings` with a stand-in embedder
+  and checks that the resolver and discovery use exactly the registered space.
+- **Progressive discovery.** Eligible documents (every chunk embedded in the
+  space) are admitted with a never-reused sequence number; the later document of
+  a pair owns its comparison. Pairs are compared in bounded tiles with a
+  persisted accumulator, scheduled round-robin, committed per tile in one
+  `Immediate` transaction that re-checks hashes and coverage. A Stop, a failure
+  or a model change keeps committed tiles; stale rows are removed when a
+  document changes; a rerun resumes. Coverage (`noActiveSpace`,
+  `embeddingIncomplete`, `partial`, `complete`) is proven from the admission
+  order, not from run counts.
+- **Retained edges.** At most 32 stored candidates per document and kind;
+  displayed edges are a read-time union top-8 at either endpoint. Eviction is
+  order-dependent, so it sets an overflow flag instead of hiding it.
+  Ripple and deletion impacts read only links plus displayed edges of the active
+  space (R3-1 fixed).
+- **Shared facts.** Conservative and low-recall: typed date or counted-quantity
+  anchor in both clauses, one matching role, one corroborated subject (a
+  heading-derived subject needs an explicit one on the other side; links are
+  never an input) and no negation or contrast. The lexicons are small hand-made
+  lists tuned on the fixture corpus only.
+- **UI.** Coverage notices (never "no connections" while incomplete), a Ripple
+  warning that never blocks approval and says nothing about links or copies,
+  "based on N connections across M files" from the native count, an automatic
+  refresh after Local Sync, an applied change or Undo when the search model is
+  ready (with progress and one Stop), and summaries dropped when coverage
+  changes.
+- **Commands added:** `refresh_local_ai_index`, `cancel_local_ai_refresh`,
+  `relationship_coverage` (and the earlier `refresh_ai_connections`,
+  `summarize_relationships`, `explain_impact`). Migrations `007` and `008` are
+  additive; main's `006_activity` landed first, so these were renumbered.
+
+### Decisions recorded for #46 (Q1–Q10, user-confirmed)
+
+- Q1: AI relationships use the selected installed search model's #27
+  `stored_chunk_space` (`chunk-text-v1`); that integration gates merge.
+- Q2/Q6: shared-fact candidates are conservative, low-recall candidates.
+- Q3: discovery is bounded, progressive and resumable; incomplete work is
+  reported as coverage, never as "no connections".
+- Q4: a focused scope receives its strongest displayed neighbours; without a
+  focus, selection is distributed fairly. _(Native distribution without a focus
+  is not implemented beyond the existing ordering; see below.)_
+- Q5: incomplete AI review warns, never blocks approval.
+- Q7: a successful Local Sync or approved change refreshes when the search model
+  is ready; there is no watcher.
+- Q8: summaries state the native-counted connections and files and when
+  incomplete.
+- Q9: Stop or failure keeps committed work and a later run resumes it.
+- Q10: held-out EN/FIL/Taglish evidence plus independent human factual review
+  are merge-ready gates; unavailable gates remain explicitly not done.
+
+The admission order, tiling, fair scheduler, read-time top-K, overflow flag,
+stale-model checks and Ripple filter are engineering choices for these
+decisions, not product claims.
+
+### Trust boundary (unchanged, S12 on hold)
+
+`register_embedding_space`, `pending_embedding_chunks`, `put_embeddings` and
+`vector_candidates` remain webview-callable (#11/#27). The webview can write
+vectors into the active space, so `provenance: "embedding"` means derived from
+vectors stored in the active space, not verified native-provider authorship.
+The webview cannot choose the active space and cannot supply passages to
+generation. No lock is held across discovery compute.
+
+### Not done / open
+
+- Real-model runs of E5 (similarity, shared-fact positives and hard negatives)
+  and thresholds: ignored tests only, **not run**; cosine gates are
+  uncalibrated (E5 cosines are high, so 0.80/0.88 may admit noise).
+- Held-out EN/FIL/Taglish corpus and independent factual review of generated
+  summaries/explanations: **not done** (human gates).
+- Generation-command test matrix (S10: auth, expiry, stale, no-model,
+  insufficient, injection in evidence and reason, busy, Lab) is **not written**;
+  the commands are covered only through their pure parts and the shared
+  grounding tests.
+- No-focus fair distribution across folders (Q4) is not implemented in the
+  summary selection; the Graph UI's scope cap still bounds the ids sent.
+  Typed errors beyond the cancellation variant, and new error codes for size
+  limits, were not added (the error-code list is a frozen contract).
+- Old-space rows are purged when a refresh starts; a stale display after a model
+  change is dropped by re-reading, and persistence stops at the next tile commit.
+  A model change between that re-check and the commit can still write rows tagged
+  with the old space; they are never displayed or used.
+- Windows/macOS execution, packaging, 8 GB behaviour and real-model memory are
+  unverified.
+- Browser end-to-end (Playwright) journeys were not run here; the fake native
+  core answers honestly (`noActiveSpace`, `modelNotInstalled`) and is covered by
+  its Vitest cases.
+
+### Verification (exact `FOLIO-46` worktree, Linux/WSL)
+
+- `cargo test --manifest-path src-tauri/Cargo.toml --workspace` with
+  `PATH=$HOME/.cargo/bin:$PATH` (rustc 1.96.1): Folio 272 passed/2 ignored,
+  folio-core 195 passed/2 ignored, loopback 1 passed; real-model suites ignored.
+  Baseline before this work: 234 / 176 / 1.
+- `npm run check`, `npm test` (47 files passed, 1 skipped; 442 passed, 9 todo;
+  baseline 414), `npm run build`, `npx prettier --check .` and `git diff --check`
+  passed.
+- The default `/usr/bin/cargo` (1.75) cannot read this lockfile; use the rustup
+  toolchain.
+
+### After review (TJ)
+
+- File previews, Ripple, Connections and coverage read the model store
+  leniently: a store that can't be read (corrupt `settings.json`, a selected
+  model a manifest update dropped) gives links-only results instead of refusing
+  every Rename, Move, Edit or Delete preview. `prepare_plan` reads the store
+  only when it computes Ripple itself, and `list_relationships` reads it before
+  taking the index lock.
+- Coverage counts only currently eligible documents, so a new file is never
+  reported as compared because another file lost its vector. `stale` documents
+  stay comparable with their last good chunks, in admission, tile checks and
+  coverage alike. Skipped jobs are excluded in SQL, so they can't hide a
+  runnable one, and coverage is one windowed query instead of O(n²).
+- Candidate eviction and deletion query each endpoint separately, using new
+  `(space, type, source)` and `(space, type, target)` indexes in 008.
+- Shared facts: a clause with two or more dates, or with a reschedule, cancel or
+  past-value word (English, Filipino, Taglish), gives no date fact, so "moved
+  from October 20 to October 27" no longer matches "deadline is October 20".
+  "Wag" negates. "May 12 kalahok" is a count, not May 12.
+- Impact explanations read at most `MAX_PASSAGES` passages and skip generation
+  without evidence. `refresh_ai_connections` takes the shared refresh lock, so
+  it can't clear a running refresh's Stop.
+- `LocalAiRefresh.embedding`, `discovery` and `ended`, and
+  `AiRelationshipRefresh.spaceFingerprint`, are absent rather than `null`; the
+  first two are declared in TS and `docs/contracts.md`.
+- Graph and plan previews read whether a writing model is ready from the shell
+  instead of a `useModels` of their own, which re-verified every model file on
+  each open. A refresh always clears its Stop notice when it ends, its progress
+  listener can't leak, and a busy provider isn't shown as a failure. Graph says
+  "so far" while coverage is unknown and shows the coverage notice once.
+- Checked on Linux/WSL: Folio 280 passed/2 ignored, folio-core 201 passed/2
+  ignored; `npm run format:check`, `check`, `test` (442 passed, 9 todo),
+  `build` and `check:bundle` passed. Browser journeys: 31 passed, 4 failed. The
+  4 are the viewport axe checks (`region`: `.olio-chat-greeting` outside a
+  landmark), which fail the same way on this branch before these changes and on
+  `main`.
+
 ## PR #68 merge resolution
 
 Merged `main` at `7efb4b5` into the Model Lab branch. The native dependency
@@ -25,7 +178,7 @@ real-model quality, or target-device resource use.
 - Olio mascot artwork: twelve cleaned poses bundled in `src/assets/olio/`, shown through `<Olio pose size>`. Since the floating Olio chat (#66) put one Olio on every other view, the per-view poses that used to live in Home's header, Home's empty states, Organize's empty Collections and Model Lab's "no model" state were removed, so each view still shows exactly one (`docs/design.md`'s "one Olio per view"). Ask & Act, which the launcher never shows on, kept its own two poses. The sidebar shows the brandkit's gold eye wordmark and motto (see the brandkit verification entry below).
 - A sidebar theme switch (System, Light, Dark), remembered on the device, and coloured file-type tiles in file lists and the document panel. Checked in headless Chromium: the switch cycles, the choice survives a reload, and System removes the override. The sample files are all Markdown, so the PDF and text tiles have not been seen rendered.
 - File table and reader ([issue #17](https://github.com/duckycodess/folio/issues/17)): name, location, type, modified and size columns that drop to fit the space; the reader beside the table (or in place of it below 860px) shows the file's text as read-only, with its full path. The reader never shows a file the current list excludes. In the desktop app, Folio starts with an "Add folder" state (sample files on request); an added folder with no readable files offers "Choose another folder". The browser preview lists sample files and says so.
-- Relationships with evidence ([issue #21](https://github.com/duckycodess/folio/issues/21)): the document panel's Related tab and the Graph view list every connected file. Each entry has its type (link and direction, or exact duplicate), how Folio knows it, the file's original folder, and evidence excerpts that open the source with the passage highlighted. Files opened from Related keep a "Back to" link to the origin. With a folder open, links and duplicates come from the native index (`list_relationships`, `list_duplicates`) merged with links in opened files. If the folder hasn't been indexed, the UI says so; no UI runs the index scan yet. Exact duplicates are also found from content hashes Folio already has. Graph also draws the same connections as a concept map (below). Similarity and shared-fact connections have labels and tests, but no producer yet.
+- Relationships with evidence ([issue #21](https://github.com/duckycodess/folio/issues/21)): the document panel's Related tab and the Graph view list every connected file. Each entry has its type (link and direction, or exact duplicate), how Folio knows it, the file's original folder, and evidence excerpts that open the source with the passage highlighted. Files opened from Related keep a "Back to" link to the origin. With a folder open, links and duplicates come from the native index (`list_relationships`, `list_duplicates`) merged with links in opened files. If the folder hasn't been indexed, the UI says so; no UI runs the index scan yet. Exact duplicates are also found from content hashes Folio already has. Graph also draws the same connections as a concept map (below). Issue #46 adds similarity and shared-fact connections found progressively in the active search model's index, with coverage notices and an automatic refresh when the search model is ready (see the #46 section; real-model quality and human review are not done).
 - Shared error and recovery states ([issue #18](https://github.com/duckycodess/folio/issues/18)): every error code maps to one plain-language message and next step ([error-states.md](error-states.md)), shown through one recovery notice in every workflow. Drafts (the Ask & Act request, rename names per file) survive errors and view changes. Success after opening a folder is shown only once the native core reports it. Each view announces into its own live region. Modals keep Tab inside them. A browser-only practice mode (`?simulate=<code>`) triggers each state in its own flow.
 - Summary tab ([#20](https://github.com/duckycodess/folio/issues/20)), using #15's `summarize_document`.
   - Each file's Summary tab offers **Summarize this file**. Nothing is generated until it's pressed.
@@ -72,7 +225,7 @@ real-model quality, or target-device resource use.
   - The browser preview says setup works in the desktop app.
   - The results section groups runs by task, with no overall score. Process RAM is labelled as the model process's, and missing measurements say "Not measured" or "Not graded". There are no recorded results yet (#8).
   - The installed size on disk isn't measured, and the page says so.
-- Graph entry points ([#40](https://github.com/duckycodess/folio/issues/40)): Graph starts from all files, one file, a folder (including connections that leave it) or a keyword topic. With a file open, it starts from that file, and opening a file from the list makes it the new start, with keyboard focus moved to the list's new title. A topic with no letters or digits matches nothing. Confirmed connections (links, identical copies) are listed apart from suggested ones (similarity, possible shared facts), which only appear when the index has them. A "Where these files are" panel counts the connected files per folder. That count isn't a written summary: the relationship summary needs a local model and isn't built. Arrow keys, Home and End move between the files in the list.
+- Graph entry points ([#40](https://github.com/duckycodess/folio/issues/40)): Graph starts from all files, one file, a folder (including connections that leave it) or a keyword topic. With a file open, it starts from that file, and opening a file from the list makes it the new start, with keyboard focus moved to the list's new title. A topic with no letters or digits matches nothing. Confirmed connections (links, identical copies) are listed apart from suggested ones (similarity, possible shared facts), which only appear when the index has them. A "Where these files are" panel counts the connected files per folder. Issue #46 adds a secure relationship-summary command and draft UI action, but it remains unavailable without native evidence/model setup and has not been quality-validated. Arrow keys, Home and End move between the files in the list.
 - Home as the file browser ([#42](https://github.com/duckycodess/folio/issues/42), [#43](https://github.com/duckycodess/folio/issues/43), ADR 0010). The Files tab is gone. Home lists every file, sorted by path, with a count. Each row has a keyboard-accessible ⋯ menu (Open, Rename…, Move to folder…, Show related), and the document panel has the same menu. Rename and Move use the exact preview, Approve and Undo flow from #22, in a dialog. The search field is only on Home, centred, and ⌘K / Ctrl K from any page opens Home and focuses it. Rows take an optional `renderDetail` slot for #19's search evidence. With the sample files, Rename and Move explain that a folder is needed. In practice mode (`?simulate=<code>`), they show the simulated refusal instead.
 - Organize flow ([issue #22](https://github.com/duckycodess/folio/issues/22)), desktop only. Analyze re-indexes the open folder, with live progress and Stop, then lists exact duplicates (by content, never moved or deleted) and filename suggestions to tick. The exact preview shows every from → to path from the native plan. Approve echoes that plan's digest and applies it. The result is worded from the per-file outcomes, so a batch that stopped partway never says nothing changed. It shows what was recorded in history and offers a Preview Undo. A refused apply keeps the preview, with Preview again. The Rename form uses the same native plan with a folder open. With the sample files, Organize explains that a folder is needed. Virtual collections are still not available.
 - Shared plan review and Edit text ([issue #45](https://github.com/duckycodess/folio/issues/45), second PR), desktop only and **not yet reachable from any screen**. One reducer and hook (`planAction.ts`, `usePlanAction.ts`) carry a single native plan through exact preview → approve → apply → result → Undo preview → Undo, ignoring late replies. Shared components (`src/views/PlanReview.tsx`): the plan table and Undo dialog (Organize now uses them, unchanged), a line diff with before/after line numbers and +/− markers with spoken labels, the full new text when a diff is too large to compute, a Ripple list with a "Needs review" badge, paths, passages and how Folio knows (links and identical copies are never labelled AI), and the apply result. Edit text (TXT/Markdown) reads the file's current text and hash, keeps the file's CRLF line endings, and asks the native core for the plan without impacts so it computes Ripple. Rename and Move are Home's `FileActionDialog` (#42). Sample files, the browser preview and PDFs say why changes aren't available (`fileActionAvailability`), and a new name must keep a `.md`, `.markdown` or `.txt` ending. The Graph node actions that open Edit text, Rename and Move are the next PR.
@@ -125,6 +278,10 @@ real-model quality, or target-device resource use.
 - Follows the [frozen contract](contracts.md): `workspaceId:relativePath` document ids, `sha256:` hashes, `explicitReference` relationships with the raw and resolved link, `folio-space-v1/...` space fingerprints, and `{ code, message, details }` failures. `read_document` now also returns the extracted text of text-based PDFs.
 - Exact-duplicate groups are confirmed by comparing the files byte for byte in blocks, so files of any size are verified; the comparison runs without holding the index.
 - Embedding store for the provider track: registered spaces keyed by model/revision/quantization/dimensions/preprocessing, per-space pending-chunk listing, vector storage with dimension checks, and exact cosine search within one space only. `sync_embeddings` fills the store from pending chunks with the selected local embedding model in a stored-chunk space separate from the snapshot space; stale `chunkChanged`/`chunkMissing` refusals are retried silently, bounded by stale and idle limits. Its initial space probe and each provider batch check Model Lab inside the `EmbeddingState` lock before any provider load: a batch already holding that lock may finish when Lab starts, then the next guarded batch returns `providerBusy` and keeps earlier commits. A vector is stored only while its chunk still holds the text it was computed from (`contentHash`), because chunk ids can be reused after a rescan. Live search and Model Lab still use the #4 snapshot path; the existing live `semantic_search` path can reload the product provider during Lab, and #27 does not change that limitation. No UI automatically triggers this fill.
+- Issue #46 reads this persistent store: its active space is the stored space
+  `sync_embeddings` registers (never the snapshot title/path space). A local AI
+  refresh now triggers this fill after Local Sync, an applied change or Undo
+  when the search model is ready.
 
 ## Native writer, Ripple, history and Undo (issue #5)
 
@@ -203,7 +360,17 @@ Fixed by passing `chosen?.id` through. Not fixed and not claimed as fixed: wheth
 
 ## Pending
 
-Model-generated Ripple explanations and similarity/shared-fact discovery (issues #4 and #8), creating folders during moves, UI use of the native index and actions (the current UI still searches loaded content), live file watching, multi-folder workspaces, native packaging, and real Model Lab results (the harness exists; no real run has been recorded, see Model Lab below) remain pending. Issue #4 on `FOLIO-4` carries multilingual embedding, semantic search, local generation, grounded summaries/answers, model/runtime setup and proposal-only interpretation through its own interim in-memory chunking and vector index; it does not yet read #3's persistent index, and its proposals are not yet connected to #5's native plan/apply path.
+Model-generated Ripple explanations and similarity/shared-fact discovery
+integration (issues #4 and #8/#46), including wiring #46's active-space seam to
+the merged #27 producer, creating folders during moves, UI use of the native
+index and actions (the current UI still searches loaded content), live file
+watching, multi-folder workspaces, native packaging, and real Model Lab
+results (the harness exists; no real run has been recorded, see Model Lab
+below) remain pending. Issue #4 on `FOLIO-4` carries multilingual embedding,
+semantic search, local generation, grounded summaries/answers, model/runtime
+setup and proposal-only interpretation through its own interim in-memory
+chunking and vector index; it does not yet read #3's persistent index, and its
+proposals are not yet connected to #5's native plan/apply path.
 
 Two `llama-server` hardening items from the #15 review remain open:
 
