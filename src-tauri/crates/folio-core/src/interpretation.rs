@@ -128,10 +128,38 @@ pub fn interpret_request(
         .map(|trace| trace.result)
 }
 
+/// Same as [`interpret_request`], for a request the user bound to one file by
+/// choosing it. A rename, move or edit then targets that file whatever the
+/// model calls it; the model only says what to do.
+pub fn interpret_request_for_chosen(
+    provider: &dyn GenerationProvider,
+    request: &str,
+    chosen_document_id: Option<&str>,
+    documents: &[DocumentRecord],
+    contents: &HashMap<String, String>,
+    chunks: &[Chunk],
+    cancel: &AtomicBool,
+) -> CoreResult<InterpretationResult> {
+    interpret(provider, request, chosen_document_id, documents, contents, chunks, cancel)
+        .map(|trace| trace.result)
+}
+
 /// Same as [`interpret_request`], additionally returning the raw model value.
 pub fn interpret_request_traced(
     provider: &dyn GenerationProvider,
     request: &str,
+    documents: &[DocumentRecord],
+    contents: &HashMap<String, String>,
+    chunks: &[Chunk],
+    cancel: &AtomicBool,
+) -> CoreResult<InterpretationTrace> {
+    interpret(provider, request, None, documents, contents, chunks, cancel)
+}
+
+fn interpret(
+    provider: &dyn GenerationProvider,
+    request: &str,
+    chosen_document_id: Option<&str>,
     documents: &[DocumentRecord],
     contents: &HashMap<String, String>,
     chunks: &[Chunk],
@@ -163,9 +191,10 @@ pub fn interpret_request_traced(
     };
     let digest = digest_value(&value);
     let result = match parse_model_intent(value.clone()) {
-        Ok(intent) => resolve_model_intent(
+        Ok(intent) => resolve_model_intent_for_chosen(
             &intent,
             detect_language(request),
+            chosen_document_id,
             documents,
             contents,
             chunks,
@@ -184,6 +213,19 @@ pub fn interpret_request_traced(
 pub fn resolve_model_intent(
     intent: &ModelIntent,
     request_language: Language,
+    documents: &[DocumentRecord],
+    contents: &HashMap<String, String>,
+    chunks: &[Chunk],
+) -> InterpretationResult {
+    resolve_model_intent_for_chosen(intent, request_language, None, documents, contents, chunks)
+}
+
+/// [`resolve_model_intent`] with the file the user chose, if any. The chosen
+/// file must be one of `documents`, so it is still an authorized file.
+pub fn resolve_model_intent_for_chosen(
+    intent: &ModelIntent,
+    request_language: Language,
+    chosen_document_id: Option<&str>,
     documents: &[DocumentRecord],
     contents: &HashMap<String, String>,
     chunks: &[Chunk],
@@ -234,28 +276,23 @@ pub fn resolve_model_intent(
         IntentKind::Edit | IntentKind::Rename | IntentKind::Move => {}
     }
 
-    let Some(target_description) = intent
-        .target_description
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    else {
-        return clarification(
-            "Which file should I use?".into(),
-            "A mutation request needs a target description.",
-        );
-    };
-    let Some(target) = resolve_target(target_description, documents, contents, chunks) else {
-        let candidates = candidate_results(target_description, documents, chunks);
-        if candidates.is_empty() {
-            return clarification(
-                "Which file should I use?".into(),
-                "No authorized file matched the target description.",
-            );
-        }
-        return InterpretationResult::NeedsFileSelection {
-            candidates,
-            pending_intent: serde_json::to_string(intent).unwrap_or_else(|_| "{}".into()),
-        };
+    let target = match chosen_document_id {
+        // The user already picked the file, so the model's name for it is
+        // never asked about again.
+        Some(id) => match documents.iter().find(|document| document.id == id) {
+            Some(document) => (document.clone(), duplicate_paths(document, documents, contents)),
+            None => {
+                return clarification(
+                    "The file you chose isn't in this folder anymore. Which file should I use?"
+                        .into(),
+                    "The chosen file is not an authorized document.",
+                )
+            }
+        },
+        None => match described_target(intent, documents, contents, chunks) {
+            Ok(target) => target,
+            Err(result) => return result,
+        },
     };
     let (document, exact_duplicate_paths) = target;
     if intent.intent == IntentKind::Edit && !is_text_media_type(&document.media_type) {
@@ -317,6 +354,39 @@ pub fn resolve_model_intent(
         }
         _ => unreachable!("non-mutating intents returned above"),
     }
+}
+
+/// The file a mutation's own words name, or the question or choice to ask instead.
+fn described_target(
+    intent: &ModelIntent,
+    documents: &[DocumentRecord],
+    contents: &HashMap<String, String>,
+    chunks: &[Chunk],
+) -> Result<(DocumentRecord, Vec<String>), InterpretationResult> {
+    let Some(target_description) = intent
+        .target_description
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return Err(clarification(
+            "Which file should I use?".into(),
+            "A mutation request needs a target description.",
+        ));
+    };
+    if let Some(target) = resolve_target(target_description, documents, contents, chunks) {
+        return Ok(target);
+    }
+    let candidates = candidate_results(target_description, documents, chunks);
+    if candidates.is_empty() {
+        return Err(clarification(
+            "Which file should I use?".into(),
+            "No authorized file matched the target description.",
+        ));
+    }
+    Err(InterpretationResult::NeedsFileSelection {
+        candidates,
+        pending_intent: serde_json::to_string(intent).unwrap_or_else(|_| "{}".into()),
+    })
 }
 
 fn resolve_edit(
@@ -936,6 +1006,66 @@ mod tests {
         assert_eq!(relative_path, "ids/201_Barangay Clearance.pdf");
         assert_eq!(destination_relative_path, "ids/Police Clearance.pdf");
         assert_eq!(observed_content_hash, content_hash("%PDF"));
+    }
+
+    fn chosen_rename(target: Option<&str>, chosen: &str, documents: &[DocumentRecord]) -> InterpretationResult {
+        let mut model_intent = intent(IntentKind::Rename);
+        model_intent.target_description = target.map(Into::into);
+        model_intent.destination = Some("obi clearance".into());
+        resolve_model_intent_for_chosen(&model_intent, Language::En, Some(chosen), documents, &HashMap::new(), &[])
+    }
+
+    fn renamed_path(result: &InterpretationResult) -> Option<&str> {
+        match result {
+            InterpretationResult::Proposal { proposal: OperationProposal::Rename { relative_path, .. }, .. } => {
+                Some(relative_path)
+            }
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_chosen_file_is_renamed_even_when_the_model_names_no_target() {
+        let documents = vec![pdf("Exavault/201_NBI Clearance.pdf"), pdf("Exavault/201_Barangay Clearance.pdf")];
+        let result = chosen_rename(None, "Exavault/201_NBI Clearance.pdf", &documents);
+        assert_eq!(renamed_path(&result), Some("Exavault/201_NBI Clearance.pdf"), "{result:?}");
+    }
+
+    #[test]
+    fn a_chosen_file_wins_over_an_ambiguous_or_different_model_target() {
+        let documents = vec![pdf("Exavault/201_NBI Clearance.pdf"), pdf("Exavault/201_Barangay Clearance.pdf")];
+        for target in ["clearance", "201_Barangay Clearance.pdf", "Exavault/201_NBI Clearance.pdf"] {
+            let result = chosen_rename(Some(target), "Exavault/201_NBI Clearance.pdf", &documents);
+            assert_eq!(renamed_path(&result), Some("Exavault/201_NBI Clearance.pdf"), "{target}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn a_chosen_file_outside_the_documents_is_never_proposed() {
+        let documents = vec![pdf("Exavault/201_Barangay Clearance.pdf")];
+        let result = chosen_rename(Some("Barangay Clearance"), "../secret.pdf", &documents);
+        assert!(matches!(result, InterpretationResult::NeedsClarification { .. }), "{result:?}");
+    }
+
+    #[test]
+    fn a_chosen_file_still_needs_a_known_revision_and_a_supported_intent() {
+        let mut unread = pdf("Exavault/201_NBI Clearance.pdf");
+        unread.content_hash = None;
+        let result = chosen_rename(None, "Exavault/201_NBI Clearance.pdf", &[unread]);
+        assert!(matches!(result, InterpretationResult::NeedsClarification { .. }), "{result:?}");
+
+        let documents = vec![pdf("Exavault/201_NBI Clearance.pdf")];
+        let mut edit = intent(IntentKind::Edit);
+        edit.find = Some("NBI".into());
+        edit.replace = Some("OBI".into());
+        let result = resolve_model_intent_for_chosen(
+            &edit, Language::En, Some("Exavault/201_NBI Clearance.pdf"), &documents, &HashMap::new(), &[],
+        );
+        assert!(matches!(result, InterpretationResult::Unsupported { .. }), "{result:?}");
+        let result = resolve_model_intent_for_chosen(
+            &intent(IntentKind::Delete), Language::En, Some("Exavault/201_NBI Clearance.pdf"), &documents, &HashMap::new(), &[],
+        );
+        assert!(matches!(result, InterpretationResult::Unsupported { .. }), "{result:?}");
     }
 
     #[test]

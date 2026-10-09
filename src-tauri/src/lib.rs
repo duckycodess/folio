@@ -1533,6 +1533,7 @@ enum GenerationHolder {
     Interpretation,
     RelationshipSummary,
     ImpactExplanation,
+    OrganizeSuggestions,
     ModelLab,
 }
 
@@ -1545,6 +1546,7 @@ impl GenerationHolder {
             Self::Interpretation => "interpretation",
             Self::RelationshipSummary => "relationshipSummary",
             Self::ImpactExplanation => "impactExplanation",
+            Self::OrganizeSuggestions => "organizeSuggestions",
             Self::ModelLab => "modelLab",
         }
     }
@@ -1556,6 +1558,7 @@ impl GenerationHolder {
             Self::Interpretation => "Folio is reading another request.",
             Self::RelationshipSummary => "Folio is summarizing connections in Graph.",
             Self::ImpactExplanation => "Folio is explaining a related file in a preview.",
+            Self::OrganizeSuggestions => "Folio is suggesting names and collections in Organize.",
             Self::ModelLab => "Model Lab is measuring models.",
         }
     }
@@ -2114,6 +2117,7 @@ fn load_corpus(
 fn read_only_rename_targets(
     root: &ScopedRoot,
     request: &str,
+    chosen_document_id: Option<&str>,
 ) -> Result<Vec<DocumentRecord>, FolioError> {
     let words = |value: &str| {
         value
@@ -2129,7 +2133,7 @@ fn read_only_rename_targets(
             continue;
         }
         let stem = row.name.rsplit_once('.').map_or(row.name.as_str(), |(stem, _)| stem);
-        let content_hash = if words(stem).is_disjoint(&asked) {
+        let content_hash = if chosen_document_id != Some(row.id.as_str()) && words(stem).is_disjoint(&asked) {
             None
         } else {
             workspace::document_hash(&root.path, &row.relative_path).ok()
@@ -2845,16 +2849,21 @@ async fn interpret_request(
     generation_state: State<'_, GenerationState>,
     workspace_id: String,
     text: String,
+    // The file the user picked for this request: a rename, move or edit
+    // targets it instead of whatever the model calls the file.
+    chosen_document_id: Option<String>,
 ) -> Result<InterpretationResult, FolioError> {
     let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
     let generation_state = generation_state.inner().clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
+        let chosen = chosen_document_id.as_deref();
         let (mut documents, contents, chunks, _skipped_documents) = load_corpus(&root)?;
-        documents.extend(read_only_rename_targets(&root, &text)?);
+        documents.extend(read_only_rename_targets(&root, &text, chosen)?);
         let lease = acquire_generation(&app, &generation_state, GenerationHolder::Interpretation)?;
-        let result = interpretation::interpret_request(
+        let result = interpretation::interpret_request_for_chosen(
             lease.provider.as_ref(),
             &text,
+            chosen,
             &documents,
             &contents,
             &chunks,
@@ -2954,7 +2963,7 @@ fn generate_in_run<T>(
         return Ok(None);
     }
     // The lease gives the slot back when it is dropped, on every path.
-    let lease = acquire_generation(app, generation_state)?;
+    let lease = acquire_generation(app, generation_state, GenerationHolder::OrganizeSuggestions)?;
     Ok(run.hold(&lease.claim.cancel).then(|| work(lease.provider.as_ref(), lease.claim.cancel.as_ref())))
 }
 
