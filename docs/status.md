@@ -118,6 +118,12 @@ Checked on macOS with Node.js 26.10.0:
   - no horizontal scroll at 700px.
 - The filter selects first wrapped their labels around the controls, which gave them names like "FolderAll foldersTop…". The labels now point at the selects with `for`.
 
+After review (2026-10-10):
+
+- Fixed: a pinned or chosen folder with no listed files left (after Organize or Move empties it) wasn't among the Folder options, so the select showed "All folders" while the filter hid everything. The select and the pin chip now show it as "old-projects (no files)".
+- `npm run format:check`, `npm run check` and `npm run build`: passed. `npm test`: 193 passed, 9 todo, after merging `main` (#40, #42).
+- Headless Chrome, sample files, `{"pins":["old-projects"]}` seeded in `folio.home.samples`: the chip reads "old-projects (no files)", and choosing it leaves the select on "old-projects (no files)" with Unpin folder and Clear filters.
+
 Not verified: a real folder through the desktop app, screen readers, and the Tauri webview.
 
 ### Graph entry points (2026-10-10, issue #40)

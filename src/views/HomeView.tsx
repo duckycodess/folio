@@ -154,7 +154,7 @@ function HomeContents({
         <HomeFilterBar home={home} folders={folders} />
       )}
       <WorkspaceSource workspace={workspace} />
-      <PinnedFolders home={home} />
+      <PinnedFolders home={home} folders={folders} />
       {!searching && !filtering && (
         <RecentFiles documents={recent} onOpen={workspace.selectDocument} />
       )}

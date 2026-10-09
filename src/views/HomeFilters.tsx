@@ -30,6 +30,11 @@ export function folderLabel(folder: string): string {
   return folder === "" ? "Top level" : folder.split("/").join(" / ");
 }
 
+/** Shown for a pinned or chosen folder that no longer holds any listed file. */
+export function emptyFolderLabel(folder: string): string {
+  return `${folderLabel(folder)} (no files)`;
+}
+
 /** Folder, File type and Modified filters, plus pinning the chosen folder. */
 export function HomeFilterBar({
   home,
@@ -43,6 +48,10 @@ export function HomeFilterBar({
   const set = (change: Partial<HomeFilters>) =>
     home.setFilters({ ...filters, ...change });
   const pinned = filters.folder !== null && home.pins.includes(filters.folder);
+  // A folder emptied by Organize or Move still has to show as chosen, or the
+  // select would fall back to "All folders" while the filter hides everything.
+  const gone =
+    filters.folder && !folders.includes(filters.folder) ? filters.folder : null;
   return (
     <div className="home-filters" role="group" aria-label="Filters">
       <div className="filter">
@@ -66,6 +75,9 @@ export function HomeFilterBar({
               {folderLabel(folder)}
             </option>
           ))}
+          {gone !== null && (
+            <option value={gone}>{emptyFolderLabel(gone)}</option>
+          )}
         </select>
       </div>
       <div className="filter">
@@ -104,7 +116,7 @@ export function HomeFilterBar({
           ))}
         </select>
       </div>
-      {(filters.folder !== null || hasFilters(filters)) && (
+      {hasFilters(filters) && (
         <div className="filter-actions">
           {filters.folder !== null && (
             <button
@@ -137,7 +149,13 @@ export function HomeFilterBar({
 }
 
 /** Pinned folders as quick filters. Shown only once something is pinned. */
-export function PinnedFolders({ home }: { home: HomeState }) {
+export function PinnedFolders({
+  home,
+  folders,
+}: {
+  home: HomeState;
+  folders: string[];
+}) {
   if (!home.pins.length) return null;
   return (
     <section className="home-strip" aria-labelledby="pinned-heading">
@@ -161,7 +179,9 @@ export function PinnedFolders({ home }: { home: HomeState }) {
                 }
               >
                 <Pin size={14} aria-hidden="true" />
-                {folderLabel(folder)}
+                {folder === "" || folders.includes(folder)
+                  ? folderLabel(folder)
+                  : emptyFolderLabel(folder)}
               </button>
               <button
                 type="button"

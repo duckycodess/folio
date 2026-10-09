@@ -82,7 +82,11 @@ export function passesFilters(
   return true;
 }
 
-/** Recently opened files, newest first: `id` moves to the front, at most `limit`. */
+/**
+ * Recently opened files, newest first: `id` moves to the front, at most
+ * `limit`. Home shows five; the extra few stand in for files that have since
+ * gone from the folder.
+ */
 export function rememberRecent(
   recent: string[],
   id: string,
