@@ -1063,7 +1063,7 @@ export type ExplicitReference = Extract<
  * A chunk without a vector in the given embedding space. Echo `contentHash`
  * when storing its vector: chunk ids can be reused after a rescan, and a vector
  * for text the chunk no longer holds is refused (`evidenceInvalid`,
- * `details.reason` = `chunkChanged`).
+ * `details.reason` = `chunkChanged` or `chunkMissing`).
  */
 export interface PendingChunk {
   chunkId: number;
@@ -1078,6 +1078,20 @@ export interface VectorCandidate {
   score: number;
   spaceFingerprint: EmbeddingSpaceFingerprint;
   passage: SourcePassage;
+}
+
+/**
+ * Result of filling the persistent embedding store. `droppedStale` counts
+ * chunks that changed or disappeared while they were being embedded and were
+ * re-listed; it is not a user-facing failure count.
+ */
+export interface EmbeddingSyncSummary {
+  workspaceId: WorkspaceId;
+  spaceFingerprint: EmbeddingSpaceFingerprint;
+  stored: number;
+  droppedStale: number;
+  cancelled: boolean;
+  complete: boolean;
 }
 
 /* ------------------------------------------------------------ native writer */

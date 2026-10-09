@@ -3,6 +3,7 @@ mod config_guard;
 mod contract_fixtures;
 mod contracts;
 mod db;
+mod embedding_sync;
 mod error;
 mod extract;
 mod identity;
@@ -69,6 +70,10 @@ struct Folio {
     cancel_indexing: Arc<AtomicBool>,
     /// Stops an apply before its next operation; the running one finishes.
     cancel_apply: Arc<AtomicBool>,
+    /// Serializes persistent embedding fills without holding the index or
+    /// provider lock across the whole run.
+    embedding_sync: Arc<Mutex<()>>,
+    cancel_embedding_sync: Arc<AtomicBool>,
 }
 
 impl Folio {
@@ -81,6 +86,8 @@ impl Folio {
             scanning: Arc::new(Mutex::new(())),
             cancel_indexing: Arc::new(AtomicBool::new(false)),
             cancel_apply: Arc::new(AtomicBool::new(false)),
+            embedding_sync: Arc::new(Mutex::new(())),
+            cancel_embedding_sync: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -314,6 +321,129 @@ async fn vector_candidates(
 ) -> Result<Vec<VectorCandidate>, FolioError> {
     state.root(&workspace_id)?;
     index::vector_candidates(&*state.index()?, &workspace_id, &space_fingerprint, &vector, k.unwrap_or(20))
+}
+
+fn refuse_during_lab(lab_state: &lab_commands::LabState) -> Result<(), FolioError> {
+    if lab_state
+        .lock()
+        .map_err(|_| unavailable_state())?
+        .is_some()
+    {
+        return Err(error(
+            ErrorCode::ProviderBusy,
+            "Model Lab is measuring models. Try again when it finishes.",
+        )
+        .with_detail("reason", "modelLabRunning"));
+    }
+    Ok(())
+}
+
+struct NativePassageEmbedder {
+    app: AppHandle,
+    embedding_state: EmbeddingState,
+    lab_state: lab_commands::LabState,
+}
+
+impl embedding_sync::PassageEmbedder for NativePassageEmbedder {
+    fn embed_batch(
+        &mut self,
+        texts: &[String],
+        cancel: &AtomicBool,
+    ) -> db::NativeResult<(ProviderEmbeddingSpace, Vec<Vec<f32>>)> {
+        refuse_during_lab(&self.lab_state)?;
+        let embedded = with_embedding_provider_guarded(
+            &self.app,
+            &self.embedding_state,
+            || refuse_during_lab(&self.lab_state),
+            |provider| {
+                let vectors = provider
+                    .embed(texts, EmbeddingKind::Passage, Some(cancel))
+                    .map_err(native_error)?;
+                Ok((provider.space().clone(), vectors))
+            },
+        )?;
+        embedded.ok_or_else(|| {
+            error(
+                ErrorCode::ModelNotInstalled,
+                "Select a verified local embedding model first.",
+            )
+            .with_detail("component", "embedding")
+        })
+    }
+}
+
+#[tauri::command]
+async fn sync_embeddings(
+    app: AppHandle,
+    state: State<'_, Folio>,
+    embedding_state: State<'_, EmbeddingState>,
+    lab_state: State<'_, lab_commands::LabState>,
+    workspace_id: String,
+) -> Result<embedding_sync::EmbeddingSyncSummary, FolioError> {
+    refuse_during_lab(lab_state.inner())?;
+    state.root(&workspace_id)?;
+    let index_path = state.index_path.clone();
+    let sync_lock = state.embedding_sync.clone();
+    let cancel = state.cancel_embedding_sync.clone();
+    let embedding_state = embedding_state.inner().clone();
+    let lab_state = lab_state.inner().clone();
+    Ok(run_blocking(move || {
+        refuse_during_lab(&lab_state)?;
+        let _sync_guard = match sync_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(error(
+                    ErrorCode::ProviderBusy,
+                    "Another embedding sync is already running.",
+                ))
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err(unavailable_state()),
+        };
+        cancel.store(false, Ordering::Release);
+
+        let provider_space = with_embedding_provider_guarded(
+            &app,
+            &embedding_state,
+            || refuse_during_lab(&lab_state),
+            |provider| Ok(provider.space().clone()),
+        )?
+        .ok_or_else(|| {
+            error(
+                ErrorCode::ModelNotInstalled,
+                "Select a verified local embedding model first.",
+            )
+            .with_detail("component", "embedding")
+        })?;
+        let stored_space = embedding_sync::stored_index_space(&provider_space)?;
+
+        let conn = db::open(&index_path)?;
+        let space_fingerprint = index::register_space(&conn, &stored_space)?;
+        let mut store = embedding_sync::IndexChunkStore::new(
+            conn,
+            workspace_id.clone(),
+            space_fingerprint.clone(),
+        );
+        let mut embedder = NativePassageEmbedder {
+            app,
+            embedding_state,
+            lab_state,
+        };
+        embedding_sync::sync_embeddings(
+            &mut store,
+            &mut embedder,
+            &provider_space,
+            &space_fingerprint,
+            workspace_id,
+            &cancel,
+            embedding_sync::SyncLimits::default(),
+        )
+    })
+    .await?)
+}
+
+#[tauri::command]
+fn cancel_embedding_sync(state: State<'_, Folio>) {
+    state.cancel_embedding_sync.store(true, Ordering::Release);
 }
 
 #[tauri::command]
@@ -1066,100 +1196,126 @@ fn read_ai_document(root: &ScopedRoot, relative_path: &str) -> Result<DocumentTe
     workspace::read_text(&root.path, relative_path)
 }
 
+/// Run the guarded part of an embedding operation while holding the provider
+/// slot lock. The guard runs before any operation can load or replace the
+/// slot. The lock order is `EmbeddingState -> LabState`; Model Lab releases
+/// its `LabState` guard before it unloads the embedding slot.
+fn with_embedding_state_guarded<T, G, F>(
+    embedding_state: &EmbeddingState,
+    before_load: G,
+    work: F,
+) -> Result<T, FolioError>
+where
+    G: FnOnce() -> Result<(), FolioError>,
+    F: FnOnce(&mut Option<EmbeddingSlot>) -> Result<T, FolioError>,
+{
+    let mut guard = embedding_state.lock().map_err(|_| unavailable_state())?;
+    before_load()?;
+    work(&mut *guard)
+}
+
+fn with_embedding_provider_guarded<T, G, F>(
+    app: &AppHandle,
+    embedding_state: &EmbeddingState,
+    before_load: G,
+    work: F,
+) -> Result<Option<T>, FolioError>
+where
+    G: FnOnce() -> Result<(), FolioError>,
+    F: FnOnce(&OrtE5Provider) -> Result<T, NativeProviderError>,
+{
+    let store = model_store(app)?;
+    with_embedding_state_guarded(embedding_state, before_load, |guard| {
+        let Some(model_id) = store
+            .selected_model(ModelRole::Embedding)
+            .map_err(native_error)?
+        else {
+            if let Some(slot) = guard.take() {
+                slot.provider.unload().map_err(native_error)?;
+            }
+            return Ok(None);
+        };
+        let descriptor = store.model(&model_id).map_err(native_error)?.clone();
+        let state = store.model_state(&model_id).map_err(native_error)?;
+        if !matches!(
+            state.status,
+            folio_core::contracts::ModelInstallStatus::Installed
+        ) {
+            if let Some(slot) = guard.take() {
+                slot.provider.unload().map_err(native_error)?;
+            }
+            return Ok(None);
+        }
+        if guard.as_ref().is_none_or(|slot| {
+            slot.model_id != descriptor.id || slot.revision != descriptor.revision
+        }) {
+            if let Some(slot) = guard.take() {
+                slot.provider.unload().map_err(native_error)?;
+            }
+            let model_file = descriptor
+                .files
+                .iter()
+                .find(|file| file.path.ends_with(".onnx"))
+                .ok_or_else(|| NativeProviderError {
+                    code: folio_core::contracts::ProviderErrorCode::ModelCorrupt,
+                    message: "The selected embedding model has no ONNX file.".into(),
+                    detail: Some(model_id.clone()),
+                })?;
+            let tokenizer_file = descriptor
+                .files
+                .iter()
+                .find(|file| file.path.ends_with("tokenizer.json"))
+                .ok_or_else(|| NativeProviderError {
+                    code: folio_core::contracts::ProviderErrorCode::ModelCorrupt,
+                    message: "The selected embedding model has no tokenizer file.".into(),
+                    detail: Some(model_id.clone()),
+                })?;
+            let model_path = store
+                .verified_file_path(&model_id, &model_file.path)
+                .map_err(native_error)?;
+            let tokenizer_path = store
+                .verified_file_path(&model_id, &tokenizer_file.path)
+                .map_err(native_error)?;
+            let provider = OrtE5Provider::from_files(
+                model_path,
+                tokenizer_path,
+                descriptor.id.clone(),
+                descriptor.revision.clone(),
+                descriptor.quantization.clone(),
+                384,
+                &model_file.sha256,
+                &tokenizer_file.sha256,
+                folio_core::embeddings::DEFAULT_MAX_TOKENS,
+                folio_core::embeddings::DEFAULT_BATCH_SIZE,
+                2,
+            )
+            .map_err(native_error)?;
+            *guard = Some(EmbeddingSlot {
+                model_id: descriptor.id.clone(),
+                revision: descriptor.revision.clone(),
+                provider,
+            });
+        }
+        let slot = guard.as_ref().ok_or_else(|| {
+            NativeProviderError {
+                code: folio_core::contracts::ProviderErrorCode::IoError,
+                message: "The local embedding provider is unavailable.".into(),
+                detail: None,
+            }
+        })?;
+        Ok(Some(work(&slot.provider)?))
+    })
+}
+
 fn with_embedding_provider<T, F>(
     app: &AppHandle,
     embedding_state: &EmbeddingState,
     work: F,
-) -> Result<Option<T>, NativeProviderError>
+) -> Result<Option<T>, FolioError>
 where
     F: FnOnce(&OrtE5Provider) -> Result<T, NativeProviderError>,
 {
-    let store = model_store(app)?;
-    let mut guard = embedding_state.lock().map_err(|_| NativeProviderError {
-        code: folio_core::contracts::ProviderErrorCode::IoError,
-        message: "The local embedding state is unavailable.".into(),
-        detail: None,
-    })?;
-    let Some(model_id) = store
-        .selected_model(ModelRole::Embedding)
-        .map_err(native_error)?
-    else {
-        if let Some(slot) = guard.take() {
-            slot.provider.unload().map_err(native_error)?;
-        }
-        return Ok(None);
-    };
-    let descriptor = store.model(&model_id).map_err(native_error)?.clone();
-    let state = store.model_state(&model_id).map_err(native_error)?;
-    if !matches!(
-        state.status,
-        folio_core::contracts::ModelInstallStatus::Installed
-    ) {
-        if let Some(slot) = guard.take() {
-            slot.provider.unload().map_err(native_error)?;
-        }
-        return Ok(None);
-    }
-    if guard
-        .as_ref()
-        .is_none_or(|slot| slot.model_id != descriptor.id || slot.revision != descriptor.revision)
-    {
-        if let Some(slot) = guard.take() {
-            slot.provider.unload().map_err(native_error)?;
-        }
-        let model_file = descriptor
-            .files
-            .iter()
-            .find(|file| file.path.ends_with(".onnx"))
-            .ok_or_else(|| NativeProviderError {
-                code: folio_core::contracts::ProviderErrorCode::ModelCorrupt,
-                message: "The selected embedding model has no ONNX file.".into(),
-                detail: Some(model_id.clone()),
-            })?;
-        let tokenizer_file = descriptor
-            .files
-            .iter()
-            .find(|file| file.path.ends_with("tokenizer.json"))
-            .ok_or_else(|| NativeProviderError {
-                code: folio_core::contracts::ProviderErrorCode::ModelCorrupt,
-                message: "The selected embedding model has no tokenizer file.".into(),
-                detail: Some(model_id.clone()),
-            })?;
-        let model_path = store
-            .verified_file_path(&model_id, &model_file.path)
-            .map_err(native_error)?;
-        let tokenizer_path = store
-            .verified_file_path(&model_id, &tokenizer_file.path)
-            .map_err(native_error)?;
-        let provider = OrtE5Provider::from_files(
-            model_path,
-            tokenizer_path,
-            descriptor.id.clone(),
-            descriptor.revision.clone(),
-            descriptor.quantization.clone(),
-            384,
-            &model_file.sha256,
-            &tokenizer_file.sha256,
-            folio_core::embeddings::DEFAULT_MAX_TOKENS,
-            folio_core::embeddings::DEFAULT_BATCH_SIZE,
-            2,
-        )
-        .map_err(native_error)?;
-        *guard = Some(EmbeddingSlot {
-            model_id: descriptor.id.clone(),
-            revision: descriptor.revision.clone(),
-            provider,
-        });
-    }
-    guard
-        .as_ref()
-        .ok_or_else(|| NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::IoError,
-            message: "The local embedding provider is unavailable.".into(),
-            detail: None,
-        })
-        .and_then(|slot| work(&slot.provider))
-        .map(Some)
+    with_embedding_provider_guarded(app, embedding_state, || Ok(()), work)
 }
 
 /// The text documents the provider snapshot reads, as (path, size, mtime).
@@ -1724,6 +1880,40 @@ mod tests {
         let failure = read_ai_document(&root, "../outside.md").unwrap_err();
         assert_eq!(failure.code, ErrorCode::PathEscapesWorkspace);
     }
+
+    #[test]
+    fn persistent_embedding_sync_refuses_an_active_model_lab_run() {
+        let lab_state = lab_commands::LabState::default();
+        assert!(refuse_during_lab(&lab_state).is_ok());
+
+        *lab_state.lock().unwrap() = Some(Arc::new(AtomicBool::new(false)));
+        let failure = refuse_during_lab(&lab_state).unwrap_err();
+        assert_eq!(failure.code, ErrorCode::ProviderBusy);
+        assert_eq!(failure.detail("reason"), Some("modelLabRunning"));
+    }
+
+    #[test]
+    fn guarded_embedding_state_refuses_lab_before_load_work() {
+        let embedding_state = EmbeddingState::default();
+        let lab_state = lab_commands::LabState::default();
+        *lab_state.lock().unwrap() = Some(Arc::new(AtomicBool::new(false)));
+        let load_attempted = Arc::new(AtomicBool::new(false));
+        let load_attempted_for_work = load_attempted.clone();
+
+        let failure = with_embedding_state_guarded(
+            &embedding_state,
+            || refuse_during_lab(&lab_state),
+            |_slot| {
+                load_attempted_for_work.store(true, Ordering::Release);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(failure.code, ErrorCode::ProviderBusy);
+        assert_eq!(failure.detail("reason"), Some("modelLabRunning"));
+        assert!(!load_attempted.load(Ordering::Acquire));
+    }
 }
 
 #[tauri::command]
@@ -1766,6 +1956,8 @@ pub fn run() {
             pending_embedding_chunks,
             put_embeddings,
             vector_candidates,
+            sync_embeddings,
+            cancel_embedding_sync,
             prepare_plan,
             approve_plan,
             apply_plan,

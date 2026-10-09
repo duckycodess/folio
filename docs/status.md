@@ -124,7 +124,7 @@ real-model quality, or target-device resource use.
 - FTS5 keyword search across unopened documents, returning document id, path and excerpt as `utf8Byte` passages bound to the indexed revision (`documentContentHash`), with page numbers for PDFs. Labelled `keyword`.
 - Follows the [frozen contract](contracts.md): `workspaceId:relativePath` document ids, `sha256:` hashes, `explicitReference` relationships with the raw and resolved link, `folio-space-v1/...` space fingerprints, and `{ code, message, details }` failures. `read_document` now also returns the extracted text of text-based PDFs.
 - Exact-duplicate groups are confirmed by comparing the files byte for byte in blocks, so files of any size are verified; the comparison runs without holding the index.
-- Embedding store for the provider track: registered spaces keyed by model/revision/quantization/dimensions/preprocessing, per-space pending-chunk listing, vector storage with dimension checks, and exact cosine search within one space only. A vector is stored only while its chunk still holds the text it was computed from (`contentHash`), because chunk ids can be reused after a rescan. No embedding model is connected.
+- Embedding store for the provider track: registered spaces keyed by model/revision/quantization/dimensions/preprocessing, per-space pending-chunk listing, vector storage with dimension checks, and exact cosine search within one space only. `sync_embeddings` fills the store from pending chunks with the selected local embedding model in a stored-chunk space separate from the snapshot space; stale `chunkChanged`/`chunkMissing` refusals are retried silently, bounded by stale and idle limits. Its initial space probe and each provider batch check Model Lab inside the `EmbeddingState` lock before any provider load: a batch already holding that lock may finish when Lab starts, then the next guarded batch returns `providerBusy` and keeps earlier commits. A vector is stored only while its chunk still holds the text it was computed from (`contentHash`), because chunk ids can be reused after a rescan. Live search and Model Lab still use the #4 snapshot path; the existing live `semantic_search` path can reload the product provider during Lab, and #27 does not change that limitation. No UI automatically triggers this fill.
 
 ## Native writer, Ripple, history and Undo (issue #5)
 
@@ -225,6 +225,18 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 
 ## Verification
 
+### Embedding store fill (2026-10-10, issue #27)
+
+The native loop and its real SQLite seams were verified on WSL/Linux with the
+rustup Cargo toolchain (Cargo 1.96.1). The deterministic embedding fakes use
+SHA-256-derived vectors to prove hash/text/race safety; they are not evidence
+of real model quality.
+
+- `PATH=/home/pandan/.cargo/bin:$PATH cargo test --manifest-path src-tauri/Cargo.toml`: 231 passed, 2 ignored, including the merged Model Lab native suite, the guard-before-load test, the vector-reuse assertion and the strengthened Immediate-transaction handshake.
+- `PATH=/home/pandan/.cargo/bin:$PATH cargo test --manifest-path src-tauri/Cargo.toml -p folio-core`: 168 unit tests passed, 2 ignored; the loopback integration test passed; the real Model Lab run was ignored; 7 real-acceptance tests were ignored because verified local model files were not supplied.
+- `npm run check`: passed. `npm test`: 344 passed, 9 todo, with 9 pending cases skipped. `npm run build`: passed (`tsc --noEmit` plus Vite production build).
+- The precise Model Lab guarantee is limited to `sync_embeddings`: its initial space probe and each provider batch check inside `EmbeddingState` before any provider load. A batch already holding the lock may finish if Lab starts; Lab then unloads the slot and the next sync batch returns `providerBusy`. The existing live `semantic_search` snapshot path can still reload the product provider during Lab, and #27 does not migrate it.
+- Not verified here: real E5 inference or cross-language model quality, Windows or macOS native execution, the desktop window, packaging, live semantic search over the persistent store, or automatic UI triggering.
 ### Adaptive layout and resizable reader (2026-10-10, issue #67)
 
 - The shell picks its layout from its own measured width, not fixed window breakpoints (`src/app/shellLayout.ts`). The sidebar keeps its labels while there's room. With a file open, the sidebar collapses to the icon rail before the list loses its 420px minimum. Only when even the rail leaves too little room does the reader overlay the list from the right ([ADR 0012](adr/0012-reader-overlay-instead-of-full-width-replacement.md)). The list stays mounted behind it and is made `inert`.
