@@ -99,12 +99,12 @@ Folio is built on the following open-source projects. Each keeps its own license
 
 **Interface**
 
-| Project                                        | Used for                          | License |
-| ---------------------------------------------- | --------------------------------- | ------- |
-| [React](https://react.dev/)                    | User interface                    | MIT     |
-| [d3-force](https://github.com/d3/d3-force)     | Graph layout                      | ISC     |
-| [Lucide](https://lucide.dev/)                  | Icons                             | ISC     |
-| [Inter](https://rsms.me/inter/) via Fontsource | Typeface, bundled for offline use | OFL-1.1 |
+| Project                                                                                                              | Used for                                              | License |
+| -------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- | ------- |
+| [React](https://react.dev/)                                                                                          | User interface                                        | MIT     |
+| [d3-force](https://github.com/d3/d3-force)                                                                           | Graph layout                                          | ISC     |
+| [Lucide](https://lucide.dev/)                                                                                        | Icons                                                 | ISC     |
+| [Manrope](https://github.com/sharanda/manrope) and [DM Sans](https://github.com/googlefonts/dm-fonts) via Fontsource | Typefaces from the brand kit, bundled for offline use | OFL-1.1 |
 
 **Development and testing**
 
