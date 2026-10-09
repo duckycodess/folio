@@ -168,6 +168,17 @@ Checked on macOS with Node.js 26.10.0, on #48 with #15 (`FOLIO-4`) merged in:
 
 Not verified: a real model's summaries, which #15 still marks "Not reviewed"; cancellation against llama.cpp; Filipino and Taglish output; screen readers.
 
+### Navigation and workflow docs (2026-10-10, issue #39)
+
+Documentation only:
+
+- [ADR 0011](adr/0011-activity-organize-and-model-lab-in-navigation.md) records the navigation (Home, Organize, Graph, Ask & Act and Activity, with Model Lab in settings) and keeps Organize as its own page; removing Files and Home-only search are ADR 0010.
+- `docs/workflows.md` keeps journeys A–C and adds the named workflows.
+- `GLOSSARY.md` adds Activity, Olio, Recent Files and Pinned Folder.
+- `docs/design.md` updates the navigation table and the Home layout.
+
+Each item links the issue that builds it. At the time of writing, Activity (#34), Home filters (#33), search evidence (#19), onboarding (#14) and the Home browser (#42, #43) are open PRs, not yet on `main`. Prettier passed; the app checks weren't rerun for this docs-only change.
+
 ### Home filters, pins and recent files (2026-10-10, issue #33)
 
 Checked on macOS with Node.js 26.10.0:
