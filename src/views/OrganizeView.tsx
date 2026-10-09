@@ -1,9 +1,10 @@
-import { ArrowRight, Folders } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { useState } from "react";
 import type { WorkspaceState } from "../app/useWorkspace";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { Modal } from "../ui/Modal";
+import { Olio } from "../ui/Olio";
 import { Panel } from "../ui/Panel";
 import { FileList } from "./FileList";
 
@@ -24,7 +25,10 @@ export function OrganizeView({ workspace }: { workspace: WorkspaceState }) {
       </header>
 
       <Panel title="Collections">
-        <EmptyState icon={<Folders size={24} />} title="No collections yet">
+        <EmptyState
+          illustration={<Olio pose="organizing" size={96} />}
+          title="No collections yet"
+        >
           Collections group related files without moving or copying them.
           Creating collections isn't available in this version yet.
         </EmptyState>

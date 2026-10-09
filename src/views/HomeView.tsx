@@ -4,6 +4,7 @@ import type { ViewId } from "../shell/navigation";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
+import { Olio } from "../ui/Olio";
 import { Panel } from "../ui/Panel";
 import { FileList } from "./FileList";
 import { WorkspaceSource } from "./WorkspaceSource";
@@ -19,9 +20,18 @@ export function HomeView({ workspace, onNavigate }: HomeViewProps) {
 
   return (
     <div className="view">
-      <header className="page-header">
-        <h1 className="page-title">Your workspace</h1>
-        <p className="page-tagline">Everything in its place.</p>
+      <header className="page-header page-header-home">
+        {/* One Olio per view: the header pose follows the list below. */}
+        <Olio
+          pose={
+            documents.length ? "default" : searching ? "confused" : "peeking"
+          }
+          size={96}
+        />
+        <div className="page-header-text">
+          <h1 className="page-title">Your workspace</h1>
+          <p className="page-tagline">Everything in its place.</p>
+        </div>
       </header>
 
       <WorkspaceSource workspace={workspace} />

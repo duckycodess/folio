@@ -176,6 +176,18 @@
   font: var(--text-display);
   letter-spacing: -0.02em;
 }
+/* Home header: at most ~96px tall (docs/design.md). */
+.page-header-home {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--space-4);
+}
+.page-header-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
 .page-header-compact .page-title {
   font: var(--text-title);
   font-size: 1.5rem;

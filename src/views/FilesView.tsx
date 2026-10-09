@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import type { WorkspaceState } from "../app/useWorkspace";
 import { Badge } from "../ui/Badge";
 import { EmptyState } from "../ui/EmptyState";
+import { Olio } from "../ui/Olio";
 import { Panel } from "../ui/Panel";
 import { FileList } from "./FileList";
 import { WorkspaceSource } from "./WorkspaceSource";
@@ -41,7 +42,12 @@ export function FilesView({ workspace }: { workspace: WorkspaceState }) {
             onSelect={workspace.selectDocument}
           />
         ) : (
-          <EmptyState title={searching ? "No matching files" : "No files yet"}>
+          <EmptyState
+            illustration={
+              <Olio pose={searching ? "confused" : "peeking"} size={160} />
+            }
+            title={searching ? "No matching files" : "No files yet"}
+          >
             {searching
               ? "Try another word."
               : "Folio reads text, Markdown and text-based PDF files."}

@@ -278,6 +278,22 @@
   margin-top: 0;
 }
 
+/* Olio */
+.olio {
+  display: inline-flex;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--olio-backdrop);
+}
+.olio img {
+  display: block;
+  transform: scale(var(--olio-scale));
+  user-select: none;
+}
+.empty-state-illustration {
+  display: inline-flex;
+}
+
 /* Notice */
 .notice {
   display: flex;

@@ -232,12 +232,13 @@ Olio is a yellow folder-owl with ivory face mask, black eyes and wings, and oran
 
 The source sheets are in `olio-asset-pack.zip`: `olio-main-design.png`, `olio-angles-and-actions.png` and `olio-more-actions.png`. The pack is kept outside Git and is ignored by `.gitignore` until the team decides whether source sheets belong in the repository; get it from the design owner and do not commit it.
 
-Assets to produce before #16 uses them:
+The twelve poses in the table below are cleaned and sliced into `src/assets/olio/olio-<pose>-<px>.png`:
 
-1. **Olio poses.** The sheets have noisy alpha backgrounds (red and yellow speckle). Clean them and slice each pose into its own transparent PNG or SVG.
-2. Export poses at 1× and 2× for 48, 96 and 160px. Keep each file small; target well under 100 KB per pose.
-3. Store them under `src/assets/olio/` with pose names (`olio-waving.png` and so on).
-4. **Wordmark.** Export the folio wordmark from the brandbook as `src/assets/brand/folio-wordmark.svg`, in a charcoal version for light surfaces and an ivory version for the sidebar.
+- The speckled low-alpha background was removed, interiors made fully opaque and anti-aliased edges kept. The artwork itself is unchanged.
+- Each pose is exported at 96, 192 and 320px: 2× of the 48, 96 and 160px display sizes. There is no separate 1× set, because the source poses are only about 300px and browsers downscale the 2× files well. Every file is under 100 KB.
+- Use them only through the `<Olio pose size>` component (`src/ui/Olio.tsx`). A test fails if a pose is missing at any size.
+
+Still to produce: **the wordmark.** Export the folio wordmark as `src/assets/brand/folio-wordmark.svg`, in a charcoal version for light surfaces and an ivory version for the sidebar. Until then the sidebar shows an interim Inter 800 wordmark.
 
 ### Poses and where they appear
 
@@ -261,6 +262,7 @@ Assets to produce before #16 uses them:
 - Olio is **decorative**: `alt=""` (or `aria-hidden`) because the adjacent text carries the meaning. Never put information only in the mascot's pose.
 - One Olio per view, at most. Never inside tables, menus, toolbars, notices in dense panels or the file reader.
 - Sizes: 48px inline, 96px in page headers and panels, 160px in empty states and onboarding.
+- On dark surfaces Olio sits on an ivory disc (`--olio-backdrop`), because its charcoal wings disappear against the dark theme. Light surfaces have no disc.
 - Errors stay serious: the worried pose accompanies a clear message and recovery action; it never replaces them.
 - Respect `prefers-reduced-motion`: any pose animation (for example a gentle bob while indexing) stops when reduced motion is requested.
 
