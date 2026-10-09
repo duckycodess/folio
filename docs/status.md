@@ -32,11 +32,16 @@ The subsequent C1–C5 integration fixes are split into focused commits on
 parity, `FolioError` conversion, the additive `GroundedResult` boundary, and
 offset-helper contract tests. Formatting and static diff checks passed locally;
 local tests, builds and inference remain intentionally stopped because WSL
-memory pressure caused repeated restarts. Remote Actions for the post-fix
-commits are the verification path and must be named by SHA before this status
-is treated as CI evidence. TJ review is still required for the additive
-contract proposals and grounded-summary correctness; no real-model acceptance,
-desktop interaction, packaging, or 8-GB measurement is claimed here.
+memory pressure caused repeated restarts. GitHub Actions run
+[37943613336](https://github.com/duckycodess/folio/actions/runs/37943613336) at
+`4da77bc` completed successfully: frontend reported 9 Vitest files passed and
+1 skipped with 89 tests passed and 16 todo; Linux core reported 46 passed, 0
+failed and 2 ignored out of 48; macOS native reported 81 passed, 0 failed and
+3 ignored out of 84; Windows native reported 85 passed, 0 failed and 3
+ignored out of 88. These are hosted compile/test results only. TJ review is
+still required for the additive contract proposals and grounded-summary
+correctness; no real-model acceptance, desktop interaction, packaging, or
+8-GB measurement is claimed here.
 
 ## Verification
 
@@ -83,11 +88,21 @@ Local inference, PDF extraction, filesystem apply/undo, native packaging, and ac
 
 The FOLIO-4 branch retains the pure `folio-core` workspace member, verified model/runtime manifest, local E5 and llama.cpp adapters, grounded summaries/answers, relevance/no-generator gate, cancellation and lifecycle handling, and deterministic proposal-only interpretation. The incoming issue #2 native shell remains authoritative for workspace identity, typed errors, action-plan identity/digest, approval, and the refusal to write until issue #5. AI output is never an approval and retrieved document text never authorizes a filesystem operation.
 
-Evidence from the pre-merge FOLIO-4 checkout is preserved but is not a verification claim for this unresolved merge: frontend checks previously passed (11 tests and production build); the post-restart core suite passed 43 tests with 0 failures and 2 ignored; the root Tauri test/build passed earlier at `e5a9e5b` (5 app tests and debug build), while a later root rerun was interrupted by WSL restart. The ignored real-provider R8 harness compiles but has no new adapter output; summary correctness remains TJ Not reviewed.
+Evidence from the pre-merge FOLIO-4 checkout is preserved as historical context,
+not as verification for the merged branch: frontend checks previously passed
+(11 tests and production build); the post-restart core suite passed 43 tests
+with 0 failures and 2 ignored; the root Tauri test/build passed earlier at
+`e5a9e5b` (5 app tests and debug build), while a later root rerun was
+interrupted by WSL restart. The current branch's hosted verification is the
+named run above; the ignored real-provider R8 harness has no new adapter
+output, and summary correctness remains TJ Not reviewed.
 
 The WSL native prerequisites were user-installed and verified at WebKitGTK/JavaScriptCoreGTK 2.52.6, libsoup 3.4.4, librsvg 2.58.0, with Cargo/rustc 1.96.1 available through the inline user-local PATH. Historical missing-library and Cargo 1.75 failures remain historical only. Windows Rust-native, macOS, desktop startup/folder picker, packaging, Job Object behavior, target RAM/size, #3 persistence, and #5 apply/undo remain unverified.
 
-This merge resolution has not been tested, built, or run with inference by user instruction. Only static conflict/diff review is being performed; the merge commit and push remain pending Opus review.
+No local test, build, or inference was run after the merge resolution because
+the user instructed that WSL-heavy execution remain stopped. Opus approved the
+static C1–C5 integration review at `4da77bc`, and the named hosted Actions run
+provides the current compile/test evidence.
 
 ## Product-context refresh
 
