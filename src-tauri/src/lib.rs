@@ -1889,6 +1889,19 @@ fn unload_generation_now(generation_state: &GenerationState) -> Result<(), Nativ
     unload_generation_now_with_limit(generation_state, Duration::from_secs(10))
 }
 
+/// At app exit: wait like `unload_generation_now`, then stop the server even
+/// if its holder never released the slot. Nothing can use it after exit, and
+/// on macOS and Linux nothing else stops the child process.
+fn unload_generation_at_exit(generation_state: &GenerationState, limit: Duration) {
+    if unload_generation_now_with_limit(generation_state, limit).is_ok() {
+        return;
+    }
+    let slot = generation_state.lock().ok().and_then(|mut guard| guard.slot.take());
+    if let Some(slot) = slot {
+        let _ = slot.provider.unload();
+    }
+}
+
 /// Separated from `unload_generation_now` only so tests can use a short
 /// limit instead of waiting the real 10 seconds.
 fn unload_generation_now_with_limit(
@@ -1927,6 +1940,17 @@ fn unload_generation_now_with_limit(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn exit_does_not_wait_forever_for_a_request_that_never_releases_the_slot() {
+        let generation = GenerationState::default();
+        let _held = claim_free_slot(&generation).unwrap();
+        let started = Instant::now();
+        unload_generation_at_exit(&generation, Duration::from_millis(60));
+        assert!(started.elapsed() < Duration::from_secs(5));
+        // The slot itself was taken for unloading even though the claim is held.
+        assert!(generation.lock().unwrap().slot.is_none());
+    }
 
     #[test]
     fn unloading_during_a_request_waits_for_the_request_to_release_the_slot() {
@@ -2183,7 +2207,7 @@ pub fn run() {
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
         ) {
             if let Some(generation_state) = app_handle.try_state::<GenerationState>() {
-                let _ = unload_generation_now(generation_state.inner());
+                unload_generation_at_exit(generation_state.inner(), Duration::from_secs(10));
             }
             // A lab run's server lives in the run's thread, outside the slot.
             if let Some(lab_state) = app_handle.try_state::<lab_commands::LabState>() {
