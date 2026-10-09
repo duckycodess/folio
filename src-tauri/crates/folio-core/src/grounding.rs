@@ -614,7 +614,11 @@ pub fn detect_language(text: &str) -> Language {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::chunking::{InterimTextChunker, TextDocument};
     use crate::contracts::ProviderErrorCode;
+    use crate::contracts::{DocumentRecord, EmbeddingSpace};
+    use crate::embeddings::QueryEmbedding;
+    use crate::retrieval::HybridRetriever;
     use std::sync::atomic::AtomicUsize;
     use std::sync::Mutex;
 
@@ -677,6 +681,62 @@ mod tests {
         let answer = answer_question(
             Some(&provider),
             "What is the deadline?",
+            Vec::new(),
+            Language::En,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(answer.kind, GroundedAnswerKind::InsufficientEvidence);
+        assert_eq!(provider.calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn semantic_relevance_gate_prevents_generator_call() {
+        let document = DocumentRecord {
+            id: "project.md".into(),
+            relative_path: "project.md".into(),
+            name: "project.md".into(),
+            title: "project.md".into(),
+            language: Language::En,
+            size_bytes: 19,
+            content: Some("project deadline".into()),
+            content_hash: None,
+        };
+        let source = InterimTextChunker::new(vec![TextDocument::new(
+            document.clone(),
+            "project deadline",
+        )]);
+        let chunks = source.all_chunks().unwrap();
+        let mut retriever = HybridRetriever::default();
+        let space = EmbeddingSpace {
+            model_id: "e5".into(),
+            revision: "dev".into(),
+            quantization: "int8".into(),
+            dimensions: 2,
+            preprocessing_fingerprint: "test".into(),
+        };
+        retriever
+            .vector_index
+            .replace(space.clone(), chunks.clone(), vec![vec![1.0, 0.0]])
+            .unwrap();
+        let results = retriever
+            .search(
+                &[document],
+                &chunks,
+                "astronomy",
+                Some(&QueryEmbedding {
+                    space,
+                    vector: vec![0.0, 1.0],
+                }),
+                5,
+            )
+            .unwrap();
+        assert!(results.is_empty());
+
+        let provider = ScriptedProvider::new(Vec::new());
+        let answer = answer_question(
+            Some(&provider),
+            "What is the astronomy schedule?",
             Vec::new(),
             Language::En,
             &AtomicBool::new(false),

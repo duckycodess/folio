@@ -10,6 +10,13 @@ use std::collections::{HashMap, HashSet};
 const RRF_K: f32 = 60.0;
 const DEFAULT_PASSAGES_PER_DOCUMENT: usize = 3;
 
+/// Provisional cosine gate calibrated only against the development corpus.
+/// Revisit it when #3 supplies persisted retrieval evaluation data.
+pub const MIN_SEMANTIC_SCORE: f32 = 0.35;
+/// Keyword evidence may supplement semantic hits only when at least half of
+/// the query terms occur in a chunk. This remains an interim fallback floor.
+pub const MIN_KEYWORD_SCORE: f32 = 0.5;
+
 #[derive(Clone, Debug)]
 struct IndexedSpace {
     space: EmbeddingSpace,
@@ -163,8 +170,16 @@ impl HybridRetriever {
         let Some(query_embedding) = semantic else {
             return Ok(self.keyword(documents, chunks, query, limit));
         };
-        let keyword = self.keyword(documents, chunks, query, chunks.len());
+        let keyword = self
+            .keyword(documents, chunks, query, chunks.len())
+            .into_iter()
+            .filter(|result| result.score >= MIN_KEYWORD_SCORE)
+            .collect::<Vec<_>>();
         let semantic = self.vector_index.search(query_embedding, chunks.len())?;
+        let semantic = semantic
+            .into_iter()
+            .filter(|(_, score)| *score >= MIN_SEMANTIC_SCORE)
+            .collect::<Vec<_>>();
         let keyword_ranks = rank_by_chunk(&keyword, chunks);
         let mut combined = Vec::new();
         let mut seen = HashSet::new();
