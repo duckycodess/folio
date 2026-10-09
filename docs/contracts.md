@@ -81,10 +81,24 @@ A relationship is a discriminated union carrying evidence typed for its kind:
   uncalibrated raw cosine clamped to the contract interval; the draft's
   discovery thresholds are development defaults, not product-quality claims.
   It is never a claim that an edit must propagate.
-- `sharedFactCandidate` — passages in both documents and an optional confidence.
-  The draft may produce these from an embedding match plus a shared normalized
-  date or numeric anchor. That anchor gate is a deterministic filter, not a
-  contradiction detector. It is never a confirmed contradiction.
+- `sharedFactCandidate` — passages in both documents and an optional confidence
+  (absent for embedding-derived candidates). A candidate needs a typed date or
+  counted-quantity anchor in a clause on each side, the same fact role, a
+  corroborated subject and no negation or contrast; an explicit link never
+  substitutes for a subject. It is a conservative, low-recall filter, not a
+  contradiction detector, and never a confirmed contradiction.
+
+**AI coverage** (issue #46). `relationship_coverage(workspaceId)` returns
+`{ state, spaceFingerprint?, eligibleDocuments, indexedDocuments,
+pairsConsidered, pairsRemaining, overflowDocuments }` with `state` one of
+`noActiveSpace`, `embeddingIncomplete`, `partial`, `complete`. `complete` means
+every pair of currently embedded files was compared; it never means a number of
+connections was found. `refresh_local_ai_index(workspaceId)` runs #27's
+embedding sync, then progressive discovery, reporting `folio://ai-refresh-progress`
+(`phase`: `embedding`, `admitting`, `relationships`) and ending with the
+coverage; `cancel_local_ai_refresh` stops both phases and keeps completed work.
+`GroundedResult.basis` (`{ connections, files, incomplete }`, relationship
+summaries only) is the native count of what the model was given.
 
 A Ripple `ImpactCandidate` may carry the `relationshipType` and `provenance` of
 the relationship that connected it to the edited document. Both are optional
