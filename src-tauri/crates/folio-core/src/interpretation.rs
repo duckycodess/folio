@@ -54,7 +54,7 @@ pub fn build_interpretation_messages(request: &str) -> Vec<ChatMessage> {
         ChatMessage {
             role: "user".into(),
             content: format!(
-                "Interpret this user request and nothing else:\n<USER_REQUEST>\n{}\n</USER_REQUEST>\n\nExamples: `Find VILAR_Resume.md.` means search with targetDescription `VILAR_Resume.md`; `Hanapin mo yung budget notes.` means search with targetDescription `budget notes`; `What does the project brief say about the deadline?` means question with targetDescription `project brief`; `Summarize the interview notes.` means summarize with targetDescription `interview notes`; `Rename the travel notes to travel-summary.md.` means rename with targetDescription `travel notes` and destination `travel-summary.md`; `Palitan sa meeting notes ang petsa na March 3 to March 4.` means edit with targetDescription `meeting notes`, find `March 3`, replace `March 4`; `Hanapin mo yung budget notes tapos gawing 650 pesos yung 500 pesos.` means edit with targetDescription `budget notes`, find `500 pesos`, replace `650 pesos`; `create a reading log.txt with today's highlights` means create and remains proposal-only; `delete the old notes` remains delete and is unsupported.",
+                "Interpret this user request and nothing else:\n<USER_REQUEST>\n{}\n</USER_REQUEST>\n\nExamples: `Find class-schedule.md.` means search with targetDescription `class-schedule.md`; `Hanapin mo yung budget notes.` means search with targetDescription `budget notes`; `What does the project brief say about the deadline?` means question with targetDescription `project brief`; `Summarize the interview notes.` means summarize with targetDescription `interview notes`; `Rename the travel notes to travel-summary.md.` means rename with targetDescription `travel notes` and destination `travel-summary.md`; `Palitan sa meeting notes ang petsa na March 3 to March 4.` means edit with targetDescription `meeting notes`, find `March 3`, replace `March 4`; `Hanapin mo yung budget notes tapos gawing 650 pesos yung 500 pesos.` means edit with targetDescription `budget notes`, find `500 pesos`, replace `650 pesos`; `create a reading log.txt with today's highlights` means create and remains proposal-only; `delete the old notes` remains delete and is unsupported.",
                 request.trim()
             ),
         },
@@ -732,7 +732,7 @@ mod tests {
     // file with nothing to change is never `edit`.
     #[test]
     fn interpretation_prompt_demonstrates_search_not_only_mutations() {
-        let messages = build_interpretation_messages("Find VILAR_Resume.md.");
+        let messages = build_interpretation_messages("Find class-schedule.md.");
         let joined = messages
             .iter()
             .map(|message| message.content.as_str())
@@ -756,13 +756,13 @@ mod tests {
     #[test]
     fn search_intent_never_asks_which_file() {
         let mut model_intent = intent(IntentKind::Search);
-        model_intent.target_description = Some("VILAR_Resume.md".into());
+        model_intent.target_description = Some("class-schedule.md".into());
         let result = resolve_model_intent(&model_intent, Language::En, &[], &HashMap::new(), &[]);
         match result {
             InterpretationResult::NonMutating {
                 intent: NonMutatingIntent::Search,
                 target_query,
-            } => assert_eq!(target_query.as_deref(), Some("VILAR_Resume.md")),
+            } => assert_eq!(target_query.as_deref(), Some("class-schedule.md")),
             other => panic!("expected a search query, got {other:?}"),
         }
     }
