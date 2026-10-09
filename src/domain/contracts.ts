@@ -348,6 +348,27 @@ export interface GenerationRequest {
   signal?: AbortSignal;
 }
 
+export type GroundedAnswerKind =
+  "fileSummary" | "partialSummary" | "answer" | "insufficientEvidence";
+
+export interface GroundedSentence {
+  text: string;
+  citations: SourcePassage[];
+}
+
+export interface CoverageRange {
+  start: number;
+  end: number;
+}
+
+export interface CoverageEntry {
+  documentId: DocumentId;
+  documentContentHash: ContentHash;
+  offsetUnit: OffsetUnit;
+  ranges: CoverageRange[];
+  complete: boolean;
+}
+
 export interface GroundedAnswer {
   text: string;
   sources: SourcePassage[];
@@ -355,6 +376,17 @@ export interface GroundedAnswer {
   coverage: DocumentId[];
   modelId: string;
   revision: string;
+}
+
+/**
+ * Issue #4's additive result shape. It remains structurally assignable to the
+ * frozen #2 GroundedAnswer while preserving sentence-level evidence details.
+ */
+export interface GroundedResult extends GroundedAnswer {
+  kind: GroundedAnswerKind;
+  sentences: GroundedSentence[];
+  coverageRanges: CoverageEntry[];
+  uncitedSentenceCount: number;
 }
 
 /** A model run either answers from evidence or reports that it has none. */
@@ -373,6 +405,61 @@ export interface GenerationProvider {
   runtime: string;
   generate(request: GenerationRequest): Promise<GenerationOutcome>;
   unload(): Promise<void>;
+}
+
+/* ---------------------------------------------------------- issue #4 models */
+
+export type ModelRole = "embedding" | "generation";
+
+export interface ModelFile {
+  path: string;
+  sha256: string;
+  bytes: number;
+  downloadUrl?: string;
+}
+
+export interface ModelDescriptor {
+  id: string;
+  role: ModelRole;
+  repo: string;
+  revision: string;
+  files: ModelFile[];
+  quantization: string;
+  license: string;
+  runtime: string;
+  optionalPack: boolean;
+}
+
+export type ModelInstallStatus =
+  "notInstalled" | "downloading" | "verifying" | "installed" | "corrupt";
+
+export interface ModelInstallState {
+  id: string;
+  status: ModelInstallStatus;
+  modelFileBytes?: number;
+  error?: FolioErrorPayload;
+}
+
+export interface RuntimeStatus {
+  id: string;
+  version: string;
+  installed: boolean;
+  executablePath?: string;
+}
+
+export interface SkippedDocument {
+  relativePath: string;
+  reason: string;
+}
+
+/** Status of the issue #4 provider's interim in-memory retrieval snapshot. */
+export interface ProviderIndexStatus {
+  workspaceId?: string;
+  documentCount: number;
+  chunkCount: number;
+  method: "keyword" | "semantic" | "hybrid";
+  spaceFingerprint?: EmbeddingSpaceFingerprint;
+  skippedDocuments?: SkippedDocument[];
 }
 
 /* -------------------------------------------------------------- operations */
@@ -440,6 +527,55 @@ export interface ActionPlan {
   /** `sha256` over the canonical plan bytes; see `plan.ts`. */
   digest: ContentHash;
 }
+
+/** A proposal is display-only until the native issue #2/#5 plan boundary accepts it. */
+export type OperationProposal =
+  | {
+      kind: "edit";
+      documentId: DocumentId;
+      relativePath: RelativePath;
+      observedContentHash: ContentHash;
+      find: string;
+      replace: string;
+      targetEvidence: SourcePassage;
+    }
+  | {
+      kind: "rename" | "move";
+      documentId: DocumentId;
+      relativePath: RelativePath;
+      observedContentHash: ContentHash;
+      destinationRelativePath: RelativePath;
+    }
+  | {
+      kind: "create";
+      destinationRelativePath: RelativePath;
+      content: string;
+    };
+
+export type InterpretationResult =
+  | {
+      status: "proposal";
+      proposal: OperationProposal;
+      requestLanguage: Language;
+      exactDuplicatePaths?: RelativePath[];
+    }
+  | {
+      status: "needsFileSelection";
+      candidates: SearchResult[];
+      pendingIntent: string;
+    }
+  | {
+      status: "needsClarification";
+      question: string;
+      reason: string;
+    }
+  | {
+      status: "nonMutating";
+      intent: "search" | "summarize" | "question";
+      targetQuery?: string;
+    }
+  | { status: "unsupported"; reason: string }
+  | { status: "invalidModelOutput"; rawOutputDigest: string };
 
 /* --------------------------------------------------- approval and outcomes */
 

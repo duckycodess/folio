@@ -102,6 +102,48 @@ One generative request runs at a time; a second concurrent request is
 `providerBusy`. A run either returns an answer or reports
 `insufficientEvidence` — it does not invent one.
 
+## Local AI provider results (issue #4)
+
+The local AI boundary adds result types without changing the frozen #2
+`GroundedAnswer` contract. `GroundedAnswer` contains `text`, `sources`, the
+covered `DocumentId[]`, `modelId`, and required provider `revision`.
+`GroundedResult` extends that shape with the required answer kind, sentence
+citations, `coverageRanges` carrying content hashes and UTF-8 byte ranges, and
+`uncitedSentenceCount`. The covered document IDs are distinct from the ranges:
+they describe retrieved evidence, not a claim about the whole corpus. A
+no-evidence result uses `revision: "none"` only when no provider ran.
+
+The provider adapter keeps embedding and generation spaces separate. Semantic
+results carry `spaceFingerprint`, and a query or cached index from another
+model revision, quantization, dimension or preprocessing fingerprint is
+rejected rather than compared. The native registry remains the only workspace
+authority; AI commands resolve the registered root before reading files.
+
+For issue #4's additive proposal boundary, edit, rename and move proposals
+carry `relativePath` and the observed file `observedContentHash` alongside the
+native `documentId`. These fields are evidence for a later native plan; they
+are not approval, an action plan, or permission to write. The native plan and
+approval engine re-check the current file before any future mutation.
+
+Core provider failures are translated at the native boundary to the frozen
+`FolioError` wire shape:
+
+| Core failure                                  | Wire error               | Details                                               |
+| --------------------------------------------- | ------------------------ | ----------------------------------------------------- |
+| `modelNotInstalled`                           | `modelNotInstalled`      | `modelId`                                             |
+| `runtimeMissing`                              | `modelNotInstalled`      | `component: "runtime"`, `runtimeId`                   |
+| `modelCorrupt`                                | `modelLoadFailed`        | `reason: "verificationFailed"`                        |
+| `runtimeStartFailed`                          | `modelLoadFailed`        | `reason: "runtimeStartFailed"`                        |
+| `generationBusy`                              | `providerBusy`           | —                                                     |
+| `cancelled`                                   | `cancelled`              | —                                                     |
+| `contextLimit`                                | `contextOverflow`        | —                                                     |
+| `embeddingSpaceMismatch`                      | `embeddingSpaceMismatch` | `expected`, `actual`                                  |
+| `invalidModelOutput`, `noEvidence`, `ioError` | `internal`               | `reportedCode` plus a safe digest/path when available |
+
+These mappings and the additive result/proposal types are issue #4 proposals
+for TJ review. They do not add or weaken frozen error enums or identity types;
+unknown wire errors remain `internal` with their reported code in details.
+
 ## Plans, approval and outcomes
 
 An `ActionPlan` is issued by the native core with an identity, a workspace, a

@@ -37,6 +37,24 @@ Use [upstream grill-with-docs](https://github.com/mattpocock/skills/blob/main/sk
 
 Ask only unresolved product decisions whose prerequisites are settled. Give a recommended answer and await the user's choices. Look up environmental facts rather than asking the user to guess. Record resolved domain terms immediately in the root glossary. Write an ADR only for a consequential, non-obvious trade-off. Implementation details belong in architecture/setup, not the glossary.
 
+## Issue #4 follow-up decisions
+
+The user accepted the recommendations for follow-up questions 1–4:
+
+- Select the smallest local embedding/generation pair that separately passes required multilingual retrieval, grounded summaries, and typed interpretation. English performance cannot compensate for failed Filipino/Taglish tasks. Report an unmet under-1-GB target honestly rather than silently weakening required functionality; the target is not an absolute release gate.
+- Require the prepared demonstration plus a small frozen, labelled acceptance suite with held-out paraphrases, distractors, ambiguity, insufficient evidence, malicious passages, missing/corrupt models, and cancellation. TJ independently checks outcomes; do not use model self-grading.
+- Ask for file selection when identity is ambiguous and clarification when the intended operation/edit is ambiguous. Invalid generated output creates no plan; never silently select the highest-ranked file for mutation.
+- Full-file summaries process the whole document in bounded stages with citations traceable to original passages. Incomplete processing produces an explicitly labelled Partial Summary with stated coverage. Whole-file coverage does not promise that every fact appears in the concise result. Specific file questions may use retrieved passages.
+
+The user also accepted shared recommendations Q8–Q9 for issues #4 and #8:
+
+- Automatically check objective expectations such as targets, exact edits, and citation locations. Preserve generated outputs and supporting evidence for TJ's factual review. Summary correctness remains Not reviewed until reviewed; valid citations or required-fact matches alone do not establish factual correctness. No model self-grading.
+- Run benchmarks in an isolated disposable workspace containing copies of the test corpus, reset between models. Proposal tests do not write by default. Any actual apply test uses Gab's native approval engine and explicit approval; benchmarks do not bypass approval or modify the user's original workspace.
+
+Earlier Q5–Q7 recommendations (mandatory-test completion gate, processing-limit behavior, and competing-generation UX) remain proposed defaults, not accepted decisions. Implementation may proceed within existing documented boundaries without treating these proposals as settled.
+
+These decisions do not authorize implementation, issue queueing, or worker dispatch.
+
 ## Open verification items, not interview questions
 
 - Actual generation/command quality of the selected small model in Filipino and Taglish.

@@ -1,0 +1,141 @@
+{
+  "schemaVersion": 1,
+  "models": [
+    {
+      "id": "multilingual-e5-small-int8",
+      "role": "embedding",
+      "repo": "Xenova/multilingual-e5-small",
+      "revision": "761b726dd34fb83930e26aab4e9ac3899aa1fa78",
+      "files": [
+        {
+          "path": "onnx/model_quantized.onnx",
+          "sha256": "f80102d3f2a1229f387d3c81909990d8945513e347b0eab049f7de3c6f98c193",
+          "bytes": 118308185,
+          "downloadUrl": "https://huggingface.co/Xenova/multilingual-e5-small/resolve/761b726dd34fb83930e26aab4e9ac3899aa1fa78/onnx/model_quantized.onnx"
+        },
+        {
+          "path": "tokenizer.json",
+          "sha256": "0b44a9d7b51c3c62626640cda0e2c2f70fdacdc25bbbd68038369d14ebdf4c39",
+          "bytes": 17082730,
+          "downloadUrl": "https://huggingface.co/Xenova/multilingual-e5-small/resolve/761b726dd34fb83930e26aab4e9ac3899aa1fa78/tokenizer.json"
+        }
+      ],
+      "quantization": "int8",
+      "license": "mit",
+      "runtime": "onnxruntime",
+      "optionalPack": false
+    },
+    {
+      "id": "qwen3-0.6b-q4-k-m",
+      "role": "generation",
+      "repo": "unsloth/Qwen3-0.6B-GGUF",
+      "revision": "50968a4468ef4233ed78cd7c3de230dd1d61a56b",
+      "files": [
+        {
+          "path": "Qwen3-0.6B-Q4_K_M.gguf",
+          "sha256": "ac2d97712095a558e31573f62f466a3f9d93990898b0ec79d7c974c1780d524a",
+          "bytes": 396705472,
+          "downloadUrl": "https://huggingface.co/unsloth/Qwen3-0.6B-GGUF/resolve/50968a4468ef4233ed78cd7c3de230dd1d61a56b/Qwen3-0.6B-Q4_K_M.gguf"
+        }
+      ],
+      "quantization": "Q4_K_M",
+      "license": "apache-2.0",
+      "runtime": "llama.cpp",
+      "optionalPack": false
+    },
+    {
+      "id": "qwen3-0.6b-q8-0",
+      "role": "generation",
+      "repo": "Qwen/Qwen3-0.6B-GGUF",
+      "revision": "23749fefcc72300e3a2ad315e1317431b06b590a",
+      "files": [
+        {
+          "path": "Qwen3-0.6B-Q8_0.gguf",
+          "sha256": "9465e63a22add5354d9bb4b99e90117043c7124007664907259bd16d043bb031",
+          "bytes": 639446688,
+          "downloadUrl": "https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/23749fefcc72300e3a2ad315e1317431b06b590a/Qwen3-0.6B-Q8_0.gguf"
+        }
+      ],
+      "quantization": "Q8_0",
+      "license": "apache-2.0",
+      "runtime": "llama.cpp",
+      "optionalPack": false
+    },
+    {
+      "id": "qwen3-1.7b-q4-k-m",
+      "role": "generation",
+      "repo": "unsloth/Qwen3-1.7B-GGUF",
+      "revision": "d7f544eead698dbd1f15126ef60b45a1e1933222",
+      "files": [
+        {
+          "path": "Qwen3-1.7B-Q4_K_M.gguf",
+          "sha256": "b139949c5bd74937ad8ed8c8cf3d9ffb1e99c866c823204dc42c0d91fa181897",
+          "bytes": 1107409472,
+          "downloadUrl": "https://huggingface.co/unsloth/Qwen3-1.7B-GGUF/resolve/d7f544eead698dbd1f15126ef60b45a1e1933222/Qwen3-1.7B-Q4_K_M.gguf"
+        }
+      ],
+      "quantization": "Q4_K_M",
+      "license": "apache-2.0",
+      "runtime": "llama.cpp",
+      "optionalPack": true
+    }
+  ],
+  "runtimes": [
+    {
+      "id": "llama-b11524-ubuntu-x64",
+      "name": "llama.cpp",
+      "version": "b11524",
+      "platform": "linux-x64",
+      "files": [
+        {
+          "path": "llama-b11524-bin-ubuntu-x64.tar.gz",
+          "sha256": "2f44f8e794a9e6290bacb2b811e6a83019a106c057473682aeeb445bd49c5083",
+          "bytes": 17831545,
+          "downloadUrl": "https://github.com/ggml-org/llama.cpp/releases/download/b11524/llama-b11524-bin-ubuntu-x64.tar.gz"
+        }
+      ]
+    },
+    {
+      "id": "llama-b11524-win-cpu-x64",
+      "name": "llama.cpp",
+      "version": "b11524",
+      "platform": "windows-x64",
+      "files": [
+        {
+          "path": "llama-b11524-bin-win-cpu-x64.zip",
+          "sha256": "66aae07a0a7e37028adbc391ade7efc9693b2015c3d31ffb19fc3c8bfa8787ae",
+          "bytes": 19518613,
+          "downloadUrl": "https://github.com/ggml-org/llama.cpp/releases/download/b11524/llama-b11524-bin-win-cpu-x64.zip"
+        }
+      ]
+    },
+    {
+      "id": "llama-b11524-macos-arm64",
+      "name": "llama.cpp",
+      "version": "b11524",
+      "platform": "macos-arm64",
+      "files": [
+        {
+          "path": "llama-b11524-bin-macos-arm64.tar.gz",
+          "sha256": "726e586ce19199f71f00a743c7baae737da9b2c7b1a2402b9661c2ce66d87ca3",
+          "bytes": 12083027,
+          "downloadUrl": "https://github.com/ggml-org/llama.cpp/releases/download/b11524/llama-b11524-bin-macos-arm64.tar.gz"
+        }
+      ]
+    },
+    {
+      "id": "llama-b11524-macos-x64",
+      "name": "llama.cpp",
+      "version": "b11524",
+      "platform": "macos-x64",
+      "files": [
+        {
+          "path": "llama-b11524-bin-macos-x64.tar.gz",
+          "sha256": "adc7e3abcf980abfda849039cb6001ddc2066c2a5f42f6b2d40dd8ac7bc17329",
+          "bytes": 11609815,
+          "downloadUrl": "https://github.com/ggml-org/llama.cpp/releases/download/b11524/llama-b11524-bin-macos-x64.tar.gz"
+        }
+      ]
+    }
+  ]
+}

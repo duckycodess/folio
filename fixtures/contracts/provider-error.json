@@ -1,0 +1,7 @@
+{
+  "code": "modelNotInstalled",
+  "message": "Install a local model before using AI.",
+  "details": {
+    "modelId": "generation"
+  }
+}

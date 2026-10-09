@@ -1,0 +1,47 @@
+{
+  "text": "Community Learning Project is due October 20.",
+  "sources": [
+    {
+      "documentId": "fixtures:projects/submission-checklist.md",
+      "documentContentHash": "sha256:8b3538ff1e91ed23104eb5ca6083bf4e44ea37cc8bcb23878d384ca1346bc15a",
+      "offsetUnit": "utf8Byte",
+      "start": 43,
+      "end": 88,
+      "text": "Community Learning Project — due October 20"
+    }
+  ],
+  "kind": "fileSummary",
+  "sentences": [
+    {
+      "text": "Community Learning Project is due October 20.",
+      "citations": [
+        {
+          "documentId": "fixtures:projects/submission-checklist.md",
+          "documentContentHash": "sha256:8b3538ff1e91ed23104eb5ca6083bf4e44ea37cc8bcb23878d384ca1346bc15a",
+          "offsetUnit": "utf8Byte",
+          "start": 43,
+          "end": 88,
+          "text": "Community Learning Project — due October 20"
+        }
+      ]
+    }
+  ],
+  "coverage": ["fixtures:projects/submission-checklist.md"],
+  "modelId": "qwen3-0.6b-q4",
+  "revision": "revision-a",
+  "coverageRanges": [
+    {
+      "documentId": "fixtures:projects/submission-checklist.md",
+      "documentContentHash": "sha256:8b3538ff1e91ed23104eb5ca6083bf4e44ea37cc8bcb23878d384ca1346bc15a",
+      "offsetUnit": "utf8Byte",
+      "ranges": [
+        {
+          "start": 0,
+          "end": 303
+        }
+      ],
+      "complete": true
+    }
+  ],
+  "uncitedSentenceCount": 0
+}
