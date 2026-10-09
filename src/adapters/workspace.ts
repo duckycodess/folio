@@ -1,11 +1,24 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   FIXTURE_WORKSPACE_ID,
   type ContentHash,
   type DocumentRecord,
+  type DuplicateGroup,
+  type EmbeddingSpace,
+  type EmbeddingSpaceFingerprint,
+  type ExplicitReference,
   type FolioErrorCode,
+  type IndexedDocument,
+  type IndexProgress,
+  type KnownWorkspace,
   type Language,
   type MediaType,
+  type PendingChunk,
+  type ScanSummary,
+  type SearchResult,
+  type VectorCandidate,
+  type WorkspaceId,
   type WorkspaceInfo,
 } from "../domain/contracts";
 import { toFolioError } from "../domain/errors";
@@ -147,4 +160,116 @@ export async function readNativeDocument(
   } catch (cause) {
     throw toFolioError(cause);
   }
+}
+
+/* -------------------------------------------------------- persistent index */
+
+async function call<T>(command: string, args?: Record<string, unknown>) {
+  try {
+    return await invoke<T>(command, args);
+  } catch (cause) {
+    throw toFolioError(cause);
+  }
+}
+
+/** Folders authorized in earlier sessions; restoring one never shows a picker. */
+export function listWorkspaces(): Promise<KnownWorkspace[]> {
+  return call<KnownWorkspace[]>("list_workspaces");
+}
+
+export function reopenWorkspace(
+  workspaceId: WorkspaceId,
+): Promise<WorkspaceInfo> {
+  return call<WorkspaceInfo>("reopen_workspace", { workspaceId });
+}
+
+/** Local Sync: incrementally re-indexes the folder. Progress arrives via `onIndexProgress`. */
+export function scanWorkspace(workspaceId: WorkspaceId): Promise<ScanSummary> {
+  return call<ScanSummary>("scan_workspace", { workspaceId });
+}
+
+export function cancelIndexing(): Promise<void> {
+  return call<void>("cancel_indexing");
+}
+
+export function onIndexProgress(
+  handler: (progress: IndexProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<IndexProgress>("folio://index-progress", (event) =>
+    handler(event.payload),
+  );
+}
+
+export function listIndexedDocuments(
+  workspaceId: WorkspaceId,
+): Promise<IndexedDocument[]> {
+  return call<IndexedDocument[]>("list_indexed_documents", { workspaceId });
+}
+
+/** FTS5 keyword search over the persistent index; results are labelled `keyword`. */
+export function searchIndex(
+  workspaceId: WorkspaceId,
+  query: string,
+  limit = 20,
+): Promise<SearchResult[]> {
+  return call<SearchResult[]>("search_index", { workspaceId, query, limit });
+}
+
+export function listDuplicates(
+  workspaceId: WorkspaceId,
+): Promise<DuplicateGroup[]> {
+  return call<DuplicateGroup[]>("list_duplicates", { workspaceId });
+}
+
+export function listRelationships(
+  workspaceId: WorkspaceId,
+): Promise<ExplicitReference[]> {
+  return call<ExplicitReference[]>("list_relationships", { workspaceId });
+}
+
+/** Returns the space fingerprint; vectors are compared only within one space. */
+export function registerEmbeddingSpace(
+  space: EmbeddingSpace,
+): Promise<EmbeddingSpaceFingerprint> {
+  return call<EmbeddingSpaceFingerprint>("register_embedding_space", {
+    space,
+  });
+}
+
+export function pendingEmbeddingChunks(
+  workspaceId: WorkspaceId,
+  spaceFingerprint: EmbeddingSpaceFingerprint,
+  limit = 64,
+): Promise<PendingChunk[]> {
+  return call<PendingChunk[]>("pending_embedding_chunks", {
+    workspaceId,
+    spaceFingerprint,
+    limit,
+  });
+}
+
+export function putEmbeddings(
+  workspaceId: WorkspaceId,
+  spaceFingerprint: EmbeddingSpaceFingerprint,
+  items: { chunkId: number; contentHash: ContentHash; vector: number[] }[],
+): Promise<number> {
+  return call<number>("put_embeddings", {
+    workspaceId,
+    spaceFingerprint,
+    items,
+  });
+}
+
+export function vectorCandidates(
+  workspaceId: WorkspaceId,
+  spaceFingerprint: EmbeddingSpaceFingerprint,
+  vector: number[],
+  k = 20,
+): Promise<VectorCandidate[]> {
+  return call<VectorCandidate[]>("vector_candidates", {
+    workspaceId,
+    spaceFingerprint,
+    vector,
+    k,
+  });
 }

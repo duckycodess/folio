@@ -4,10 +4,13 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use walkdir::WalkDir;
 
+use crate::db::NativeResult;
 use crate::error::{error, ErrorCode, FolioError};
+use crate::extract::{self, MediaKind};
 use crate::identity::{
     content_hash, document_id, media_type_for_path, normalize_relative_path, relative_path_below,
     workspace_id_for,
@@ -242,15 +245,21 @@ pub fn read_text(root: &Path, relative: &str) -> Result<DocumentText, FolioError
             "Folio reads TXT, Markdown and text-based PDF documents.",
         )
     })?;
-    if media_type == "application/pdf" {
-        return Err(error(
-            ErrorCode::DocumentNotText,
-            "PDF extraction is not connected yet. This reader supports TXT and Markdown.",
-        )
-        .with_detail("path", relative));
-    }
     let metadata = fs::metadata(&path)
         .map_err(|cause| error(ErrorCode::DocumentUnavailable, cause.to_string()))?;
+    if media_type == "application/pdf" {
+        // Text-based PDFs are read/index-only. `content` is the extracted text
+        // (pages joined by a blank line); the hash and size are of the file bytes.
+        let bytes = read_bounded(&path, extract::MAX_PDF_BYTES)?;
+        let content = extract::document_text(MediaKind::Pdf, &bytes)
+            .map_err(|failure| failure.with_detail("path", relative))?;
+        return Ok(DocumentText {
+            content_hash: content_hash(&bytes),
+            size_bytes: bytes.len() as u64,
+            modified_at_ms: metadata.modified().ok().and_then(epoch_ms),
+            content,
+        });
+    }
     let file = fs::File::open(&path)
         .map_err(|cause| error(ErrorCode::DocumentUnavailable, cause.to_string()))?;
     let mut bytes = Vec::new();
@@ -286,6 +295,112 @@ pub fn document_hash(root: &Path, relative: &str) -> Result<String, FolioError> 
     let bytes =
         fs::read(path).map_err(|cause| error(ErrorCode::DocumentUnavailable, cause.to_string()))?;
     Ok(content_hash(&bytes))
+}
+
+/// The canonical root, or `workspaceUnavailable` when the folder is gone or unreadable.
+pub fn available_root(path: &Path) -> Result<PathBuf, FolioError> {
+    let unavailable = || {
+        error(
+            ErrorCode::WorkspaceUnavailable,
+            "That folder is no longer available. Choose it again to continue.",
+        )
+    };
+    let root = path.canonicalize().map_err(|_| unavailable())?;
+    if !root.is_dir() || fs::read_dir(&root).is_err() {
+        return Err(unavailable());
+    }
+    Ok(root)
+}
+
+/// Reads at most `limit` bytes; a larger file is refused rather than truncated.
+pub fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, FolioError> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .and_then(|file| file.take(limit + 1).read_to_end(&mut bytes))
+        .map_err(|cause| error(ErrorCode::DocumentUnavailable, cause.to_string()))?;
+    if bytes.len() as u64 > limit {
+        return Err(error(
+            ErrorCode::DocumentTooLarge,
+            format!("This file is larger than the {} MiB limit.", limit / 1024 / 1024),
+        ));
+    }
+    Ok(bytes)
+}
+
+/// A folder the user picked in an earlier session (ADR 0007).
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct KnownWorkspace {
+    pub id: String,
+    pub root_path: String,
+    pub authorized_at: u64,
+    pub last_opened_at: Option<u64>,
+    /// False when the folder is gone or no longer readable.
+    pub available: bool,
+}
+
+/// Records a folder authorized through the native picker so a later session
+/// can restore it. The webview can only ever name a stored identity.
+pub fn remember(conn: &Connection, info: &WorkspaceInfo) -> NativeResult<()> {
+    let now = epoch_ms(SystemTime::now()).unwrap_or_default().to_string();
+    conn.execute(
+        "INSERT INTO workspaces (id, root_path, authorized_at, last_opened_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(id) DO UPDATE SET root_path = excluded.root_path, last_opened_at = excluded.last_opened_at",
+        params![info.id, info.root_path, info.authorized_at.to_string(), now],
+    )?;
+    Ok(())
+}
+
+/// The stored root of a previously picked folder. The caller re-authorizes it
+/// through `WorkspaceRegistry::authorize`, which revalidates access.
+pub fn remembered_root(conn: &Connection, workspace_id: &str) -> NativeResult<PathBuf> {
+    conn.query_row(
+        "SELECT root_path FROM workspaces WHERE id = ?1",
+        [workspace_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()?
+    .map(PathBuf::from)
+    .ok_or_else(|| {
+        error(
+            ErrorCode::WorkspaceNotAuthorized,
+            "This folder was never chosen in Folio. Choose it with the folder picker.",
+        )
+    })
+}
+
+/// The remembered folders as stored, without touching the filesystem. `available` is
+/// filled in by `with_availability`, which may block on a slow or unreachable path and so
+/// runs without holding the index.
+pub fn remembered_workspaces(conn: &Connection) -> NativeResult<Vec<KnownWorkspace>> {
+    let mut statement = conn.prepare(
+        "SELECT id, root_path, authorized_at, last_opened_at FROM workspaces
+         ORDER BY CAST(last_opened_at AS INTEGER) DESC",
+    )?;
+    let rows = statement.query_map([], |row| {
+        let authorized_at: String = row.get(2)?;
+        let last_opened_at: Option<String> = row.get(3)?;
+        Ok(KnownWorkspace {
+            id: row.get(0)?,
+            root_path: row.get(1)?,
+            authorized_at: authorized_at.parse().unwrap_or_default(),
+            last_opened_at: last_opened_at.and_then(|value| value.parse().ok()),
+            available: false,
+        })
+    })?;
+    Ok(rows.collect::<Result<_, _>>()?)
+}
+
+pub fn with_availability(mut workspaces: Vec<KnownWorkspace>) -> Vec<KnownWorkspace> {
+    for workspace in &mut workspaces {
+        workspace.available = available_root(Path::new(&workspace.root_path)).is_ok();
+    }
+    workspaces
+}
+
+#[cfg(test)]
+pub fn known_workspaces(conn: &Connection) -> NativeResult<Vec<KnownWorkspace>> {
+    Ok(with_availability(remembered_workspaces(conn)?))
 }
 
 #[cfg(test)]
@@ -476,6 +591,79 @@ mod tests {
         assert_eq!(
             registry.resolve(&info.id).unwrap_err().code,
             ErrorCode::WorkspaceUnavailable
+        );
+    }
+
+    #[test]
+    fn reads_a_text_pdf_and_refuses_a_scanned_one() {
+        let root = tempfile::tempdir().unwrap();
+        let pdf = extract::testpdf::text_pdf(&[&["Consent form guide."]]);
+        fs::write(root.path().join("guide.pdf"), &pdf).unwrap();
+        fs::write(root.path().join("scan.pdf"), extract::testpdf::image_only_pdf()).unwrap();
+        let read = read_text(root.path(), "guide.pdf").unwrap();
+        assert!(read.content.contains("Consent form guide."));
+        assert_eq!(read.content_hash, content_hash(&pdf));
+        assert_eq!(read.size_bytes, pdf.len() as u64);
+        assert_eq!(
+            read_text(root.path(), "scan.pdf").unwrap_err().code,
+            ErrorCode::DocumentNotText
+        );
+    }
+
+    #[test]
+    fn a_remembered_folder_is_restored_with_the_same_identity() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let (_, info) = registry_with(root.path());
+        remember(&conn, &info).unwrap();
+        let mut after_restart = WorkspaceRegistry::new();
+        let restored = after_restart
+            .authorize(&remembered_root(&conn, &info.id).unwrap())
+            .unwrap();
+        assert_eq!(restored.id, info.id);
+        assert_eq!(
+            remembered_root(&conn, "never-picked").unwrap_err().code,
+            ErrorCode::WorkspaceNotAuthorized
+        );
+        assert!(known_workspaces(&conn).unwrap()[0].available);
+    }
+
+    #[test]
+    fn a_remembered_folder_that_disappeared_is_reported_unavailable() {
+        let conn = crate::db::open_in_memory().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let (_, info) = registry_with(root.path());
+        remember(&conn, &info).unwrap();
+        drop(root);
+        assert!(!known_workspaces(&conn).unwrap()[0].available);
+        let mut registry = WorkspaceRegistry::new();
+        assert_eq!(
+            registry
+                .authorize(&remembered_root(&conn, &info.id).unwrap())
+                .unwrap_err()
+                .code,
+            ErrorCode::WorkspaceUnavailable
+        );
+    }
+
+    #[test]
+    fn refuses_a_symlink_escape_on_hosts_that_can_create_one() {
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("allowed");
+        fs::create_dir(&root).unwrap();
+        let outside = parent.path().join("outside.md");
+        fs::write(&outside, "private").unwrap();
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&outside, root.join("link.md"));
+        #[cfg(windows)]
+        let linked = std::os::windows::fs::symlink_file(&outside, root.join("link.md"));
+        if linked.is_err() {
+            eprintln!("skipping: this host does not permit creating symlinks");
+            return;
+        }
+        assert_eq!(
+            read_text(&root, "link.md").unwrap_err().code,
+            ErrorCode::PathEscapesWorkspace
         );
     }
 }
