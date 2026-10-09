@@ -175,6 +175,22 @@ Merge with `main` and second review follow-up (2026-10-10, Linux, Node.js 24):
 - `npm run check`, `npm test` (427 passed, 9 todo), `npm run build` and `npm run check:bundle` passed. Playwright: 31 passed. The 4 `viewports` axe failures (`.olio-chat-greeting` outside a landmark) fail the same way on `main` and come from the Olio chat, not Activity.
 - Native: `cargo test --no-run` and `cargo check --tests` compiled everything, but the tests couldn't run on this host. It's a QEMU virtual CPU without AVX, and the test binary stops with SIGILL before any test starts, as `main`'s build does. The new native tests still need CI's `desktop-check`. The Tauri app wasn't opened.
 
+## Opening a file from the list (issue #85)
+
+A single click on a row already opened the file (`ListRow`'s own doc comment said so), and the row's **⋯ → Open** action calls the same `workspace.selectDocument`, so neither was actually broken in isolation — a Playwright sweep of the browser preview confirmed click, ⋯ → Open (including switching between files and reopening the same file after closing it), and overlay/narrow mode all open the file correctly. What was genuinely missing: `ListRow` had no `onDoubleClick` at all, so a fast double click relied on two ordinary click events landing cleanly rather than any explicit double-click handling, and a stray native double-click side effect (text selection) could show instead. Added an explicit `onDoubleClick` that calls the same `onSelect`, confirmed via Playwright it opens the file with no duplicated panel.
+
+The reported "open button not working" in the real desktop app could not be reproduced here: the browser preview's sample files never call the native `read_document` path at all (`selectDocument` short-circuits when `document.content` is already set), so a native-read-specific failure wouldn't show up in this harness. If it recurs, check `workspace.failure`/`RecoveryNotice` for a surfaced error first — the native read path does propagate failures there.
+
+`npm run check`, `npm test` (427 passed, 9 todo) and `npm run build` passed. The Tauri app wasn't opened against a real folder for this change.
+
+## Choosing a workspace folder could freeze the window (issue #86)
+
+Root cause: `choose_workspace` (`src-tauri/src/lib.rs`) called `app.dialog().file().blocking_pick_folder()` directly inside its `async fn` body, instead of going through the file's own `blocking()` helper (`tauri::async_runtime::spawn_blocking`, already used by `read_document` and `list_workspaces` for exactly this reason). `blocking_pick_folder` blocks its calling thread until the dialog closes; called unwrapped, that thread was one of the async runtime's own worker threads, so every other pending async command — including the IPC responses `workspace.busy`/`workspace.failure` depend on — queued behind it. A second folder pick (reselecting a different folder, as in onboarding step 2) made the odds of hitting a busy worker much worse, which fits "can't back or continue": `workspace.selectFolder`'s `busy` flag only clears in a `finally` once its matching IPC call actually returns, and the onboarding Back/Continue buttons are gated on their own `downloading`/`workspace.source` checks that read state the stuck call never got to update.
+
+Fix: wrapped the same `blocking_pick_folder()` call in the existing `blocking()` helper, so it runs on a dedicated blocking thread and leaves the async worker pool free. The "Change folder" control on Home (`src/views/WorkspaceSource.tsx`) already existed and was already reachable outside onboarding — it just inherited the same freeze whenever it called `selectFolder`, so no separate UI work was needed there once the native command was fixed.
+
+`cargo check`, `cargo fmt --check` (437 pre-existing diffs elsewhere in the crate, unrelated to this change and unchanged by it — not touched) and `cargo test --lib` (240 passed, 2 ignored, 0 failed) ran clean on real macOS hardware. The actual freeze under load (a real folder, a second pick, a local model running) was not reproduced live — the root cause was found by code inspection, matching this file's own established `blocking()` convention, not by catching it mid-freeze.
+
 ## Pending
 
 Model-generated Ripple explanations and similarity/shared-fact discovery (issues #4 and #8), creating folders during moves, UI use of the native index and actions (the current UI still searches loaded content), live file watching, multi-folder workspaces, native packaging, and real Model Lab results (the harness exists; no real run has been recorded, see Model Lab below) remain pending. Issue #4 on `FOLIO-4` carries multilingual embedding, semantic search, local generation, grounded summaries/answers, model/runtime setup and proposal-only interpretation through its own interim in-memory chunking and vector index; it does not yet read #3's persistent index, and its proposals are not yet connected to #5's native plan/apply path.
@@ -251,6 +267,12 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 8-GB measurement is claimed here.
 
 ## Verification
+
+### Sidebar local AI status (2026-10-10, issue #89)
+
+The sidebar's status pill was hard-coded to "Local AI not set up". It now reads the model store through `useModels()`, using the same `localAiStatus()` as the floating chat and Model Lab, so the three always agree. It says "Local AI ready" (green dot) only when the selected writing model is installed, and "Checking local AI…" while that model is still being verified rather than "not set up". It also says "Local AI status unavailable" (red dot) when the check fails, and "Local AI needs the desktop app" in the browser preview. Clicking it still opens Model Lab. The shell reads the model store once and passes the label to the floating chat, so the installed models are verified once instead of once per consumer. Selecting or removing a model in Model Lab now refreshes the other readers too.
+
+Tested: `npm run check`, `npm test` (428 passed, including a new case for "checking" while the selected model is verified) and `npm run build`. The desktop app launched on macOS with the models installed, but the pill's text in the window was not captured, so the "ready" state in the real app is not verified by this entry.
 
 ### Embedding store fill (2026-10-10, issue #27)
 

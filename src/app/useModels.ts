@@ -102,6 +102,18 @@ function subscribeInstall(listener: () => void) {
 }
 
 /**
+ * Selecting or removing a model in one view must reach the others (the
+ * sidebar status, the floating chat), which each hold their own copy of the
+ * setup. Each change records which model it touched.
+ */
+let storeChange: { count: number; modelId: string } = { count: 0, modelId: "" };
+
+function announceStoreChange(modelId: string) {
+  storeChange = { count: storeChange.count + 1, modelId };
+  installListeners.forEach((listener) => listener());
+}
+
+/**
  * Model setup through the native model store. Downloads start only from a
  * button press, use the pinned manifest's sizes and hashes, and can be
  * cancelled. Nothing here touches the user's files.
@@ -126,6 +138,7 @@ export function useModels(): ModelsController {
     subscribeInstall,
     () => installFeedback,
   );
+  const changed = useSyncExternalStore(subscribeInstall, () => storeChange);
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<FolioError | null>(null);
   const [generation, setGeneration] = useState(0);
@@ -204,6 +217,22 @@ export function useModels(): ModelsController {
     else setGeneration((value) => value + 1);
   }, [finished]);
 
+  // Another view selected or removed a model: read the setup again and
+  // re-verify only that model. A change made here already did both.
+  const seenChange = useRef(changed.count);
+  const changedHere = useRef(false);
+  useEffect(() => {
+    if (changed.count === seenChange.current) return;
+    seenChange.current = changed.count;
+    if (changedHere.current) {
+      changedHere.current = false;
+      return;
+    }
+    void refreshSetup().catch(() => undefined);
+    const model = descriptors.find((each) => each.id === changed.modelId);
+    if (model) void verifyAll([model]);
+  }, [changed, descriptors, refreshSetup, verifyAll]);
+
   async function install(descriptor: ModelDescriptor) {
     if (activeInstall || !setup) return;
     installedHere.current = true;
@@ -266,6 +295,8 @@ export function useModels(): ModelsController {
     } finally {
       await refreshSetup().catch(() => undefined);
       if (mounted.current) setSaving(null);
+      changedHere.current = true;
+      announceStoreChange(modelId);
     }
   }
 
