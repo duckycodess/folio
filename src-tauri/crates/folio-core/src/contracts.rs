@@ -296,15 +296,19 @@ mod contract_tests {
     }
 
     #[test]
-    fn provider_error_uses_native_keys() {
-        round_trip(
-            "provider-error",
+    fn native_provider_error_stays_internal() {
+        assert_eq!(
             serde_json::to_value(NativeProviderError {
                 code: ProviderErrorCode::ModelNotInstalled,
                 message: "Install a local model before using AI.".into(),
                 detail: Some("generation".into()),
             })
             .unwrap(),
+            serde_json::json!({
+                "code": "modelNotInstalled",
+                "message": "Install a local model before using AI.",
+                "detail": "generation"
+            })
         );
     }
 
