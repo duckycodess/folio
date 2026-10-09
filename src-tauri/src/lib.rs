@@ -484,6 +484,11 @@ async fn organization_suggestions(
 #[derive(Clone)]
 struct IndexSnapshot {
     workspace_id: String,
+    /// Path, size and modification time of every text document the snapshot
+    /// was built from. A different listing means the files changed (an
+    /// approved edit, an undo, a scan or an external change), so the snapshot
+    /// is rebuilt instead of citing old text.
+    source_fingerprint: Vec<(String, u64, Option<u64>)>,
     documents: Vec<DocumentRecord>,
     chunks: Vec<Chunk>,
     retriever: HybridRetriever,
@@ -491,7 +496,8 @@ struct IndexSnapshot {
     skipped_documents: Vec<SkippedDocument>,
 }
 
-type IndexState = Arc<Mutex<Option<IndexSnapshot>>>;
+/// Shared, not cloned per query.
+type IndexState = Arc<Mutex<Option<Arc<IndexSnapshot>>>>;
 
 struct EmbeddingSlot {
     model_id: String,
@@ -1043,11 +1049,31 @@ where
         .map(Some)
 }
 
+/// The text documents the provider snapshot reads, as (path, size, mtime).
+fn corpus_fingerprint(root: &ScopedRoot) -> Result<Vec<(String, u64, Option<u64>)>, FolioError> {
+    let mut fingerprint = workspace::list_documents(root)?
+        .documents
+        .into_iter()
+        .filter(|row| {
+            let extension = Path::new(&row.relative_path)
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            matches!(extension.as_str(), "txt" | "md")
+        })
+        .map(|row| (row.relative_path, row.size_bytes, row.modified_at_ms))
+        .collect::<Vec<_>>();
+    fingerprint.sort();
+    Ok(fingerprint)
+}
+
 fn build_snapshot(
     app: &AppHandle,
     embedding_state: &EmbeddingState,
     root: &ScopedRoot,
 ) -> Result<IndexSnapshot, FolioError> {
+    let source_fingerprint = corpus_fingerprint(root)?;
     let (documents, _contents, chunks, skipped_documents) = load_corpus(root)?;
     let mut retriever = HybridRetriever::default();
     let mut embedding_space = None;
@@ -1065,6 +1091,7 @@ fn build_snapshot(
     }
     Ok(IndexSnapshot {
         workspace_id: root.id.clone(),
+        source_fingerprint,
         documents,
         chunks,
         retriever,
@@ -1091,7 +1118,7 @@ async fn rebuild_index(
             code: folio_core::contracts::ProviderErrorCode::IoError,
             message: "The local index state is unavailable.".into(),
             detail: None,
-        })? = Some(snapshot);
+        })? = Some(Arc::new(snapshot));
         Ok(status)
     })
     .await?)
@@ -1151,7 +1178,7 @@ fn index_status(index_state: State<'_, IndexState>) -> Result<IndexStatus, Folio
             space_fingerprint: None,
             skipped_documents: Vec::new(),
         },
-        snapshot_status,
+        |snapshot| snapshot_status(snapshot),
     ))
 }
 
@@ -1160,7 +1187,8 @@ fn ensure_snapshot(
     embedding_state: &EmbeddingState,
     root: &ScopedRoot,
     index_state: &IndexState,
-) -> Result<IndexSnapshot, FolioError> {
+) -> Result<Arc<IndexSnapshot>, FolioError> {
+    let current = corpus_fingerprint(root)?;
     if let Some(snapshot) = index_state
         .lock()
         .map_err(|_| NativeProviderError {
@@ -1169,12 +1197,14 @@ fn ensure_snapshot(
             detail: None,
         })?
         .as_ref()
-        .filter(|snapshot| snapshot.workspace_id == root.id)
+        .filter(|snapshot| {
+            snapshot.workspace_id == root.id && snapshot.source_fingerprint == current
+        })
         .cloned()
     {
         return Ok(snapshot);
     }
-    let snapshot = build_snapshot(app, embedding_state, root)?;
+    let snapshot = Arc::new(build_snapshot(app, embedding_state, root)?);
     *index_state.lock().map_err(|_| NativeProviderError {
         code: folio_core::contracts::ProviderErrorCode::IoError,
         message: "The local index state is unavailable.".into(),
