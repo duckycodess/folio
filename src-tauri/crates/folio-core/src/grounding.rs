@@ -830,7 +830,7 @@ mod tests {
         let mut passages = Vec::new();
         let mut outputs = Vec::new();
         for index in 0..(MAX_SUMMARY_STAGES * MAX_GROUP_PASSAGES + 1) {
-            passages.push(passage(index as u32 * 2, "fact"));
+            passages.push(passage(index * 2, "fact"));
         }
         for stage in 0..MAX_SUMMARY_STAGES {
             outputs.push(json!({
