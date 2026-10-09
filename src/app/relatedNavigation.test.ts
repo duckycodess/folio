@@ -52,6 +52,15 @@ describe("navigating through related files", () => {
     expect(state.returnedTo).toBe(PLAN.id);
   });
 
+  it("keeps the highlight when evidence is opened with no file open", () => {
+    const state = run(
+      { type: "openPassage", passage: PASSAGE_IN_NOTES, current: undefined },
+      { type: "selectionChanged", id: NOTES.id },
+    );
+    expect(state.focus).toBe(PASSAGE_IN_NOTES);
+    expect(state.trail).toEqual([]);
+  });
+
   it("highlights a passage in the open file without adding to the trail", () => {
     const state = run({
       type: "openPassage",

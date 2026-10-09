@@ -52,14 +52,14 @@ export function relatedNavigation(
         expected: action.to.id,
       };
     case "openPassage": {
-      const elsewhere =
-        action.current !== undefined &&
-        action.current.id !== action.passage.documentId;
+      const { current, passage } = action;
+      // Opening evidence from Graph may happen with no file open yet.
+      const moves = current?.id !== passage.documentId;
       return {
-        trail: elsewhere ? [...state.trail, action.current!] : state.trail,
-        focus: action.passage,
+        trail: moves && current ? [...state.trail, current] : state.trail,
+        focus: passage,
         returnedTo: null,
-        expected: elsewhere ? action.passage.documentId : state.expected,
+        expected: moves ? passage.documentId : state.expected,
       };
     }
     case "back": {

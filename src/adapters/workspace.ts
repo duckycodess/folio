@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
   FIXTURE_WORKSPACE_ID,
   type ContentHash,
+  type DocumentId,
   type DocumentRecord,
   type DuplicateGroup,
   type EmbeddingSpace,
@@ -183,9 +184,30 @@ export function reopenWorkspace(
   return call<WorkspaceInfo>("reopen_workspace", { workspaceId });
 }
 
-/** Local Sync: incrementally re-indexes the folder. Progress arrives via `onIndexProgress`. */
-export function scanWorkspace(workspaceId: WorkspaceId): Promise<ScanSummary> {
-  return call<ScanSummary>("scan_workspace", { workspaceId });
+/**
+ * Local Sync: incrementally re-indexes the folder. Progress arrives via
+ * `onIndexProgress`. `recheckUnreadable` also reads every failed or stale
+ * document that is waiting before Folio checks it again.
+ */
+export function scanWorkspace(
+  workspaceId: WorkspaceId,
+  options: { recheckUnreadable?: boolean } = {},
+): Promise<ScanSummary> {
+  return call<ScanSummary>("scan_workspace", {
+    workspaceId,
+    recheckUnreadable: options.recheckUnreadable ?? false,
+  });
+}
+
+/** "Check again": reads these documents now and returns their updated records. */
+export function recheckDocuments(
+  workspaceId: WorkspaceId,
+  documentIds: DocumentId[],
+): Promise<IndexedDocument[]> {
+  return call<IndexedDocument[]>("recheck_documents", {
+    workspaceId,
+    documentIds,
+  });
 }
 
 export function cancelIndexing(): Promise<void> {
