@@ -51,14 +51,14 @@ real-model quality, or target-device resource use.
   - **Preview:** it shows the plan rows, the exact text change in that one file, and Ripple passages in related files, labelled "Needs review" and never changed.
   - **Approve:** Approve and apply uses the shared approval, which echoes the plan digest, then shows the result with Preview Undo.
   - **Dialog:** it can't be dismissed while applying, Done and Close return focus, and Cancel says nothing was changed.
-  - **Ambiguous files:** when several files could match, nothing is planned until the user picks one. Then Olio reads the request again with that file named.
+  - **Ambiguous files:** when several files could match, nothing is planned until the user picks one. Then Olio reads the request again with that file chosen: the file's id goes to `interpret_request` as data, so the change targets it whatever the wording says (issue #88).
 - Ask & Act workspace ([#36](https://github.com/duckycodess/folio/issues/36)), using #15's retrieval, interpretation and answers.
   - Ask & Act is a full page with Olio. The search scope (the open folder, or one folder inside it) and the index state stay visible. The index state shows prepared files and skipped files with reasons, and labels keyword-only search when there's no search model.
   - **Find files** runs `semantic_search` and needs no writing model. Each result has the file name, path, a method badge (keyword, semantic, or keyword + semantic, as the native result says), a reason, quoted excerpts that open the passage, and Open file. The reader opens beside Ask & Act.
   - **Ask Olio** runs `interpret_request`:
-    - questions get cited answers from `answer_question`, or an honest "couldn't find enough";
+    - questions get cited answers from `answer_question`, or an honest "couldn't find enough". A question that names one file (every informative word of its target is in the file's name or path) is answered from that file; one that names several it cannot tell apart asks "Which file should Olio use?"; one that names none is answered from the whole folder (issue #88);
     - searches list results;
-    - summaries go to the file's Summary tab (#20), and if several files could match, the user chooses first;
+    - summaries go to the file's Summary tab (#20) — directly for a file the request names, attached or chosen — and if several files could match, the user chooses first;
     - change requests are shown as understood but not previewable here yet, with nothing changed;
     - clarifications, unsupported requests and unreadable model output say so.
   - One request runs at a time and can be cancelled. Cancelling and errors keep the request text. Earlier replies stay readable, and replies are kept when leaving Ask & Act until another folder is opened.
@@ -598,6 +598,18 @@ Checked on macOS with Node.js 26.10.0, on `main` after #63 and #64:
 - Native (`folio_core::device`): device RAM from `sysctl hw.memsize` on macOS, `GetPhysicallyInstalledSystemMemory` on Windows (the installed RAM, so memory reserved for an integrated GPU still counts; `GlobalMemoryStatusEx` is the fallback) and `/proc/meminfo` on Linux; free space from `statvfs` or `GetDiskFreeSpaceExW`, measured at the nearest existing folder. **Not built on this host** (no Rust toolchain). In CI it compiles on macOS and Windows (`desktop-check`), but its tests (device RAM reported, free space for an existing folder and for one not created yet) run only on Linux, in the `frontend` job's folio-core step, where they passed. The macOS and Windows code paths are compiled there, never run. After Gab's review, the Windows path asks for the installed RAM first; that change was formatted with `rustfmt` but, like the rest of this path, is only compiled in CI and has not been run on a Windows computer.
 
 Not verified: real downloads and the real figures in the Tauri app, an interrupted download or a hash mismatch against the real store (they surface through the shared recovery notice and the "Damaged: download again" state), and screen readers.
+
+### Ask & Act answers from the chosen file (2026-10-10, issue #88)
+
+Testing the desktop app with a real local model (qwen3-0.6b) reported that Ask & Act didn't use the file's contents and never asked which file a question meant. Reading the code found wiring causes before any question of model quality:
+
+- A file the user picked or attached only travelled as `Use this file: <path>` appended to the request. `answer_question` was always called without `documentId`, so the evidence came from the whole folder, and "what does this file say?" usually retrieved nothing, which skips the model entirely. Now the id travels as data to `interpret_request` and `answer_question`, and `requestForFile` is gone.
+- Questions and summaries never went through target resolution, so no question could reach the chooser. Now a question or summary request whose target description names one file (every informative word is in the file's name or path) carries that document; one that names several files it cannot tell apart returns `needsFileSelection` with `purpose` `question` or `summarize`; a topic no file name contains names no file and is answered from the whole folder. The chooser says "Which file should Olio use?" for a question, and picking a file answers directly, without interpreting again.
+- A question about a chosen file skips the evidence gate: its best-ranked passages go into the prompt, or its opening passages when nothing ranks, in reading order. The prompt carries at most eight passages and 6,400 bytes (`MAX_ANSWER_EVIDENCE_BYTES`); the budget also applies to folder-wide questions, because stored chunks can be 1,200 characters.
+- PDFs were left out of every question, search and interpretation until issue #92 moved them onto the index; they are now searchable and answerable. A change to a PDF is refused.
+- Citations only ever pointed at passages in the prompt. Capturing-provider tests now show it: the chosen file's text and its labelled passages are in the request sent to the model, and every citation maps to a passage that was sent (an invented label, or a claim with no real citation, is dropped or left uncited).
+- Checked on Linux (WSL) with `cargo test --workspace`, `npm run check`, `npm test`, `npm run build` and `npm run format:check`.
+- **Not done: the real-model repro.** No model file or `llama-server` was available here, so whether the file's text reaches a real server, and whether a 0.6B int4 model then answers well, has not been run. The capturing tests prove what Folio sends, not what a model does with it. If answers are still poor with the file's text present, that is a Model Lab measurement (#77), not a wiring bug. There is no runtime prompt dump, on purpose: it would write document text outside the user's folder. The repro for the desktop is: choose a folder with two files whose names share a word, ask a question naming that word (the chooser should appear), pick one, and check the answer cites that file.
 
 ### AI context from the persistent index (2026-10-10, issue #92)
 

@@ -151,6 +151,18 @@ vectors in the loaded model's space) and `skippedDocuments`. `PendingChunk`
 additionally carries `title` and `relativePath`, which the fill embeds in front
 of the chunk text.
 
+`interpret_request(workspaceId, text, documentId?)` takes the file the user
+picked or attached. A change then targets that file whatever the description
+says; a chosen file missing from the index asks for clarification, and a PDF is
+`unsupported`. `InterpretationResult` additionally carries
+`nonMutating.document` (the one file a question or summary names, without its
+content) and `needsFileSelection.purpose` (`change`, `summarize` or `question`;
+absent means `change`). A question or summary names a file when every
+informative word of its target description is in the file's name or path.
+`answer_question(workspaceId, question, documentId)` skips the evidence gate for
+that file: its best-ranked passages go in, or its opening passages when nothing
+ranks, within eight passages and 6,400 bytes, in reading order.
+
 ## Providers
 
 Embedding and generation stay behind separate interfaces. An adapter rejects
