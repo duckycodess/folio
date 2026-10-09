@@ -109,8 +109,11 @@ mod platform {
 mod platform {
     use super::PeakReading;
 
-    const METHOD: &str =
-        "proc_pid_rusage RUSAGE_INFO_V4 ri_lifetime_max_phys_footprint (peak physical footprint)";
+    // The physical footprint leaves out clean file-backed pages, and
+    // llama-server maps the model file by default, so the weights are not in
+    // this figure. It can't be compared with the Windows and Linux peaks, which
+    // count mapped pages the process touched; the method says so.
+    const METHOD: &str = "proc_pid_rusage RUSAGE_INFO_V4 ri_lifetime_max_phys_footprint (peak physical footprint; excludes the memory-mapped model file)";
 
     pub fn process_peak(pid: u32) -> PeakReading {
         let Ok(pid) = i32::try_from(pid) else {
