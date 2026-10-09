@@ -384,11 +384,24 @@ fn build_answer(
     kind: GroundedAnswerKind,
     coverage_complete: bool,
 ) -> GroundedResult {
+    // `text` and `kind` must hold for any consumer of the frozen
+    // GroundedAnswer: only cited sentences are joined into `text`, and a
+    // result with no cited sentence is not an answer or a summary. Uncited
+    // sentences stay in `sentences` and are counted.
     let text = sentences
         .iter()
+        .filter(|sentence| !sentence.citations.is_empty())
         .map(|sentence| sentence.text.as_str())
         .collect::<Vec<_>>()
         .join(" ");
+    let kind = if sentences
+        .iter()
+        .all(|sentence| sentence.citations.is_empty())
+    {
+        GroundedAnswerKind::InsufficientEvidence
+    } else {
+        kind
+    };
     let mut sources = Vec::new();
     let mut seen = BTreeSet::new();
     for sentence in &sentences {
@@ -975,6 +988,29 @@ mod tests {
         assert_eq!(answer.sentences[0].citations, vec![supplied[1].clone()]);
         assert!(answer.sentences[1].citations.is_empty());
         assert_eq!(answer.uncited_sentence_count, 1);
+    }
+
+    #[test]
+    fn an_answer_without_a_valid_citation_is_insufficient_evidence() {
+        let provider = ScriptedProvider::new(vec![json!({
+            "sentences": [
+                {"text": "The deadline moved to November.", "citations": ["C999"]},
+                {"text": "Nobody knows why.", "citations": []}
+            ],
+            "insufficientEvidence": false
+        })]);
+        let answer = answer_question(
+            Some(&provider),
+            "What is the deadline?",
+            vec![passage(0, "The deadline is October 20.")],
+            Language::En,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(answer.kind, GroundedAnswerKind::InsufficientEvidence);
+        assert!(answer.text.is_empty());
+        assert!(answer.sources.is_empty());
+        assert_eq!(answer.uncited_sentence_count, 2);
     }
 
     #[test]
