@@ -121,6 +121,30 @@ mod tests {
             3_427_879_360,
             "624a18a8cfc3d8ee29752200f73dc02f5007eaac408d94309e8d8da27b2a7ed9",
         ),
+        (
+            "gemma-4-e2b-q4-k-m",
+            "unsloth/gemma-4-E2B-it-GGUF",
+            "0314792d7f1f7e229411f620751375812bb9faf2",
+            "gemma-4-E2B-it-Q4_K_M.gguf",
+            3_106_738_272,
+            "740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8",
+        ),
+        (
+            "ministral-3-3b-q4-k-m",
+            "mistralai/Ministral-3-3B-Instruct-2512-GGUF",
+            "eb599d408350ea2bb60452cb86be7c7b2fc28227",
+            "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
+            2_147_023_008,
+            "9ed150d4367e68df0ac8e1540f6ddc65b42d0ee26378329d1ecbca60f93fc5f8",
+        ),
+        (
+            "lfm2.5-1.2b-q4-k-m",
+            "LiquidAI/LFM2.5-1.2B-Instruct-GGUF",
+            "8ed288026e23958ad9dfa92d53ed773a8eee7125",
+            "LFM2.5-1.2B-Instruct-Q4_K_M.gguf",
+            730_895_168,
+            "b1b3de114215d9507409a662a501a631095a479a419584e8a2ded6304b19b4f5",
+        ),
     ];
 
     #[test]

@@ -20,7 +20,8 @@ on:
         description: >-
           Pinned generation model ids, comma separated, run one at a time in this order.
           Evaluation-only candidates (qwen3.5-0.8b-q4-k-m, qwen3.5-2b-q4-k-m,
-          gemma-sea-lion-v4.5-e2b-q4-k-m) are accepted by name; they are never run by default
+          gemma-sea-lion-v4.5-e2b-q4-k-m, gemma-4-e2b-q4-k-m, ministral-3-3b-q4-k-m,
+          lfm2.5-1.2b-q4-k-m) are accepted by name; they are never run by default
         type: string
         default: qwen3-0.6b-q4-k-m
 
