@@ -20,6 +20,12 @@ pub enum EmbeddingKind {
     Passage,
 }
 
+#[derive(Clone, Debug)]
+pub struct QueryEmbedding {
+    pub space: EmbeddingSpace,
+    pub vector: Vec<f32>,
+}
+
 pub trait EmbeddingProvider: Send {
     fn space(&self) -> &EmbeddingSpace;
     fn embed(
@@ -28,6 +34,21 @@ pub trait EmbeddingProvider: Send {
         kind: EmbeddingKind,
         cancel: Option<&AtomicBool>,
     ) -> CoreResult<Vec<Vec<f32>>>;
+
+    fn embed_query(&self, text: &str, cancel: Option<&AtomicBool>) -> CoreResult<QueryEmbedding> {
+        let vectors = self.embed(&[text.to_owned()], EmbeddingKind::Query, cancel)?;
+        if vectors.len() != 1 {
+            return Err(CoreError::Message(
+                "The embedding provider must return exactly one query vector.".into(),
+            ));
+        }
+        let vector = vectors.into_iter().next().expect("length checked above");
+        Ok(QueryEmbedding {
+            space: self.space().clone(),
+            vector,
+        })
+    }
+
     fn unload(&self) -> CoreResult<()>;
 }
 

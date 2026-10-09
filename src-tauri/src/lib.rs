@@ -100,6 +100,15 @@ fn model_store(app: &AppHandle) -> Result<ModelStore, NativeProviderError> {
     ModelStore::new(app_data_dir(app)?).map_err(native_error)
 }
 
+fn invalidate_index(index_state: &IndexState) -> Result<(), NativeProviderError> {
+    *index_state.lock().map_err(|_| NativeProviderError {
+        code: folio_core::contracts::ProviderErrorCode::IoError,
+        message: "The local index state is unavailable.".into(),
+        detail: None,
+    })? = None;
+    Ok(())
+}
+
 #[tauri::command]
 async fn choose_workspace(
     app: AppHandle,
@@ -165,33 +174,46 @@ fn verify_model(
 #[tauri::command]
 fn install_model(
     app: AppHandle,
+    index_state: State<'_, IndexState>,
     model_id: String,
 ) -> Result<ModelInstallState, NativeProviderError> {
     let store = model_store(&app)?;
     let cancel = AtomicBool::new(false);
-    store
+    let result = store
         .install_model(&model_id, &cancel, |progress| {
             let _ = app.emit("folio://model-progress", progress);
         })
-        .map_err(native_error)
+        .map_err(native_error);
+    invalidate_index(&index_state)?;
+    result
 }
 
 #[tauri::command]
-fn remove_model(app: AppHandle, model_id: String) -> Result<(), NativeProviderError> {
-    model_store(&app)?
-        .remove_model(&model_id)
-        .map_err(native_error)
+fn remove_model(
+    app: AppHandle,
+    index_state: State<'_, IndexState>,
+    model_id: String,
+) -> Result<(), NativeProviderError> {
+    let result = model_store(&app)?.remove_model(&model_id).map_err(native_error);
+    invalidate_index(&index_state)?;
+    result
 }
 
 #[tauri::command]
 fn select_model(
     app: AppHandle,
+    index_state: State<'_, IndexState>,
     role: ModelRole,
     model_id: String,
 ) -> Result<(), NativeProviderError> {
-    model_store(&app)?
+    let embedding_selection = matches!(&role, ModelRole::Embedding);
+    let result = model_store(&app)?
         .select_model(role, &model_id)
-        .map_err(native_error)
+        .map_err(native_error);
+    if result.is_ok() && embedding_selection {
+        invalidate_index(&index_state)?;
+    }
+    result
 }
 
 #[tauri::command]
@@ -477,7 +499,7 @@ fn semantic_search(
 ) -> Result<Vec<SearchResult>, NativeProviderError> {
     let snapshot = ensure_snapshot(&app, &state, &index_state, &workspace_id)?;
     let limit = limit.unwrap_or(10).clamp(1, 50);
-    let Some(space) = snapshot.embedding_space.clone() else {
+    if snapshot.embedding_space.is_none() {
         return Ok(snapshot.retriever.keyword(
             &snapshot.documents,
             &snapshot.chunks,
@@ -491,16 +513,7 @@ fn semantic_search(
         message: "The selected embedding model is no longer installed.".into(),
         detail: None,
     })?;
-    let query_vector = provider
-        .embed(&[query.clone()], EmbeddingKind::Query, None)
-        .map_err(native_error)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::IoError,
-            message: "The embedding provider returned no query vector.".into(),
-            detail: None,
-        })?;
+    let query_embedding = provider.embed_query(&query, None).map_err(native_error)?;
     provider.unload().map_err(native_error)?;
     snapshot
         .retriever
@@ -508,7 +521,7 @@ fn semantic_search(
             &snapshot.documents,
             &snapshot.chunks,
             &query,
-            Some((&space, &query_vector)),
+            Some(&query_embedding),
             limit,
         )
         .map_err(native_error)
@@ -725,7 +738,7 @@ fn search_snapshot(
     query: &str,
 ) -> Result<Vec<SearchResult>, NativeProviderError> {
     let limit = folio_core::generation::MAX_PASSAGES;
-    let Some(space) = snapshot.embedding_space.clone() else {
+    if snapshot.embedding_space.is_none() {
         return Ok(snapshot
             .retriever
             .keyword(&snapshot.documents, &snapshot.chunks, query, limit));
@@ -736,16 +749,7 @@ fn search_snapshot(
         message: "The selected embedding model is no longer installed.".into(),
         detail: None,
     })?;
-    let vector = provider
-        .embed(&[query.to_owned()], EmbeddingKind::Query, None)
-        .map_err(native_error)?
-        .into_iter()
-        .next()
-        .ok_or_else(|| NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::IoError,
-            message: "The embedding provider returned no query vector.".into(),
-            detail: None,
-        })?;
+    let query_embedding = provider.embed_query(query, None).map_err(native_error)?;
     provider.unload().map_err(native_error)?;
     snapshot
         .retriever
@@ -753,7 +757,7 @@ fn search_snapshot(
             &snapshot.documents,
             &snapshot.chunks,
             query,
-            Some((&space, &vector)),
+            Some(&query_embedding),
             limit,
         )
         .map_err(native_error)

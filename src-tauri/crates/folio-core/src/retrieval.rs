@@ -1,6 +1,7 @@
 use crate::chunking::Chunk;
 use crate::contracts::ProviderErrorCode;
 use crate::contracts::{DocumentRecord, EmbeddingSpace, SearchMethod, SearchResult, SourcePassage};
+use crate::embeddings::QueryEmbedding;
 use crate::error::{CoreError, CoreResult, NativeProviderErrorError};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -64,25 +65,20 @@ impl VectorIndex {
             .map_or(0, |indexed| indexed.chunks.len())
     }
 
-    pub fn search(
-        &self,
-        space: &EmbeddingSpace,
-        query: &[f32],
-        limit: usize,
-    ) -> CoreResult<Vec<(Chunk, f32)>> {
-        if query.len() != space.dimensions {
+    pub fn search(&self, query: &QueryEmbedding, limit: usize) -> CoreResult<Vec<(Chunk, f32)>> {
+        if query.vector.len() != query.space.dimensions {
             return Err(CoreError::Message(
                 "Query vector dimension does not match its embedding space.".into(),
             ));
         }
-        let requested_id = embedding_space_id(space);
+        let requested_id = embedding_space_id(&query.space);
         let indexed = self.spaces.get(&requested_id).ok_or_else(|| {
             CoreError::Provider(NativeProviderErrorError::new(
                 ProviderErrorCode::EmbeddingSpaceMismatch,
                 "The query embedding space is not indexed.",
             ))
         })?;
-        if indexed.space != *space {
+        if indexed.space != query.space {
             return Err(CoreError::Provider(NativeProviderErrorError::new(
                 ProviderErrorCode::EmbeddingSpaceMismatch,
                 "The query embedding space does not match the index.",
@@ -93,7 +89,7 @@ impl VectorIndex {
             .iter()
             .cloned()
             .zip(indexed.vectors.iter())
-            .map(|(chunk, vector)| (chunk, cosine_similarity(query, vector)))
+            .map(|(chunk, vector)| (chunk, cosine_similarity(&query.vector, vector)))
             .collect::<Vec<_>>();
         scored.sort_by(|a, b| b.1.total_cmp(&a.1));
         scored.truncate(limit);
@@ -161,16 +157,14 @@ impl HybridRetriever {
         documents: &[DocumentRecord],
         chunks: &[Chunk],
         query: &str,
-        semantic: Option<(&EmbeddingSpace, &[f32])>,
+        semantic: Option<&QueryEmbedding>,
         limit: usize,
     ) -> CoreResult<Vec<SearchResult>> {
-        let Some((space, query_vector)) = semantic else {
+        let Some(query_embedding) = semantic else {
             return Ok(self.keyword(documents, chunks, query, limit));
         };
         let keyword = self.keyword(documents, chunks, query, chunks.len());
-        let semantic = self
-            .vector_index
-            .search(space, query_vector, chunks.len())?;
+        let semantic = self.vector_index.search(query_embedding, chunks.len())?;
         let keyword_ranks = rank_by_chunk(&keyword, chunks);
         let mut combined = Vec::new();
         let mut seen = HashSet::new();
@@ -219,7 +213,7 @@ impl HybridRetriever {
             by_id,
             combined,
             SearchMethod::Hybrid,
-            Some(embedding_space_id(space)),
+            Some(embedding_space_id(&query_embedding.space)),
             limit,
         ))
     }
@@ -387,7 +381,31 @@ mod tests {
         index
             .replace(space("a"), chunks, vec![vec![1.0, 0.0]])
             .unwrap();
-        let error = index.search(&space("b"), &[1.0, 0.0], 5).unwrap_err();
+        let error = index
+            .search(
+                &QueryEmbedding {
+                    space: space("b"),
+                    vector: vec![1.0, 0.0],
+                },
+                5,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("not indexed"));
+    }
+
+    #[test]
+    fn provider_query_space_cannot_use_a_different_index_space() {
+        let source = InterimTextChunker::new(vec![document("notes.md", "deadline")]);
+        let chunks = source.all_chunks().unwrap();
+        let mut index = VectorIndex::default();
+        index
+            .replace(space("provider-a"), chunks, vec![vec![1.0, 0.0]])
+            .unwrap();
+        let provider_b_query = QueryEmbedding {
+            space: space("provider-b"),
+            vector: vec![1.0, 0.0],
+        };
+        let error = index.search(&provider_b_query, 5).unwrap_err();
         assert!(error.to_string().contains("not indexed"));
     }
 
