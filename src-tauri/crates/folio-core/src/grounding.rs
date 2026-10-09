@@ -217,7 +217,10 @@ pub fn summarize_document(
             Vec::new(),
         ));
     }
-    validate_passage_sizes(&passages)?;
+    // Only the passages the bounded stages can read are checked; the rest are
+    // reported as uncovered (a Partial Summary), not treated as an error.
+    let readable = passages.len().min(MAX_SUMMARY_STAGES * MAX_GROUP_PASSAGES);
+    validate_passage_sizes(&passages[..readable])?;
 
     let mut notes = Vec::new();
     let mut processed = 0_usize;
@@ -1051,9 +1054,20 @@ mod tests {
 
     #[test]
     fn stage_cap_returns_partial_coverage() {
+        stage_capped_summary_is_partial(MAX_SUMMARY_STAGES * MAX_GROUP_PASSAGES + 1);
+    }
+
+    #[test]
+    fn very_long_documents_return_a_partial_summary_instead_of_failing() {
+        stage_capped_summary_is_partial(
+            MAX_PASSAGES * MAX_SUMMARY_STAGES * MAX_GROUP_PASSAGES + 50,
+        );
+    }
+
+    fn stage_capped_summary_is_partial(passage_count: usize) {
         let mut passages = Vec::new();
         let mut outputs = Vec::new();
-        for index in 0..(MAX_SUMMARY_STAGES * MAX_GROUP_PASSAGES + 1) {
+        for index in 0..passage_count {
             passages.push(passage(index * 2, "fact"));
         }
         for stage in 0..MAX_SUMMARY_STAGES {
