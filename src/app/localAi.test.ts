@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ModelDescriptor } from "../domain/contracts";
-import { localAiStatusLabel } from "./localAi";
+import { localAiStatus, localAiStatusLabel } from "./localAi";
 import type { ModelGroup } from "./models";
 import type { ModelsController } from "./useModels";
 
@@ -28,14 +28,14 @@ function controller(partial: Partial<ModelsController>): ModelsController {
 
 function groupWith(
   id: string,
-  status: "installed" | "notInstalled",
+  status: "installed" | "notInstalled" | undefined,
 ): ModelGroup {
   return {
     role: "generation",
     rows: [
       {
         descriptor: { id, role: "generation" } as ModelDescriptor,
-        state: { id, status },
+        state: status && { id, status },
         selected: true,
         downloadBytes: 0,
       },
@@ -106,5 +106,23 @@ describe("localAiStatusLabel", () => {
         }),
       ),
     ).toBe("Local AI ready");
+  });
+
+  it("is still checking while the selected writing model is being verified", () => {
+    const groups = [groupWith("writer", undefined)];
+    const models = controller({
+      load: "ready",
+      groups,
+      setup: {
+        selectedEmbedding: null,
+        selectedGeneration: "writer",
+        hostRuntimeId: "cpu",
+        hostRuntimeBytes: null,
+        deviceMemoryBytes: null,
+        availableDiskBytes: null,
+      },
+    });
+    expect(localAiStatus(models)).toBe("checking");
+    expect(localAiStatusLabel(models)).toBe("Checking local AI…");
   });
 });

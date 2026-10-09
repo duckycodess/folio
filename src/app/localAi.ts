@@ -1,18 +1,22 @@
 import type { ModelsController } from "./useModels";
 
+export type LocalAiStatus =
+  "desktopOnly" | "checking" | "unavailable" | "ready" | "notSetUp";
+
 /**
- * The floating chat's header never assumes local AI is ready: it reads the
- * same `useModels()` state Model Lab shows, and only calls it "ready" once
- * the writing model Ask & Act actually uses is installed.
+ * Local AI never reads as ready by assumption: this reads the same
+ * `useModels()` state Model Lab shows, and is "ready" only once the writing
+ * model Ask & Act actually uses is installed. While that model is still being
+ * verified it is "checking", not "not set up".
  */
-export function localAiStatusLabel(models: ModelsController): string {
+export function localAiStatus(models: ModelsController): LocalAiStatus {
   switch (models.load) {
     case "desktopOnly":
-      return "Local AI needs the desktop app";
+      return "desktopOnly";
     case "loading":
-      return "Checking local AI…";
+      return "checking";
     case "failed":
-      return "Local AI status unavailable";
+      return "unavailable";
     case "ready": {
       const generationId = models.setup?.selectedGeneration;
       const row = generationId
@@ -20,11 +24,22 @@ export function localAiStatusLabel(models: ModelsController): string {
             .flatMap((group) => group.rows)
             .find((candidate) => candidate.descriptor.id === generationId)
         : undefined;
-      return row?.state?.status === "installed"
-        ? "Local AI ready"
-        : "Local AI not set up";
+      if (row && !row.state) return "checking";
+      return row?.state?.status === "installed" ? "ready" : "notSetUp";
     }
   }
+}
+
+const LABELS: Record<LocalAiStatus, string> = {
+  desktopOnly: "Local AI needs the desktop app",
+  checking: "Checking local AI…",
+  unavailable: "Local AI status unavailable",
+  ready: "Local AI ready",
+  notSetUp: "Local AI not set up",
+};
+
+export function localAiStatusLabel(models: ModelsController): string {
+  return LABELS[localAiStatus(models)];
 }
 
 /**

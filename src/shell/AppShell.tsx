@@ -36,11 +36,15 @@ import {
   saveReaderWidth,
 } from "../app/shellLayout";
 import { useElementWidth } from "../app/useElementWidth";
+import {
+  localAiStatus,
+  localAiStatusLabel,
+  searchModelKey,
+} from "../app/localAi";
+import { useModels } from "../app/useModels";
+import { AiIndexProvider, useAiIndex } from "../app/useAiIndex";
 import { ResizeHandle } from "../ui/ResizeHandle";
 import { useRelationships } from "../app/useRelationships";
-import { AiIndexProvider, useAiIndex } from "../app/useAiIndex";
-import { searchModelKey } from "../app/localAi";
-import { useModels } from "../app/useModels";
 import { useActivity } from "../app/useActivity";
 import { useHome } from "../app/useHome";
 import {
@@ -154,6 +158,10 @@ export function AppShell() {
     activity.reload();
   };
   const home = useHome(workspace);
+  // One reading of the model store for the sidebar status and the floating
+  // chat, so they always agree with each other and with Model Lab.
+  const aiStatus = localAiStatus(models);
+  const aiLabel = localAiStatusLabel(models);
   // First run in the desktop app; reopened from the sidebar's settings.
   const [welcome, setWelcome] = useState(() =>
     shouldStartOnboarding(workspace.nativeAvailable, loadOnboardingCompleted()),
@@ -471,12 +479,13 @@ export function AppShell() {
               <button
                 type="button"
                 className="status-pill"
+                data-status={aiStatus}
                 onClick={() => setView("modelLab")}
-                aria-label="Local AI not set up. Open Model Lab."
-                title="Local AI isn't set up. Open Model Lab."
+                aria-label={`${aiLabel}. Open Model Lab.`}
+                title={`${aiLabel}. Open Model Lab.`}
               >
                 <span className="status-dot" aria-hidden="true" />
-                <span className="status-text">Local AI not set up</span>
+                <span className="status-text">{aiLabel}</span>
               </button>
             </div>
           </aside>
@@ -650,6 +659,7 @@ export function AppShell() {
               onNavigate={setView}
               onOpenFile={openFromAsk}
               currentFile={reading}
+              localAiLabel={aiLabel}
             />
           </AnnouncerProvider>
         </div>
