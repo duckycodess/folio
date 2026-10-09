@@ -49,8 +49,6 @@ export interface WorkspaceState {
   results: SearchResult[];
   relationships: Relationship[];
   selected: DocumentRecord | undefined;
-  /** Related documents for the selection, from explicit links only. */
-  neighbors: DocumentRecord[];
   busy: boolean;
   failure: Failure | null;
   dismissFailure: () => void;
@@ -112,19 +110,6 @@ export function useWorkspace(): WorkspaceState {
     () => discoverExplicitReferences(documents),
     [documents],
   );
-  const neighbors = useMemo(() => {
-    const ids = new Set(
-      relationships
-        .filter(
-          (edge) =>
-            edge.sourceId === selectedId || edge.targetId === selectedId,
-        )
-        .map((edge) =>
-          edge.sourceId === selectedId ? edge.targetId : edge.sourceId,
-        ),
-    );
-    return documents.filter((document) => ids.has(document.id));
-  }, [relationships, selectedId, documents]);
 
   async function selectDocument(document: DocumentRecord) {
     const current = ++request.current;
@@ -213,7 +198,6 @@ export function useWorkspace(): WorkspaceState {
     results,
     relationships,
     selected,
-    neighbors,
     busy,
     failure,
     dismissFailure: () => setFailure(null),
