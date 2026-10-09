@@ -1416,6 +1416,13 @@
   text-decoration: line-through;
   color: var(--color-text-secondary);
 }
+/* An operation that changed nothing (failed, cancelled or not started). */
+.change-line.is-unchanged {
+  color: var(--color-text-secondary);
+}
+.activity-stop {
+  font: var(--text-small);
+}
 /* Opens the file at its current path (#67): same size as the rest of the
    line, not the larger default link-button text. */
 .change-line-path {

@@ -181,10 +181,17 @@ unknown wire errors remain `internal` with their reported code in details.
 ## Plans, approval and outcomes
 
 An `ActionPlan` is issued by the native core with an identity, a workspace, a
-validity window, ordered operations, Ripple `impacts` and a `digest`.
+`source`, a validity window, ordered operations, Ripple `impacts` and a
+`digest`.
 
-**Canonical bytes.** `FOLIO-PLAN-V1`, then every field as
-`<utf8ByteLength>:<value>\n`: plan id, workspace id, `createdAt`, `expiresAt`,
+**Source** (issue #35, ADR 0014) says where in Folio the plan was started:
+`home`, `organize`, `graph`, `assistant` or `summary`. The UI names it when it
+calls `prepare_plan`; it is a closed list, so no document text can supply it,
+and `prepare_plan` refuses `unknown`, which only describes plans recorded
+before sources existed.
+
+**Canonical bytes.** `FOLIO-PLAN-V2`, then every field as
+`<utf8ByteLength>:<value>\n`: plan id, workspace id, source, `createdAt`, `expiresAt`,
 operation count, then per operation its kind followed by its fields in a fixed
 order: `create` — destination path, media type, content; `edit` — document id,
 path, expected hash, new content; `rename` and `move` — document id, path,
@@ -192,9 +199,10 @@ expected hash, destination path; `delete` — document id, path, expected hash.
 Length prefixes mean no path or document body can forge a field boundary.
 `digest` is `sha256` over those bytes.
 
-The digest covers exactly what can change a file. `impacts` are review
-candidates that never write, so they are excluded and cannot silently
-invalidate an approval.
+The digest covers exactly what can change a file, plus the source, so a plan
+can't be relabelled after approval. `impacts` are review candidates that never
+write, so they are excluded and cannot silently invalidate an approval. (V1,
+before #35, had no source field.)
 
 **Approval** binds to one plan identity _and_ its digest. The native registry
 accepts an approval only for a plan it issued, and only when the caller echoes
@@ -261,6 +269,18 @@ kept (`targetChanged`, or `documentUnavailable` from the filesystem). Undo
 re-creates the file with an exclusive create at its previous path; a file now
 using that name is `destinationOccupied` and is never replaced, and a folder
 that is gone is `missing`.
+
+**Activity** (issue #35, ADR 0014). `list_activity(workspaceId, limit?,
+before?)` returns the plans Folio ran, newest first, one `ActivityBatch` per
+plan, never split across pages: `planId`, `source`, `appliedAt`, `finishedAt`,
+`stopReason` and one `ActivityOperation` per operation with its kind, before
+and after paths, `status`, `error` when it failed and its `history` entry when
+it changed a file. `before` is the plan id the previous page ended with; an
+unknown one is `historyUnknown`. A batch that failed before changing anything
+is listed; a plan that was prepared or approved but never applied is not.
+Batches recorded before #35 read as `source: "unknown"` with no `finishedAt`;
+an operation of theirs with history is `succeeded`, and one without has no
+`status`, because its outcome was never recorded.
 
 **History.** Each `HistoryEntry` carries its `operationKind`. An entry for a
 `delete` has a `beforeRelativePath` and `beforeContentHash` but no

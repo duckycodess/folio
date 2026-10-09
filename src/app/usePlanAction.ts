@@ -11,6 +11,7 @@ import type {
   DocumentRecord,
   FileOperation,
   ImpactCandidate,
+  NewPlanSource,
 } from "../domain/contracts";
 import { folioError, toFolioError } from "../domain/errors";
 import {
@@ -61,6 +62,11 @@ type Source = (fresh: boolean) => Promise<{
  */
 export function usePlanAction(
   workspace: WorkspaceState,
+  /**
+   * Where in Folio these changes start (Activity shows it). Part of each
+   * plan's digest, so it can't be changed after approval.
+   */
+  planSource: NewPlanSource,
   /** Called after Folio changed files, so other views re-read the index. */
   onFilesChanged: () => void = () => {},
 ): PlanActionController {
@@ -86,7 +92,7 @@ export function usePlanAction(
           "Add a folder before changing its files.",
         );
       const { operations, impacts } = await from(fresh);
-      const plan = await preparePlan(folderId, operations, impacts);
+      const plan = await preparePlan(folderId, planSource, operations, impacts);
       dispatch({ type: "prepared", request, plan });
     } catch (cause) {
       dispatch({ type: "failed", request, error: toFolioError(cause) });

@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import cases from "../../fixtures/contracts/contract-cases.json";
+import { fromActivity } from "./activity";
 import {
   BATCH_STOP_REASONS,
   FOLIO_ERROR_CODES,
   OPERATION_STATUSES,
+  PLAN_SOURCES,
   SOURCE_OFFSET_UNIT,
   type ActionPlan,
+  type ActivityBatch,
 } from "./contracts";
 import { isFolioError } from "./errors";
 import { hashText } from "./hash";
@@ -31,6 +34,7 @@ describe("cross-language contract fixtures", () => {
     expect([...FOLIO_ERROR_CODES]).toEqual(cases.errorCodes);
     expect([...OPERATION_STATUSES]).toEqual(cases.operationStatuses);
     expect([...BATCH_STOP_REASONS]).toEqual(cases.batchStopReasons);
+    expect([...PLAN_SOURCES]).toEqual(cases.planSources);
     expect(SOURCE_OFFSET_UNIT).toBe(cases.offsetUnit);
   });
 
@@ -138,6 +142,21 @@ describe("cross-language contract fixtures", () => {
       expect(canonical.length).toBe(entry.canonicalByteLength);
       expect(await planDigest(plan)).toBe(entry.digest);
       expect(plan.digest).toBe(entry.digest);
+    }
+  });
+
+  it("reads Activity batches with optional fields absent, never null", () => {
+    const nulls = (value: unknown): boolean =>
+      value === null ||
+      (typeof value === "object" && Object.values(value).some(nulls));
+    for (const entry of cases.activity) {
+      expect(nulls(entry.batch), entry.label).toBe(false);
+      const [shown] = fromActivity([entry.batch as ActivityBatch]);
+      expect(shown.operations, entry.label).toHaveLength(
+        entry.batch.operations.length,
+      );
+      expect(shown.changed, entry.label).toBe(entry.changed);
+      expect(shown.unrecorded, entry.label).toBe(entry.unrecorded);
     }
   });
 });
