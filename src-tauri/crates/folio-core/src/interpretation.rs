@@ -6,8 +6,8 @@
 
 use crate::chunking::{content_hash, Chunk};
 use crate::contracts::{
-    DocumentRecord, InterpretationResult, Language, NonMutatingIntent, OffsetUnit,
-    OperationProposal, SearchMethod, SearchResult, SourcePassage,
+    DocumentRecord, FileSelectionPurpose, InterpretationResult, Language, NonMutatingIntent,
+    OffsetUnit, OperationProposal, SearchMethod, SearchResult, SourcePassage,
 };
 use crate::error::{CoreError, CoreResult};
 use crate::generation::{ChatMessage, GenerationBudget, GenerationProvider};
@@ -222,8 +222,26 @@ pub fn resolve_model_intent(
 ) -> InterpretationResult {
     match intent.intent {
         IntentKind::Search => return non_mutating(NonMutatingIntent::Search, intent, None),
-        IntentKind::Summarize => return non_mutating(NonMutatingIntent::Summarize, intent, None),
-        IntentKind::Question => return non_mutating(NonMutatingIntent::Question, intent, None),
+        IntentKind::Summarize => {
+            return named_non_mutating(
+                NonMutatingIntent::Summarize,
+                FileSelectionPurpose::Summarize,
+                intent,
+                documents,
+                contents,
+                chunks,
+            )
+        }
+        IntentKind::Question => {
+            return named_non_mutating(
+                NonMutatingIntent::Question,
+                FileSelectionPurpose::Question,
+                intent,
+                documents,
+                contents,
+                chunks,
+            )
+        }
         IntentKind::Delete => {
             return InterpretationResult::Unsupported {
                 reason: "Delete is not available in Folio's proposal-only interpreter.".into(),
@@ -287,6 +305,7 @@ pub fn resolve_model_intent(
         return InterpretationResult::NeedsFileSelection {
             candidates,
             pending_intent: serde_json::to_string(intent).unwrap_or_else(|_| "{}".into()),
+            purpose: FileSelectionPurpose::Change,
         };
     };
     let (document, exact_duplicate_paths) = target;
@@ -504,26 +523,7 @@ fn candidate_results(
     let mut candidates = documents
         .iter()
         .filter(|document| normalize_stem(&document.name) == normalize_stem(target_description))
-        .map(|document| SearchResult {
-            document: document.clone(),
-            passages: chunks
-                .iter()
-                .filter(|chunk| chunk.document_id == document.id)
-                .take(3)
-                .map(|chunk| SourcePassage {
-                    document_id: chunk.document_id.clone(),
-                    document_content_hash: chunk.content_hash.clone(),
-                    offset_unit: OffsetUnit::Utf8Byte,
-                    start: chunk.start,
-                    end: chunk.end,
-                    text: chunk.text.clone(),
-                    page: None,
-                })
-                .collect(),
-            score: 1.0,
-            method: SearchMethod::Keyword,
-            space_fingerprint: None,
-        })
+        .map(|document| selection_candidate(document, chunks))
         .collect::<Vec<_>>();
     for result in
         HybridRetriever::default().keyword_term_overlap(documents, chunks, target_description, 5)
@@ -676,6 +676,129 @@ fn non_mutating(
             .clone()
             .or(fallback)
             .or_else(|| model_intent.clarification.clone()),
+        document: None,
+    }
+}
+
+/// Words that point at "a file" without saying which one.
+const TARGET_FILLER: &[&str] = &[
+    "a", "an", "the", "this", "that", "my", "our", "file", "files", "document", "documents",
+    "doc", "docs", "ang", "ng", "sa", "yung", "mga", "na", "ito", "ko", "namin", "dokumento",
+    "talaan",
+];
+
+/// The words of a file's relative path, without its extension.
+fn path_words(document: &DocumentRecord) -> Vec<String> {
+    let path = document.relative_path.to_lowercase();
+    let stem = path.rsplit_once('.').map_or(path.as_str(), |(stem, _)| stem);
+    stem.split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whether the description names this file: every informative word of the
+/// description is a word of the file's name or path. A topic ("the budget
+/// deadline") that no file name contains names no file, so it is not a reason
+/// to ask which file is meant.
+fn names_document(description: &str, document: &DocumentRecord) -> bool {
+    let words = informative_words(description);
+    if words.is_empty() {
+        return false;
+    }
+    let path = path_words(document);
+    words.iter().all(|word| path.contains(word))
+}
+
+/// The description without the words that only point at "a file".
+fn informative_words(description: &str) -> Vec<String> {
+    description
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .filter(|word| !TARGET_FILLER.contains(&word.as_str()))
+        .collect()
+}
+
+/// A question or summary request: bound to one file when the request names
+/// one, asking which when it names several the resolver cannot tell apart, and
+/// unbound otherwise.
+fn named_non_mutating(
+    intent: NonMutatingIntent,
+    purpose: FileSelectionPurpose,
+    model_intent: &ModelIntent,
+    documents: &[DocumentRecord],
+    contents: &HashMap<String, String>,
+    chunks: &[Chunk],
+) -> InterpretationResult {
+    let Some(description) = model_intent
+        .target_description
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        return non_mutating(intent, model_intent, None);
+    };
+    let named = documents
+        .iter()
+        .filter(|document| names_document(description, document))
+        .cloned()
+        .collect::<Vec<_>>();
+    let document = match named.as_slice() {
+        [] => return non_mutating(intent, model_intent, None),
+        [only] => only.clone(),
+        several => match resolve_target(&informative_words(description).join(" "), several, contents, chunks) {
+            Some((resolved, _duplicates)) => resolved,
+            None => {
+                let mut candidates = several
+                    .iter()
+                    .map(|document| selection_candidate(document, chunks))
+                    .collect::<Vec<_>>();
+                candidates.sort_by(|left, right| {
+                    left.document
+                        .relative_path
+                        .cmp(&right.document.relative_path)
+                });
+                candidates.truncate(5);
+                return InterpretationResult::NeedsFileSelection {
+                    candidates,
+                    pending_intent: serde_json::to_string(model_intent)
+                        .unwrap_or_else(|_| "{}".into()),
+                    purpose,
+                };
+            }
+        },
+    };
+    InterpretationResult::NonMutating {
+        intent,
+        target_query: model_intent.target_description.clone(),
+        document: Some(DocumentRecord {
+            content: None,
+            ..document
+        }),
+    }
+}
+
+/// One document offered for selection, with its first passages.
+fn selection_candidate(document: &DocumentRecord, chunks: &[Chunk]) -> SearchResult {
+    SearchResult {
+        document: document.clone(),
+        passages: chunks
+            .iter()
+            .filter(|chunk| chunk.document_id == document.id)
+            .take(3)
+            .map(|chunk| SourcePassage {
+                document_id: chunk.document_id.clone(),
+                document_content_hash: chunk.content_hash.clone(),
+                offset_unit: OffsetUnit::Utf8Byte,
+                start: chunk.start,
+                end: chunk.end,
+                text: chunk.text.clone(),
+                page: None,
+            })
+            .collect(),
+        score: 1.0,
+        method: SearchMethod::Keyword,
+        space_fingerprint: None,
     }
 }
 
@@ -819,6 +942,135 @@ mod tests {
         ));
     }
 
+    fn corpus() -> (Vec<DocumentRecord>, Vec<Chunk>) {
+        let files = [
+            ("projects/project-plan.md", "project-plan.md", "# Plan\n\nThe deadline is October 20."),
+            ("archive/project-plan-copy.md", "project-plan-copy.md", "# Plan\n\nThe deadline is October 20."),
+            ("meetings/meeting-notes.md", "meeting-notes.md", "# Meeting\n\nNapag-usapan ang deadline."),
+            ("courses/study-notes.md", "study-notes.md", "# Study\n\nVectors and probability."),
+            ("personal/budget-notes.md", "budget-notes.md", "# Budget\n\nSet aside money for transport."),
+        ];
+        let mut documents = Vec::new();
+        let mut chunks = Vec::new();
+        for (id, name, content) in files {
+            let (record, mut file_chunks) = document(id, name, content);
+            documents.push(DocumentRecord {
+                content: None,
+                ..record
+            });
+            chunks.append(&mut file_chunks);
+        }
+        (documents, chunks)
+    }
+
+    fn about(kind: IntentKind, description: &str) -> ModelIntent {
+        ModelIntent {
+            target_description: Some(description.into()),
+            ..intent(kind)
+        }
+    }
+
+    fn resolve(model_intent: &ModelIntent) -> InterpretationResult {
+        let (documents, chunks) = corpus();
+        resolve_model_intent(
+            model_intent,
+            Language::En,
+            &documents,
+            &HashMap::new(),
+            &chunks,
+        )
+    }
+
+    #[test]
+    fn a_question_naming_one_file_is_bound_to_it_without_its_content() {
+        for description in ["project plan", "the project plan file", "yung project plan"] {
+            let result = resolve(&about(IntentKind::Question, description));
+            match result {
+                InterpretationResult::NonMutating {
+                    intent: NonMutatingIntent::Question,
+                    document: Some(document),
+                    ..
+                } => {
+                    assert_eq!(document.relative_path, "projects/project-plan.md", "{description}");
+                    assert_eq!(document.content, None);
+                }
+                other => panic!("{description}: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_question_naming_several_files_asks_which_one() {
+        let result = resolve(&about(IntentKind::Question, "notes"));
+        match result {
+            InterpretationResult::NeedsFileSelection {
+                candidates,
+                purpose: FileSelectionPurpose::Question,
+                ..
+            } => {
+                let paths = candidates
+                    .iter()
+                    .map(|candidate| candidate.document.relative_path.as_str())
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    paths,
+                    [
+                        "courses/study-notes.md",
+                        "meetings/meeting-notes.md",
+                        "personal/budget-notes.md"
+                    ]
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_question_about_a_topic_no_file_name_contains_is_not_about_a_file() {
+        for description in [
+            "the budget deadline",
+            "when is the submission due",
+            "kailan ang deadline",
+        ] {
+            let result = resolve(&about(IntentKind::Question, description));
+            assert!(
+                matches!(
+                    result,
+                    InterpretationResult::NonMutating { document: None, .. }
+                ),
+                "{description}: {result:?}"
+            );
+        }
+        let without = resolve(&intent(IntentKind::Question));
+        assert!(matches!(
+            without,
+            InterpretationResult::NonMutating { document: None, target_query: None, .. }
+        ));
+    }
+
+    #[test]
+    fn a_summary_request_resolves_and_asks_the_same_way() {
+        assert!(matches!(
+            resolve(&about(IntentKind::Summarize, "meeting notes")),
+            InterpretationResult::NonMutating {
+                intent: NonMutatingIntent::Summarize,
+                document: Some(_),
+                ..
+            }
+        ));
+        assert!(matches!(
+            resolve(&about(IntentKind::Summarize, "notes")),
+            InterpretationResult::NeedsFileSelection {
+                purpose: FileSelectionPurpose::Summarize,
+                ..
+            }
+        ));
+        assert!(matches!(
+            resolve(&about(IntentKind::Search, "meeting notes")),
+            InterpretationResult::NonMutating { document: None, .. }
+        ));
+    }
+
     #[test]
     fn a_pdf_target_is_read_only() {
         let (mut record, chunks) = document("papers/report.pdf", "report.pdf", "Deadline is March 3.");
@@ -951,7 +1203,7 @@ mod tests {
             &chunks,
         );
         assert!(
-            matches!(result, InterpretationResult::NeedsFileSelection { candidates, .. } if candidates.len() == 2)
+            matches!(result, InterpretationResult::NeedsFileSelection { candidates, purpose: FileSelectionPurpose::Change, .. } if candidates.len() == 2)
         );
     }
 

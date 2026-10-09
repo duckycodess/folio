@@ -627,6 +627,9 @@ export type OperationProposal =
       content: string;
     };
 
+/** Why Folio asks which file is meant. */
+export type FileSelectionPurpose = "change" | "summarize" | "question";
+
 export type InterpretationResult =
   | {
       status: "proposal";
@@ -638,6 +641,8 @@ export type InterpretationResult =
       status: "needsFileSelection";
       candidates: SearchResult[];
       pendingIntent: string;
+      /** What the chosen file is for; an older core omits it (`change`). */
+      purpose?: FileSelectionPurpose;
     }
   | {
       status: "needsClarification";
@@ -648,6 +653,8 @@ export type InterpretationResult =
       status: "nonMutating";
       intent: "search" | "summarize" | "question";
       targetQuery?: string;
+      /** The one file the request names, without its content. */
+      document?: DocumentRecord;
     }
   | { status: "unsupported"; reason: string }
   | { status: "invalidModelOutput"; rawOutputDigest: string };

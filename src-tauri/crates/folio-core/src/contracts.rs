@@ -257,6 +257,9 @@ pub enum InterpretationResult {
     NeedsFileSelection {
         candidates: Vec<SearchResult>,
         pending_intent: String,
+        /// What the chosen file is for, so the chooser can say so.
+        #[serde(default)]
+        purpose: FileSelectionPurpose,
     },
     NeedsClarification {
         question: String,
@@ -266,6 +269,10 @@ pub enum InterpretationResult {
         intent: NonMutatingIntent,
         #[serde(skip_serializing_if = "Option::is_none")]
         target_query: Option<String>,
+        /// The one file the request names, when it names one. Its `content`
+        /// is never set; callers read the file themselves.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        document: Option<DocumentRecord>,
     },
     Unsupported {
         reason: String,
@@ -273,6 +280,17 @@ pub enum InterpretationResult {
     InvalidModelOutput {
         raw_output_digest: String,
     },
+}
+
+/// Why Folio asks which file is meant.
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileSelectionPurpose {
+    /// An edit, rename or move.
+    #[default]
+    Change,
+    Summarize,
+    Question,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
