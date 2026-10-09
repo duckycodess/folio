@@ -210,9 +210,19 @@ impl EvidenceGate {
 impl HybridRetriever {
     /// Whether the query has semantic evidence anywhere in the indexed space.
     pub fn evidence_gate(&self, query_embedding: &QueryEmbedding) -> CoreResult<EvidenceGate> {
+        self.evidence_gate_scoped(query_embedding, None)
+    }
+
+    /// The evidence gate over one document's chunks when the search is scoped
+    /// to it, so another document cannot open the gate for that search.
+    pub fn evidence_gate_scoped(
+        &self,
+        query_embedding: &QueryEmbedding,
+        document_id: Option<&str>,
+    ) -> CoreResult<EvidenceGate> {
         let cosines = self
             .vector_index
-            .search(query_embedding, usize::MAX)?
+            .search_scoped(query_embedding, document_id, usize::MAX)?
             .into_iter()
             .map(|(_, cosine)| cosine)
             .collect();
@@ -220,7 +230,9 @@ impl HybridRetriever {
     }
 
     /// Keyword-only retrieval with BM25 scores normalized to the query's
-    /// IDF-weighted maximum. Labelled `keyword`, never `semantic`.
+    /// IDF-weighted maximum. Labelled `keyword`, never `semantic`. Chunks below
+    /// `MIN_KEYWORD_SCORE` are not evidence, so a query made only of common
+    /// words retrieves nothing and no generation runs.
     pub fn keyword(
         &self,
         documents: &[DocumentRecord],
@@ -248,7 +260,7 @@ impl HybridRetriever {
             .iter()
             .zip(scores)
             .filter(|(chunk, score)| {
-                *score > 0.0 && document_id.is_none_or(|id| chunk.document_id == id)
+                *score >= MIN_KEYWORD_SCORE && document_id.is_none_or(|id| chunk.document_id == id)
             })
             .map(|(chunk, score)| (chunk, score, score))
             .collect();
@@ -325,7 +337,7 @@ impl HybridRetriever {
         let Some(query_embedding) = semantic else {
             return Ok(self.keyword_scoped(documents, chunks, query, document_id, limit));
         };
-        let gate = self.evidence_gate(query_embedding)?;
+        let gate = self.evidence_gate_scoped(query_embedding, document_id)?;
         let scores = self.score_chunks(chunks, query, query_embedding, document_id)?;
         let combined = scores
             .iter()
@@ -505,8 +517,9 @@ fn terms(query: &str) -> Vec<String> {
 }
 
 /// BM25 over the supplied chunks, normalized by the summed IDF weights of the
-/// query terms (the score of a chunk of average length containing every term
-/// once), so a chunk matching only common words scores low. Returns one score
+/// query's informative terms (the score of a chunk of average length
+/// containing each of them once). Terms found in more than half of the chunks
+/// carry no weight, so a query of only common words has no keyword evidence. Returns one score
 /// in [0, 1] per chunk, aligned with `chunks`.
 fn bm25_scores(chunks: &[Chunk], terms: &[String]) -> Vec<f32> {
     if chunks.is_empty() || terms.is_empty() {
@@ -525,6 +538,11 @@ fn bm25_scores(chunks: &[Chunk], terms: &[String]) -> Vec<f32> {
                 .iter()
                 .filter(|tokens| tokens.iter().any(|token| token == term))
                 .count() as f32;
+            // A term in more than half of the chunks ("the", "ang", a shared
+            // header word) says nothing about which chunk is evidence.
+            if frequency > (count / 2.0).max(1.0) {
+                return 0.0;
+            }
             (1.0 + (count - frequency + 0.5) / (frequency + 0.5)).ln()
         })
         .collect::<Vec<_>>();
@@ -666,6 +684,67 @@ mod tests {
         let results = retriever.keyword(&documents, &chunks, "the budget", 5);
         assert_eq!(results[0].document.id, "b.md");
         assert!(results[0].score >= MIN_KEYWORD_SCORE);
+    }
+
+    #[test]
+    fn keyword_only_mode_applies_the_evidence_floor() {
+        let source = InterimTextChunker::new(vec![
+            document("a.md", "ang plano ay nasa folder at ang tala"),
+            document("b.md", "ang budget ay para sa bus at ang cake"),
+        ]);
+        let documents = source.documents();
+        let chunks = source.all_chunks().unwrap();
+        let retriever = HybridRetriever::default();
+        assert!(retriever
+            .search(&documents, &chunks, "ang at", None, 5)
+            .unwrap()
+            .is_empty());
+        let results = retriever
+            .search(&documents, &chunks, "budget", None, 5)
+            .unwrap();
+        assert_eq!(results[0].document.id, "b.md");
+    }
+
+    #[test]
+    fn a_scoped_search_uses_the_gate_of_its_own_document() {
+        let source = InterimTextChunker::new(vec![
+            document("strong.md", "matching evidence"),
+            document("target.md", "unrelated text"),
+        ]);
+        let documents = source.documents();
+        let chunks = source.all_chunks().unwrap();
+        let mut retriever = HybridRetriever::default();
+        let space = space("scoped-gate");
+        let vectors = chunks
+            .iter()
+            .map(|chunk| {
+                if chunk.document_id == "strong.md" {
+                    vec![1.0, 0.0]
+                } else {
+                    vec![0.0, 1.0]
+                }
+            })
+            .collect::<Vec<_>>();
+        retriever
+            .vector_index
+            .replace(space.clone(), chunks.clone(), vectors)
+            .unwrap();
+        let query = QueryEmbedding {
+            space,
+            vector: vec![1.0, 0.0],
+        };
+        assert!(retriever.evidence_gate(&query).unwrap().passed);
+        let results = retriever
+            .search_scoped(
+                &documents,
+                &chunks,
+                "zzz",
+                Some(&query),
+                Some("target.md"),
+                5,
+            )
+            .unwrap();
+        assert!(results.is_empty());
     }
 
     #[test]
