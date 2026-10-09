@@ -33,8 +33,6 @@ jobs:
     runs-on: ${{ inputs.os }}
     timeout-minutes: 120
     env:
-      FOLIO_LAB_DATA_DIR: ${{ runner.temp }}/folio-lab-data
-      FOLIO_LAB_OUTPUT: ${{ runner.temp }}/model-lab-results.json
       FOLIO_LAB_EMBEDDING_MODEL: ${{ inputs.embedding_model }}
       FOLIO_LAB_GENERATION_MODELS: ${{ inputs.generation_models }}
     steps:
@@ -43,9 +41,12 @@ jobs:
         with:
           python-version: "3.12"
       - uses: dtolnay/rust-toolchain@stable
-      - name: Choose the pinned runtime for this runner
+      - name: Choose the pinned runtime and paths for this runner
         shell: bash
         run: |
+          # The runner context is not available in job-level env, so paths are set here.
+          echo "FOLIO_LAB_DATA_DIR=$RUNNER_TEMP/folio-lab-data" >> "$GITHUB_ENV"
+          echo "FOLIO_LAB_OUTPUT=$RUNNER_TEMP/model-lab-results.json" >> "$GITHUB_ENV"
           case "${{ inputs.os }}" in
             windows-latest) echo "FOLIO_LAB_RUNTIME_ID=llama-b11524-win-cpu-x64" >> "$GITHUB_ENV" ;;
             macos-latest) echo "FOLIO_LAB_RUNTIME_ID=llama-b11524-macos-arm64" >> "$GITHUB_ENV" ;;
@@ -56,9 +57,8 @@ jobs:
         env:
           LAB_EMBEDDING: ${{ inputs.embedding_model }}
           LAB_MODELS: ${{ inputs.generation_models }}
-          LAB_DATA_DIR: ${{ runner.temp }}/folio-lab-data
         run: |
-          LAB_RUNTIME_ID="$FOLIO_LAB_RUNTIME_ID" python scripts/model_lab_plan.py
+          LAB_DATA_DIR="$FOLIO_LAB_DATA_DIR" LAB_RUNTIME_ID="$FOLIO_LAB_RUNTIME_ID" python scripts/model_lab_plan.py
       - name: Install the pinned files and run the lab
         shell: bash
         run: >
