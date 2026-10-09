@@ -1132,7 +1132,7 @@ fn snapshot_status(snapshot: &IndexSnapshot) -> IndexStatus {
         method: snapshot
             .embedding_space
             .as_ref()
-            .map_or_else(|| "keyword".into(), |_| "semantic".into()),
+            .map_or_else(|| "keyword".into(), |_| "hybrid".into()),
         space_fingerprint: snapshot
             .embedding_space
             .as_ref()
