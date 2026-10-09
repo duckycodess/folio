@@ -874,6 +874,42 @@ fn cancel_install(install_state: State<'_, InstallState>) -> Result<(), FolioErr
     Ok(())
 }
 
+/// What the model setup screen needs and can't learn from the manifest
+/// listing: the saved selections, and the runtime build for this computer.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelSetup {
+    selected_embedding: Option<String>,
+    selected_generation: Option<String>,
+    host_runtime_id: &'static str,
+    /// Exact download size of that runtime from the pinned manifest.
+    host_runtime_bytes: Option<u64>,
+}
+
+#[tauri::command]
+async fn model_setup(app: AppHandle) -> Result<ModelSetup, FolioError> {
+    Ok(run_blocking::<_, FolioError, _>(move || {
+        let store = model_store(&app)?;
+        let host_runtime_id = runtime_id_for_host();
+        Ok(ModelSetup {
+            selected_embedding: store
+                .selected_model(ModelRole::Embedding)
+                .map_err(native_error)?,
+            selected_generation: store
+                .selected_model(ModelRole::Generation)
+                .map_err(native_error)?,
+            host_runtime_id,
+            host_runtime_bytes: store
+                .manifest()
+                .runtimes
+                .iter()
+                .find(|runtime| runtime.id == host_runtime_id)
+                .map(|runtime| runtime.files.iter().map(|file| file.bytes).sum()),
+        })
+    })
+    .await?)
+}
+
 fn runtime_id_for_host() -> &'static str {
     #[cfg(target_os = "windows")]
     {
@@ -1703,6 +1739,7 @@ pub fn run() {
             runtime_status,
             install_runtime,
             cancel_install,
+            model_setup,
             rebuild_index,
             index_status,
             semantic_search,
