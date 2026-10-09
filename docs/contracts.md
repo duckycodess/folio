@@ -115,17 +115,41 @@ Lab state while holding `EmbeddingState`, before any embedding provider load.
 If Lab starts while a sync holds that lock, the current provider batch may
 finish; Lab then waits to unload the slot, and the sync's next guarded batch
 returns `providerBusy` with `details.reason = "modelLabRunning"`. Batches
-already committed remain. Existing snapshot `semantic_search` can still
-reload the product embedding provider during a Lab run; that is the
-pre-existing #8 limitation, and #27 does not migrate live search to this
-persistent store. Cancellation keeps already committed batches and reports
+already committed remain. Cancellation keeps already committed batches and reports
 their cumulative counts. Persistent chunks use the separate `title-path-chunk-v2`
 stored space, so these vectors are not comparable to the title/path snapshot
-space. No UI trigger is implied by these commands. The native index owns the
+space. `semantic_search`, `answer_question`, `interpret_request` and
+`rebuild_index` trigger the same fill themselves, for only the chunks that
+lack a vector (see below). The native index owns the
 all-or-nothing
 `Immediate` transaction that rechecks each chunk hash before storing vectors;
 the retry loop only filters the returned `ChunkVector` batch and never
 recomputes a hash. This additive contract is for TJ review.
+
+## AI requests read the persistent index
+
+`semantic_search(workspaceId, query, limit?)`, `answer_question(workspaceId,
+question, documentId?)`, `interpret_request(workspaceId, text)` and
+`rebuild_index(workspaceId)` first bring the folder's persistent index up to
+date: an incremental scan (files whose size and modification time are unchanged
+are not read), then an embedding fill for the chunks that have no vector in the
+current stored space, in cancellable batches. While they do, they emit
+`folio://preparing-progress` (`PreparingProgress`: `workspaceId`, `phase`
+`reading` | `embedding`, `processed`, `total`). `cancel_generation` stops that
+work too. Then they query: only documents with status `indexed` are read;
+passages carry `documents.content_hash`, and the documents behind the passages
+that go into an answer prompt are hashed again, so a passage of an older
+revision is dropped. A query embedded in a different space than the stored
+vectors is refused (`embeddingSpaceMismatch`). Without a selected embedding
+model, search is FTS5 keyword search and results are labelled `keyword`. During
+a Model Lab run, `semantic_search`, `answer_question` and `rebuild_index`
+return `providerBusy` (`details.reason` = `modelLabRunning`);
+`interpret_request` reads no vectors and is unaffected. `index_status(workspaceId?)`
+reads SQLite only: `documentCount`, `chunkCount`, `embeddedChunkCount` (known
+once the embedding model is loaded), `method` (`hybrid` only when chunks have
+vectors in the loaded model's space) and `skippedDocuments`. `PendingChunk`
+additionally carries `title` and `relativePath`, which the fill embeds in front
+of the chunk text.
 
 ## Providers
 
