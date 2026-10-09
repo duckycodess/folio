@@ -546,6 +546,9 @@ struct GenerationSlot {
 struct GenerationStateInner {
     slot: Option<GenerationSlot>,
     active_cancel: Option<Arc<AtomicBool>>,
+    /// Set while the llama.cpp runtime is reinstalled, so no request starts a
+    /// server from the directory being replaced.
+    runtime_installing: bool,
 }
 
 type GenerationState = Arc<Mutex<GenerationStateInner>>;
@@ -844,12 +847,23 @@ async fn install_runtime(
     app: AppHandle,
     runtime_id: String,
     install_state: State<'_, InstallState>,
+    generation_state: State<'_, GenerationState>,
 ) -> Result<RuntimeStatus, FolioError> {
     let cancel = begin_install(install_state.inner())?;
     let worker_cancel = cancel.clone();
     let install_state = install_state.inner().clone();
+    let generation_state = generation_state.inner().clone();
+    // A running llama-server keeps its directory in use (on Windows the swap
+    // would fail), so stop it first and keep new requests out until the new
+    // runtime is in place. A request already running is not cut off.
+    if let Err(failure) = begin_runtime_install(&generation_state) {
+        finish_install(&install_state, &cancel)?;
+        return Err(failure.into());
+    }
     let progress_app = app.clone();
+    let worker_generation_state = generation_state.clone();
     let result = run_blocking(move || {
+        unload_generation_now(&worker_generation_state)?;
         model_store(&app)?
             .install_runtime(&runtime_id, &worker_cancel, |progress: DownloadProgress| {
                 let _ = progress_app.emit("folio://runtime-progress", progress);
@@ -857,8 +871,34 @@ async fn install_runtime(
             .map_err(native_error)
     })
     .await;
+    end_runtime_install(&generation_state);
     finish_install(&install_state, &cancel)?;
     Ok(result?)
+}
+
+/// Refuses a runtime reinstall while a generation request is running, and
+/// otherwise marks the runtime as being installed so no request starts one.
+fn begin_runtime_install(generation_state: &GenerationState) -> Result<(), NativeProviderError> {
+    let mut guard = generation_state.lock().map_err(|_| NativeProviderError {
+        code: folio_core::contracts::ProviderErrorCode::IoError,
+        message: "The local generation state is unavailable.".into(),
+        detail: None,
+    })?;
+    if guard.active_cancel.is_some() {
+        return Err(NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
+            message: "Stop the running request before reinstalling the local AI runtime.".into(),
+            detail: None,
+        });
+    }
+    guard.runtime_installing = true;
+    Ok(())
+}
+
+fn end_runtime_install(generation_state: &GenerationState) {
+    if let Ok(mut guard) = generation_state.lock() {
+        guard.runtime_installing = false;
+    }
 }
 
 #[tauri::command]
@@ -1294,10 +1334,14 @@ async fn semantic_search(
     .await?)
 }
 
-fn generation_provider(
+/// The generation provider for the selected model, marked active in the same
+/// critical section. A model switch, removal or runtime reinstall that runs
+/// afterwards therefore sees this request and cancels it (or refuses), instead
+/// of unloading a provider that this request then starts again outside the slot.
+fn acquire_generation(
     app: &AppHandle,
     generation_state: &GenerationState,
-) -> Result<Arc<LlamaServerProvider>, NativeProviderError> {
+) -> Result<(Arc<LlamaServerProvider>, Arc<AtomicBool>), NativeProviderError> {
     let store = model_store(app)?;
     let model_id = store
         .selected_model(ModelRole::Generation)
@@ -1324,10 +1368,20 @@ fn generation_provider(
             detail: None,
         });
     }
+    if guard.runtime_installing {
+        return Err(NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
+            message: "The local AI runtime is being installed. Try again when it finishes.".into(),
+            detail: None,
+        });
+    }
+    let cancel = Arc::new(AtomicBool::new(false));
     if let Some(slot) = guard.slot.as_ref() {
         if slot.model_id == verified.descriptor.id && slot.revision == verified.descriptor.revision
         {
-            return Ok(slot.provider.clone());
+            let provider = slot.provider.clone();
+            guard.active_cancel = Some(cancel.clone());
+            return Ok((provider, cancel));
         }
     }
     if let Some(slot) = guard.slot.take() {
@@ -1345,27 +1399,8 @@ fn generation_provider(
         revision: provider.revision().into(),
         provider: provider.clone(),
     });
-    Ok(provider)
-}
-
-fn begin_generation(
-    generation_state: &GenerationState,
-) -> Result<Arc<AtomicBool>, NativeProviderError> {
-    let mut guard = generation_state.lock().map_err(|_| NativeProviderError {
-        code: folio_core::contracts::ProviderErrorCode::IoError,
-        message: "The local generation state is unavailable.".into(),
-        detail: None,
-    })?;
-    if guard.active_cancel.is_some() {
-        return Err(NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
-            message: "Another local generation request is active.".into(),
-            detail: None,
-        });
-    }
-    let cancel = Arc::new(AtomicBool::new(false));
     guard.active_cancel = Some(cancel.clone());
-    Ok(cancel)
+    Ok((provider, cancel))
 }
 
 fn finish_generation(
@@ -1419,8 +1454,7 @@ async fn summarize_document(
         let content = document_text.content.clone();
         let passages =
             grounding::summary_passages(&document_id, &content, &document_text.content_hash);
-        let provider = generation_provider(&app, &generation_state)?;
-        let cancel = begin_generation(&generation_state)?;
+        let (provider, cancel) = acquire_generation(&app, &generation_state)?;
         let result = grounding::summarize_document(
             provider.as_ref(),
             passages,
@@ -1477,8 +1511,7 @@ async fn answer_question(
                 &AtomicBool::new(false),
             )?);
         }
-        let provider = generation_provider(&app, &generation_state)?;
-        let cancel = begin_generation(&generation_state)?;
+        let (provider, cancel) = acquire_generation(&app, &generation_state)?;
         let result = grounding::answer_question(
             Some(provider.as_ref()),
             &question,
@@ -1553,8 +1586,7 @@ async fn interpret_request(
     let generation_state = generation_state.inner().clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
         let (documents, contents, chunks, _skipped_documents) = load_corpus(&root)?;
-        let provider = generation_provider(&app, &generation_state)?;
-        let cancel = begin_generation(&generation_state)?;
+        let (provider, cancel) = acquire_generation(&app, &generation_state)?;
         let result = interpretation::interpret_request(
             provider.as_ref(),
             &text,

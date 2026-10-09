@@ -541,6 +541,32 @@ fn duplicate_paths(
         .collect()
 }
 
+/// A path segment Windows reserves for a device: `CON`, `PRN`, `AUX`, `NUL`,
+/// `COM1`–`COM9` and `LPT1`–`LPT9` (also with the superscript digits ¹ ² ³),
+/// whatever the case and whatever follows the first dot, so `nul.md` and
+/// `Con.tar.gz` are reserved too. Shared with the native plan builder.
+pub fn is_windows_reserved_name(segment: &str) -> bool {
+    let base = segment
+        .split('.')
+        .next()
+        .unwrap_or(segment)
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    match base.as_str() {
+        "CON" | "PRN" | "AUX" | "NUL" => true,
+        _ => {
+            let mut characters = base.chars();
+            let prefix: String = characters.by_ref().take(3).collect();
+            let rest: String = characters.collect();
+            (prefix == "COM" || prefix == "LPT")
+                && matches!(
+                    rest.as_str(),
+                    "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+                )
+        }
+    }
+}
+
 fn validate_destination(destination: &str, source_name: Option<&str>) -> Result<(), String> {
     if destination.trim().is_empty()
         || destination.starts_with('/')
@@ -558,10 +584,12 @@ fn validate_destination(destination: &str, source_name: Option<&str>) -> Result<
         return Err("The destination cannot contain empty, '.', or '..' path segments.".into());
     }
     // Names Windows cannot store, including `a.md:x.md` (an NTFS alternate
-    // data stream). The native plan builder checks again before any write.
+    // data stream) and device names such as `nul.md`. The native plan builder
+    // checks again before any write.
     if parts.iter().any(|part| {
         part.ends_with('.')
             || part.ends_with(' ')
+            || is_windows_reserved_name(part)
             || part.chars().any(|character| {
                 character.is_control()
                     || matches!(character, ':' | '<' | '>' | '"' | '|' | '?' | '*')
@@ -845,6 +873,12 @@ mod tests {
             "bad|name.md",
             "folder./notes.md",
             "tab\tname.md",
+            "nul.md",
+            "notes/CON.md",
+            "aux/plan.md",
+            "COM1.md",
+            "lpt9.txt",
+            "com¹.md",
         ] {
             assert!(
                 validate_destination(destination, None).is_err(),
@@ -852,6 +886,15 @@ mod tests {
             );
         }
         assert!(validate_destination("notes/archived-notes.md", Some("notes.md")).is_ok());
+        for allowed in [
+            "null.md",
+            "console.md",
+            "com10.md",
+            "auxiliary/plan.md",
+            "lpt.md",
+        ] {
+            assert!(validate_destination(allowed, None).is_ok(), "{allowed:?}");
+        }
     }
 
     #[test]
