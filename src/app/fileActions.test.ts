@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { DocumentRecord } from "../domain/contracts";
-import { folderChoices, nameProblem, relocateOperation } from "./fileActions";
+import {
+  fileActionAvailability,
+  folderChoices,
+  nameProblem,
+  relocateOperation,
+} from "./fileActions";
 
 const doc = (relativePath: string) =>
   ({
@@ -57,5 +62,42 @@ describe("renaming a file", () => {
     // Refused natively, since Windows and macOS folders usually ignore case.
     expect(nameProblem("Notes.md", "notes.md")).toMatch(/capital letters/);
     expect(nameProblem(" NOTES.MD ", "notes.md")).toMatch(/capital letters/);
+  });
+
+  it("keeps a text or Markdown ending, in English or Filipino", () => {
+    expect(nameProblem("plano-ng-proyekto.md", "plan.md")).toBeNull();
+    expect(nameProblem("  Talaan ni Niña.txt ", "plan.md")).toBeNull();
+    expect(nameProblem("plan.markdown", "plan.md")).toBeNull();
+    expect(nameProblem("plan.pdf", "plan.md")).toMatch(/\.md/);
+    expect(nameProblem("plan", "plan.md")).toMatch(/\.md/);
+  });
+});
+
+const folder = { source: "folder", nativeAvailable: true } as const;
+const markdown = { mediaType: "text/markdown" } as const;
+
+describe("file action availability", () => {
+  it("needs the desktop app and a folder the user added", () => {
+    expect(
+      fileActionAvailability(
+        { source: "samples", nativeAvailable: false },
+        markdown,
+      ),
+    ).toMatchObject({ available: false, reason: /desktop app/ });
+    expect(
+      fileActionAvailability(
+        { source: "samples", nativeAvailable: true },
+        markdown,
+      ),
+    ).toMatchObject({ available: false, reason: /Sample files/ });
+    expect(fileActionAvailability(folder, markdown)).toEqual({
+      available: true,
+    });
+  });
+
+  it("only opens PDFs", () => {
+    expect(
+      fileActionAvailability(folder, { mediaType: "application/pdf" }),
+    ).toMatchObject({ available: false, reason: /PDFs can only be opened/ });
   });
 });

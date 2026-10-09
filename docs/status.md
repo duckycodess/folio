@@ -51,6 +51,7 @@
 - Graph entry points ([#40](https://github.com/duckycodess/folio/issues/40)): Graph starts from all files, one file, a folder (including connections that leave it) or a keyword topic. With a file open, it starts from that file, and opening a file from the list makes it the new start, with keyboard focus moved to the list's new title. A topic with no letters or digits matches nothing. Confirmed connections (links, identical copies) are listed apart from suggested ones (similarity, possible shared facts), which only appear when the index has them. A "Where these files are" panel counts the connected files per folder. That count isn't a written summary: the relationship summary needs a local model and isn't built. Arrow keys, Home and End move between the files in the list.
 - Home as the file browser ([#42](https://github.com/duckycodess/folio/issues/42), [#43](https://github.com/duckycodess/folio/issues/43), ADR 0010). The Files tab is gone. Home lists every file, sorted by path, with a count. Each row has a keyboard-accessible ⋯ menu (Open, Rename…, Move to folder…, Show related), and the document panel has the same menu. Rename and Move use the exact preview, Approve and Undo flow from #22, in a dialog. The search field is only on Home, centred, and ⌘K / Ctrl K from any page opens Home and focuses it. Rows take an optional `renderDetail` slot for #19's search evidence. With the sample files, Rename and Move explain that a folder is needed. In practice mode (`?simulate=<code>`), they show the simulated refusal instead.
 - Organize flow ([issue #22](https://github.com/duckycodess/folio/issues/22)), desktop only. Analyze re-indexes the open folder, with live progress and Stop, then lists exact duplicates (by content, never moved or deleted) and filename suggestions to tick. The exact preview shows every from → to path from the native plan. Approve echoes that plan's digest and applies it. The result is worded from the per-file outcomes, so a batch that stopped partway never says nothing changed. It shows what was recorded in history and offers a Preview Undo. A refused apply keeps the preview, with Preview again. The Rename form uses the same native plan with a folder open. With the sample files, Organize explains that a folder is needed. Virtual collections are still not available.
+- Shared plan review and Edit text ([issue #45](https://github.com/duckycodess/folio/issues/45), second PR), desktop only and **not yet reachable from any screen**. One reducer and hook (`planAction.ts`, `usePlanAction.ts`) carry a single native plan through exact preview → approve → apply → result → Undo preview → Undo, ignoring late replies. Shared components (`src/views/PlanReview.tsx`): the plan table and Undo dialog (Organize now uses them, unchanged), a line diff with before/after line numbers and +/− markers with spoken labels, the full new text when a diff is too large to compute, a Ripple list with a "Needs review" badge, paths, passages and how Folio knows (links and identical copies are never labelled AI), and the apply result. Edit text (TXT/Markdown) reads the file's current text and hash, keeps the file's CRLF line endings, and asks the native core for the plan without impacts so it computes Ripple. Rename and Move are Home's `FileActionDialog` (#42). Sample files, the browser preview and PDFs say why changes aren't available (`fileActionAvailability`), and a new name must keep a `.md`, `.markdown` or `.txt` ending. The Graph node actions that open Edit text, Rename and Move are the next PR.
 - Search evidence ([issue #19](https://github.com/duckycodess/folio/issues/19)): each Home search result shows how it matched (words in the text or in the name; "Similar meaning" only for semantic results) and up to two excerpts with the query words highlighted, case- and accent-insensitive, plus page labels for PDFs. Selecting an excerpt opens the reader at that highlighted passage. In an open folder, text search uses the persistent index (FTS5 keyword search), merged with file-name matches. An unindexed folder says that only names are searched and offers **Index this folder**, with progress and Stop. A file kept open outside the results is labelled, and a note says that finding files by meaning needs a local AI model.
 - Text-PDF pages in the reader ([issue #47](https://github.com/duckycodess/folio/issues/47)): `read_document` additionally returns each PDF page's UTF-8 byte range (`pages`) and the pages whose text couldn't be extracted (`unreadablePages`). Both are omitted for TXT and Markdown; the content, offsets and hash are unchanged. The reader shows a PDF page by page under "Page N" headings, lists unreadable pages as "Page N couldn't be read", highlights a cited passage on its page, and scrolls to a cited page whose passage can't be highlighted. Ranges that don't fit the text fall back to one block instead of mislabelling pages.
 - Home filters, pinned folders and recent files ([issue #33](https://github.com/duckycodess/folio/issues/33)):
@@ -157,6 +158,34 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 8-GB measurement is claimed here.
 
 ## Verification
+
+### Shared plan review and Edit text (2026-10-10, issue #45)
+
+Checked on Linux with Node.js 24.15.0, on top of #41:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 190 passed, 9 todo (158 passed before this change). New cases cover:
+  - line diffs: identical text has no hunks, a replaced line with line numbers, Filipino and multibyte text, a missing or added final line break, a change only to a line ending, separate hunks, and giving up on a diff too large to compute instead of approximating;
+  - restoring CRLF (and mixed) line endings after a textarea, with unedited text returned byte for byte;
+  - Ripple grouping, with links and identical copies never classified as inferred or AI;
+  - the plan action: no apply without a native plan on screen, late replies ignored, a refused apply keeping the preview and needing a fresh one, a result only from the native report for the apply in flight, an Undo conflict changing nothing and claiming nothing undone, Undo offered only for saved changes;
+  - availability (desktop app and a user folder, PDFs only opened), rename name checks, move destinations, and the rename and move operations.
+- The dialogs in headless Chromium, mounted in a throwaway harness (not committed) with a **mocked** native core injected as `window.__TAURI_INTERNALS__`:
+  - Edit text: nothing but `read_document` and `prepare_plan` before approval; the edit of a CRLF file was sent with its CRLF endings; `prepare_plan` received no impacts; the diff showed one removed and one added line; Ripple showed "Needs review", the 25-cap note, one AI badge (for the model's shared-fact candidate) and never "updated"; the approval echoed the shown plan's id and digest; "Saved 1 change." only after the report; a conflicting Undo preview listed the blocking file with Undo disabled;
+  - a refused approval kept the diff with Approve disabled and Preview again; when the file had changed, Preview again kept the draft, said so, and the next preview pinned the new hash;
+  - closing and reopening kept the draft;
+  - Rename refused a `.pdf` name before preview and kept the typed name on "Change the name"; Move listed only existing folders and sent a move into `notes/`;
+  - sample files and a PDF showed the reason instead of a form.
+
+Not verified: the real native core (all of the above used the mock), a real CRLF file on Windows, screen readers, and dark mode. The dialogs are not wired into any screen yet.
+
+After review, merged with `main` (#42, #54, #56, #58, #63 and #64):
+
+- `RenameDialog`, `MoveDialog` and `moveOperation` were removed, since Home's `FileActionDialog` already renames and moves through the Organize plan flow. `fileActionAvailability` and the ending check joined main's `fileActions.ts`, and `ActionDialog` uses main's `Modal` `dismissible`.
+- After a refused Undo, "Preview again" now checks again; it used to do nothing, leaving only "Keep the changes".
+- Reopening Edit text after saving no longer says the file changed under the draft.
+- Each related-passages list has its own heading id.
+- `npm run format:check`, `npm run check`, `npm test` (318 passed, 9 todo, with #58 and #64 merged in) and `npm run build`: passed on Linux with Node.js 24.15.0. The browser harness above was not run again.
 
 ### Native delete and deletion impacts (2026-10-10, issue #44)
 

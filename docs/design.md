@@ -60,19 +60,21 @@ The brandbook is a direction, not a spec of shipped features. Its screens contai
 
 Measured with the WCAG 2.x formula on the white canvas and surfaces:
 
-| Pair                  | Ratio   | Allowed for                                                    |
-| --------------------- | ------- | -------------------------------------------------------------- |
-| Charcoal on white     | 15.89:1 | All text                                                       |
-| Charcoal on gold      | 9.34:1  | Button labels and icons on gold                                |
-| `#5C5F59` on white    | 6.49:1  | Secondary text, graph lines and node rims                      |
-| `#6B6E68` on white    | 5.18:1  | Tertiary text and placeholders                                 |
-| `#8A6500` on white    | 5.33:1  | Links                                                          |
-| `#5B5BD6` on white    | 5.37:1  | Dashed AI graph lines only — never text                        |
-| `#B8BAB4` on charcoal | 8.11:1  | Sidebar muted text                                             |
-| Gold on charcoal      | 9.34:1  | Active indicator and focus ring in sidebar                     |
-| `#8A8C86` on white    | 3.40:1  | Control borders only — **never text**                          |
-| **Gold on white**     | 1.70:1  | **Decoration only** — never text, focus or a meaningful border |
-| **Honey on white**    | 2.08:1  | **Decoration only**                                            |
+| Pair                   | Ratio   | Allowed for                                                    |
+| ---------------------- | ------- | -------------------------------------------------------------- |
+| Charcoal on white      | 15.89:1 | All text                                                       |
+| Charcoal on gold       | 9.34:1  | Button labels and icons on gold                                |
+| `#5C5F59` on white     | 6.49:1  | Secondary text, graph lines and node rims                      |
+| `#6B6E68` on white     | 5.18:1  | Tertiary text and placeholders                                 |
+| `#8A6500` on white     | 5.33:1  | Links                                                          |
+| `#5B5BD6` on white     | 5.37:1  | Dashed AI graph lines only — never text                        |
+| `#B8BAB4` on charcoal  | 8.11:1  | Sidebar muted text                                             |
+| Gold on charcoal       | 9.34:1  | Active indicator and focus ring in sidebar                     |
+| `#2E7D32` on `#FAF7EE` | 4.79:1  | Diff "+" marker on an added line                               |
+| `#B42318` on `#FEF3F2` | 6.05:1  | Error text, diff "−" marker on a removed line                  |
+| `#8A8C86` on white     | 3.40:1  | Control borders only — **never text**                          |
+| **Gold on white**      | 1.70:1  | **Decoration only** — never text, focus or a meaningful border |
+| **Honey on white**     | 2.08:1  | **Decoration only**                                            |
 
 Never put white text on gold. Never rely on color alone: status dots, collection dots and badges always have a text label.
 
@@ -240,6 +242,12 @@ Active item: `--sidebar-item-active` background, 3px gold bar on the left edge, 
 - A summary is always shown as a generated preview, never as a saved file.
 
 **Status pill** (sidebar bottom): dot + text, for example "Local AI · Private · Yours". The text and dot come from real runtime state — see Product truth.
+
+**Exact previews** (#45, `src/views/PlanReview.tsx`)
+
+- _Text diff_: a table with Before and After line numbers. Removed lines have a `−` marker in `--color-danger` on `--color-danger-bg`; added lines a `+` marker in `--color-success` on `--color-surface-muted` with a 3px success bar. Each marker also has a spoken "Removed"/"Added" label, so color is never the only signal. A diff too large to compute shows the full new text instead.
+- _Needs review_: Ripple candidates are cards with a "Needs review" badge, the path, the reason, how Folio knows, and the passages as quotes. Only model or embedding provenance adds an "AI" badge. Never word a candidate as updated.
+- The Edit text dialog uses the wide modal (`modal-wide`, 760px) and can't be closed while a change is being saved.
 
 **Notices and errors**: follow #18. Inline notice = icon + plain-language message + one action; danger uses `--color-danger` text on `--color-danger-bg`.
 
