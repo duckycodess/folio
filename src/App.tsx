@@ -1,20 +1,31 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   chooseWorkspace,
-  fixtureDocuments,
+  loadFixtureDocuments,
   nativeAvailable,
   readNativeDocument,
 } from "./adapters/workspace";
 import { discoverExplicitReferences, keywordSearch } from "./domain/discovery";
-import type { DocumentRecord, WorkspaceInfo } from "./domain/contracts";
+import {
+  FIXTURE_WORKSPACE_ID,
+  type DocumentRecord,
+  type WorkspaceInfo,
+} from "./domain/contracts";
+import { toFolioError } from "./domain/errors";
+import { documentIdFor } from "./domain/identity";
+
+const FIXTURE_START = documentIdFor(
+  FIXTURE_WORKSPACE_ID,
+  "projects/project-plan.md",
+);
 
 type Area = "Search" | "Organize" | "Summarize";
 
 export default function App() {
   const [area, setArea] = useState<Area>("Search");
-  const [documents, setDocuments] = useState(fixtureDocuments);
+  const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [workspace, setWorkspace] = useState<WorkspaceInfo | null>(null);
-  const [selectedId, setSelectedId] = useState("projects/project-plan.md");
+  const [selectedId, setSelectedId] = useState(FIXTURE_START);
   const [query, setQuery] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -25,6 +36,21 @@ export default function App() {
   const [notice, setNotice] = useState("");
   const selectionRequest = useRef(0);
   const assistantDialog = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    let active = true;
+    loadFixtureDocuments()
+      .then((fixtures) => {
+        if (active)
+          setDocuments((current) => (current.length ? current : fixtures));
+      })
+      .catch((cause) => {
+        if (active) setError(toFolioError(cause).message);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     const dialog = assistantDialog.current;
@@ -79,7 +105,8 @@ export default function App() {
         current.map((item) => (item.id === read.id ? read : item)),
       );
     } catch (cause) {
-      if (request === selectionRequest.current) setError(String(cause));
+      if (request === selectionRequest.current)
+        setError(toFolioError(cause).message);
     } finally {
       if (request === selectionRequest.current) setBusy(false);
     }
@@ -98,9 +125,14 @@ export default function App() {
       setSelectedId("");
       setQuery("");
       setRenamePreview(null);
-      setNotice("");
+      setNotice(
+        chosen.skipped.length
+          ? `${chosen.skipped.length} file(s) could not be identified and are not listed.`
+          : "",
+      );
     } catch (cause) {
-      if (request === selectionRequest.current) setError(String(cause));
+      if (request === selectionRequest.current)
+        setError(toFolioError(cause).message);
     } finally {
       if (request === selectionRequest.current) setBusy(false);
     }
@@ -209,6 +241,11 @@ export default function App() {
           <div role="alert" className="error-banner">
             {error}
           </div>
+        )}
+        {notice && !selected && (
+          <p role="status" className="notice">
+            {notice}
+          </p>
         )}
         <section className="search-bar">
           <span aria-hidden="true">⌕</span>

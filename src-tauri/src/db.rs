@@ -1,6 +1,8 @@
 use std::path::Path;
 use rusqlite::Connection;
-use crate::error::NativeResult;
+use crate::error::{error, ErrorCode, FolioError};
+
+pub type NativeResult<T> = Result<T, FolioError>;
 
 /// Applied in order; `PRAGMA user_version` records how many have run.
 const MIGRATIONS: &[&str] = &[
@@ -8,6 +10,24 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/002_index_state.sql"),
     include_str!("../migrations/003_actions.sql"),
 ];
+
+impl From<rusqlite::Error> for FolioError {
+    fn from(cause: rusqlite::Error) -> Self {
+        error(ErrorCode::Internal, "Folio's local index could not be read or updated.").with_detail("cause", cause.to_string())
+    }
+}
+
+impl From<std::io::Error> for FolioError {
+    fn from(cause: std::io::Error) -> Self {
+        error(ErrorCode::DocumentUnavailable, "A file could not be read.").with_detail("cause", cause.to_string())
+    }
+}
+
+impl From<serde_json::Error> for FolioError {
+    fn from(cause: serde_json::Error) -> Self {
+        error(ErrorCode::Internal, "Stored index data could not be decoded.").with_detail("cause", cause.to_string())
+    }
+}
 
 pub fn open(path: &Path) -> NativeResult<Connection> {
     let conn = Connection::open(path)?;

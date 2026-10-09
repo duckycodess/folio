@@ -1,70 +1,146 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
-  ApplyResult,
+  ActionPlan,
+  ApplyReport,
+  Approval,
+  DocumentId,
   FileOperation,
-  FilenameSuggestion,
   HistoryEntry,
-  OrganizeSuggestions,
-  PlanPreview,
-  UndoResult,
+  ImpactCandidate,
+  OrganizationSuggestions,
+  UndoPreflight,
+  UndoReport,
+  WorkspaceId,
 } from "../domain/contracts";
+import { toFolioError } from "../domain/errors";
 
 /**
- * Native plan → approve → apply → undo. Operations must come from the user's request
- * (directly or through the provider's interpretation), never from document text.
- * Creating a preview writes nothing; only `applyPlan` on an approved plan changes files.
+ * The action boundary. The native core issues plan identities and digests,
+ * records approvals and owns every write; this module only carries requests
+ * across. The UI cannot mint a plan or an approval the native core will accept.
  */
-export function createPlan(
-  workspaceId: string,
-  operations: FileOperation[],
-): Promise<PlanPreview> {
-  return invoke<PlanPreview>("create_plan", { workspaceId, operations });
+async function call<T>(command: string, args?: Record<string, unknown>) {
+  try {
+    return await invoke<T>(command, args);
+  } catch (cause) {
+    throw toFolioError(cause);
+  }
 }
 
-/** Approves exactly the previewed plan; the digest must be the one shown in the preview. */
-export function approvePlan(
-  workspaceId: string,
-  plan: Pick<PlanPreview, "id" | "digest">,
-): Promise<PlanPreview> {
-  return invoke<PlanPreview>("approve_plan", {
+/**
+ * Prepares an exact, expiring plan. Nothing is written. Without `impacts`,
+ * the native core computes Ripple candidates from each edit's diff.
+ */
+export function preparePlan(
+  workspaceId: WorkspaceId,
+  operations: FileOperation[],
+  impacts?: ImpactCandidate[],
+): Promise<ActionPlan> {
+  return call<ActionPlan>("prepare_plan", {
     workspaceId,
-    planId: plan.id,
-    digest: plan.digest,
+    operations,
+    impacts,
   });
 }
 
-/** Rejects with a NativeError when nothing was written; resolves `failed` after a partial write. */
+/** Approve exactly the plan that was shown, by echoing its digest. */
+export function approvePlan(
+  workspaceId: WorkspaceId,
+  plan: ActionPlan,
+): Promise<Approval> {
+  return call<Approval>("approve_plan", {
+    workspaceId,
+    planId: plan.id,
+    planDigest: plan.digest,
+  });
+}
+
+/**
+ * Applies an approved plan. Rejects with a `FolioError` when nothing was
+ * written; otherwise the report holds one durable outcome per operation. A
+ * failure stops the batch and keeps earlier changes, which Undo can reverse.
+ */
 export function applyPlan(
-  workspaceId: string,
-  planId: string,
-): Promise<ApplyResult> {
-  return invoke<ApplyResult>("apply_plan", { workspaceId, planId });
+  workspaceId: WorkspaceId,
+  plan: ActionPlan,
+): Promise<ApplyReport> {
+  return call<ApplyReport>("apply_plan", { workspaceId, planId: plan.id });
 }
 
-/** Reverses a whole applied plan, or rejects with UNDO_CONFLICT without touching files. */
+/** Stops a running apply before its next operation; finished changes are kept. */
+export function cancelApply(): Promise<void> {
+  return call<void>("cancel_apply");
+}
+
+/** What Undo would reverse and anything blocking it. Writes nothing. */
+export function previewUndo(
+  workspaceId: WorkspaceId,
+  planId: string,
+): Promise<UndoPreflight> {
+  return call<UndoPreflight>("preview_undo", { workspaceId, planId });
+}
+
+/**
+ * Reverses the entries of the preview the user confirmed. If anything changed
+ * since that preview, nothing is undone. A partial Undo leaves the rest
+ * pending; preview again to finish it.
+ */
 export function undoPlan(
-  workspaceId: string,
-  planId: string,
-): Promise<UndoResult> {
-  return invoke<UndoResult>("undo_plan", { workspaceId, planId });
+  workspaceId: WorkspaceId,
+  preview: UndoPreflight,
+): Promise<UndoReport> {
+  return call<UndoReport>("undo_plan", {
+    workspaceId,
+    planId: preview.planId,
+    entryIds: preview.entryIds,
+  });
 }
 
-export function listHistory(workspaceId: string): Promise<HistoryEntry[]> {
-  return invoke<HistoryEntry[]>("list_history", { workspaceId });
+/** The most recent history entries, newest plan first (at most 500). */
+export function listHistory(
+  workspaceId: WorkspaceId,
+  limit = 100,
+): Promise<HistoryEntry[]> {
+  return call<HistoryEntry[]>("list_history", { workspaceId, limit });
 }
 
-export function organizeSuggestions(
-  workspaceId: string,
-): Promise<OrganizeSuggestions> {
-  return invoke<OrganizeSuggestions>("organize_suggestions", { workspaceId });
+/** Ripple candidates for an explicit phrase, e.g. the value an interpreter replaced. */
+export function rippleImpacts(
+  workspaceId: WorkspaceId,
+  documentId: DocumentId,
+  replacedText: string,
+): Promise<ImpactCandidate[]> {
+  return call<ImpactCandidate[]>("ripple_impacts", {
+    workspaceId,
+    documentId,
+    replacedText,
+  });
 }
 
-/** The rename operation for a chosen filename suggestion; preview it with `createPlan`. */
-export function renameOperation(suggestion: FilenameSuggestion): FileOperation {
-  return {
-    kind: "rename",
-    documentId: suggestion.documentId,
-    expectedContentHash: suggestion.contentHash,
-    destinationRelativePath: suggestion.suggestedRelativePath,
-  };
+/**
+ * The edit operation that replaces one exact passage. Rejects with
+ * `operationUnsupported` (`details.reason` is `passageNotFound` or
+ * `passageAmbiguous`) when the passage does not occur exactly once.
+ */
+export function preparePassageEdit(
+  workspaceId: WorkspaceId,
+  documentId: DocumentId,
+  before: string,
+  after: string,
+): Promise<FileOperation> {
+  return call<FileOperation>("prepare_passage_edit", {
+    workspaceId,
+    documentId,
+    before,
+    after,
+  });
+}
+
+/** Duplicate groups (evidence only) and filename suggestions with their rename operations. */
+export function organizationSuggestions(
+  workspaceId: WorkspaceId,
+): Promise<OrganizationSuggestions> {
+  return call<OrganizationSuggestions>("organization_suggestions", {
+    workspaceId,
+  });
 }

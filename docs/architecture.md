@@ -30,7 +30,7 @@ flowchart TD
 | Providers     | Separate embedding and generation interfaces, local runtime lifecycle             | Direct filesystem mutation                                       |
 | Model Lab     | Actual fixed-task results and measurement conditions                              | Synthetic performance claims                                     |
 
-`src/domain/contracts.ts` is the initial cross-track boundary. Native serialization uses camelCase. Keep operation identities and source locations stable across adapters.
+[Frozen contracts](contracts.md) define the cross-track boundary: `src/domain/contracts.ts` and `src-tauri/src/contracts.rs` declare the same shapes, native serialization uses camelCase, and `fixtures/contracts/contract-cases.json` pins the encodings both languages must produce. Failures cross the boundary as `{ code, message, details? }` so callers branch on a code rather than on prose. Workspace and document identities are stable across restarts and edits, source offsets are UTF-8 bytes bound to a document revision, and approval binds to a plan digest. Announce a contract change before merging it.
 
 ## Local AI
 
@@ -54,7 +54,7 @@ On save, move, rename, external modification, or deletion: update identity/path 
 
 The native core creates an expiring plan tied to workspace identity, canonical target paths, expected file hashes, exact operations, and evidence. Approval applies to that exact plan. Changed targets or changed operations require a new preview. Reject path escape, symlink escape, collisions, and unsupported operations. Write via temporary file/replace where supported, record recoverable content, and handle rollback honestly. Undo also checks the current file hash so it cannot destroy unrelated external edits.
 
-The native core (`src-tauri/src/actions.rs`) stores plans, approvals and history in SQLite; `src/domain/approval.ts` remains a UI-side mirror of the state machine. The UI must never invent an approval token that the native core treats as authoritative: approval needs a stored plan whose digest matches. Ripple rules, failed-write handling and plan-level undo are recorded in ADR 0006.
+The native core issues plan identities and a digest over canonical, length-prefixed plan bytes, and accepts an approval only for a plan it issued whose digest the caller echoes. A batch records one durable outcome per operation — succeeded, failed, cancelled or not started — and Undo is whole-batch against current file state. The native writer (`src-tauri/src/writer.rs`) applies an approved plan, records one recoverable history entry per completed operation in SQLite, refreshes the affected index entries, and reverses a whole batch through Undo after the user confirms its preview (ADR 0008). The UI cannot invent an approval token the native core treats as authoritative.
 
 ## Sources
 

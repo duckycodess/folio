@@ -1,30 +1,32 @@
 use std::collections::HashSet;
 use rusqlite::Connection;
 use serde::Serialize;
-use crate::error::NativeResult;
+use crate::contracts::{DestinationState, FileOperation};
+use crate::db::NativeResult;
 use crate::index::{self, DuplicateGroup};
 use crate::workspace::ScopedRoot;
 
 const MAX_SLUG_CHARS: usize = 60;
 
-/// A proposed rename. Applying it goes through an approved plan like any other change.
+/// An Organization Suggestion for a filename. It changes nothing by itself: its
+/// `operation` is previewed and approved like any other plan.
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct FilenameSuggestion {
+pub struct OrganizationSuggestion {
     pub document_id: String,
     pub relative_path: String,
     pub suggested_relative_path: String,
-    pub content_hash: String,
     pub reason: String,
+    pub operation: FileOperation,
 }
 
-/// Organization Suggestions: exact duplicates are evidence only (never moved or deleted
-/// automatically); filename suggestions become rename plans when the user picks them.
+/// Exact duplicates are evidence only — never moved or deleted automatically — and
+/// filename suggestions become rename plans only when the user picks one.
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct OrganizeSuggestions {
-    pub duplicates: Vec<DuplicateGroup>,
-    pub filenames: Vec<FilenameSuggestion>,
+pub struct OrganizationSuggestions {
+    pub duplicate_groups: Vec<DuplicateGroup>,
+    pub filenames: Vec<OrganizationSuggestion>,
 }
 
 /// Lowercase words joined by hyphens; letters with accents and non-Latin letters are kept.
@@ -40,7 +42,7 @@ pub fn slugify(title: &str) -> String {
     slug.trim_end_matches('-').to_owned()
 }
 
-pub fn suggestions(conn: &Connection, root: &ScopedRoot) -> NativeResult<OrganizeSuggestions> {
+pub fn suggestions(conn: &Connection, root: &ScopedRoot) -> NativeResult<OrganizationSuggestions> {
     let documents = index::list_documents(conn, &root.id)?;
     let mut taken: HashSet<String> = documents.iter().map(|document| document.relative_path.to_lowercase()).collect();
     let mut filenames = Vec::new();
@@ -48,19 +50,25 @@ pub fn suggestions(conn: &Connection, root: &ScopedRoot) -> NativeResult<Organiz
         if document.status != "indexed" || document.media_type == "application/pdf" { continue; }
         let Some((stem, extension)) = document.name.rsplit_once('.') else { continue };
         let slug = slugify(&document.title);
-        if slug.is_empty() || slug.chars().count() > MAX_SLUG_CHARS || slug == stem { continue; }
+        if slug.is_empty() || slug.chars().count() > MAX_SLUG_CHARS || slug == stem.to_lowercase() { continue; }
         let folder = document.relative_path.rsplit_once('/').map_or(String::new(), |(folder, _)| format!("{folder}/"));
         let suggested = format!("{folder}{slug}.{extension}");
         if !taken.insert(suggested.to_lowercase()) || root.path.join(&suggested).exists() { continue; }
-        filenames.push(FilenameSuggestion {
+        filenames.push(OrganizationSuggestion {
             document_id: document.id.clone(),
             relative_path: document.relative_path.clone(),
-            suggested_relative_path: suggested,
-            content_hash: document.content_hash.clone(),
+            suggested_relative_path: suggested.clone(),
             reason: format!("Named after the document's title \u{201c}{}\u{201d}.", document.title),
+            operation: FileOperation::Rename {
+                document_id: document.id.clone(),
+                relative_path: document.relative_path.clone(),
+                expected_content_hash: document.content_hash.clone(),
+                destination_relative_path: suggested,
+                expected_destination: DestinationState::Absent,
+            },
         });
     }
-    Ok(OrganizeSuggestions { duplicates: index::duplicate_groups(conn, root)?, filenames })
+    Ok(OrganizationSuggestions { duplicate_groups: index::duplicate_groups(conn, root)?, filenames })
 }
 
 #[cfg(test)]
@@ -77,18 +85,17 @@ mod tests {
     }
 
     #[test]
-    fn suggestions_propose_without_changing_files() {
+    fn suggestions_propose_rename_operations_without_changing_files() {
         let (folder, mut conn, root) = fixture_workspace();
         scan(&mut conn, &root);
-        let before: Vec<_> = walkdir::WalkDir::new(folder.path()).into_iter().filter_map(Result::ok).map(|entry| entry.path().to_path_buf()).collect();
+        let listing = |path: &std::path::Path| -> Vec<_> { walkdir::WalkDir::new(path).into_iter().filter_map(Result::ok).map(|entry| entry.path().to_path_buf()).collect() };
+        let before = listing(folder.path());
         let result = suggestions(&conn, &root).unwrap();
-        assert_eq!(result.duplicates.len(), 1);
+        assert_eq!(result.duplicate_groups.len(), 1);
         let plan = result.filenames.iter().find(|suggestion| suggestion.relative_path == "projects/project-plan.md").unwrap();
         assert_eq!(plan.suggested_relative_path, "projects/community-learning-project.md");
-        let copy = result.filenames.iter().find(|suggestion| suggestion.relative_path == "archive/project-plan-copy.md").unwrap();
-        assert_eq!(copy.suggested_relative_path, "archive/community-learning-project.md");
+        assert!(matches!(&plan.operation, FileOperation::Rename { expected_content_hash, .. } if expected_content_hash.starts_with("sha256:")));
         assert!(result.filenames.iter().all(|suggestion| !suggestion.suggested_relative_path.ends_with(".pdf")));
-        let after: Vec<_> = walkdir::WalkDir::new(folder.path()).into_iter().filter_map(Result::ok).map(|entry| entry.path().to_path_buf()).collect();
-        assert_eq!(before, after);
+        assert_eq!(listing(folder.path()), before);
     }
 }

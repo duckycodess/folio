@@ -1,68 +1,160 @@
-use serde::Serialize;
+use std::collections::BTreeMap;
+use std::fmt;
 
-/// Stable error codes shared with the UI (`NativeErrorCode` in `src/domain/contracts.ts`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+use serde::{Deserialize, Serialize};
+
+/// Every failure that crosses the UI boundary carries one of these codes.
+///
+/// The TypeScript union in `src/domain/contracts.ts` lists the same values in
+/// the same order, and both are checked against
+/// `fixtures/contracts/contract-cases.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum ErrorCode {
-    PathEscape,
-    NotAuthorized,
-    NotFound,
-    Unsupported,
-    TooLarge,
-    InvalidInput,
-    Busy,
-    EmbeddingSpaceMismatch,
-    /// A target's bytes no longer match the preview; a new preview is required.
-    TargetChanged,
-    /// The index is behind the file on disk; refresh before planning a change.
-    StaleIndex,
-    AmbiguousEdit,
-    UnsupportedEdit,
-    Collision,
-    ApprovalRequired,
+    WorkspaceNotAuthorized,
+    WorkspaceUnavailable,
+    PathNotRelative,
+    PathEscapesWorkspace,
+    PathUnsupportedEncoding,
+    DocumentUnavailable,
+    DocumentTooLarge,
+    DocumentNotText,
+    UnsupportedMediaType,
+    PlanUnknown,
+    PlanEmpty,
     PlanExpired,
-    /// The approved digest does not match the stored plan.
-    PlanChanged,
-    PlanState,
+    PlanStateInvalid,
+    PlanDigestMismatch,
+    ApprovalRequired,
+    ApprovalStale,
+    DuplicateOperationTarget,
+    TargetMissing,
+    TargetChanged,
+    DestinationExists,
+    OperationUnsupported,
+    HistoryRequired,
+    HistoryUnknown,
     UndoConflict,
-    UndoUnavailable,
-    Io,
-    Database,
+    WriterNotImplemented,
+    ModelNotInstalled,
+    ModelLoadFailed,
+    ProviderBusy,
+    Cancelled,
+    ContextOverflow,
+    EmbeddingSpaceMismatch,
+    EvidenceInvalid,
+    Internal,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+/// The frozen list, in wire order. Used by the cross-language fixture test.
+#[allow(dead_code)]
+pub const ALL_ERROR_CODES: [ErrorCode; 33] = [
+    ErrorCode::WorkspaceNotAuthorized,
+    ErrorCode::WorkspaceUnavailable,
+    ErrorCode::PathNotRelative,
+    ErrorCode::PathEscapesWorkspace,
+    ErrorCode::PathUnsupportedEncoding,
+    ErrorCode::DocumentUnavailable,
+    ErrorCode::DocumentTooLarge,
+    ErrorCode::DocumentNotText,
+    ErrorCode::UnsupportedMediaType,
+    ErrorCode::PlanUnknown,
+    ErrorCode::PlanEmpty,
+    ErrorCode::PlanExpired,
+    ErrorCode::PlanStateInvalid,
+    ErrorCode::PlanDigestMismatch,
+    ErrorCode::ApprovalRequired,
+    ErrorCode::ApprovalStale,
+    ErrorCode::DuplicateOperationTarget,
+    ErrorCode::TargetMissing,
+    ErrorCode::TargetChanged,
+    ErrorCode::DestinationExists,
+    ErrorCode::OperationUnsupported,
+    ErrorCode::HistoryRequired,
+    ErrorCode::HistoryUnknown,
+    ErrorCode::UndoConflict,
+    ErrorCode::WriterNotImplemented,
+    ErrorCode::ModelNotInstalled,
+    ErrorCode::ModelLoadFailed,
+    ErrorCode::ProviderBusy,
+    ErrorCode::Cancelled,
+    ErrorCode::ContextOverflow,
+    ErrorCode::EmbeddingSpaceMismatch,
+    ErrorCode::EvidenceInvalid,
+    ErrorCode::Internal,
+];
+
+/// The wire form of a failure. A command returns `Result<T, FolioError>`, so the
+/// UI always receives a code it can act on together with prose for the user.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct NativeError {
+pub struct FolioError {
     pub code: ErrorCode,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<BTreeMap<String, String>>,
 }
 
-pub type NativeResult<T> = Result<T, NativeError>;
+impl FolioError {
+    pub fn new(code: ErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            details: None,
+        }
+    }
 
-pub fn fail(code: ErrorCode, message: impl Into<String>) -> NativeError {
-    NativeError { code, message: message.into() }
-}
+    pub fn with_detail(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.details
+            .get_or_insert_with(BTreeMap::new)
+            .insert(key.into(), value.into());
+        self
+    }
 
-impl std::fmt::Display for NativeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}: {}", self.code, self.message)
+    #[allow(dead_code)]
+    pub fn detail(&self, key: &str) -> Option<&str> {
+        self.details.as_ref()?.get(key).map(String::as_str)
     }
 }
 
-impl From<rusqlite::Error> for NativeError {
-    fn from(error: rusqlite::Error) -> Self {
-        fail(ErrorCode::Database, error.to_string())
+impl fmt::Display for FolioError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}", self.message)
     }
 }
 
-impl From<std::io::Error> for NativeError {
-    fn from(error: std::io::Error) -> Self {
-        fail(ErrorCode::Io, error.to_string())
-    }
+impl std::error::Error for FolioError {}
+
+pub fn error(code: ErrorCode, message: impl Into<String>) -> FolioError {
+    FolioError::new(code, message)
 }
 
-impl From<serde_json::Error> for NativeError {
-    fn from(error: serde_json::Error) -> Self {
-        fail(ErrorCode::Io, error.to_string())
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serializes_codes_in_camel_case() {
+        let value = serde_json::to_value(ErrorCode::PathEscapesWorkspace).unwrap();
+        assert_eq!(value, serde_json::json!("pathEscapesWorkspace"));
+    }
+
+    #[test]
+    fn serializes_a_failure_with_its_details() {
+        let failure = error(ErrorCode::TargetChanged, "This file changed.")
+            .with_detail("path", "projects/project-plan.md");
+        let value = serde_json::to_value(&failure).unwrap();
+        assert_eq!(value["code"], serde_json::json!("targetChanged"));
+        assert_eq!(value["message"], serde_json::json!("This file changed."));
+        assert_eq!(
+            value["details"]["path"],
+            serde_json::json!("projects/project-plan.md")
+        );
+    }
+
+    #[test]
+    fn omits_absent_details_rather_than_sending_null() {
+        let value = serde_json::to_value(error(ErrorCode::Internal, "x")).unwrap();
+        assert!(value.get("details").is_none());
     }
 }

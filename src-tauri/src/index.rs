@@ -7,9 +7,12 @@ use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
-use crate::error::{fail, ErrorCode, NativeResult};
-use crate::extract::{self, Extraction, MediaKind, Utf16Cursor};
-use crate::workspace::{self, now_millis, ScopedRoot};
+use crate::contracts::{OffsetUnit, SourcePassage};
+use crate::db::NativeResult;
+use crate::error::{error, ErrorCode};
+use crate::extract::{self, Extraction, MediaKind};
+use crate::identity::{content_hash, document_id, embedding_space_fingerprint, normalize_relative_path, relative_path_below};
+use crate::workspace::{self, ScopedRoot};
 
 const MAX_DOCUMENTS: usize = 5000;
 const BATCH_SIZE: usize = 50;
@@ -18,55 +21,67 @@ const EXCERPT_LENGTH: usize = 360;
 const MAX_QUERY_TERMS: usize = 32;
 const PASSAGES_PER_RESULT: usize = 3;
 
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as u64).unwrap_or(0)
+}
+
+/// A `DocumentRecord` as known to the persistent index, plus its index status.
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexedDocument {
     pub id: String,
+    pub workspace_id: String,
     pub relative_path: String,
     pub name: String,
     pub title: String,
     /// Language detection belongs to the provider track; the index does not guess.
     pub language: &'static str,
-    pub size_bytes: i64,
-    pub content_hash: String,
     pub media_type: String,
+    pub size_bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modified_at_ms: Option<u64>,
+    /// The revision the index holds. For a `stale` document this is the previous version.
+    pub content_hash: String,
     pub status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_message: Option<String>,
-    pub modified_at: String,
-    pub indexed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indexed_at_ms: Option<u64>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+/// The link of an `explicitReference` relationship: as written, and where it resolved.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
-pub struct SourcePassage {
-    pub document_id: String,
-    /// UTF-16 code-unit offsets into the document's extracted text.
-    pub start: usize,
-    pub end: usize,
-    pub text: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub page: Option<u32>,
+pub struct LinkTarget {
+    pub raw_target: String,
+    pub resolved_relative_path: String,
 }
 
+/// The `explicitReference` member of the frozen `Relationship` union.
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct Relationship {
+pub struct ExplicitReference {
     pub source_id: String,
     pub target_id: String,
-    #[serde(rename = "type")]
-    pub relationship_type: String,
-    pub evidence: Vec<SourcePassage>,
-    pub provenance: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub confidence: Option<f64>,
     pub source_content_hash: String,
     pub target_content_hash: String,
+    #[serde(rename = "type")]
+    pub relationship_type: &'static str,
+    pub provenance: &'static str,
+    pub link: LinkTarget,
+    pub evidence: Vec<SourcePassage>,
 }
 
+#[derive(Serialize, Deserialize)]
+struct StoredReference {
+    link: LinkTarget,
+    evidence: Vec<SourcePassage>,
+}
+
+/// The frozen `SearchResult`. Keyword results carry no space fingerprint.
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct SearchHit {
+pub struct SearchResult {
     pub document: IndexedDocument,
     pub passages: Vec<SourcePassage>,
     pub score: f64,
@@ -97,6 +112,7 @@ pub struct ScanSummary {
     pub unsupported: usize,
     pub failed: usize,
     pub stale: usize,
+    /// Entries that could not be read or identified (e.g. a name that is not valid Unicode).
     pub skipped: usize,
     pub cancelled: bool,
     pub duration_ms: u64,
@@ -106,13 +122,9 @@ pub struct ScanSummary {
 #[serde(rename_all = "camelCase")]
 pub struct DuplicateGroup {
     pub content_hash: String,
-    pub size_bytes: i64,
+    pub size_bytes: u64,
     /// Every listed document was re-read and compared byte for byte.
     pub documents: Vec<IndexedDocument>,
-}
-
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
 }
 
 fn sha256_file(path: &Path) -> NativeResult<String> {
@@ -124,25 +136,32 @@ fn sha256_file(path: &Path) -> NativeResult<String> {
         if read == 0 { break; }
         hasher.update(&buffer[..read]);
     }
-    Ok(hex::encode(hasher.finalize()))
+    Ok(format!("sha256:{}", hex::encode(hasher.finalize())))
 }
 
-const DOCUMENT_COLUMNS: &str = "id, relative_path, name, COALESCE(title, name), size_bytes, content_hash, media_type, status, status_message, modified_at, indexed_at";
+pub fn passage(document_id: &str, document_hash: &str, start: usize, end: usize, text: &str, page: Option<u32>) -> SourcePassage {
+    SourcePassage { document_id: document_id.to_owned(), document_content_hash: document_hash.to_owned(), offset_unit: OffsetUnit::Utf8Byte, start, end, text: text.to_owned(), page }
+}
+
+const DOCUMENT_COLUMNS: &str = "id, workspace_id, relative_path, name, COALESCE(title, name), media_type, size_bytes, modified_at, content_hash, status, status_message, indexed_at";
 
 fn document_from_row(row: &Row<'_>) -> rusqlite::Result<IndexedDocument> {
+    let modified: String = row.get(7)?;
+    let indexed: Option<String> = row.get(11)?;
     Ok(IndexedDocument {
         id: row.get(0)?,
-        relative_path: row.get(1)?,
-        name: row.get(2)?,
-        title: row.get(3)?,
+        workspace_id: row.get(1)?,
+        relative_path: row.get(2)?,
+        name: row.get(3)?,
+        title: row.get(4)?,
         language: "unknown",
-        size_bytes: row.get(4)?,
-        content_hash: row.get(5)?,
-        media_type: row.get(6)?,
-        status: row.get(7)?,
-        status_message: row.get(8)?,
-        modified_at: row.get(9)?,
-        indexed_at: row.get(10)?,
+        media_type: row.get(5)?,
+        size_bytes: row.get::<_, i64>(6)? as u64,
+        modified_at_ms: modified.parse::<u128>().ok().map(|nanos| (nanos / 1_000_000) as u64),
+        content_hash: row.get(8)?,
+        status: row.get(9)?,
+        status_message: row.get(10)?,
+        indexed_at_ms: indexed.and_then(|value| value.parse().ok()),
     })
 }
 
@@ -155,7 +174,7 @@ pub fn list_documents(conn: &Connection, workspace_id: &str) -> NativeResult<Vec
 pub fn get_document(conn: &Connection, workspace_id: &str, document_id: &str) -> NativeResult<IndexedDocument> {
     conn.query_row(&format!("SELECT {DOCUMENT_COLUMNS} FROM documents WHERE workspace_id = ?1 AND id = ?2"), [workspace_id, document_id], document_from_row)
         .optional()?
-        .ok_or_else(|| fail(ErrorCode::NotFound, "The document is not in this workspace's index."))
+        .ok_or_else(|| error(ErrorCode::DocumentUnavailable, "That document is not in this folder's index.").with_detail("documentId", document_id))
 }
 
 // ---------------------------------------------------------------- scanning
@@ -190,6 +209,10 @@ fn skipped_directory(name: &OsStr) -> bool {
     name.starts_with('.') || name == "node_modules"
 }
 
+fn modified_nanos(metadata: &std::fs::Metadata) -> String {
+    metadata.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map(|elapsed| elapsed.as_nanos().to_string()).unwrap_or_default()
+}
+
 fn discover(root: &Path) -> NativeResult<(Vec<Found>, usize)> {
     let mut found = Vec::new();
     let mut skipped = 0;
@@ -202,15 +225,13 @@ fn discover(root: &Path) -> NativeResult<(Vec<Found>, usize)> {
         // Symlinks report their own type here, so links never enter the index.
         if !entry.file_type().is_file() || entry.file_name().to_string_lossy().starts_with('.') { continue; }
         let Some(kind) = MediaKind::from_path(entry.path()) else { continue };
-        let Ok(metadata) = entry.metadata() else {
+        let (Ok(relative), Ok(metadata)) = (relative_path_below(root, entry.path()), entry.metadata()) else {
             skipped += 1;
             continue;
         };
-        let relative = entry.path().strip_prefix(root).map_err(|_| fail(ErrorCode::PathEscape, "A document path escaped the folder."))?.to_string_lossy().replace('\\', "/");
-        let modified = metadata.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map(|elapsed| elapsed.as_nanos().to_string()).unwrap_or_default();
-        found.push(Found { relative, path: entry.path().to_path_buf(), kind, size: metadata.len() as i64, modified });
+        found.push(Found { relative, path: entry.path().to_path_buf(), kind, size: metadata.len() as i64, modified: modified_nanos(&metadata) });
         if found.len() > MAX_DOCUMENTS {
-            return Err(fail(ErrorCode::TooLarge, "Folio supports up to 5,000 TXT, Markdown and PDF documents per folder. Choose a smaller folder."));
+            return Err(error(ErrorCode::DocumentTooLarge, "Folio supports up to 5,000 TXT, Markdown and PDF documents per folder. Choose a smaller folder."));
         }
     }
     found.sort_by(|a, b| a.relative.cmp(&b.relative));
@@ -288,14 +309,14 @@ fn index_file(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior: Opt
     }
     let bytes = match workspace::read_bounded(&file.path, file.kind.max_bytes()) {
         Ok(bytes) => Some(bytes),
-        Err(error) if error.code == ErrorCode::TooLarge => None,
-        Err(error) => return record_failure(tx, workspace_id, file, prior, &error.message, None),
+        Err(failure) if failure.code == ErrorCode::DocumentTooLarge => None,
+        Err(failure) => return record_failure(tx, workspace_id, file, prior, &failure.message, None),
     };
     let hash = match &bytes {
-        Some(bytes) => sha256_hex(bytes),
+        Some(bytes) => content_hash(bytes),
         None => match sha256_file(&file.path) {
             Ok(hash) => hash,
-            Err(error) => return record_failure(tx, workspace_id, file, prior, &error.message, None),
+            Err(failure) => return record_failure(tx, workspace_id, file, prior, &failure.message, None),
         },
     };
     if let Some(prior) = prior {
@@ -320,19 +341,19 @@ fn index_file(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior: Opt
             clear_derived(tx, &id)?;
             let mut insert = tx.prepare_cached("INSERT INTO chunks (document_id, ordinal, chunk_text, start_offset, end_offset, page, content_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")?;
             for chunk in extract::chunk(&extracted) {
-                insert.execute(params![id, chunk.ordinal as i64, chunk.text, chunk.start as i64, chunk.end as i64, chunk.page, sha256_hex(chunk.text.as_bytes())])?;
+                insert.execute(params![id, chunk.ordinal as i64, chunk.text, chunk.start as i64, chunk.end as i64, chunk.page, content_hash(chunk.text.as_bytes())])?;
             }
             Ok(if prior.is_some() { Outcome::Updated } else { Outcome::Added })
         }
         Ok(Extraction::Unsupported(reason)) => record_unsupported(tx, workspace_id, file, prior, &hash, &reason),
-        Err(error) => record_failure(tx, workspace_id, file, prior, &error.message, Some(&hash)),
+        Err(failure) => record_failure(tx, workspace_id, file, prior, &failure.message, Some(&hash)),
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn upsert_document(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior: Option<&Existing>, hash: &str, title: Option<&str>, status: &str, message: Option<&str>, indexed: bool) -> NativeResult<String> {
-    let name = file.path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
-    let indexed_at = indexed.then(now_millis);
+    let name = file.relative.rsplit('/').next().unwrap_or(&file.relative).to_owned();
+    let indexed_at = indexed.then(|| now_ms().to_string());
     match prior {
         Some(prior) => {
             tx.execute(
@@ -342,7 +363,7 @@ fn upsert_document(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior
             Ok(prior.id.clone())
         }
         None => {
-            let id = uuid::Uuid::new_v4().to_string();
+            let id = document_id(workspace_id, &file.relative);
             tx.execute(
                 "INSERT INTO documents (id, workspace_id, relative_path, name, title, content_hash, media_type, size_bytes, modified_at, indexed_at, status, status_message) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![id, workspace_id, file.relative, name, title, hash, file.kind.media_type(), file.size, file.modified, indexed_at, status, message],
@@ -394,6 +415,7 @@ pub fn forget_document(tx: &Transaction<'_>, document_id: &str) -> NativeResult<
 
 /// Re-indexes specific files after Folio changed them, then rebuilds link relationships.
 /// Paths that no longer exist are removed from the index.
+#[allow(dead_code)]
 pub fn refresh_paths(conn: &mut Connection, root: &ScopedRoot, relative_paths: &[String]) -> NativeResult<()> {
     let tx = conn.transaction()?;
     for relative in relative_paths {
@@ -404,16 +426,15 @@ pub fn refresh_paths(conn: &mut Connection, root: &ScopedRoot, relative_paths: &
             .optional()?;
         let path = match workspace::resolve_document(&root.path, relative) {
             Ok(path) => path,
-            Err(error) if error.code == ErrorCode::NotFound => {
+            Err(failure) if failure.code == ErrorCode::DocumentUnavailable => {
                 if let Some(prior) = prior { forget_document(&tx, &prior.id)?; }
                 continue;
             }
-            Err(error) => return Err(error),
+            Err(failure) => return Err(failure),
         };
-        let kind = MediaKind::from_path(&path).ok_or_else(|| fail(ErrorCode::Unsupported, "Folio indexes TXT, Markdown and text-based PDF files."))?;
+        let kind = MediaKind::from_path(&path).ok_or_else(|| error(ErrorCode::UnsupportedMediaType, "Folio indexes TXT, Markdown and text-based PDF files."))?;
         let metadata = std::fs::metadata(&path)?;
-        let modified = metadata.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map(|elapsed| elapsed.as_nanos().to_string()).unwrap_or_default();
-        let file = Found { relative: relative.clone(), path, kind, size: metadata.len() as i64, modified };
+        let file = Found { relative: relative.clone(), path, kind, size: metadata.len() as i64, modified: modified_nanos(&metadata) };
         index_file(&tx, &root.id, &file, prior.as_ref(), true)?;
     }
     rebuild_explicit_references(&tx, &root.id)?;
@@ -446,7 +467,8 @@ fn percent_decode(value: &str) -> Option<String> {
     String::from_utf8(decoded).ok()
 }
 
-/// Mirrors `linkedPath` in `src/domain/discovery.ts`: relative links only, never above the root.
+/// Mirrors the frontend's link resolution: relative links only, never above the root,
+/// and the result must be a valid workspace path.
 pub fn linked_path(source_path: &str, link: &str) -> Option<String> {
     if has_scheme_or_root(link) { return None; }
     let decoded = percent_decode(link.split(['?', '#']).next().unwrap_or(""))?;
@@ -460,10 +482,11 @@ pub fn linked_path(source_path: &str, link: &str) -> Option<String> {
             other => parts.push(other),
         }
     }
-    Some(parts.join("/"))
+    normalize_relative_path(&parts.join("/")).ok()
 }
 
-/// Rebuilds Markdown-link relationships for the workspace, with the link text as evidence.
+/// Rebuilds Markdown-link relationships for the workspace, one per distinct link, with the
+/// located link text as evidence.
 pub fn rebuild_explicit_references(tx: &Transaction<'_>, workspace_id: &str) -> NativeResult<usize> {
     tx.execute(
         "DELETE FROM relationships WHERE relationship_type = 'explicitReference' AND provenance = 'documentLink' AND source_document_id IN (SELECT id FROM documents WHERE workspace_id = ?1)",
@@ -477,61 +500,51 @@ pub fn rebuild_explicit_references(tx: &Transaction<'_>, workspace_id: &str) -> 
             by_path.insert(path, (id, hash));
         }
     }
-    let mut edges: Vec<((String, String), Vec<SourcePassage>)> = Vec::new();
+    let mut edges: Vec<((String, String, String), StoredReference)> = Vec::new();
     {
         let mut statement = tx.prepare(
-            "SELECT d.id, d.relative_path, c.chunk_text, c.start_offset, c.page FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.workspace_id = ?1 AND c.chunk_text LIKE '%](%' ORDER BY d.relative_path, c.ordinal",
+            "SELECT d.id, d.relative_path, d.content_hash, c.chunk_text, c.start_offset, c.page FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.workspace_id = ?1 AND c.chunk_text LIKE '%](%' ORDER BY d.relative_path, c.ordinal",
         )?;
-        let rows = statement.query_map([workspace_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?, row.get::<_, Option<u32>>(4)?)))?;
+        let rows = statement.query_map([workspace_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?, row.get::<_, Option<u32>>(5)?)))?;
         for row in rows {
-            let (source_id, source_path, text, chunk_start, page) = row?;
-            let mut cursor = Utf16Cursor::new(&text);
+            let (source_id, source_path, source_hash, text, chunk_start, page) = row?;
             for link in extract::markdown_links(&text) {
-                let Some((target_id, _)) = linked_path(&source_path, &link.target).and_then(|path| by_path.get(&path)) else { continue };
+                let Some(resolved) = linked_path(&source_path, &link.target) else { continue };
+                let Some((target_id, _)) = by_path.get(&resolved) else { continue };
                 if *target_id == source_id { continue; }
-                let passage = SourcePassage {
-                    document_id: source_id.clone(),
-                    start: chunk_start as usize + cursor.at(link.whole.start),
-                    end: chunk_start as usize + cursor.at(link.whole.end),
-                    text: text[link.whole.clone()].to_owned(),
-                    page,
-                };
-                let key = (source_id.clone(), target_id.clone());
+                let evidence = passage(&source_id, &source_hash, chunk_start as usize + link.whole.start, chunk_start as usize + link.whole.end, &text[link.whole.clone()], page);
+                let key = (source_id.clone(), target_id.clone(), link.target.clone());
                 match edges.iter_mut().find(|(existing, _)| *existing == key) {
-                    Some((_, evidence)) => evidence.push(passage),
-                    None => edges.push((key, vec![passage])),
+                    Some((_, stored)) => stored.evidence.push(evidence),
+                    None => edges.push((key, StoredReference { link: LinkTarget { raw_target: link.target.clone(), resolved_relative_path: resolved }, evidence: vec![evidence] })),
                 }
             }
         }
     }
     let hash_of: HashMap<&String, &String> = by_path.values().map(|(id, hash)| (id, hash)).collect();
-    let now = now_millis();
-    for ((source, target), evidence) in &edges {
+    let now = now_ms().to_string();
+    for ((source, target, raw), stored) in &edges {
+        let id = content_hash(format!("explicitReference\0{source}\0{target}\0{raw}").as_bytes());
         tx.execute(
             "INSERT INTO relationships (id, source_document_id, target_document_id, relationship_type, evidence_json, provenance, confidence, source_content_hash, target_content_hash, created_at) VALUES (?1, ?2, ?3, 'explicitReference', ?4, 'documentLink', NULL, ?5, ?6, ?7)",
-            params![uuid::Uuid::new_v4().to_string(), source, target, serde_json::to_string(evidence)?, hash_of[source], hash_of[target], now],
+            params![id, source, target, serde_json::to_string(stored)?, hash_of[source], hash_of[target], now],
         )?;
     }
     Ok(edges.len())
 }
 
-pub fn list_relationships(conn: &Connection, workspace_id: &str) -> NativeResult<Vec<Relationship>> {
+pub fn list_relationships(conn: &Connection, workspace_id: &str) -> NativeResult<Vec<ExplicitReference>> {
     let mut statement = conn.prepare(
-        "SELECT r.source_document_id, r.target_document_id, r.relationship_type, r.evidence_json, r.provenance, r.confidence, r.source_content_hash, r.target_content_hash FROM relationships r JOIN documents d ON d.id = r.source_document_id WHERE d.workspace_id = ?1 ORDER BY d.relative_path",
+        "SELECT r.source_document_id, r.target_document_id, r.evidence_json, r.source_content_hash, r.target_content_hash FROM relationships r JOIN documents d ON d.id = r.source_document_id WHERE d.workspace_id = ?1 AND r.relationship_type = 'explicitReference' ORDER BY d.relative_path, r.target_document_id",
     )?;
-    let rows = statement.query_map([workspace_id], |row| {
-        Ok(Relationship {
-            source_id: row.get(0)?,
-            target_id: row.get(1)?,
-            relationship_type: row.get(2)?,
-            evidence: serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or_default(),
-            provenance: row.get(4)?,
-            confidence: row.get(5)?,
-            source_content_hash: row.get(6)?,
-            target_content_hash: row.get(7)?,
-        })
-    })?;
-    Ok(rows.collect::<Result<_, _>>()?)
+    let rows = statement.query_map([workspace_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?)))?;
+    let mut relationships = Vec::new();
+    for row in rows {
+        let (source_id, target_id, json, source_content_hash, target_content_hash) = row?;
+        let stored: StoredReference = serde_json::from_str(&json)?;
+        relationships.push(ExplicitReference { source_id, target_id, source_content_hash, target_content_hash, relationship_type: "explicitReference", provenance: "documentLink", link: stored.link, evidence: stored.evidence });
+    }
+    Ok(relationships)
 }
 
 // ---------------------------------------------------------------- keyword search
@@ -559,8 +572,8 @@ fn find_word(haystack: &str, term: &str) -> Option<usize> {
     None
 }
 
-/// A window of the chunk around the first query term, with UTF-16 document offsets.
-fn excerpt(document_id: &str, chunk_text: &str, chunk_start: usize, page: Option<u32>, terms: &[String]) -> SourcePassage {
+/// A window of the chunk around the first query term, located with UTF-8 byte offsets.
+fn excerpt(document_id: &str, document_hash: &str, chunk_text: &str, chunk_start: usize, page: Option<u32>, terms: &[String]) -> SourcePassage {
     let lower = chunk_text.to_lowercase();
     let hit = if lower.len() == chunk_text.len() { terms.iter().filter_map(|term| find_word(&lower, term)).min().unwrap_or(0) } else { 0 };
     let boundaries: Vec<usize> = chunk_text.char_indices().map(|(index, _)| index).chain(std::iter::once(chunk_text.len())).collect();
@@ -568,37 +581,36 @@ fn excerpt(document_id: &str, chunk_text: &str, chunk_start: usize, page: Option
     let from_char = hit_char.saturating_sub(EXCERPT_BEFORE);
     let to_char = (from_char + EXCERPT_LENGTH).min(boundaries.len() - 1);
     let (from, to) = (boundaries[from_char], boundaries[to_char]);
-    let mut cursor = Utf16Cursor::new(chunk_text);
-    SourcePassage { document_id: document_id.to_owned(), start: chunk_start + cursor.at(from), end: chunk_start + cursor.at(to), text: chunk_text[from..to].to_owned(), page }
+    passage(document_id, document_hash, chunk_start + from, chunk_start + to, &chunk_text[from..to], page)
 }
 
 /// FTS5 keyword search over indexed chunks. Query words are quoted and OR-ed, so document
 /// or query text cannot inject FTS syntax. This is keyword matching, not semantic search.
-pub fn search(conn: &Connection, workspace_id: &str, query: &str, limit: usize) -> NativeResult<Vec<SearchHit>> {
+pub fn search(conn: &Connection, workspace_id: &str, query: &str, limit: usize) -> NativeResult<Vec<SearchResult>> {
     let terms = query_terms(query);
     if terms.is_empty() { return Ok(Vec::new()); }
     let expression = terms.iter().map(|term| format!("\"{term}\"")).collect::<Vec<_>>().join(" OR ");
     let limit = limit.clamp(1, 100);
     let mut statement = conn.prepare(
-        "SELECT c.document_id, c.chunk_text, c.start_offset, c.page, bm25(chunks_fts) AS rank FROM chunks_fts JOIN chunks c ON c.chunk_id = chunks_fts.rowid JOIN documents d ON d.id = c.document_id WHERE chunks_fts MATCH ?1 AND d.workspace_id = ?2 ORDER BY rank LIMIT ?3",
+        "SELECT c.document_id, d.content_hash, c.chunk_text, c.start_offset, c.page, bm25(chunks_fts) AS rank FROM chunks_fts JOIN chunks c ON c.chunk_id = chunks_fts.rowid JOIN documents d ON d.id = c.document_id WHERE chunks_fts MATCH ?1 AND d.workspace_id = ?2 ORDER BY rank LIMIT ?3",
     )?;
     let rows = statement.query_map(params![expression, workspace_id, (limit * 8).min(400) as i64], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?, row.get::<_, Option<u32>>(3)?, row.get::<_, f64>(4)?))
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?, row.get::<_, Option<u32>>(4)?, row.get::<_, f64>(5)?))
     })?;
     let mut grouped: Vec<(String, f64, Vec<SourcePassage>)> = Vec::new();
     for row in rows {
-        let (document_id, text, start, page, rank) = row?;
-        let passage = excerpt(&document_id, &text, start as usize, page, &terms);
+        let (document_id, hash, text, start, page, rank) = row?;
+        let found = excerpt(&document_id, &hash, &text, start as usize, page, &terms);
         match grouped.iter().position(|(id, _, _)| *id == document_id) {
-            Some(index) if grouped[index].2.len() < PASSAGES_PER_RESULT => grouped[index].2.push(passage),
+            Some(index) if grouped[index].2.len() < PASSAGES_PER_RESULT => grouped[index].2.push(found),
             Some(_) => {}
-            None if grouped.len() < limit => grouped.push((document_id, -rank, vec![passage])),
+            None if grouped.len() < limit => grouped.push((document_id, -rank, vec![found])),
             None => {}
         }
     }
     grouped
         .into_iter()
-        .map(|(document_id, score, passages)| Ok(SearchHit { document: get_document(conn, workspace_id, &document_id)?, passages, score, method: "keyword" }))
+        .map(|(document_id, score, passages)| Ok(SearchResult { document: get_document(conn, workspace_id, &document_id)?, passages, score, method: "keyword" }))
         .collect()
 }
 
@@ -625,8 +637,8 @@ pub fn duplicate_groups(conn: &Connection, root: &ScopedRoot) -> NativeResult<Ve
             }
         }
         for (bytes, documents) in confirmed {
-            if documents.len() > 1 && sha256_hex(&bytes) == hash {
-                groups.push(DuplicateGroup { content_hash: hash.clone(), size_bytes: bytes.len() as i64, documents });
+            if documents.len() > 1 && content_hash(&bytes) == hash {
+                groups.push(DuplicateGroup { content_hash: hash.clone(), size_bytes: bytes.len() as u64, documents });
             }
         }
     }
@@ -665,86 +677,88 @@ pub struct PendingChunk {
 pub struct VectorCandidate {
     pub chunk_id: i64,
     pub score: f32,
+    pub space_fingerprint: String,
     pub passage: SourcePassage,
 }
 
-/// Each distinct model/revision/quantization/dimension/preprocessing tuple is its own space.
+/// Stores the space under its frozen fingerprint (`folio-space-v1/...`) and returns it.
 pub fn register_space(conn: &Connection, space: &EmbeddingSpace) -> NativeResult<String> {
     let fields = [&space.model_id, &space.revision, &space.quantization, &space.preprocessing_fingerprint];
     if fields.iter().any(|field| field.trim().is_empty()) || space.dimensions == 0 || space.dimensions > 8192 {
-        return Err(fail(ErrorCode::InvalidInput, "An embedding space needs a model, revision, quantization, preprocessing fingerprint and 1–8192 dimensions."));
+        return Err(error(ErrorCode::EmbeddingSpaceMismatch, "An embedding space needs a model, revision, quantization, preprocessing fingerprint and 1–8192 dimensions."));
     }
-    let fingerprint = format!("{}\0{}\0{}\0{}\0{}", space.model_id, space.revision, space.quantization, space.dimensions, space.preprocessing_fingerprint);
-    let id = format!("space-{}", &sha256_hex(fingerprint.as_bytes())[..32]);
+    let fingerprint = embedding_space_fingerprint(&space.model_id, &space.revision, &space.quantization, space.dimensions, &space.preprocessing_fingerprint);
     conn.execute(
         "INSERT OR IGNORE INTO embedding_spaces (id, model_id, revision, quantization, dimensions, preprocessing_fingerprint) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![id, space.model_id, space.revision, space.quantization, space.dimensions, space.preprocessing_fingerprint],
+        params![fingerprint, space.model_id, space.revision, space.quantization, space.dimensions, space.preprocessing_fingerprint],
     )?;
-    Ok(id)
+    Ok(fingerprint)
 }
 
-fn space_dimensions(conn: &Connection, space_id: &str) -> NativeResult<usize> {
-    conn.query_row("SELECT dimensions FROM embedding_spaces WHERE id = ?1", [space_id], |row| row.get::<_, i64>(0))
+fn space_dimensions(conn: &Connection, fingerprint: &str) -> NativeResult<usize> {
+    conn.query_row("SELECT dimensions FROM embedding_spaces WHERE id = ?1", [fingerprint], |row| row.get::<_, i64>(0))
         .optional()?
         .map(|dimensions| dimensions as usize)
-        .ok_or_else(|| fail(ErrorCode::NotFound, "Unknown embedding space. Register it first."))
+        .ok_or_else(|| error(ErrorCode::EmbeddingSpaceMismatch, "Unknown embedding space. Register it before storing or comparing vectors.").with_detail("spaceFingerprint", fingerprint))
 }
 
 fn check_vector(vector: &[f32], dimensions: usize) -> NativeResult<()> {
     if vector.len() != dimensions {
-        return Err(fail(ErrorCode::EmbeddingSpaceMismatch, format!("Expected a {dimensions}-dimension vector for this embedding space, got {}.", vector.len())));
+        return Err(error(ErrorCode::EmbeddingSpaceMismatch, format!("Expected a {dimensions}-dimension vector for this embedding space.")).with_detail("receivedDimensions", vector.len().to_string()));
     }
     if vector.iter().any(|value| !value.is_finite()) {
-        return Err(fail(ErrorCode::InvalidInput, "Vectors must contain finite numbers."));
+        return Err(error(ErrorCode::EmbeddingSpaceMismatch, "Vectors must contain finite numbers."));
     }
     Ok(())
 }
 
-pub fn put_embeddings(conn: &mut Connection, workspace_id: &str, space_id: &str, items: &[ChunkVector]) -> NativeResult<usize> {
-    let dimensions = space_dimensions(conn, space_id)?;
+pub fn put_embeddings(conn: &mut Connection, workspace_id: &str, fingerprint: &str, items: &[ChunkVector]) -> NativeResult<usize> {
+    let dimensions = space_dimensions(conn, fingerprint)?;
     let tx = conn.transaction()?;
     for item in items {
         check_vector(&item.vector, dimensions)?;
         let owned: Option<i64> = tx
             .query_row("SELECT c.chunk_id FROM chunks c JOIN documents d ON d.id = c.document_id WHERE c.chunk_id = ?1 AND d.workspace_id = ?2", params![item.chunk_id, workspace_id], |row| row.get(0))
             .optional()?;
-        if owned.is_none() { return Err(fail(ErrorCode::NotFound, format!("Chunk {} is not in this workspace's current index.", item.chunk_id))); }
+        if owned.is_none() {
+            return Err(error(ErrorCode::EvidenceInvalid, "That chunk is not in this folder's current index.").with_detail("chunkId", item.chunk_id.to_string()));
+        }
         let blob: Vec<u8> = item.vector.iter().flat_map(|value| value.to_le_bytes()).collect();
-        tx.execute("INSERT OR REPLACE INTO embeddings (chunk_id, space_id, vector) VALUES (?1, ?2, ?3)", params![item.chunk_id, space_id, blob])?;
+        tx.execute("INSERT OR REPLACE INTO embeddings (chunk_id, space_id, vector) VALUES (?1, ?2, ?3)", params![item.chunk_id, fingerprint, blob])?;
     }
     tx.commit()?;
     Ok(items.len())
 }
 
 /// Chunks that have no vector in this space yet, for the embedding provider to process.
-pub fn pending_embedding_chunks(conn: &Connection, workspace_id: &str, space_id: &str, limit: usize) -> NativeResult<Vec<PendingChunk>> {
-    space_dimensions(conn, space_id)?;
+pub fn pending_embedding_chunks(conn: &Connection, workspace_id: &str, fingerprint: &str, limit: usize) -> NativeResult<Vec<PendingChunk>> {
+    space_dimensions(conn, fingerprint)?;
     let mut statement = conn.prepare(
         "SELECT c.chunk_id, c.document_id, c.chunk_text FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.workspace_id = ?1 AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.chunk_id = c.chunk_id AND e.space_id = ?2) ORDER BY c.chunk_id LIMIT ?3",
     )?;
-    let rows = statement.query_map(params![workspace_id, space_id, limit.clamp(1, 512) as i64], |row| Ok(PendingChunk { chunk_id: row.get(0)?, document_id: row.get(1)?, text: row.get(2)? }))?;
+    let rows = statement.query_map(params![workspace_id, fingerprint, limit.clamp(1, 512) as i64], |row| Ok(PendingChunk { chunk_id: row.get(0)?, document_id: row.get(1)?, text: row.get(2)? }))?;
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
 /// Exact cosine search within one embedding space. Vectors from other spaces are never read.
-pub fn vector_candidates(conn: &Connection, workspace_id: &str, space_id: &str, query: &[f32], k: usize) -> NativeResult<Vec<VectorCandidate>> {
-    check_vector(query, space_dimensions(conn, space_id)?)?;
+pub fn vector_candidates(conn: &Connection, workspace_id: &str, fingerprint: &str, query: &[f32], k: usize) -> NativeResult<Vec<VectorCandidate>> {
+    check_vector(query, space_dimensions(conn, fingerprint)?)?;
     let query_norm = query.iter().map(|value| value * value).sum::<f32>().sqrt();
     let mut statement = conn.prepare(
-        "SELECT e.chunk_id, c.document_id, c.chunk_text, c.start_offset, c.end_offset, c.page, e.vector FROM embeddings e JOIN chunks c ON c.chunk_id = e.chunk_id JOIN documents d ON d.id = c.document_id WHERE e.space_id = ?1 AND d.workspace_id = ?2",
+        "SELECT e.chunk_id, c.document_id, d.content_hash, c.chunk_text, c.start_offset, c.end_offset, c.page, e.vector FROM embeddings e JOIN chunks c ON c.chunk_id = e.chunk_id JOIN documents d ON d.id = c.document_id WHERE e.space_id = ?1 AND d.workspace_id = ?2",
     )?;
-    let rows = statement.query_map(params![space_id, workspace_id], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?, row.get::<_, i64>(4)?, row.get::<_, Option<u32>>(5)?, row.get::<_, Vec<u8>>(6)?))
+    let rows = statement.query_map(params![fingerprint, workspace_id], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, i64>(4)?, row.get::<_, i64>(5)?, row.get::<_, Option<u32>>(6)?, row.get::<_, Vec<u8>>(7)?))
     })?;
     let mut candidates = Vec::new();
     for row in rows {
-        let (chunk_id, document_id, text, start, end, page, blob) = row?;
+        let (chunk_id, document_id, hash, text, start, end, page, blob) = row?;
         let vector: Vec<f32> = blob.chunks_exact(4).map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])).collect();
         if vector.len() != query.len() { continue; }
         let dot: f32 = vector.iter().zip(query).map(|(a, b)| a * b).sum();
         let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
         let score = if norm == 0.0 || query_norm == 0.0 { 0.0 } else { dot / (norm * query_norm) };
-        candidates.push(VectorCandidate { chunk_id, score, passage: SourcePassage { document_id, start: start as usize, end: end as usize, text, page } });
+        candidates.push(VectorCandidate { chunk_id, score, space_fingerprint: fingerprint.to_owned(), passage: passage(&document_id, &hash, start as usize, end as usize, &text, page) });
     }
     candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
     candidates.truncate(k.clamp(1, 100));
@@ -754,7 +768,7 @@ pub fn vector_candidates(conn: &Connection, workspace_id: &str, space_id: &str, 
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use crate::{db, extract::testpdf, workspace::remember_picked_folder};
+    use crate::{db, extract::testpdf, workspace::WorkspaceRegistry};
     use std::fs;
 
     pub fn copy_fixtures(destination: &Path) {
@@ -766,6 +780,12 @@ pub mod tests {
         }
     }
 
+    pub fn authorize(conn: &Connection, folder: &Path) -> ScopedRoot {
+        let info = WorkspaceRegistry::new().authorize(folder).unwrap();
+        workspace::remember(conn, &info).unwrap();
+        ScopedRoot { id: info.id, path: PathBuf::from(info.root_path) }
+    }
+
     pub fn scan(conn: &mut Connection, root: &ScopedRoot) -> ScanSummary {
         scan_workspace(conn, root, &AtomicBool::new(false), &mut |_| {}).unwrap()
     }
@@ -774,12 +794,12 @@ pub mod tests {
         let folder = tempfile::tempdir().unwrap();
         copy_fixtures(folder.path());
         let conn = db::open_in_memory().unwrap();
-        let root = remember_picked_folder(&conn, folder.path()).unwrap();
+        let root = authorize(&conn, folder.path());
         (folder, conn, root)
     }
 
-    pub fn id_of(conn: &Connection, root: &ScopedRoot, path: &str) -> String {
-        conn.query_row("SELECT id FROM documents WHERE workspace_id = ?1 AND relative_path = ?2", [&root.id, path], |row| row.get(0)).unwrap()
+    pub fn id_of(root: &ScopedRoot, path: &str) -> String {
+        document_id(&root.id, path)
     }
 
     fn status_of(conn: &Connection, root: &ScopedRoot, path: &str) -> (String, Option<String>) {
@@ -790,8 +810,15 @@ pub mod tests {
         conn.query_row("SELECT count(*) FROM chunks WHERE document_id = ?1", [document_id], |row| row.get(0)).unwrap()
     }
 
-    fn paths(hits: &[SearchHit]) -> Vec<&str> {
+    fn paths(hits: &[SearchResult]) -> Vec<&str> {
         hits.iter().map(|hit| hit.document.relative_path.as_str()).collect()
+    }
+
+    pub fn assert_located(folder: &Path, relative: &str, found: &SourcePassage) {
+        let bytes = fs::read(folder.join(relative)).unwrap();
+        assert_eq!(found.offset_unit, OffsetUnit::Utf8Byte);
+        assert_eq!(&bytes[found.start..found.end], found.text.as_bytes());
+        assert_eq!(found.document_content_hash, content_hash(&bytes));
     }
 
     #[test]
@@ -820,24 +847,18 @@ pub mod tests {
         let hits = search(&conn, &root.id, "huling araw ng pagpasa", 10).unwrap();
         let hit = hits.iter().find(|hit| hit.document.relative_path == "notes/tala-sa-proyekto.md").expect("Filipino note is found");
         assert_eq!(hit.method, "keyword");
-        assert_eq!(hit.document.id, id_of(&conn, &root, "notes/tala-sa-proyekto.md"));
-        let passage = &hit.passages[0];
-        assert!(passage.text.contains("huling araw ng pagpasa"));
-        let content = fs::read_to_string(folder.path().join("notes/tala-sa-proyekto.md")).unwrap();
-        let units: Vec<u16> = content.encode_utf16().collect();
-        assert_eq!(String::from_utf16(&units[passage.start..passage.end]).unwrap(), passage.text);
+        assert_eq!(hit.document.id, format!("{}:notes/tala-sa-proyekto.md", root.id));
+        assert!(hit.passages[0].text.contains("huling araw ng pagpasa"));
+        assert_located(folder.path(), "notes/tala-sa-proyekto.md", &hit.passages[0]);
     }
 
     #[test]
-    fn excerpt_offsets_survive_non_ascii_text() {
+    fn excerpt_offsets_are_utf8_bytes_on_non_ascii_text() {
         let (folder, mut conn, root) = fixture_workspace();
         scan(&mut conn, &root);
         let hits = search(&conn, &root.id, "authoritative schedule", 5).unwrap();
         assert_eq!(hits[0].document.relative_path, "projects/submission-checklist.md");
-        let content = fs::read_to_string(folder.path().join("projects/submission-checklist.md")).unwrap();
-        let units: Vec<u16> = content.encode_utf16().collect();
-        let passage = &hits[0].passages[0];
-        assert_eq!(String::from_utf16(&units[passage.start..passage.end]).unwrap(), passage.text);
+        assert_located(folder.path(), "projects/submission-checklist.md", &hits[0].passages[0]);
     }
 
     #[test]
@@ -862,8 +883,8 @@ pub mod tests {
     fn external_edit_and_delete_update_the_right_records() {
         let (folder, mut conn, root) = fixture_workspace();
         scan(&mut conn, &root);
-        let plan_id = id_of(&conn, &root, "projects/project-plan.md");
-        let notes_id = id_of(&conn, &root, "meetings/meeting-notes.md");
+        let plan_id = id_of(&root, "projects/project-plan.md");
+        let notes_id = id_of(&root, "meetings/meeting-notes.md");
         let relationship_count = |conn: &Connection, id: &str| -> i64 { conn.query_row("SELECT count(*) FROM relationships WHERE source_document_id = ?1", [id], |row| row.get(0)).unwrap() };
         assert_eq!(relationship_count(&conn, &plan_id), 2);
         conn.execute("INSERT INTO derived_cache (document_id, kind, content_hash, payload, created_at) VALUES (?1, 'summary', 'x', 'old summary', '0')", [&plan_id]).unwrap();
@@ -872,15 +893,14 @@ pub mod tests {
         fs::remove_file(folder.path().join("personal/grocery-list.md")).unwrap();
         let summary = scan(&mut conn, &root);
         assert_eq!((summary.updated, summary.removed), (1, 1));
-        assert_eq!(id_of(&conn, &root, "projects/project-plan.md"), plan_id, "identity survives an edit");
         assert_eq!(paths(&search(&conn, &root.id, "November", 5).unwrap()), vec!["projects/project-plan.md"]);
         assert!(!paths(&search(&conn, &root.id, "volunteer", 10).unwrap()).contains(&"projects/project-plan.md"));
         assert_eq!(relationship_count(&conn, &plan_id), 0, "links removed from the edited file are dropped");
         assert_eq!(relationship_count(&conn, &notes_id), 1, "links into the edited file are rebuilt");
+        let into_plan = list_relationships(&conn, &root.id).unwrap().into_iter().find(|edge| edge.source_id == notes_id).unwrap();
+        assert_eq!(into_plan.target_content_hash, content_hash(&fs::read(folder.path().join("projects/project-plan.md")).unwrap()), "evidence names the new revision");
         let cached: i64 = conn.query_row("SELECT count(*) FROM derived_cache WHERE document_id = ?1", [&plan_id], |row| row.get(0)).unwrap();
         assert_eq!(cached, 0, "cached summary invalidated");
-        let grocery: i64 = conn.query_row("SELECT count(*) FROM documents WHERE relative_path = 'personal/grocery-list.md'", [], |row| row.get(0)).unwrap();
-        assert_eq!(grocery, 0);
         assert!(search(&conn, &root.id, "grocery", 5).unwrap().is_empty());
     }
 
@@ -888,7 +908,7 @@ pub mod tests {
     fn failed_re_extraction_keeps_prior_chunks_and_marks_stale() {
         let (folder, mut conn, root) = fixture_workspace();
         scan(&mut conn, &root);
-        let id = id_of(&conn, &root, "notes/paalala.md");
+        let id = id_of(&root, "notes/paalala.md");
         let before = chunk_count(&conn, &id);
         fs::write(folder.path().join("notes/paalala.md"), [0xff, 0xfe, 0xfd, 0x00, 0x01]).unwrap();
         let summary = scan(&mut conn, &root);
@@ -934,8 +954,8 @@ pub mod tests {
     fn lost_folder_is_refused() {
         let (folder, mut conn, root) = fixture_workspace();
         drop(folder);
-        let error = scan_workspace(&mut conn, &root, &AtomicBool::new(false), &mut |_| {}).unwrap_err();
-        assert_eq!(error.code, ErrorCode::NotAuthorized);
+        let failure = scan_workspace(&mut conn, &root, &AtomicBool::new(false), &mut |_| {}).unwrap_err();
+        assert_eq!(failure.code, ErrorCode::WorkspaceUnavailable);
     }
 
     #[test]
@@ -959,16 +979,19 @@ pub mod tests {
     }
 
     #[test]
-    fn explicit_references_carry_located_link_evidence() {
-        let (_folder, mut conn, root) = fixture_workspace();
+    fn explicit_references_follow_the_frozen_relationship_shape() {
+        let (folder, mut conn, root) = fixture_workspace();
         scan(&mut conn, &root);
         let relationships = list_relationships(&conn, &root.id).unwrap();
-        let plan = id_of(&conn, &root, "projects/project-plan.md");
-        let notes = id_of(&conn, &root, "meetings/meeting-notes.md");
+        let plan = id_of(&root, "projects/project-plan.md");
+        let notes = id_of(&root, "meetings/meeting-notes.md");
         let edge = relationships.iter().find(|edge| edge.source_id == notes && edge.target_id == plan).unwrap();
-        assert_eq!((edge.relationship_type.as_str(), edge.provenance.as_str()), ("explicitReference", "documentLink"));
+        assert_eq!(edge.link, LinkTarget { raw_target: "../projects/project-plan.md".into(), resolved_relative_path: "projects/project-plan.md".into() });
         assert_eq!(edge.evidence[0].text, "[project plan](../projects/project-plan.md)");
-        let copy = id_of(&conn, &root, "archive/project-plan-copy.md");
+        assert_located(folder.path(), "meetings/meeting-notes.md", &edge.evidence[0]);
+        let value = serde_json::to_value(edge).unwrap();
+        assert_eq!((value["type"].as_str(), value["provenance"].as_str()), (Some("explicitReference"), Some("documentLink")));
+        let copy = id_of(&root, "archive/project-plan-copy.md");
         let copy_targets: Vec<&String> = relationships.iter().filter(|edge| edge.source_id == copy).map(|edge| &edge.target_id).collect();
         assert_eq!(copy_targets, vec![&notes], "the copy's broken checklist link is not invented");
     }
@@ -982,6 +1005,7 @@ pub mod tests {
         assert_eq!(groups.len(), 1);
         let members: Vec<&str> = groups[0].documents.iter().map(|document| document.relative_path.as_str()).collect();
         assert_eq!(members, vec!["archive/project-plan-copy.md", "projects/project-plan.md"]);
+        assert!(groups[0].content_hash.starts_with("sha256:"));
     }
 
     #[test]
@@ -993,19 +1017,22 @@ pub mod tests {
     }
 
     #[test]
-    fn index_persists_across_reopen() {
+    fn index_persists_across_restart() {
         let folder = tempfile::tempdir().unwrap();
         copy_fixtures(folder.path());
         let data = tempfile::tempdir().unwrap();
         let database = data.path().join("folio.sqlite");
         let workspace_id = {
             let mut conn = db::open(&database).unwrap();
-            let root = remember_picked_folder(&conn, folder.path()).unwrap();
+            let root = authorize(&conn, folder.path());
             scan(&mut conn, &root);
             root.id
         };
         let mut conn = db::open(&database).unwrap();
-        let root = workspace::reopen(&conn, &workspace_id).unwrap();
+        let mut registry = WorkspaceRegistry::new();
+        let info = registry.authorize(&workspace::remembered_root(&conn, &workspace_id).unwrap()).unwrap();
+        assert_eq!(info.id, workspace_id);
+        let root = registry.resolve(&info.id).unwrap();
         assert!(!search(&conn, &root.id, "volunteer", 5).unwrap().is_empty());
         let again = scan(&mut conn, &root);
         assert_eq!(again.unchanged, again.total);
@@ -1018,6 +1045,7 @@ pub mod tests {
         let space = |revision: &str| EmbeddingSpace { model_id: "multilingual-e5-small".into(), revision: revision.into(), quantization: "q8".into(), dimensions: 3, preprocessing_fingerprint: "passage-prefix-v1".into() };
         let old = register_space(&conn, &space("r1")).unwrap();
         let new = register_space(&conn, &space("r2")).unwrap();
+        assert_eq!(old, "folio-space-v1/multilingual-e5-small/r1/q8/3/passage-prefix-v1");
         assert_ne!(old, new);
         assert_eq!(register_space(&conn, &space("r1")).unwrap(), old);
         let pending = pending_embedding_chunks(&conn, &root.id, &old, 2).unwrap();
@@ -1025,6 +1053,7 @@ pub mod tests {
         put_embeddings(&mut conn, &root.id, &new, &[ChunkVector { chunk_id: pending[1].chunk_id, vector: vec![1.0, 0.0, 0.0] }]).unwrap();
         let from_old = vector_candidates(&conn, &root.id, &old, &[1.0, 0.0, 0.0], 10).unwrap();
         assert_eq!(from_old.iter().map(|candidate| candidate.chunk_id).collect::<Vec<_>>(), vec![pending[0].chunk_id]);
+        assert_eq!(from_old[0].space_fingerprint, old);
         assert_eq!(pending_embedding_chunks(&conn, &root.id, &new, 1000).unwrap().iter().filter(|chunk| chunk.chunk_id == pending[0].chunk_id).count(), 1);
         let mismatch = put_embeddings(&mut conn, &root.id, &old, &[ChunkVector { chunk_id: pending[0].chunk_id, vector: vec![1.0; 4] }]).unwrap_err();
         assert_eq!(mismatch.code, ErrorCode::EmbeddingSpaceMismatch);
@@ -1036,7 +1065,7 @@ pub mod tests {
         let (folder, mut conn, root) = fixture_workspace();
         scan(&mut conn, &root);
         let space = register_space(&conn, &EmbeddingSpace { model_id: "m".into(), revision: "1".into(), quantization: "q".into(), dimensions: 2, preprocessing_fingerprint: "p".into() }).unwrap();
-        let plan_id = id_of(&conn, &root, "projects/project-plan.md");
+        let plan_id = id_of(&root, "projects/project-plan.md");
         let chunk_id: i64 = conn.query_row("SELECT chunk_id FROM chunks WHERE document_id = ?1", [&plan_id], |row| row.get(0)).unwrap();
         put_embeddings(&mut conn, &root.id, &space, &[ChunkVector { chunk_id, vector: vec![0.5, 0.5] }]).unwrap();
         fs::write(folder.path().join("projects/project-plan.md"), "# Plan\n\nRewritten content with a different length.").unwrap();
