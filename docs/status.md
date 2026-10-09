@@ -6,6 +6,7 @@
 - Olio mascot artwork: twelve cleaned poses bundled in `src/assets/olio/`. Home's header pose follows the file list (default, confused for no results, peeking for an empty folder). The Files empty states, Organize's empty Collections and Model Lab's "no model" state also show a pose. The wordmark is still interim text.
 - A sidebar theme switch (System, Light, Dark), remembered on the device, and coloured file-type tiles in file lists and the document panel. Checked in headless Chromium: the switch cycles, the choice survives a reload, and System removes the override. The sample files are all Markdown, so the PDF and text tiles have not been seen rendered.
 - File table and reader ([issue #17](https://github.com/duckycodess/folio/issues/17)): name, location, type, modified and size columns that drop to fit the space; the reader beside the table (or in place of it below 860px) shows the file's text as read-only, with its full path. The reader never shows a file the current list excludes. In the desktop app, Folio starts with an "Add folder" state (sample files on request); an added folder with no readable files offers "Choose another folder". The browser preview lists sample files and says so.
+- Relationships with evidence ([issue #21](https://github.com/duckycodess/folio/issues/21)): the document panel's Related tab and the Graph view list every connected file. Each entry has its type (link and direction, or exact duplicate), how Folio knows it, the file's original folder, and evidence excerpts that open the source with the passage highlighted. Files opened from Related keep a "Back to" link to the origin. With a folder open, links and duplicates come from the native index (`list_relationships`, `list_duplicates`) merged with links in opened files. If the folder hasn't been indexed, the UI says so; no UI runs the index scan yet. Exact duplicates are also found from content hashes Folio already has. The list is the only Graph view; there is no drawn graph. Similarity and shared-fact connections have labels and tests, but no producer yet.
 - Keyword filtering (explicitly labelled), actual Markdown-link discovery in fixture text, source content views, and a list of those explicit links with their evidence (Graph view).
 - Tauri folder picker and scoped native listing/TXT/Markdown reading commands.
 - [Frozen cross-track contracts](contracts.md) declared in both `src/domain/contracts.ts` and `src-tauri/src/contracts.rs`: typed failures, stable workspace/document identity, UTF-8 source offsets bound to a document revision, typed relationship evidence, embedding-space fingerprints, provider error/cancellation codes, plans, approvals, per-operation outcomes, history and undo shapes.
@@ -56,6 +57,31 @@ Provider cases are listed as pending, not mocked, in `src/domain/pending.test.ts
 No AI or save completion should be presented until the corresponding native/provider implementation succeeds. Model sizes, installed size, memory targets, and platform support remain subject to measurements.
 
 ## Verification
+
+### Relationships list and Graph (2026-10-09, issue #21)
+
+Checked on macOS with Node.js 26.10.0:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 114 passed, 9 todo. New cases cover:
+  - no connected file dropped (12 of 12 listed);
+  - links in both directions folded into one entry with all evidence;
+  - index and opened-file links merged without repeats;
+  - exact duplicates from the index and from hashes;
+  - links and identical bytes never labelled as AI output;
+  - model provenance labelled and flagged for checking;
+  - passage highlighting after multi-byte characters;
+  - stale passages refused.
+- Browser preview (sample files) in headless Chromium at 1280×850 and 700×800:
+  - Graph lists 10 links;
+  - `project-plan.md` shows 5 related files, including the exact duplicate `project-plan-copy.md` and the Filipino note `tala-sa-proyekto.md`;
+  - opening an excerpt shows the source with the passage highlighted and focused;
+  - "Back to" returns to the origin's Related tab;
+  - picking a file from a list clears the trail;
+  - Tab reaches each related file and each excerpt in order;
+  - no horizontal scroll at 700px.
+
+Not verified: a real folder in the Tauri app (the index path was only type-checked), screen readers, and a PDF passage with a page number.
 
 ### File table and reader (2026-10-09, issue #17)
 
