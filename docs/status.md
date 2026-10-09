@@ -243,7 +243,7 @@ No AI or save completion should be presented without the corresponding native/pr
 - Quitting during a run cancels it and waits up to 10 seconds for it to end, which stops its llama-server. Before, macOS and Linux could leave the server running.
 - The Model Lab workspace marker is written before the copy, so a failed copy can be replaced.
 - The TypeScript test guard refuses what `BenchmarkRecord::validate` refuses.
-- Not changed: `unload_generation` during a run still frees the generation slot before the lab thread ends. No UI calls it, and the fix belongs with #4's slot handling.
+- `unload_generation` during a run no longer frees the generation slot before the lab thread ends; see "Generation slot release (issue #93)" below.
 - Checked on Linux (WSL, Node.js 24.15.0): `folio-core` 167 passed and 2 ignored, the native library 211 passed and 2 ignored (an existing test needed `LabHold` to implement `Debug`), and `npm run format:check`, `check`, `test` (344 passed, 9 todo) and `build` passed. No real model was run.
 
 ## Remote CI verification after conflict resolution
@@ -598,6 +598,18 @@ Checked on macOS with Node.js 26.10.0, on `main` after #63 and #64:
 - Native (`folio_core::device`): device RAM from `sysctl hw.memsize` on macOS, `GetPhysicallyInstalledSystemMemory` on Windows (the installed RAM, so memory reserved for an integrated GPU still counts; `GlobalMemoryStatusEx` is the fallback) and `/proc/meminfo` on Linux; free space from `statvfs` or `GetDiskFreeSpaceExW`, measured at the nearest existing folder. **Not built on this host** (no Rust toolchain). In CI it compiles on macOS and Windows (`desktop-check`), but its tests (device RAM reported, free space for an existing folder and for one not created yet) run only on Linux, in the `frontend` job's folio-core step, where they passed. The macOS and Windows code paths are compiled there, never run. After Gab's review, the Windows path asks for the installed RAM first; that change was formatted with `rustfmt` but, like the rest of this path, is only compiled in CI and has not been run on a Windows computer.
 
 Not verified: real downloads and the real figures in the Tauri app, an interrupted download or a hash mismatch against the real store (they surface through the shared recovery notice and the "Damaged: download again" state), and screen readers.
+
+### Generation slot release (2026-10-10, issue #93)
+
+Only the holder of the generation slot releases it. A request holds the slot through a `GenerationClaim` that gives the slot back when it is dropped, so a provider error or a panic can no longer leave Folio reporting `providerBusy`. A Model Lab run still releases through `finish_lab`; its thread already catches panics.
+
+- Cancel and unload set the holder's cancel flag and stop the loaded server, but leave the slot held. `unload_generation`, removing a model and reinstalling the runtime wait up to 10 seconds for the holder to end, then unload the model. If the holder outlasts that, they return `providerBusy` ("still stopping") and leave the slot held.
+- While an unload waits, new requests, Model Lab runs and runtime installs get `providerBusy`, so a second `llama-server` can't start.
+- Exit waits up to 10 seconds for a request as well as for a Model Lab run, then stops the loaded server whether or not they ended.
+- Removing a model checks and unloads in one critical section, instead of checking, releasing the lock, then unloading.
+- Checked on Linux (WSL): native library tests passed, including a scripted Model Lab run that unload cannot free (the next claim is busy until `finish_lab`, then succeeds), a request that returns an error or panics, an unload that times out, and exit waiting for a request. The tests drive the slot's state, not a real `llama-server`: `GenerationSlot` holds the concrete `LlamaServerProvider`, so "never two servers" is checked through the slot, not by counting processes. No real model was run, and nothing was run on Windows or macOS.
+- `cancel_generation` during a Model Lab run still cancels the run, because both use the same flag.
+- The Groq provider (#94) does not exist on this branch; when it lands its requests need to hold the same claim.
 
 ### Floating Olio chat (2026-10-10, issue #66)
 

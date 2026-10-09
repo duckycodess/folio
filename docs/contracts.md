@@ -133,7 +133,9 @@ Embedding and generation stay behind separate interfaces. An adapter rejects
 with `modelNotInstalled`, `modelLoadFailed`, `providerBusy`, `cancelled` or
 `contextOverflow`. Aborting the request's `signal` rejects with `cancelled`.
 One generative request runs at a time; a second concurrent request is
-`providerBusy`. A run either returns an answer or reports
+`providerBusy`. Cancelling or unloading signals the holder but leaves the slot
+held until the holder ends; an unload waits up to 10 seconds, then reports
+`providerBusy` instead of freeing it. A run either returns an answer or reports
 `insufficientEvidence` — it does not invent one.
 
 ## Local AI provider results (issue #4)
