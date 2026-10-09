@@ -691,6 +691,11 @@ fn record_failure(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior:
 pub fn clear_derived(tx: &Transaction<'_>, document_id: &str) -> NativeResult<()> {
     tx.execute("DELETE FROM chunks WHERE document_id = ?1", [document_id])?;
     tx.execute("DELETE FROM relationships WHERE source_document_id = ?1 OR target_document_id = ?1", [document_id])?;
+    // Coverage of the old revision and any in-flight pair touching it. The
+    // admission counter is untouched, so the revision re-enters with a new,
+    // larger seq and its job compares it against every other admitted document.
+    tx.execute("DELETE FROM ai_pair_progress WHERE document_id = ?1 OR partner_id = ?1", [document_id])?;
+    tx.execute("DELETE FROM ai_relationship_coverage WHERE document_id = ?1", [document_id])?;
     tx.execute("DELETE FROM derived_cache WHERE document_id = ?1", [document_id])?;
     Ok(())
 }
@@ -2053,6 +2058,36 @@ pub mod tests {
         assert!(space_after.iter().all(|relationship| !touches_changed_document(relationship)));
         assert!(other_space_after.iter().all(|relationship| !touches_changed_document(relationship)));
         assert!(!other_space_after.is_empty(), "unrelated pairs in another space remain valid");
+    }
+
+    #[test]
+    fn an_edit_clears_that_documents_coverage_and_pair_progress_but_not_the_counter() {
+        let folder = tempfile::tempdir().unwrap();
+        for name in ["a.md", "b.md", "c.md"] {
+            fs::write(folder.path().join(name), format!("Distinct note {name}.")).unwrap();
+        }
+        let mut conn = db::open_in_memory().unwrap();
+        let root = authorize(&conn, folder.path());
+        scan(&mut conn, &root);
+        let space = register_space(&conn, &EmbeddingSpace { model_id: "m".into(), revision: "1".into(), quantization: "q".into(), dimensions: 2, preprocessing_fingerprint: "p".into() }).unwrap();
+        let (a, b, c) = (id_of(&root, "a.md"), id_of(&root, "b.md"), id_of(&root, "c.md"));
+        conn.execute("INSERT INTO ai_relationship_seq (workspace_id, space_id, next_seq) VALUES (?1, ?2, 4)", params![root.id, space]).unwrap();
+        for (seq, id) in [(1, &a), (2, &b), (3, &c)] {
+            let hash: String = conn.query_row("SELECT content_hash FROM documents WHERE id = ?1", [id], |row| row.get(0)).unwrap();
+            conn.execute("INSERT INTO ai_relationship_coverage (workspace_id, space_id, document_id, content_hash, seq, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, '0')", params![root.id, space, id, hash, seq]).unwrap();
+        }
+        conn.execute("INSERT INTO ai_pair_progress (workspace_id, space_id, document_id, partner_id, document_hash, partner_hash, partner_seq, next_left, next_right, accumulator_json) VALUES (?1, ?2, ?3, ?4, 'h', 'h', 1, 0, 0, '{}')", params![root.id, space, c, a]).unwrap();
+        conn.execute("INSERT INTO ai_pair_progress (workspace_id, space_id, document_id, partner_id, document_hash, partner_hash, partner_seq, next_left, next_right, accumulator_json) VALUES (?1, ?2, ?3, ?4, 'h', 'h', 2, 0, 0, '{}')", params![root.id, space, b, a]).unwrap();
+
+        fs::write(folder.path().join("a.md"), "Rewritten note with different content.").unwrap();
+        scan(&mut conn, &root);
+
+        let covered: Vec<String> = conn.prepare("SELECT document_id FROM ai_relationship_coverage ORDER BY seq").unwrap().query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+        assert_eq!(covered, vec![b, c], "only the edited revision lost its coverage");
+        let progress: i64 = conn.query_row("SELECT count(*) FROM ai_pair_progress", [], |row| row.get(0)).unwrap();
+        assert_eq!(progress, 0, "in-flight pairs naming the edited document are gone, on either side");
+        let next: i64 = conn.query_row("SELECT next_seq FROM ai_relationship_seq", [], |row| row.get(0)).unwrap();
+        assert_eq!(next, 4, "seqs are never reused");
     }
 
     #[test]
