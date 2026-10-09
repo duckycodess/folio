@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
+use std::fs::Metadata;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +21,11 @@ const EXCERPT_BEFORE: usize = 120;
 const EXCERPT_LENGTH: usize = 360;
 const MAX_QUERY_TERMS: usize = 32;
 const PASSAGES_PER_RESULT: usize = 3;
+/// A document that keeps failing to read is retried on this many scans before the wait
+/// below starts (ADR 0009).
+const FREE_RETRIES: u32 = 2;
+const FIRST_WAIT_MS: u64 = 10 * 60 * 1000;
+const MAX_WAIT_MS: u64 = 6 * 60 * 60 * 1000;
 
 pub fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|elapsed| elapsed.as_millis() as u64).unwrap_or(0)
@@ -47,6 +53,10 @@ pub struct IndexedDocument {
     pub status_message: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub indexed_at_ms: Option<u64>,
+    /// For a `stale` or `failed` document: Local Sync will not read it again before this
+    /// time unless the file changes or the user asks Folio to check again.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
 }
 
 /// The link of an `explicitReference` relationship: as written, and where it resolved.
@@ -100,6 +110,7 @@ pub struct IndexProgress {
 }
 
 /// Counts describe what this scan did; `unchanged` documents were not re-extracted.
+/// `added + updated + unchanged + unsupported + failed + stale == total`.
 #[derive(Serialize, Default, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanSummary {
@@ -112,6 +123,9 @@ pub struct ScanSummary {
     pub unsupported: usize,
     pub failed: usize,
     pub stale: usize,
+    /// The `failed` and `stale` documents that were not read again this scan, because they
+    /// failed the same way recently. Already counted in `failed` or `stale`.
+    pub deferred: usize,
     /// Entries that could not be read or identified (e.g. a name that is not valid Unicode).
     pub skipped: usize,
     pub cancelled: bool,
@@ -143,11 +157,12 @@ pub fn passage(document_id: &str, document_hash: &str, start: usize, end: usize,
     SourcePassage { document_id: document_id.to_owned(), document_content_hash: document_hash.to_owned(), offset_unit: OffsetUnit::Utf8Byte, start, end, text: text.to_owned(), page }
 }
 
-const DOCUMENT_COLUMNS: &str = "id, workspace_id, relative_path, name, COALESCE(title, name), media_type, size_bytes, modified_at, content_hash, status, status_message, indexed_at";
+const DOCUMENT_COLUMNS: &str = "id, workspace_id, relative_path, name, COALESCE(title, name), media_type, size_bytes, modified_at, content_hash, status, status_message, indexed_at, retry_after";
 
 fn document_from_row(row: &Row<'_>) -> rusqlite::Result<IndexedDocument> {
     let modified: String = row.get(7)?;
     let indexed: Option<String> = row.get(11)?;
+    let retry_after: Option<String> = row.get(12)?;
     Ok(IndexedDocument {
         id: row.get(0)?,
         workspace_id: row.get(1)?,
@@ -162,6 +177,7 @@ fn document_from_row(row: &Row<'_>) -> rusqlite::Result<IndexedDocument> {
         status: row.get(9)?,
         status_message: row.get(10)?,
         indexed_at_ms: indexed.and_then(|value| value.parse().ok()),
+        retry_after_ms: retry_after.and_then(|value| value.parse().ok()),
     })
 }
 
@@ -185,7 +201,17 @@ struct Found {
     kind: MediaKind,
     size: i64,
     modified: String,
+    /// See `change_signature`.
+    signature: String,
 }
+
+impl Found {
+    fn new(relative: String, path: PathBuf, kind: MediaKind, metadata: &Metadata) -> Self {
+        Self { relative, path, kind, size: metadata.len() as i64, modified: modified_nanos(metadata), signature: change_signature(metadata) }
+    }
+}
+
+const EXISTING_COLUMNS: &str = "id, size_bytes, modified_at, content_hash, status, retry_failures, retry_after, retry_signature, retry_extractor";
 
 struct Existing {
     id: String,
@@ -193,6 +219,67 @@ struct Existing {
     modified: String,
     hash: String,
     status: String,
+    /// Consecutive failures with the same change signature and extractor version.
+    retry_failures: u32,
+    retry_after: Option<u64>,
+    retry_signature: Option<String>,
+    retry_extractor: Option<u32>,
+}
+
+impl Existing {
+    fn from_row(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            size: row.get(1)?,
+            modified: row.get(2)?,
+            hash: row.get(3)?,
+            status: row.get(4)?,
+            retry_failures: row.get(5)?,
+            retry_after: row.get::<_, Option<String>>(6)?.and_then(|value| value.parse().ok()),
+            retry_signature: row.get(7)?,
+            retry_extractor: row.get(8)?,
+        })
+    }
+
+    fn unreadable(&self) -> bool {
+        self.status == "stale" || self.status == "failed"
+    }
+
+    /// Whether the file and the extractor are the same as at the last failure.
+    fn failed_identically(&self, file: &Found) -> bool {
+        self.unreadable() && self.retry_signature.as_deref() == Some(file.signature.as_str()) && self.retry_extractor == Some(extract::EXTRACTOR_VERSION)
+    }
+
+    /// Whether an unreadable document is worth reading again: something changed since it
+    /// last failed, its free retries are not used up, or its wait is over. A wait longer
+    /// than the maximum means the clock went back, and is treated as over.
+    fn retry_due(&self, file: &Found, now: u64) -> bool {
+        !self.failed_identically(file) || self.retry_failures < FREE_RETRIES || self.retry_after.is_none_or(|after| now >= after || after > now.saturating_add(MAX_WAIT_MS))
+    }
+}
+
+/// What a scan may read regardless of the retry backoff, and the time it runs at.
+#[derive(Default)]
+pub struct ScanOptions {
+    /// The user asked Folio to check every unreadable document again.
+    pub recheck_unreadable: bool,
+    /// Documents the user asked Folio to check again. They are read even when unchanged.
+    pub recheck_ids: HashSet<String>,
+    pub now_ms: u64,
+}
+
+impl ScanOptions {
+    pub fn now() -> Self {
+        Self { now_ms: now_ms(), ..Default::default() }
+    }
+}
+
+/// How long to wait before reading a document again after `failures` consecutive identical
+/// failures: no wait for the first `FREE_RETRIES`, then 10 minutes, doubling up to 6 hours.
+fn backoff(failures: u32) -> u64 {
+    if failures <= FREE_RETRIES { return 0; }
+    let doublings = (failures - FREE_RETRIES - 1).min(16);
+    (FIRST_WAIT_MS << doublings).min(MAX_WAIT_MS)
 }
 
 /// What reading one file produced. Computed without touching the index, so a batch
@@ -202,6 +289,8 @@ enum Prepared {
     Unchanged,
     /// Read, and byte-identical to what the index holds.
     SameBytes,
+    /// A `stale` or `failed` record that failed the same way recently: not read at all.
+    Deferred,
     Indexed { hash: String, title: Option<String>, note: Option<String>, chunks: Vec<extract::Chunk> },
     Unsupported { hash: String, reason: String },
     Failure { hash: Option<String>, reason: String },
@@ -214,6 +303,7 @@ enum Outcome {
     Unsupported,
     Failed,
     Stale,
+    Deferred { stale: bool },
 }
 
 fn skipped_directory(name: &OsStr) -> bool {
@@ -221,8 +311,34 @@ fn skipped_directory(name: &OsStr) -> bool {
     name.starts_with('.') || name == "node_modules"
 }
 
-fn modified_nanos(metadata: &std::fs::Metadata) -> String {
+fn modified_nanos(metadata: &Metadata) -> String {
     metadata.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map(|elapsed| elapsed.as_nanos().to_string()).unwrap_or_default()
+}
+
+/// What a change to the file would alter, so an unreadable document is retried as soon as
+/// something happens to it: size and modification time, plus the change time and mode on
+/// Unix (so `chmod` counts) and the attributes on Windows (the read-only flag, a cloud
+/// placeholder being downloaded). Stable Rust does not expose the Windows change time, so
+/// there a permission (ACL) change or a released lock waits for the backoff or a re-check.
+fn change_signature(metadata: &Metadata) -> String {
+    format!("{}:{}{}", metadata.len(), modified_nanos(metadata), platform_signature(metadata))
+}
+
+#[cfg(unix)]
+fn platform_signature(metadata: &Metadata) -> String {
+    use std::os::unix::fs::MetadataExt;
+    format!(":{}.{}:{:o}", metadata.ctime(), metadata.ctime_nsec(), metadata.mode())
+}
+
+#[cfg(windows)]
+fn platform_signature(metadata: &Metadata) -> String {
+    use std::os::windows::fs::MetadataExt;
+    format!(":{:x}", metadata.file_attributes())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn platform_signature(_metadata: &Metadata) -> String {
+    String::new()
 }
 
 /// What a walk of the folder saw.
@@ -270,7 +386,7 @@ fn discover(root: &Path) -> NativeResult<Discovery> {
             discovery.unreadable.push(relative);
             continue;
         };
-        discovery.found.push(Found { relative, path: entry.path().to_path_buf(), kind, size: metadata.len() as i64, modified: modified_nanos(&metadata) });
+        discovery.found.push(Found::new(relative, entry.path().to_path_buf(), kind, &metadata));
         if discovery.found.len() > MAX_DOCUMENTS {
             return Err(error(ErrorCode::WorkspaceUnavailable, "This folder has more than 5,000 TXT, Markdown and PDF documents. Choose a smaller folder.").with_detail("reason", "tooManyDocuments").with_detail("limit", MAX_DOCUMENTS.to_string()));
         }
@@ -294,8 +410,9 @@ fn removed_paths<'a>(existing: impl Iterator<Item = &'a String>, present: &HashS
 /// files have their chunks, vectors, relationships and caches replaced; deleted files are
 /// removed, while records inside folders that could not be read are kept. Each batch is
 /// read and extracted first and only then written, so the write lock is held briefly.
-/// Cancellation keeps all completed batches.
-pub fn scan_workspace(conn: &mut Connection, root: &ScopedRoot, cancel: &AtomicBool, progress: &mut dyn FnMut(&IndexProgress)) -> NativeResult<ScanSummary> {
+/// Cancellation keeps all completed batches. Documents that keep failing to read back off
+/// (ADR 0009) unless `options` asks for them.
+pub fn scan_workspace(conn: &mut Connection, root: &ScopedRoot, options: &ScanOptions, cancel: &AtomicBool, progress: &mut dyn FnMut(&IndexProgress)) -> NativeResult<ScanSummary> {
     let started = std::time::Instant::now();
     let root_path = workspace::available_root(&root.path)?;
     let report = |phase, processed, total, current_path| IndexProgress { workspace_id: root.id.clone(), phase, processed, total, current_path };
@@ -306,8 +423,8 @@ pub fn scan_workspace(conn: &mut Connection, root: &ScopedRoot, cancel: &AtomicB
 
     let mut existing: HashMap<String, Existing> = HashMap::new();
     {
-        let mut statement = conn.prepare("SELECT relative_path, id, size_bytes, modified_at, content_hash, status FROM documents WHERE workspace_id = ?1")?;
-        let rows = statement.query_map([&root.id], |row| Ok((row.get::<_, String>(0)?, Existing { id: row.get(1)?, size: row.get(2)?, modified: row.get(3)?, hash: row.get(4)?, status: row.get(5)? })))?;
+        let mut statement = conn.prepare(&format!("SELECT {EXISTING_COLUMNS}, relative_path FROM documents WHERE workspace_id = ?1"))?;
+        let rows = statement.query_map([&root.id], |row| Ok((row.get::<_, String>(9)?, Existing::from_row(row)?)))?;
         for row in rows {
             let (path, record) = row?;
             existing.insert(path, record);
@@ -324,6 +441,7 @@ pub fn scan_workspace(conn: &mut Connection, root: &ScopedRoot, cancel: &AtomicB
     }
 
     let mut processed = 0;
+    let mut deferred_failures = 0;
     for batch in found.chunks(BATCH_SIZE) {
         let mut prepared = Vec::with_capacity(batch.len());
         for file in batch {
@@ -331,17 +449,26 @@ pub fn scan_workspace(conn: &mut Connection, root: &ScopedRoot, cancel: &AtomicB
                 summary.cancelled = true;
                 break;
             }
-            prepared.push((file, prepare_file(file, existing.get(&file.relative), false)));
+            prepared.push((file, prepare_file(file, existing.get(&file.relative), false, options)));
         }
         let tx = conn.transaction()?;
         for (file, result) in prepared {
-            match store_prepared(&tx, &root.id, file, existing.get(&file.relative), result)? {
+            match store_prepared(&tx, &root.id, file, existing.get(&file.relative), result, options.now_ms)? {
                 Outcome::Unchanged => summary.unchanged += 1,
                 Outcome::Added => summary.added += 1,
                 Outcome::Updated => summary.updated += 1,
                 Outcome::Unsupported => summary.unsupported += 1,
                 Outcome::Failed => summary.failed += 1,
                 Outcome::Stale => summary.stale += 1,
+                Outcome::Deferred { stale } => {
+                    summary.deferred += 1;
+                    if stale {
+                        summary.stale += 1;
+                    } else {
+                        summary.failed += 1;
+                        deferred_failures += 1;
+                    }
+                }
             }
             processed += 1;
         }
@@ -350,7 +477,8 @@ pub fn scan_workspace(conn: &mut Connection, root: &ScopedRoot, cancel: &AtomicB
         if summary.cancelled { break; }
     }
 
-    if summary.added + summary.updated + summary.removed + summary.unsupported + summary.failed > 0 {
+    // A deferred document changed nothing, so it does not call for relinking.
+    if summary.added + summary.updated + summary.removed + summary.unsupported + summary.failed - deferred_failures > 0 {
         progress(&report("linking", processed, found.len(), None));
         let tx = conn.transaction()?;
         rebuild_explicit_references(&tx, &root.id)?;
@@ -362,12 +490,16 @@ pub fn scan_workspace(conn: &mut Connection, root: &ScopedRoot, cancel: &AtomicB
 }
 
 /// Reads, hashes and extracts one file. Never touches the index. A `stale` or `failed`
-/// record is always re-read, so a file that was locked, offline or briefly unreadable
-/// recovers on the next scan. `verify` also re-reads current records (files Folio wrote).
-fn prepare_file(file: &Found, prior: Option<&Existing>, verify: bool) -> Prepared {
+/// record is re-read even when its size and time match, so a file that was locked, offline
+/// or briefly unreadable recovers; once it has failed the same way more than
+/// `FREE_RETRIES` times it is read only when it changes, the extractor changes, its wait is
+/// over or the user asks. `verify` (files Folio wrote) and a per-document re-check also
+/// re-read current records.
+fn prepare_file(file: &Found, prior: Option<&Existing>, verify: bool, options: &ScanOptions) -> Prepared {
     if let Some(prior) = prior {
-        let retry = prior.status == "stale" || prior.status == "failed";
-        if !verify && !retry && prior.size == file.size && prior.modified == file.modified { return Prepared::Unchanged; }
+        let forced = verify || options.recheck_ids.contains(&prior.id);
+        if !forced && !prior.unreadable() && prior.size == file.size && prior.modified == file.modified { return Prepared::Unchanged; }
+        if !forced && prior.unreadable() && !options.recheck_unreadable && !prior.retry_due(file, options.now_ms) { return Prepared::Deferred; }
     }
     let bytes = match workspace::read_bounded(&file.path, file.kind.max_bytes()) {
         Ok(bytes) => Some(bytes),
@@ -401,15 +533,16 @@ fn prepare_file(file: &Found, prior: Option<&Existing>, verify: bool) -> Prepare
 }
 
 /// Writes one prepared result. Runs inside the batch transaction and does no file I/O.
-fn store_prepared(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior: Option<&Existing>, prepared: Prepared) -> NativeResult<Outcome> {
+fn store_prepared(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior: Option<&Existing>, prepared: Prepared, now: u64) -> NativeResult<Outcome> {
     match prepared {
         Prepared::Unchanged => Ok(Outcome::Unchanged),
+        Prepared::Deferred => Ok(Outcome::Deferred { stale: prior.is_some_and(|prior| prior.status == "stale") }),
         Prepared::SameBytes => {
             // Refresh metadata only. A stale record whose file is back to its indexed
             // content is current again.
             let prior = prior.expect("identical bytes imply a prior record");
             tx.execute(
-                "UPDATE documents SET size_bytes = ?1, modified_at = ?2, status = CASE status WHEN 'stale' THEN 'indexed' ELSE status END, status_message = CASE status WHEN 'stale' THEN NULL ELSE status_message END WHERE id = ?3",
+                "UPDATE documents SET size_bytes = ?1, modified_at = ?2, status = CASE status WHEN 'stale' THEN 'indexed' ELSE status END, status_message = CASE status WHEN 'stale' THEN NULL ELSE status_message END, retry_failures = 0, retry_after = NULL, retry_signature = NULL, retry_extractor = NULL WHERE id = ?3",
                 params![file.size, file.modified, prior.id],
             )?;
             Ok(Outcome::Unchanged)
@@ -428,10 +561,12 @@ fn store_prepared(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior:
             clear_derived(tx, &id)?;
             Ok(Outcome::Unsupported)
         }
-        Prepared::Failure { hash, reason } => record_failure(tx, workspace_id, file, prior, &reason, hash.as_deref()),
+        Prepared::Failure { hash, reason } => record_failure(tx, workspace_id, file, prior, &reason, hash.as_deref(), now),
     }
 }
 
+/// Writes the document's record and clears its retry state; `record_failure` sets that
+/// state again afterwards.
 #[allow(clippy::too_many_arguments)]
 fn upsert_document(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior: Option<&Existing>, hash: &str, title: Option<&str>, status: &str, message: Option<&str>, indexed: bool) -> NativeResult<String> {
     let name = file.relative.rsplit('/').next().unwrap_or(&file.relative).to_owned();
@@ -439,7 +574,7 @@ fn upsert_document(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior
     match prior {
         Some(prior) => {
             tx.execute(
-                "UPDATE documents SET name = ?1, title = ?2, content_hash = ?3, media_type = ?4, size_bytes = ?5, modified_at = ?6, indexed_at = COALESCE(?7, indexed_at), status = ?8, status_message = ?9 WHERE id = ?10",
+                "UPDATE documents SET name = ?1, title = ?2, content_hash = ?3, media_type = ?4, size_bytes = ?5, modified_at = ?6, indexed_at = COALESCE(?7, indexed_at), status = ?8, status_message = ?9, retry_failures = 0, retry_after = NULL, retry_signature = NULL, retry_extractor = NULL WHERE id = ?10",
                 params![name, title, hash, file.kind.media_type(), file.size, file.modified, indexed_at, status, message, prior.id],
             )?;
             Ok(prior.id.clone())
@@ -457,22 +592,34 @@ fn upsert_document(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior
 
 /// Extraction failure never erases valid prior state: an indexed document keeps its chunks
 /// and becomes `stale`; a document with no usable prior index is recorded as `failed`.
-/// Both are retried on every scan until a read succeeds.
-fn record_failure(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior: Option<&Existing>, reason: &str, hash: Option<&str>) -> NativeResult<Outcome> {
-    match prior {
+/// Both are retried until a read succeeds, backing off while they fail the same way.
+fn record_failure(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior: Option<&Existing>, reason: &str, hash: Option<&str>, now: u64) -> NativeResult<Outcome> {
+    let failures = match prior {
+        Some(prior) if prior.failed_identically(file) => prior.retry_failures.saturating_add(1),
+        _ => 1,
+    };
+    let wait = backoff(failures);
+    let retry_after = (wait > 0).then(|| (now + wait).to_string());
+    let later = "Folio will check again later, or as soon as the file changes.";
+    let (id, outcome) = match prior {
         Some(prior) if prior.status == "indexed" || prior.status == "stale" => {
             tx.execute(
                 "UPDATE documents SET size_bytes = ?1, modified_at = ?2, status = 'stale', status_message = ?3 WHERE id = ?4",
-                params![file.size, file.modified, format!("The file changed but could not be re-read; search shows the previous version. {reason}"), prior.id],
+                params![file.size, file.modified, format!("This file changed, but Folio couldn't read the new version, so search shows the previous version. {reason} {later}"), prior.id],
             )?;
-            Ok(Outcome::Stale)
+            (prior.id.clone(), Outcome::Stale)
         }
         _ => {
-            let id = upsert_document(tx, workspace_id, file, prior, hash.unwrap_or(""), None, "failed", Some(reason), false)?;
+            let id = upsert_document(tx, workspace_id, file, prior, hash.unwrap_or(""), None, "failed", Some(&format!("{reason} {later}")), false)?;
             clear_derived(tx, &id)?;
-            Ok(Outcome::Failed)
+            (id, Outcome::Failed)
         }
-    }
+    };
+    tx.execute(
+        "UPDATE documents SET retry_failures = ?1, retry_after = ?2, retry_signature = ?3, retry_extractor = ?4 WHERE id = ?5",
+        params![failures, retry_after, file.signature, extract::EXTRACTOR_VERSION, id],
+    )?;
+    Ok(outcome)
 }
 
 /// Drops everything derived from a document's previous content. Embeddings cascade from chunks.
@@ -491,11 +638,7 @@ pub fn forget_document(tx: &Transaction<'_>, document_id: &str) -> NativeResult<
 }
 
 fn existing_at(conn: &Connection, workspace_id: &str, relative: &str) -> NativeResult<Option<Existing>> {
-    Ok(conn
-        .query_row("SELECT id, size_bytes, modified_at, content_hash, status FROM documents WHERE workspace_id = ?1 AND relative_path = ?2", [workspace_id, relative], |row| {
-            Ok(Existing { id: row.get(0)?, size: row.get(1)?, modified: row.get(2)?, hash: row.get(3)?, status: row.get(4)? })
-        })
-        .optional()?)
+    Ok(conn.query_row(&format!("SELECT {EXISTING_COLUMNS} FROM documents WHERE workspace_id = ?1 AND relative_path = ?2"), [workspace_id, relative], Existing::from_row).optional()?)
 }
 
 /// Re-indexes specific files after Folio changed them, then rebuilds link relationships.
@@ -503,6 +646,23 @@ fn existing_at(conn: &Connection, workspace_id: &str, relative: &str) -> NativeR
 /// write transaction opens.
 #[allow(dead_code)]
 pub fn refresh_paths(conn: &mut Connection, root: &ScopedRoot, relative_paths: &[String]) -> NativeResult<()> {
+    refresh(conn, root, relative_paths, true, &ScanOptions::now())
+}
+
+/// Reads the documents the user asked Folio to check again, whatever their retry backoff,
+/// and returns them as now indexed. A document whose file is gone is removed and left out.
+/// Every id must belong to this folder's index. Files are read in batches, like a scan.
+pub fn recheck_documents(conn: &mut Connection, root: &ScopedRoot, document_ids: &[String], now: u64) -> NativeResult<Vec<IndexedDocument>> {
+    let mut paths = Vec::with_capacity(document_ids.len());
+    for id in document_ids { paths.push(get_document(conn, &root.id, id)?.relative_path); }
+    paths.sort();
+    paths.dedup();
+    let options = ScanOptions { recheck_ids: document_ids.iter().cloned().collect(), now_ms: now, ..Default::default() };
+    for batch in paths.chunks(BATCH_SIZE) { refresh(conn, root, batch, false, &options)?; }
+    Ok(document_ids.iter().filter_map(|id| get_document(conn, &root.id, id).ok()).collect())
+}
+
+fn refresh(conn: &mut Connection, root: &ScopedRoot, relative_paths: &[String], verify: bool, options: &ScanOptions) -> NativeResult<()> {
     let mut prepared = Vec::new();
     let mut gone = Vec::new();
     for relative in relative_paths {
@@ -517,14 +677,14 @@ pub fn refresh_paths(conn: &mut Connection, root: &ScopedRoot, relative_paths: &
         };
         let kind = MediaKind::from_path(&path).ok_or_else(|| error(ErrorCode::UnsupportedMediaType, "Folio indexes TXT, Markdown and text-based PDF files."))?;
         let metadata = std::fs::metadata(&path)?;
-        let file = Found { relative: relative.clone(), path, kind, size: metadata.len() as i64, modified: modified_nanos(&metadata) };
-        let result = prepare_file(&file, prior.as_ref(), true);
+        let file = Found::new(relative.clone(), path, kind, &metadata);
+        let result = prepare_file(&file, prior.as_ref(), verify, options);
         prepared.push((file, prior, result));
     }
     let tx = conn.transaction()?;
     for id in &gone { forget_document(&tx, id)?; }
     for (file, prior, result) in prepared {
-        store_prepared(&tx, &root.id, &file, prior.as_ref(), result)?;
+        store_prepared(&tx, &root.id, &file, prior.as_ref(), result, options.now_ms)?;
     }
     rebuild_explicit_references(&tx, &root.id)?;
     tx.commit()?;
@@ -937,7 +1097,11 @@ pub mod tests {
     }
 
     pub fn scan(conn: &mut Connection, root: &ScopedRoot) -> ScanSummary {
-        scan_workspace(conn, root, &AtomicBool::new(false), &mut |_| {}).unwrap()
+        scan_at(conn, root, &ScanOptions::now())
+    }
+
+    pub fn scan_at(conn: &mut Connection, root: &ScopedRoot, options: &ScanOptions) -> ScanSummary {
+        scan_workspace(conn, root, options, &AtomicBool::new(false), &mut |_| {}).unwrap()
     }
 
     pub fn fixture_workspace() -> (tempfile::TempDir, Connection, ScopedRoot) {
@@ -1127,14 +1291,14 @@ pub mod tests {
     fn lost_folder_is_refused() {
         let (folder, mut conn, root) = fixture_workspace();
         drop(folder);
-        let failure = scan_workspace(&mut conn, &root, &AtomicBool::new(false), &mut |_| {}).unwrap_err();
+        let failure = scan_workspace(&mut conn, &root, &ScanOptions::now(), &AtomicBool::new(false), &mut |_| {}).unwrap_err();
         assert_eq!(failure.code, ErrorCode::WorkspaceUnavailable);
     }
 
     #[test]
     fn cancellation_stops_without_losing_completed_work() {
         let (_folder, mut conn, root) = fixture_workspace();
-        let summary = scan_workspace(&mut conn, &root, &AtomicBool::new(true), &mut |_| {}).unwrap();
+        let summary = scan_workspace(&mut conn, &root, &ScanOptions::now(), &AtomicBool::new(true), &mut |_| {}).unwrap();
         assert!(summary.cancelled);
         assert_eq!(summary.added, 0);
         let resumed = scan(&mut conn, &root);
@@ -1145,7 +1309,7 @@ pub mod tests {
     fn progress_reports_phases() {
         let (_folder, mut conn, root) = fixture_workspace();
         let mut phases = Vec::new();
-        scan_workspace(&mut conn, &root, &AtomicBool::new(false), &mut |progress| phases.push(progress.phase)).unwrap();
+        scan_workspace(&mut conn, &root, &ScanOptions::now(), &AtomicBool::new(false), &mut |progress| phases.push(progress.phase)).unwrap();
         assert_eq!(phases.first(), Some(&"discovering"));
         assert!(phases.contains(&"indexing") && phases.contains(&"linking"));
         assert_eq!(phases.last(), Some(&"done"));
@@ -1327,7 +1491,7 @@ pub mod tests {
         for index in 0..=MAX_DOCUMENTS { fs::write(folder.path().join(format!("n{index}.txt")), "x").unwrap(); }
         let mut conn = db::open_in_memory().unwrap();
         let root = authorize(&conn, folder.path());
-        let failure = scan_workspace(&mut conn, &root, &AtomicBool::new(false), &mut |_| {}).unwrap_err();
+        let failure = scan_workspace(&mut conn, &root, &ScanOptions::now(), &AtomicBool::new(false), &mut |_| {}).unwrap_err();
         assert_eq!((failure.code, failure.detail("reason")), (ErrorCode::WorkspaceUnavailable, Some("tooManyDocuments")));
         assert!(list_documents(&conn, &root.id).unwrap().is_empty());
     }
@@ -1362,5 +1526,250 @@ pub mod tests {
         assert_eq!(linked_path("a/b.md", "/etc/passwd"), None);
         assert_eq!(linked_path("a/b.md", "my%20notes.md#part").as_deref(), Some("a/my notes.md"));
         assert_eq!(linked_path("a/b.md", "%E0%A4%A"), None);
+    }
+
+    // Retry backoff for documents that keep failing to read (issue #28, ADR 0009). Scans
+    // run at fixed times so the waits are exact.
+
+    const MINUTE: u64 = 60 * 1000;
+    const T0: u64 = 1_800_000_000_000;
+
+    fn at(now_ms: u64) -> ScanOptions {
+        ScanOptions { now_ms, ..Default::default() }
+    }
+
+    fn retry_state(conn: &Connection, root: &ScopedRoot, path: &str) -> (u32, Option<String>) {
+        conn.query_row("SELECT retry_failures, retry_after FROM documents WHERE workspace_id = ?1 AND relative_path = ?2", [&root.id, path], |row| Ok((row.get(0)?, row.get(1)?))).unwrap()
+    }
+
+    /// `len` bytes that start like a PDF but are not one.
+    fn corrupt_pdf(len: usize, seed: u8) -> Vec<u8> {
+        let mut bytes = b"%PDF-1.4\n".to_vec();
+        bytes.extend((0..len.saturating_sub(bytes.len())).map(|index| (index as u8).wrapping_mul(31).wrapping_add(seed)));
+        bytes
+    }
+
+    fn corrupt_pdfs(folder: &Path, count: usize) -> Vec<String> {
+        (0..count)
+            .map(|index| {
+                let relative = format!("research/broken-{index}.pdf");
+                fs::write(folder.join(&relative), corrupt_pdf(4096, index as u8)).unwrap();
+                relative
+            })
+            .collect()
+    }
+
+    /// Records the file's current change signature as the one it last failed with, as when
+    /// it becomes readable without any visible change (a released lock, a finished cloud
+    /// download). Rewriting a file in a test also moves its Unix change time, which would
+    /// otherwise retry it at once.
+    fn forget_the_change(conn: &Connection, root: &ScopedRoot, relative: &str, folder: &Path) {
+        let signature = change_signature(&fs::metadata(folder.join(relative)).unwrap());
+        conn.execute("UPDATE documents SET retry_signature = ?1 WHERE id = ?2", params![signature, id_of(root, relative)]).unwrap();
+    }
+
+    #[test]
+    fn corrupt_pdfs_are_not_re_extracted_on_every_scan() {
+        let (folder, mut conn, root) = fixture_workspace();
+        let broken = corrupt_pdfs(folder.path(), 3);
+        for scan_number in 1..=3 {
+            let summary = scan_at(&mut conn, &root, &at(T0));
+            assert_eq!((summary.failed, summary.deferred), (3, 0), "scan {scan_number} reads them again");
+        }
+        let fourth = scan_at(&mut conn, &root, &at(T0));
+        assert_eq!((fourth.failed, fourth.deferred), (3, 3), "still reported, but not read");
+        assert_eq!(fourth.unchanged, fourth.total - 3);
+        assert_eq!(fourth.added + fourth.updated + fourth.unchanged + fourth.unsupported + fourth.failed + fourth.stale, fourth.total);
+        for path in &broken {
+            let (status, message) = status_of(&conn, &root, path);
+            assert_eq!(status, "failed");
+            let message = message.unwrap();
+            assert!(message.contains("will check again later"), "{message}");
+            for developer_term in ["os error", "lopdf", "Error"] {
+                assert!(!message.contains(developer_term), "{message}");
+            }
+        }
+        assert_eq!(get_document(&conn, &root.id, &id_of(&root, &broken[0])).unwrap().retry_after_ms, Some(T0 + 10 * MINUTE));
+    }
+
+    #[test]
+    fn a_file_fixed_with_the_same_size_and_time_recovers_after_the_window() {
+        let (folder, mut conn, root) = fixture_workspace();
+        let relative = "research/late.pdf";
+        let path = folder.path().join(relative);
+        let readable = testpdf::text_pdf(&[&["Recovered after the wait."]]);
+        let broken = corrupt_pdf(readable.len(), 7);
+        fs::write(&path, &broken).unwrap();
+        for _ in 0..3 { scan_at(&mut conn, &root, &at(T0)); }
+        becomes_readable_with_same_metadata(&path, &broken, &readable);
+        forget_the_change(&conn, &root, relative, folder.path());
+        assert_eq!(scan_at(&mut conn, &root, &at(T0 + 9 * MINUTE)).deferred, 1);
+        assert_eq!(status_of(&conn, &root, relative).0, "failed");
+        let after = scan_at(&mut conn, &root, &at(T0 + 10 * MINUTE));
+        assert_eq!(after.deferred, 0);
+        assert_eq!(status_of(&conn, &root, relative).0, "indexed");
+        assert_eq!(paths(&search(&conn, &root.id, "recovered", 5).unwrap()), vec![relative]);
+    }
+
+    #[test]
+    fn a_metadata_change_retries_immediately() {
+        let (folder, mut conn, root) = fixture_workspace();
+        let broken = corrupt_pdfs(folder.path(), 1).remove(0);
+        for _ in 0..3 { scan_at(&mut conn, &root, &at(T0)); }
+        assert_eq!(scan_at(&mut conn, &root, &at(T0)).deferred, 1);
+        // Read-only moves the change time and mode on Unix and the attributes on Windows.
+        let path = folder.path().join(&broken);
+        let original = fs::metadata(&path).unwrap().permissions();
+        let mut read_only = original.clone();
+        read_only.set_readonly(true);
+        fs::set_permissions(&path, read_only).unwrap();
+        let summary = scan_at(&mut conn, &root, &at(T0));
+        fs::set_permissions(&path, original).unwrap();
+        assert_eq!((summary.failed, summary.deferred), (1, 0), "the change is a reason to read it again");
+        assert_eq!(retry_state(&conn, &root, &broken), (1, None), "a failure of a changed file starts counting again");
+    }
+
+    #[test]
+    fn an_extractor_upgrade_retries_immediately() {
+        let (folder, mut conn, root) = fixture_workspace();
+        let broken = corrupt_pdfs(folder.path(), 1).remove(0);
+        for _ in 0..3 { scan_at(&mut conn, &root, &at(T0)); }
+        assert_eq!(scan_at(&mut conn, &root, &at(T0)).deferred, 1);
+        conn.execute("UPDATE documents SET retry_extractor = 0 WHERE id = ?1", [id_of(&root, &broken)]).unwrap();
+        assert_eq!(scan_at(&mut conn, &root, &at(T0)).deferred, 0);
+    }
+
+    #[test]
+    fn recheck_flag_and_recheck_documents_bypass_the_window() {
+        let (folder, mut conn, root) = fixture_workspace();
+        let broken = corrupt_pdfs(folder.path(), 2);
+        for _ in 0..3 { scan_at(&mut conn, &root, &at(T0)); }
+
+        let flagged = scan_at(&mut conn, &root, &ScanOptions { recheck_unreadable: true, now_ms: T0, ..Default::default() });
+        assert_eq!((flagged.failed, flagged.deferred), (2, 0));
+        assert_eq!(flagged.unchanged, flagged.total - 2, "the flag reads only the unreadable documents");
+        assert_eq!(scan_at(&mut conn, &root, &at(T0)).deferred, 2);
+
+        let readable = testpdf::text_pdf(&[&["Checked again on request."]]);
+        let path = folder.path().join(&broken[0]);
+        let padded = corrupt_pdf(readable.len(), 0);
+        fs::write(&path, &padded).unwrap();
+        for _ in 0..3 { scan_at(&mut conn, &root, &at(T0)); }
+        becomes_readable_with_same_metadata(&path, &padded, &readable);
+        forget_the_change(&conn, &root, &broken[0], folder.path());
+        assert_eq!(scan_at(&mut conn, &root, &at(T0)).deferred, 2);
+
+        let checked = recheck_documents(&mut conn, &root, &[id_of(&root, &broken[0])], T0).unwrap();
+        assert_eq!(checked.iter().map(|document| document.status.as_str()).collect::<Vec<_>>(), vec!["indexed"]);
+        assert_eq!(checked[0].retry_after_ms, None);
+        assert_eq!(paths(&search(&conn, &root.id, "request", 5).unwrap()), vec![broken[0].as_str()]);
+        assert_eq!(status_of(&conn, &root, &broken[1]).0, "failed", "only the named document was read");
+
+        let other_folder = tempfile::tempdir().unwrap();
+        fs::write(other_folder.path().join("a.md"), "another folder").unwrap();
+        let other = authorize(&conn, other_folder.path());
+        scan(&mut conn, &other);
+        for refused in [format!("{}:missing.md", root.id), id_of(&other, "a.md")] {
+            assert_eq!(recheck_documents(&mut conn, &root, &[refused], T0).unwrap_err().code, ErrorCode::DocumentUnavailable);
+        }
+    }
+
+    #[test]
+    fn a_deferred_stale_document_keeps_its_previous_version_searchable() {
+        let (folder, mut conn, root) = fixture_workspace();
+        scan_at(&mut conn, &root, &at(T0));
+        fs::write(folder.path().join("notes/paalala.md"), [0xff, 0xfe, 0xfd]).unwrap();
+        for _ in 0..3 { assert_eq!(scan_at(&mut conn, &root, &at(T0)).stale, 1); }
+        let deferred = scan_at(&mut conn, &root, &at(T0));
+        assert_eq!((deferred.stale, deferred.failed, deferred.deferred), (1, 0, 1));
+        let (status, message) = status_of(&conn, &root, "notes/paalala.md");
+        assert_eq!(status, "stale");
+        assert!(message.unwrap().contains("search shows the previous version"));
+        assert!(search(&conn, &root.id, "checklist", 20).unwrap().iter().any(|hit| hit.document.relative_path == "notes/paalala.md"));
+    }
+
+    #[test]
+    fn backoff_schedule() {
+        assert_eq!((backoff(0), backoff(1), backoff(2)), (0, 0, 0));
+        assert_eq!(backoff(3), 10 * MINUTE);
+        assert_eq!(backoff(4), 20 * MINUTE);
+        assert_eq!(backoff(8), 320 * MINUTE);
+        assert_eq!(backoff(9), MAX_WAIT_MS);
+        assert_eq!(backoff(u32::MAX), MAX_WAIT_MS);
+    }
+
+    #[test]
+    fn identical_failures_count_and_a_changed_file_restarts_the_count() {
+        let (folder, mut conn, root) = fixture_workspace();
+        let broken = corrupt_pdfs(folder.path(), 1).remove(0);
+        let after = |minutes: u64| Some((T0 + minutes * MINUTE).to_string());
+        scan_at(&mut conn, &root, &at(T0));
+        assert_eq!(retry_state(&conn, &root, &broken), (1, None));
+        scan_at(&mut conn, &root, &at(T0));
+        assert_eq!(retry_state(&conn, &root, &broken), (2, None));
+        scan_at(&mut conn, &root, &at(T0));
+        assert_eq!(retry_state(&conn, &root, &broken), (3, after(10)));
+        scan_at(&mut conn, &root, &at(T0 + 10 * MINUTE));
+        assert_eq!(retry_state(&conn, &root, &broken), (4, after(10 + 20)));
+        fs::write(folder.path().join(&broken), corrupt_pdf(8192, 99)).unwrap();
+        let changed = scan_at(&mut conn, &root, &at(T0 + 10 * MINUTE));
+        assert_eq!((changed.failed, changed.deferred), (1, 0));
+        assert_eq!(retry_state(&conn, &root, &broken), (1, None));
+    }
+
+    #[test]
+    fn a_wait_beyond_the_maximum_is_over_when_the_clock_goes_back() {
+        let (folder, mut conn, root) = fixture_workspace();
+        corrupt_pdfs(folder.path(), 1);
+        for _ in 0..3 { scan_at(&mut conn, &root, &at(T0)); }
+        assert_eq!(scan_at(&mut conn, &root, &at(T0 - MINUTE)).deferred, 1);
+        assert_eq!(scan_at(&mut conn, &root, &at(T0 - 7 * 60 * MINUTE)).deferred, 0, "never skipped longer than the maximum wait");
+    }
+
+    #[test]
+    fn a_successful_read_clears_retry_state() {
+        let (folder, mut conn, root) = fixture_workspace();
+        let relative = "notes/broken.md";
+        fs::write(folder.path().join(relative), [0xff, 0xfe]).unwrap();
+        for _ in 0..3 { scan_at(&mut conn, &root, &at(T0)); }
+        assert_eq!(retry_state(&conn, &root, relative).0, 3);
+        fs::write(folder.path().join(relative), "Fixed now.").unwrap();
+        scan_at(&mut conn, &root, &at(T0 + MINUTE));
+        assert_eq!(status_of(&conn, &root, relative).0, "indexed");
+        assert_eq!(retry_state(&conn, &root, relative), (0, None));
+        let (signature, extractor): (Option<String>, Option<u32>) = conn.query_row("SELECT retry_signature, retry_extractor FROM documents WHERE id = ?1", [id_of(&root, relative)], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!((signature, extractor), (None, None));
+    }
+
+    /// The measurement issue #28 asks for: rescans of the fixture corpus plus 30 damaged
+    /// 1 MiB PDFs, reading them on every scan (the scan flag) and with the backoff, and the
+    /// same for 30 PDFs whose one page inflates past the 16 MiB limit. Not run in CI.
+    #[test]
+    #[ignore = "measurement: cargo test measure_rescan_with_corrupt_pdfs -- --ignored --nocapture"]
+    fn measure_rescan_with_corrupt_pdfs() {
+        const RUNS: u32 = 5;
+        let corpora: [(&str, Box<dyn Fn(u8) -> Vec<u8>>); 2] = [
+            ("damaged 1 MiB PDFs", Box::new(|seed| corrupt_pdf(1024 * 1024, seed))),
+            ("PDFs whose page inflates past 16 MiB", Box::new(|_| testpdf::pdf_with_oversized_page(17 * 1024 * 1024, false))),
+        ];
+        for (label, make) in corpora {
+            let (folder, mut conn, root) = fixture_workspace();
+            for index in 0..30u8 {
+                fs::write(folder.path().join(format!("research/damaged-{index:02}.pdf")), make(index)).unwrap();
+            }
+            for _ in 0..3 { scan_at(&mut conn, &root, &at(T0)); }
+            let mut mean = |options: &ScanOptions, expected_deferred: usize| {
+                let started = std::time::Instant::now();
+                for _ in 0..RUNS {
+                    let summary = scan_at(&mut conn, &root, options);
+                    assert_eq!((summary.failed, summary.deferred), (30, expected_deferred));
+                }
+                started.elapsed() / RUNS
+            };
+            let every_scan = mean(&ScanOptions { recheck_unreadable: true, now_ms: T0, ..Default::default() }, 0);
+            let with_backoff = mean(&at(T0), 30);
+            let documents = list_documents(&conn, &root.id).unwrap().len();
+            println!("{documents} documents, 30 of them {label}; mean of {RUNS} rescans: read every scan {every_scan:?}, with backoff {with_backoff:?}");
+        }
     }
 }

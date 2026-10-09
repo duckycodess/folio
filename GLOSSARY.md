@@ -67,6 +67,9 @@ _Avoid_: Cross-device or cloud synchronization.
 **Stale Document**: A document that changed but could not be re-read, so Folio still shows what it knew from the previous version.
 _Avoid_: A current search result, a deleted document.
 
+**Check Again**: Asking Folio to read a document that could not be read, without waiting for Local Sync's next attempt.
+_Avoid_: Treating a document Folio cannot read yet as permanently unreadable.
+
 **Model Lab**: The settings area for choosing local models and inspecting actual task measurements.
 _Avoid_: Fabricated benchmarks or the main product identity.
 

@@ -22,7 +22,7 @@ use contracts::{ActionPlan, Approval, FileOperation, ImpactCandidate};
 use error::{error, ErrorCode, FolioError};
 use index::{
     ChunkVector, DuplicateGroup, EmbeddingSpace, ExplicitReference, IndexProgress,
-    IndexedDocument, PendingChunk, ScanSummary, SearchResult, VectorCandidate,
+    IndexedDocument, PendingChunk, ScanOptions, ScanSummary, SearchResult, VectorCandidate,
 };
 use plan::PlanRegistry;
 use workspace::{
@@ -143,11 +143,14 @@ async fn reopen_workspace(
 
 /// Local Sync: incrementally indexes the folder on its own connection, so
 /// search stays responsive. Progress arrives as `folio://index-progress`.
+/// `recheck_unreadable` reads every failed or stale document again, even
+/// those waiting out a retry backoff.
 #[tauri::command]
 async fn scan_workspace(
     app: AppHandle,
     state: State<'_, Folio>,
     workspace_id: String,
+    recheck_unreadable: Option<bool>,
 ) -> Result<ScanSummary, FolioError> {
     let root = state.root(&workspace_id)?;
     let index_path = state.index_path.clone();
@@ -157,13 +160,39 @@ async fn scan_workspace(
         let _scanning = scanning.lock().map_err(|_| unavailable_state())?;
         cancel.store(false, Ordering::SeqCst);
         let mut conn = db::open(&index_path)?;
-        index::scan_workspace(&mut conn, &root, &cancel, &mut |progress: &IndexProgress| {
+        let options = ScanOptions {
+            recheck_unreadable: recheck_unreadable.unwrap_or(false),
+            ..ScanOptions::now()
+        };
+        index::scan_workspace(&mut conn, &root, &options, &cancel, &mut |progress: &IndexProgress| {
             let _ = app.emit(INDEX_PROGRESS_EVENT, progress);
         })
     })
     .await
     .map_err(|cause| {
         error(ErrorCode::Internal, "Indexing stopped unexpectedly.").with_detail("cause", cause.to_string())
+    })?
+}
+
+/// "Check again" for specific documents: reads them now, whatever their retry
+/// backoff, and returns their updated records. Waits for a running scan.
+#[tauri::command]
+async fn recheck_documents(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    document_ids: Vec<String>,
+) -> Result<Vec<IndexedDocument>, FolioError> {
+    let root = state.root(&workspace_id)?;
+    let index_path = state.index_path.clone();
+    let scanning = state.scanning.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _scanning = scanning.lock().map_err(|_| unavailable_state())?;
+        let mut conn = db::open(&index_path)?;
+        index::recheck_documents(&mut conn, &root, &document_ids, index::now_ms())
+    })
+    .await
+    .map_err(|cause| {
+        error(ErrorCode::Internal, "Checking the documents stopped unexpectedly.").with_detail("cause", cause.to_string())
     })?
 }
 
@@ -349,6 +378,7 @@ pub fn run() {
             list_documents,
             read_document,
             scan_workspace,
+            recheck_documents,
             cancel_indexing,
             list_indexed_documents,
             search_index,

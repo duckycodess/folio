@@ -245,8 +245,7 @@ pub fn read_text(root: &Path, relative: &str) -> Result<DocumentText, FolioError
             "Folio reads TXT, Markdown and text-based PDF documents.",
         )
     })?;
-    let metadata = fs::metadata(&path)
-        .map_err(|cause| error(ErrorCode::DocumentUnavailable, cause.to_string()))?;
+    let metadata = fs::metadata(&path).map_err(read_failure)?;
     if media_type == "application/pdf" {
         // Text-based PDFs are read/index-only. `content` is the extracted text
         // (pages joined by a blank line); the hash and size are of the file bytes.
@@ -260,12 +259,11 @@ pub fn read_text(root: &Path, relative: &str) -> Result<DocumentText, FolioError
             content,
         });
     }
-    let file = fs::File::open(&path)
-        .map_err(|cause| error(ErrorCode::DocumentUnavailable, cause.to_string()))?;
+    let file = fs::File::open(&path).map_err(read_failure)?;
     let mut bytes = Vec::new();
     file.take(MAX_TEXT_BYTES + 1)
         .read_to_end(&mut bytes)
-        .map_err(|cause| error(ErrorCode::DocumentUnavailable, cause.to_string()))?;
+        .map_err(read_failure)?;
     if bytes.len() as u64 > MAX_TEXT_BYTES {
         return Err(error(
             ErrorCode::DocumentTooLarge,
@@ -292,8 +290,7 @@ pub fn read_text(root: &Path, relative: &str) -> Result<DocumentText, FolioError
 /// whole corpus.
 pub fn document_hash(root: &Path, relative: &str) -> Result<String, FolioError> {
     let path = resolve_document(root, relative)?;
-    let bytes =
-        fs::read(path).map_err(|cause| error(ErrorCode::DocumentUnavailable, cause.to_string()))?;
+    let bytes = fs::read(path).map_err(read_failure)?;
     Ok(content_hash(&bytes))
 }
 
@@ -312,12 +309,22 @@ pub fn available_root(path: &Path) -> Result<PathBuf, FolioError> {
     Ok(root)
 }
 
+/// A file that could not be opened or read, in words a person can act on. The operating
+/// system's own text ("Access is denied. (os error 5)") stays in `details.cause`.
+pub fn read_failure(cause: std::io::Error) -> FolioError {
+    let message = match cause.kind() {
+        std::io::ErrorKind::PermissionDenied => "Folio doesn't have permission to read this file.",
+        _ => "This file couldn't be read right now.",
+    };
+    error(ErrorCode::DocumentUnavailable, message).with_detail("cause", cause.to_string())
+}
+
 /// Reads at most `limit` bytes; a larger file is refused rather than truncated.
 pub fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, FolioError> {
     let mut bytes = Vec::new();
     fs::File::open(path)
         .and_then(|file| file.take(limit + 1).read_to_end(&mut bytes))
-        .map_err(|cause| error(ErrorCode::DocumentUnavailable, cause.to_string()))?;
+        .map_err(read_failure)?;
     if bytes.len() as u64 > limit {
         return Err(error(
             ErrorCode::DocumentTooLarge,
