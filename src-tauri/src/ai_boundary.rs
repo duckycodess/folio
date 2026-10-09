@@ -122,6 +122,21 @@ pub(crate) fn provider_failure(failure: NativeProviderError) -> FolioError {
             }
             result
         }
+        // Online generation (ADR 0017) reuses the frozen codes; `provider`
+        // tells the UI to word the recovery for Groq. Groq's reply body is
+        // never forwarded.
+        ProviderErrorCode::OnlineKeyMissing => error(ErrorCode::ModelNotInstalled, message)
+            .with_detail("provider", "groq")
+            .with_detail("component", "onlineKey"),
+        ProviderErrorCode::OnlineKeyRejected => error(ErrorCode::ModelLoadFailed, message)
+            .with_detail("provider", "groq")
+            .with_detail("reason", "keyRejected"),
+        ProviderErrorCode::OnlineUnavailable => error(ErrorCode::ModelLoadFailed, message)
+            .with_detail("provider", "groq")
+            .with_detail("reason", "unreachable"),
+        ProviderErrorCode::OnlineRateLimited => error(ErrorCode::ProviderBusy, message)
+            .with_detail("provider", "groq")
+            .with_detail("reason", "rateLimited"),
     }
 }
 
@@ -279,6 +294,19 @@ mod tests {
             (ProviderErrorCode::NoEvidence, ErrorCode::Internal),
             (ProviderErrorCode::IoError, ErrorCode::Internal),
             (ProviderErrorCode::TimedOut, ErrorCode::Internal),
+            (
+                ProviderErrorCode::OnlineKeyMissing,
+                ErrorCode::ModelNotInstalled,
+            ),
+            (
+                ProviderErrorCode::OnlineKeyRejected,
+                ErrorCode::ModelLoadFailed,
+            ),
+            (
+                ProviderErrorCode::OnlineUnavailable,
+                ErrorCode::ModelLoadFailed,
+            ),
+            (ProviderErrorCode::OnlineRateLimited, ErrorCode::ProviderBusy),
         ];
         for (code, expected) in cases {
             assert_eq!(
@@ -290,6 +318,25 @@ mod tests {
                 .code,
                 expected
             );
+        }
+    }
+
+    #[test]
+    fn online_failures_name_groq_and_never_carry_its_reply() {
+        for code in [
+            ProviderErrorCode::OnlineKeyMissing,
+            ProviderErrorCode::OnlineKeyRejected,
+            ProviderErrorCode::OnlineUnavailable,
+            ProviderErrorCode::OnlineRateLimited,
+        ] {
+            let failure = provider_failure(NativeProviderError {
+                code,
+                message: "failure".into(),
+                detail: Some("{\"error\":\"raw reply\"}".into()),
+            });
+            let details = failure.details.unwrap();
+            assert_eq!(details.get("provider").map(String::as_str), Some("groq"));
+            assert!(details.values().all(|value| !value.contains("raw reply")));
         }
     }
 

@@ -17,6 +17,7 @@ import { Panel } from "../ui/Panel";
 import { Progress } from "../ui/Progress";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
 import { ModelCard } from "./ModelCard";
+import { OnlineGenerationPanel } from "./OnlineGenerationPanel";
 
 function ResultsTable({ results }: { results: BenchmarkResult[] }) {
   return (
@@ -142,6 +143,7 @@ export function ModelLabView() {
           model takes once installed isn't measured.
         </p>
       )}
+      {models.load !== "desktopOnly" && <OnlineGenerationPanel />}
 
       <Panel title="Fixed-task results">
         <p className="muted">

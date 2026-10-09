@@ -14,6 +14,7 @@ pub mod embeddings;
 pub mod error;
 pub mod generation;
 pub mod grounding;
+pub mod hosted;
 pub mod interpretation;
 pub mod lab;
 pub mod models;

@@ -8,7 +8,7 @@ import { Button } from "./Button";
 import { Notice } from "./Notice";
 
 interface RecoveryNoticeProps {
-  error: Pick<FolioError, "code">;
+  error: Pick<FolioError, "code"> & Partial<Pick<FolioError, "details">>;
   /** For change-related errors: refused before any write (the default), during apply, or a partial Undo. */
   stage?: RecoveryStage;
   /** The next steps this screen can carry out; others aren't offered. */

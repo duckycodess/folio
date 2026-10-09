@@ -112,6 +112,26 @@ pub struct GroundedAnswer {
     pub coverage: Vec<DocumentId>,
     pub model_id: String,
     pub revision: String,
+    /// Where the text was generated. Absent on the wire for the local model,
+    /// so results stored before online generation still read as local.
+    #[serde(default, skip_serializing_if = "GenerationOrigin::is_local")]
+    pub origin: GenerationOrigin,
+}
+
+/// Where generated text came from: the local model, or the optional online
+/// generation the user turned on (ADR 0017).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GenerationOrigin {
+    #[default]
+    Local,
+    Groq,
+}
+
+impl GenerationOrigin {
+    pub fn is_local(&self) -> bool {
+        *self == Self::Local
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -122,6 +142,8 @@ pub struct GroundedResult {
     pub coverage: Vec<DocumentId>,
     pub model_id: String,
     pub revision: String,
+    #[serde(default, skip_serializing_if = "GenerationOrigin::is_local")]
+    pub origin: GenerationOrigin,
     pub kind: GroundedAnswerKind,
     pub sentences: Vec<GroundedSentence>,
     pub coverage_ranges: Vec<CoverageEntry>,
@@ -153,6 +175,14 @@ pub enum ProviderErrorCode {
     IoError,
     /// A generation request exceeded its total time budget.
     TimedOut,
+    /// Online generation is on but no key is stored.
+    OnlineKeyMissing,
+    /// The online service refused the stored key.
+    OnlineKeyRejected,
+    /// The online service couldn't be reached or failed on its side.
+    OnlineUnavailable,
+    /// The online service asked Folio to slow down.
+    OnlineRateLimited,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -358,6 +388,7 @@ mod contract_tests {
                 coverage: vec!["fixtures:projects/submission-checklist.md".into()],
                 model_id: "qwen3-0.6b-q4".into(),
                 revision: "revision-a".into(),
+                origin: GenerationOrigin::Local,
                 kind: GroundedAnswerKind::FileSummary,
                 sentences: vec![GroundedSentence {
                     text: "Community Learning Project is due October 20.".into(),
@@ -376,6 +407,22 @@ mod contract_tests {
             })
             .unwrap(),
         );
+    }
+
+    #[test]
+    fn only_an_online_result_names_its_origin() {
+        let local: GroundedResult = serde_json::from_str(
+            &std::fs::read_to_string(format!("{GOLDEN_ROOT}/grounded-answer.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(local.origin, GenerationOrigin::Local);
+        assert!(serde_json::to_value(&local).unwrap().get("origin").is_none());
+
+        let online = GroundedResult {
+            origin: GenerationOrigin::Groq,
+            ..local
+        };
+        assert_eq!(serde_json::to_value(&online).unwrap()["origin"], "groq");
     }
 
     #[test]

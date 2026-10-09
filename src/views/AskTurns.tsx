@@ -4,6 +4,7 @@ import {
   methodLabel,
   type AskTurn,
 } from "../app/askAct";
+import { isOnline, madeBy } from "../app/generatedBy";
 import { requestForFile } from "../app/proposals";
 import type { AskActController } from "../app/useAskAct";
 import type { RelationshipsState } from "../app/useRelationships";
@@ -189,6 +190,7 @@ export function TurnBody({
           <div className="summary-head">
             <Badge>Generated answer</Badge>
             <Badge>Not reviewed</Badge>
+            {isOnline(outcome.result) && <Badge>Online · Groq</Badge>}
           </div>
           <CitedSentences
             result={outcome.result}
@@ -196,8 +198,8 @@ export function TurnBody({
             onOpen={relations.openPassage}
           />
           <p className="muted">
-            Made by the local model {outcome.result.modelId}. Each point links
-            to the passage it came from.
+            {madeBy(outcome.result)}. Each point links to the passage it came
+            from.
           </p>
         </div>
       );

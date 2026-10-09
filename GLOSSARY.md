@@ -88,6 +88,9 @@ _Avoid_: Treating a document Folio cannot read yet as permanently unreadable.
 **Model Lab**: The settings area for choosing local models and inspecting actual task measurements.
 _Avoid_: Fabricated benchmarks or the main product identity.
 
+**Online Generation**: Writing summaries and answers through Groq's online service with the user's own key, instead of the local model. Off unless the user turns it on and accepts that the selected passages are sent to Groq.
+_Avoid_: Cloud sync, a fallback Folio switches to by itself, a local result.
+
 **Workspace Identity**: The stable identifier of an authorized folder, unchanged across restarts of Folio.
 _Avoid_: A new identifier each time the same folder is chosen.
 

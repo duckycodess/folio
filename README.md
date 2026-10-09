@@ -2,7 +2,7 @@
 
 **Search. Organize. Summarize.** A private desktop workspace for finding, understanding and managing local documents in English, Filipino and Taglish.
 
-Folio indexes the folders you choose, finds documents by keyword and by meaning, explains how files relate to each other, and proposes exact file changes that you review and approve before anything on disk changes. Documents and AI inference stay on your device. After the one-time model download, the core workflows run without an internet connection.
+Folio indexes the folders you choose, finds documents by keyword and by meaning, explains how files relate to each other, and proposes exact file changes that you review and approve before anything on disk changes. Documents and AI inference stay on your device, unless you turn on optional online writing through Groq for summaries and answers. After the one-time model download, the core workflows run without an internet connection.
 
 Students are the first audience: coursework, notes and project files spread across folders. The file workflows are general-purpose and work for anyone.
 

@@ -81,7 +81,7 @@ The demo uses 10–20 prepared documents with known related facts. The starter i
 
 The UI initially uses English labels. Documents, search, commands, and model responses support English, Filipino, and Taglish; respond in the user's language unless asked otherwise. Include cross-language retrieval, not just same-language matching. Additional languages remain available through multilingual models, with tested coverage reported honestly.
 
-Core operations must complete with internet disabled after installation/model setup. Initial model downloads can require internet. Hosted Jev and MCP remain optional future adapters. Sync is local index/graph refresh; cloud and cross-device synchronization are outside this MVP.
+Core operations must complete with internet disabled after installation/model setup. Initial model downloads can require internet. Online generation through Groq is an optional, off-by-default way to write summaries and answers with the user's own key (ADR 0017); with it off, nothing reaches the network. Hosted Jev and MCP remain optional future adapters. Sync is local index/graph refresh; cloud and cross-device synchronization are outside this MVP.
 
 Automatic virtual collections and project-wide summaries are stretch goals. Virtual collections do not copy or move documents; physical operations always require approval. Exact duplicate detection does not imply that similar documents are duplicates.
 

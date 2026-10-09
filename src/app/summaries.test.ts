@@ -154,6 +154,22 @@ describe("saving a summary", () => {
     expect(text).toContain("2. notes/plan.md: “Maya writes the report”");
   });
 
+  it("says a saved online summary was written by Groq, not locally", () => {
+    const text = summaryMarkdown(
+      { name: "plan.md", relativePath: "notes/plan.md" },
+      result({
+        modelId: "openai/gpt-oss-20b",
+        revision: "hosted",
+        origin: "groq",
+      }),
+      new Date(2026, 9, 10, 12),
+    );
+    expect(text).toContain(
+      "Generated online by Groq with openai/gpt-oss-20b on 2026-10-10",
+    );
+    expect(text).not.toContain("local model");
+  });
+
   it("calls a partial summary partial", () => {
     expect(
       summaryMarkdown(

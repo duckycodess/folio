@@ -11,6 +11,7 @@ mod identity;
 mod index;
 mod lab_commands;
 mod lab_store;
+mod online;
 mod organize;
 mod plan;
 mod ripple;
@@ -779,6 +780,9 @@ struct GenerationSlot {
 struct GenerationStateInner {
     slot: Option<GenerationSlot>,
     active_cancel: Option<Arc<AtomicBool>>,
+    /// The active request runs on the local server in `slot` (not online
+    /// generation), so cancelling it also stops that server's request.
+    active_local: bool,
     /// Set while the llama.cpp runtime is reinstalled, so no request starts a
     /// server from the directory being replaced.
     runtime_installing: bool,
@@ -1673,6 +1677,7 @@ fn acquire_generation(
         {
             let provider = slot.provider.clone();
             guard.active_cancel = Some(cancel.clone());
+            guard.active_local = true;
             return Ok((provider, cancel));
         }
     }
@@ -1692,7 +1697,51 @@ fn acquire_generation(
         provider: provider.clone(),
     });
     guard.active_cancel = Some(cancel.clone());
+    guard.active_local = true;
     Ok((provider, cancel))
+}
+
+/// The provider for summaries and answers: online generation when the user
+/// turned it on (ADR 0017), otherwise the local model. Either way one
+/// generation runs at a time, and an online request leaves the local model
+/// loaded.
+fn acquire_writer(
+    app: &AppHandle,
+    generation_state: &GenerationState,
+    online_state: &online::OnlineState,
+) -> Result<(Arc<dyn GenerationProvider>, Arc<AtomicBool>), NativeProviderError> {
+    let store = model_store(app)?;
+    match online::writer(&store, online_state.secrets())? {
+        Some(groq) => {
+            let cancel = claim_online_generation(generation_state)?;
+            Ok((Arc::new(groq), cancel))
+        }
+        None => {
+            let (provider, cancel) = acquire_generation(app, generation_state)?;
+            Ok((provider, cancel))
+        }
+    }
+}
+
+fn claim_online_generation(
+    generation_state: &GenerationState,
+) -> Result<Arc<AtomicBool>, NativeProviderError> {
+    let mut guard = generation_state.lock().map_err(|_| NativeProviderError {
+        code: folio_core::contracts::ProviderErrorCode::IoError,
+        message: "The local generation state is unavailable.".into(),
+        detail: None,
+    })?;
+    if guard.active_cancel.is_some() {
+        return Err(NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
+            message: "Another generation request is active.".into(),
+            detail: None,
+        });
+    }
+    let cancel = Arc::new(AtomicBool::new(false));
+    guard.active_cancel = Some(cancel.clone());
+    guard.active_local = false;
+    Ok(cancel)
 }
 
 fn finish_generation(
@@ -1710,6 +1759,7 @@ fn finish_generation(
         .is_some_and(|active| Arc::ptr_eq(active, cancel))
     {
         guard.active_cancel = None;
+        guard.active_local = false;
     }
     Ok(())
 }
@@ -1723,8 +1773,12 @@ fn cancel_generation(generation_state: State<'_, GenerationState>) -> Result<(),
     })?;
     if let Some(cancel) = guard.active_cancel.as_ref() {
         cancel.store(true, Ordering::Release);
-        if let Some(slot) = guard.slot.as_ref() {
-            slot.provider.cancel_active().map_err(native_error)?;
+        // An online request stops on the flag alone; the idle local server
+        // is left loaded.
+        if guard.active_local {
+            if let Some(slot) = guard.slot.as_ref() {
+                slot.provider.cancel_active().map_err(native_error)?;
+            }
         }
     }
     Ok(())
@@ -1742,11 +1796,12 @@ async fn summarize_document(
     let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
     let generation_state = generation_state.inner().clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
+        let online_state = app.state::<online::OnlineState>();
         let document_text = read_ai_document(&root, &relative_path)?;
         let content = document_text.content.clone();
         let passages =
             grounding::summary_passages(&document_id, &content, &document_text.content_hash);
-        let (provider, cancel) = acquire_generation(&app, &generation_state)?;
+        let (provider, cancel) = acquire_writer(&app, &generation_state, &online_state)?;
         let result = grounding::summarize_document(
             provider.as_ref(),
             passages,
@@ -1803,7 +1858,8 @@ async fn answer_question(
                 &AtomicBool::new(false),
             )?);
         }
-        let (provider, cancel) = acquire_generation(&app, &generation_state)?;
+        let online_state = app.state::<online::OnlineState>();
+        let (provider, cancel) = acquire_writer(&app, &generation_state, &online_state)?;
         let result = grounding::answer_question(
             Some(provider.as_ref()),
             &question,
@@ -1917,8 +1973,10 @@ fn stop_suggestion_run(runs: &SuggestionRuns, generation_state: &GenerationState
     if let Ok(guard) = generation_state.lock() {
         if guard.active_cancel.as_ref().is_some_and(|active| Arc::ptr_eq(active, &generation)) {
             generation.store(true, Ordering::Release);
-            if let Some(slot) = guard.slot.as_ref() {
-                let _ = slot.provider.cancel_active();
+            if guard.active_local {
+                if let Some(slot) = guard.slot.as_ref() {
+                    let _ = slot.provider.cancel_active();
+                }
             }
         }
     }
@@ -2089,6 +2147,7 @@ fn unload_generation_now(generation_state: &GenerationState) -> Result<(), Nativ
     if let Some(cancel) = guard.active_cancel.take() {
         cancel.store(true, Ordering::Release);
     }
+    guard.active_local = false;
     if let Some(slot) = guard.slot.take() {
         slot.provider.unload().map_err(native_error)?;
     }
@@ -2233,6 +2292,7 @@ mod tests {
             ("EmbeddingState", TypeId::of::<EmbeddingState>()),
             ("GenerationState", TypeId::of::<GenerationState>()),
             ("SuggestionRuns", TypeId::of::<SuggestionRuns>()),
+            ("OnlineState", TypeId::of::<online::OnlineState>()),
             ("InstallState", TypeId::of::<InstallState>()),
             ("LabState", TypeId::of::<lab_commands::LabState>()),
             ("Folio", TypeId::of::<Folio>()),
@@ -2242,6 +2302,33 @@ mod tests {
                 assert_ne!(id, other_id, "{name} and {other} are the same type");
             }
         }
+    }
+
+    #[test]
+    fn local_and_online_generation_share_one_slot() {
+        let state = GenerationState::default();
+        // A local request (or a Model Lab run) holds the slot.
+        let local = Arc::new(AtomicBool::new(false));
+        {
+            let mut guard = state.lock().unwrap();
+            guard.active_cancel = Some(local.clone());
+            guard.active_local = true;
+        }
+        let busy = claim_online_generation(&state).unwrap_err();
+        assert_eq!(
+            busy.code,
+            folio_core::contracts::ProviderErrorCode::GenerationBusy
+        );
+        finish_generation(&state, &local).unwrap();
+
+        let online = claim_online_generation(&state).unwrap();
+        assert!(!state.lock().unwrap().active_local);
+        assert!(claim_online_generation(&state).is_err());
+        // A stale finish from another request doesn't release it.
+        finish_generation(&state, &local).unwrap();
+        assert!(state.lock().unwrap().active_cancel.is_some());
+        finish_generation(&state, &online).unwrap();
+        assert!(state.lock().unwrap().active_cancel.is_none());
     }
 
     #[test]
@@ -2293,6 +2380,7 @@ pub fn run() {
         .manage(EmbeddingState::default())
         .manage(GenerationState::default())
         .manage(SuggestionRuns::default())
+        .manage(online::OnlineState::default())
         .manage(InstallState::default())
         // Each managed state must be its own type (see
         // `every_managed_state_has_its_own_type`).
@@ -2360,6 +2448,10 @@ pub fn run() {
             interpret_request,
             cancel_generation,
             unload_generation,
+            online::online_generation_status,
+            online::save_online_key,
+            online::forget_online_key,
+            online::set_online_generation,
             lab_commands::lab_models,
             lab_commands::install_lab_candidate,
             lab_commands::remove_lab_candidate,

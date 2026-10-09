@@ -119,6 +119,9 @@ function isGroundedResult(value: unknown): value is GroundedResult {
     value.coverage.every((documentId) => typeof documentId === "string") &&
     typeof value.modelId === "string" &&
     typeof value.revision === "string" &&
+    (value.origin === undefined ||
+      value.origin === "local" ||
+      value.origin === "groq") &&
     ["fileSummary", "partialSummary", "answer", "insufficientEvidence"].some(
       (kind) => kind === value.kind,
     ) &&
@@ -159,6 +162,10 @@ describe("native contract goldens", () => {
       "fixtures:projects/submission-checklist.md",
     ]);
     expect(answer.revision).toBe("revision-a");
+    // A local result carries no origin; only online generation names one.
+    expect(answer.origin).toBeUndefined();
+    expect(isGroundedResult({ ...result, origin: "groq" })).toBe(true);
+    expect(isGroundedResult({ ...result, origin: "cloud" })).toBe(false);
     expect(result.coverageRanges[0].offsetUnit).toBe("utf8Byte");
     expect(result.sources[0].start).toBe(43);
     expect(result.sources[0].end).toBe(88);

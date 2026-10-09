@@ -146,6 +146,10 @@ citations, `coverageRanges` carrying content hashes and UTF-8 byte ranges, and
 `uncitedSentenceCount`. The covered document IDs are distinct from the ranges:
 they describe retrieved evidence, not a claim about the whole corpus. A
 no-evidence result uses `revision: "none"` only when no provider ran.
+An optional `origin` names where the text was generated: it is absent for the
+local model (so older results and the golden fixture are unchanged) and
+`"groq"` for optional online generation (ADR 0017), whose `revision` is
+`"hosted"` because a hosted model has no pinned revision.
 
 The provider adapter keeps embedding and generation spaces separate. Semantic
 results carry `spaceFingerprint`, and a query or cached index from another
@@ -173,6 +177,13 @@ Core provider failures are translated at the native boundary to the frozen
 | `contextLimit`                                | `contextOverflow`        | —                                                     |
 | `embeddingSpaceMismatch`                      | `embeddingSpaceMismatch` | `expected`, `actual`                                  |
 | `invalidModelOutput`, `noEvidence`, `ioError` | `internal`               | `reportedCode` plus a safe digest/path when available |
+| `onlineKeyMissing`                            | `modelNotInstalled`      | `provider: "groq"`, `component: "onlineKey"`          |
+| `onlineKeyRejected`                           | `modelLoadFailed`        | `provider: "groq"`, `reason: "keyRejected"`           |
+| `onlineUnavailable`                           | `modelLoadFailed`        | `provider: "groq"`, `reason: "unreachable"`           |
+| `onlineRateLimited`                           | `providerBusy`           | `provider: "groq"`, `reason: "rateLimited"`           |
+
+The four online codes (ADR 0017) add no wire code; Groq's reply body is never
+forwarded in their details.
 
 These mappings and the additive result/proposal types are issue #4 proposals
 for TJ review. They do not add or weaken frozen error enums or identity types;

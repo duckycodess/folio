@@ -1,5 +1,27 @@
 # Implementation status
 
+## Online generation through Groq (#94)
+
+Optional online writing for summaries and answers, off by default (ADR 0017). Gab implemented it on `gab/94-groq`, stacked on #78's `gab/78-collections`.
+
+- `folio_core::hosted::GroqProvider` sits behind the existing `GenerationProvider` boundary. It sends one non-streaming HTTPS request to `https://api.groq.com/openai/v1/chat/completions` with Folio's schema in strict `json_schema` mode, temperature 0 and seed 7. For gpt-oss it adds `reasoning_effort: "low"`, `include_reasoning: false` and 1024 extra completion tokens; for Qwen, `reasoning_effort: "none"`. Only `openai/gpt-oss-20b` (the default), `openai/gpt-oss-120b` and `qwen/qwen3.8-27b` are allowed, because they enforce strict schemas (Groq's docs as of 2026-10-10). Cancel returns within about 100 ms; the abandoned request ends within the 120-second client timeout. Replies are capped at 1 MiB.
+- Results carry `origin: "groq"` and `revision: "hosted"`. A local result's JSON is unchanged. The Summary tab, Ask & Act answers and saved summary files say "Made online by Groq with <model>" (or "Generated online by Groq…") with an "Online · Groq" badge, never "local model".
+- Only `summarize_document` and `answer_question` use it. Interpretation, collection naming and embeddings stay local, so Ask & Act answers reach Groq only when a local writing model is installed too.
+- The key is kept in the OS keychain through `keyring` 3.6.3 (Windows Credential Manager, the macOS Keychain; the Linux kernel keyring for development). It's checked with Groq's model list before it's stored, and is never returned to the webview, written to `settings.json`, or included in an error. `settings.json` keeps `onlineGeneration: { enabled, modelId }`. Turning it on needs a stored key and the consent checkbox; forgetting the key turns it off. A key removed outside Folio is reported, not skipped.
+- An online request takes the same one-at-a-time generation slot, so it's refused while a local request or Model Lab run holds it, and the reverse. It doesn't unload the local model. Cancel stops the local server only when the active request is local.
+- Failures reuse frozen wire codes with `provider: "groq"`: no key → `modelNotInstalled`, refused key or unreachable → `modelLoadFailed`, rate limited → `providerBusy`. `recoveryFor` words them for Groq. Groq's reply body is never forwarded.
+- Model Lab has an "Online writing (optional)" panel (key entry, model, consent, on/off). The floating chat's "Local AI ready" label is unchanged, because Ask & Act still needs the local model to read requests.
+
+Tested on this Linux host (a QEMU virtual CPU without AVX, so the Rust test binaries ran under `qemu-x86_64 -cpu max`):
+
+- `folio-core` lib: 192 passed, 2 ignored. This includes the new hosted-provider tests against a scripted loopback HTTP server (request shape, status mapping with the key never in a message or detail, cut-off and malformed replies, cancel returning promptly, unreachable host, key check, model allowlist, Taglish prompt passed through), the origin stamping test, the contract serialization test and the settings test. The hosted tests also passed in a stand-alone crate run natively.
+- App crate lib: 258 passed, 2 ignored. This includes the online settings and key rules with an in-memory secret store, error mapping, and the shared generation slot.
+- `npm run check`, `npm test` (450 passed), `npm run build`, `npm run check:bundle` and Prettier passed. `npm run test:e2e`: 35 passed, 4 failed. The 4 viewport journeys fail the same way on the base branch (an axe `region` violation on `.olio-chat-greeting`), not because of this change. A temporary journey (not committed) opened the new panel at 1280 and 640 px: no horizontal scroll, no axe violations inside the view, and saving a key against the fake core showed the native error and kept the typed key.
+
+After rebasing onto #87's review fixes (the ADR renumbered to 0017, since #87's collections ADR became 0016; a suggestion Stop now cancels the local server only when the active request is local), the same host gave: `folio-core` 195 passed, app crate 264 passed, `npm test` 454 passed (9 todo), `npm run check`, `npm run build`, `npm run check:bundle` and Prettier passed, and Playwright 36 passed with the same 4 `viewports` failures.
+
+Not tested: any real request to Groq (that needs a user's key in the desktop app), the keychain on actual Windows or macOS, whether Groq accepts every Folio schema in strict mode in practice, Groq output quality in English, Filipino or Taglish, and the desktop window itself.
+
 ## PR #68 merge resolution
 
 Merged `main` at `7efb4b5` into the Model Lab branch. The native dependency
