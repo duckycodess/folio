@@ -330,6 +330,27 @@ fn retrieve(
     (results, cosine_scores)
 }
 
+/// Gate statistics and every chunk's cosine, BM25 and fused score for one
+/// query. Diagnostic evidence only; nothing is asserted on it.
+fn query_diagnostics(prepared: &PreparedAcceptance, query: &str) -> Value {
+    let embeddings = prepared
+        .embeddings
+        .lock()
+        .expect("embedding provider lock is available");
+    let query_embedding = embeddings
+        .embed_query(query, None)
+        .unwrap_or_else(|error| panic!("embed query {query:?}: {error}"));
+    let gate = prepared
+        .retriever
+        .evidence_gate(&query_embedding)
+        .unwrap_or_else(|error| panic!("gate query {query:?}: {error}"));
+    let scores = prepared
+        .retriever
+        .explain(&prepared.chunks, query, &query_embedding)
+        .unwrap_or_else(|error| panic!("explain query {query:?}: {error}"));
+    json!({ "evidenceGate": gate, "allChunkScores": scores })
+}
+
 fn retrieval_evidence(results: &[SearchResult]) -> Vec<Value> {
     results
         .iter()
@@ -473,14 +494,17 @@ fn r8_retrieval_cross_language() {
                 "englishToFilipino": {
                     "rankedDocuments": retrieval_evidence(&english),
                     "topKCosineScores": english_scores,
+                    "diagnostics": query_diagnostics(prepared, english_query),
                 },
                 "filipinoToEnglish": {
                     "rankedDocuments": retrieval_evidence(&filipino),
                     "topKCosineScores": filipino_scores,
+                    "diagnostics": query_diagnostics(prepared, filipino_query),
                 },
                 "taglish": {
                     "rankedDocuments": retrieval_evidence(&taglish),
                     "topKCosineScores": taglish_scores,
+                    "diagnostics": query_diagnostics(prepared, taglish_query),
                 },
             },
         }),
@@ -626,6 +650,7 @@ fn r8_evidence_gate() {
                 "query": query,
                 "rankedDocuments": retrieval_evidence(&results),
                 "topKCosineScores": scores,
+                "diagnostics": query_diagnostics(prepared, query),
             }),
         );
     }
@@ -726,6 +751,62 @@ fn r8_summary_cited_output() {
         "summary returned no sentences"
     );
     assert_citations_within(&summary, &supplied);
+}
+
+/// Records gate statistics for the development calibration queries in
+/// `tests/dev_calibration.json`. It asserts nothing about retrieval quality:
+/// its output is the data the provisional gate constants are set from, and
+/// it never reads the R8 acceptance inputs.
+#[test]
+#[ignore = "requires verified local E5 and llama.cpp model files"]
+fn calibration_dev_query_scores() {
+    let prepared = prepared();
+    let calibration: Value = serde_json::from_str(
+        &fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/dev_calibration.json"),
+        )
+        .expect("development calibration queries exist"),
+    )
+    .expect("development calibration queries are valid JSON");
+    let mut related = Vec::new();
+    for case in calibration["related"].as_array().expect("related queries") {
+        let query = case["query"].as_str().expect("related query text");
+        let (results, _) = retrieve(prepared, query, 5);
+        related.push(json!({
+            "query": query,
+            "relevant": &case["relevant"],
+            "rankedPaths": results
+                .iter()
+                .map(|result| result.document.relative_path.clone())
+                .collect::<Vec<_>>(),
+            "diagnostics": query_diagnostics(prepared, query),
+        }));
+    }
+    let mut unrelated = Vec::new();
+    for query in calibration["unrelated"]
+        .as_array()
+        .expect("unrelated queries")
+    {
+        let query = query.as_str().expect("unrelated query text");
+        let (results, _) = retrieve(prepared, query, 5);
+        unrelated.push(json!({
+            "query": query,
+            "rankedPaths": results
+                .iter()
+                .map(|result| result.document.relative_path.clone())
+                .collect::<Vec<_>>(),
+            "diagnostics": query_diagnostics(prepared, query),
+        }));
+    }
+    write_evidence(
+        "calibration_dev_query_scores",
+        json!({
+            "purpose": "development calibration data only; not acceptance evidence",
+            "calibrationRule": &calibration["calibrationRule"],
+            "related": related,
+            "unrelated": unrelated,
+        }),
+    );
 }
 
 #[test]

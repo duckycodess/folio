@@ -1,0 +1,50 @@
+{
+  "purpose": "Development-only queries for calibrating the semantic evidence gate. They are written for calibration, are not the R8 acceptance inputs, and must not be replaced by them. Held-out evaluation remains TJ's separate suite.",
+  "corpus": "fixtures/documents (the same 15 synthetic documents as R8)",
+  "calibrationRule": "GATE_MIN_MARGIN is the midpoint between the largest unrelated-query margin and the smallest related-query margin when the two sets separate; otherwise the value that maximizes related passes minus unrelated passes, preferring the lower value on ties. GATE_MIN_TOP_COSINE is chosen the same way from top cosines. Both are recorded with the run that produced them.",
+  "related": [
+    {
+      "query": "When is the presentation for the student project?",
+      "relevant": ["projects/project-plan.md", "notes/tala-sa-proyekto.md"]
+    },
+    {
+      "query": "Ano ang kailangan bago mangolekta ng sagot sa panayam?",
+      "relevant": [
+        "research/tala-sa-pamamaraan.md",
+        "research/methodology-notes.md"
+      ]
+    },
+    {
+      "query": "Kailan yung math practice session?",
+      "relevant": ["courses/math-review.md", "courses/pagsasanay-sa-math.md"]
+    },
+    {
+      "query": "What should I bring for the weekend trip?",
+      "relevant": ["personal/travel-notes.md"]
+    },
+    {
+      "query": "Ano ang bibilhin sa palengke ngayong Sabado?",
+      "relevant": ["personal/grocery-list.md"]
+    },
+    {
+      "query": "track spending for transport and school supplies",
+      "relevant": ["personal/budget-notes.md"]
+    },
+    {
+      "query": "Saan tayo mag-aaral sa Biyernes?",
+      "relevant": ["notes/study-session.md"]
+    },
+    {
+      "query": "Who is assigned to write the report?",
+      "relevant": ["meetings/meeting-notes.md"]
+    }
+  ],
+  "unrelated": [
+    "How do I renew a driver's license?",
+    "Sino ang nanalo sa basketball kagabi?",
+    "What is the capital city of Australia?",
+    "Paano ayusin ang sirang gulong ng bisikleta?",
+    "Best fan curve settings for a gaming laptop",
+    "Magkano ang palitan ng dolyar ngayon?"
+  ]
+}
