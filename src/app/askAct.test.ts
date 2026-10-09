@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { DocumentRecord, SearchResult } from "../domain/contracts";
+import type {
+  DocumentRecord,
+  InterpretationResult,
+  SearchResult,
+} from "../domain/contracts";
 import {
   addTurn,
   describeProposal,
@@ -7,6 +11,7 @@ import {
   MAX_TURNS,
   matchReason,
   methodLabel,
+  planAsk,
   preparingLabel,
   summaryTarget,
   targetsChosenFile,
@@ -218,5 +223,131 @@ describe("preparingLabel", () => {
         total: 10,
       }),
     ).toBe("Preparing search by meaning: 10 of 10 passages");
+  });
+});
+
+describe("planAsk", () => {
+  const doc = (relativePath: string): DocumentRecord => ({
+    id: `w:${relativePath}`,
+    workspaceId: "w",
+    relativePath,
+    name: relativePath.split("/").pop() ?? relativePath,
+    title: relativePath,
+    language: "en",
+    mediaType: "text/markdown",
+    sizeBytes: 1,
+  });
+  const plan = doc("projects/project-plan.md");
+  const budget = doc("personal/budget-notes.md");
+  const question: InterpretationResult = {
+    status: "nonMutating",
+    intent: "question",
+  };
+
+  it("answers a question that names no file from the whole folder", () => {
+    expect(planAsk(question, "When is the deadline?", undefined, "")).toEqual({
+      kind: "answer",
+      documentId: undefined,
+    });
+  });
+
+  it("scopes a question to the one file the request names", () => {
+    expect(
+      planAsk({ ...question, document: plan }, "Plan deadline?", undefined, ""),
+    ).toEqual({ kind: "answer", documentId: plan.id });
+  });
+
+  it("lets a file the user picked win over one Folio resolved", () => {
+    expect(
+      planAsk({ ...question, document: plan }, "Deadline?", budget, ""),
+    ).toEqual({ kind: "answer", documentId: budget.id });
+    expect(planAsk(question, "What does it say?", budget, "")).toEqual({
+      kind: "answer",
+      documentId: budget.id,
+    });
+  });
+
+  it("summarizes a chosen or named file directly, else finds the target", () => {
+    const summary: InterpretationResult = {
+      status: "nonMutating",
+      intent: "summarize",
+      targetQuery: "the plan",
+    };
+    expect(planAsk(summary, "Summarize the plan", budget, "")).toEqual({
+      kind: "summarize",
+      document: budget,
+    });
+    expect(
+      planAsk({ ...summary, document: plan }, "Summarize", undefined, ""),
+    ).toEqual({ kind: "summarize", document: plan });
+    expect(planAsk(summary, "Summarize the plan", undefined, "")).toEqual({
+      kind: "findSummaryTarget",
+      query: "the plan",
+    });
+    expect(
+      planAsk(
+        { status: "nonMutating", intent: "search" },
+        "Find the plan",
+        undefined,
+        "",
+      ),
+    ).toEqual({ kind: "results", query: "Find the plan" });
+  });
+
+  it("asks which file for a question only when the request names several", () => {
+    const selection: InterpretationResult = {
+      status: "needsFileSelection",
+      pendingIntent: "{}",
+      purpose: "question",
+      candidates: [
+        result("notes/a-notes.md", "keyword"),
+        result("b-notes.md", "keyword"),
+      ],
+    };
+    const step = planAsk(selection, "What do the notes say?", undefined, "");
+    expect(step).toMatchObject({
+      kind: "outcome",
+      outcome: { type: "chooseFile", purpose: "question" },
+    });
+    // Everything it named is outside the chosen folder scope: still a
+    // question about the folder, not an empty chooser.
+    expect(
+      planAsk(selection, "What do the notes say?", undefined, "elsewhere"),
+    ).toEqual({ kind: "answer" });
+  });
+
+  it("keeps the purpose of a selection and treats an older core's as a change", () => {
+    const base = {
+      status: "needsFileSelection" as const,
+      pendingIntent: "{}",
+      candidates: [result("a.md", "keyword")],
+    };
+    expect(planAsk(base, "Edit it", undefined, "")).toMatchObject({
+      outcome: { purpose: "change" },
+    });
+    expect(
+      planAsk({ ...base, purpose: "summarize" }, "Summarize", undefined, ""),
+    ).toMatchObject({ outcome: { purpose: "summarize" } });
+  });
+
+  it("refuses a change to a file other than the chosen one before any preview", () => {
+    const proposal: InterpretationResult = {
+      status: "proposal",
+      requestLanguage: "en",
+      proposal: {
+        kind: "rename",
+        documentId: plan.id,
+        relativePath: plan.relativePath,
+        observedContentHash: "sha256:x",
+        destinationRelativePath: "projects/plan-final.md",
+      },
+    };
+    expect(planAsk(proposal, "Rename it", budget, "").kind).toBe("outcome");
+    expect(planAsk(proposal, "Rename it", budget, "")).toMatchObject({
+      outcome: { type: "otherFile" },
+    });
+    expect(planAsk(proposal, "Rename it", plan, "")).toMatchObject({
+      outcome: { type: "proposal" },
+    });
   });
 });

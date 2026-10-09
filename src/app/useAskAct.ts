@@ -18,8 +18,8 @@ import type {
 import { toFolioError, type FolioError } from "../domain/errors";
 import {
   inScope,
+  planAsk,
   summaryTarget,
-  targetsChosenFile,
   type AskOutcome,
   type AskTurn,
 } from "./askAct";
@@ -235,18 +235,25 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
     request: string,
     chosen?: DocumentRecord,
   ): Promise<AskOutcome> {
-    const meaning = await interpretRequest(folder, request);
-    switch (meaning.status) {
-      case "nonMutating": {
-        const query = meaning.targetQuery?.trim() || request;
-        if (meaning.intent === "question")
-          return {
-            type: "answer",
-            result: await answerQuestion(folder, request),
-          };
-        const results = await search(folder, query);
-        if (meaning.intent === "search")
-          return { type: "results", query, results };
+    const meaning = await interpretRequest(folder, request, chosen?.id);
+    const step = planAsk(meaning, request, chosen, scope);
+    switch (step.kind) {
+      case "answer":
+        return {
+          type: "answer",
+          result: await answerQuestion(folder, request, step.documentId),
+        };
+      case "results":
+        return {
+          type: "results",
+          query: step.query,
+          results: await search(folder, step.query),
+        };
+      case "summarize":
+        void summarize(folder, step.document.id);
+        return { type: "summary", document: step.document };
+      case "findSummaryTarget": {
+        const results = await search(folder, step.query);
         const target = summaryTarget(results);
         if (!target)
           return {
@@ -257,24 +264,8 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
         void summarize(folder, target.id);
         return { type: "summary", document: target };
       }
-      case "needsFileSelection":
-        return {
-          type: "chooseFile",
-          purpose: "change",
-          candidates: inScope(meaning.candidates, scope),
-        };
-      case "needsClarification":
-        return { type: "clarify", question: meaning.question };
-      case "proposal":
-        // Naming the chosen file in the request doesn't bind the model, so
-        // a change to any other file is refused here, before any preview.
-        if (chosen && !targetsChosenFile(meaning.proposal, chosen.id))
-          return { type: "otherFile", proposal: meaning.proposal, chosen };
-        return { type: "proposal", proposal: meaning.proposal };
-      case "unsupported":
-        return { type: "unsupported", reason: meaning.reason };
-      case "invalidModelOutput":
-        return { type: "unreadable" };
+      case "outcome":
+        return step.outcome;
     }
   }
 
