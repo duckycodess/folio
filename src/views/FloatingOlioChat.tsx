@@ -1,5 +1,12 @@
 import { History, Maximize2, Paperclip, Send, Trash2, X } from "lucide-react";
-import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import { PRACTICE_LABEL } from "../adapters/mockChat";
 import { folderChoices } from "../app/fileActions";
 import { matchSlashCommands, parseCommand } from "../app/commands";
@@ -86,6 +93,10 @@ export function FloatingOlioChat({
   const launcherRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const messagesRef = useRef<HTMLDivElement>(null);
+  // Like a messenger: newest at the bottom, and the view follows it unless
+  // you've scrolled up to read something older.
+  const pinnedToLatest = useRef(true);
   // The running turn this chat saw start; only its end is announced, so
   // stored history and switching conversations announce nothing.
   const watching = useRef<number | null>(null);
@@ -133,6 +144,24 @@ export function FloatingOlioChat({
   useEffect(() => {
     if (open) textareaRef.current?.focus();
   }, [open, panel]);
+
+  function scrollToLatest() {
+    const messages = messagesRef.current;
+    if (messages) messages.scrollTop = messages.scrollHeight;
+  }
+
+  // Opening the chat or sending a request always jumps to the newest turn.
+  useLayoutEffect(() => {
+    if (!open || panel !== "chat") return;
+    pinnedToLatest.current = true;
+    scrollToLatest();
+  }, [open, panel, ask.turns.length]);
+
+  // A reply that grows (progress, then results) is followed only while
+  // you're still at the bottom.
+  useLayoutEffect(() => {
+    if (pinnedToLatest.current) scrollToLatest();
+  }, [latest]);
 
   if (view === "assistant") return null;
 
@@ -188,7 +217,7 @@ export function FloatingOlioChat({
     text.startsWith("/") && !text.includes(" ")
       ? matchSlashCommands(text.slice(1))
       : [];
-  const turns = [...ask.turns].reverse();
+  const turns = ask.turns;
 
   return (
     <div className="olio-chat">
@@ -271,7 +300,16 @@ export function FloatingOlioChat({
             />
           ) : (
             <>
-              <div className="olio-chat-messages" aria-live="off">
+              <div
+                ref={messagesRef}
+                className={`olio-chat-messages${turns.length > 0 ? " has-turns" : ""}`}
+                aria-live="off"
+                onScroll={(event) => {
+                  const box = event.currentTarget;
+                  pinnedToLatest.current =
+                    box.scrollHeight - box.scrollTop - box.clientHeight < 48;
+                }}
+              >
                 {turns.length === 0 ? (
                   <div className="olio-chat-welcome">
                     <h3 className="olio-chat-welcome-title">

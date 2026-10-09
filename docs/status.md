@@ -445,6 +445,12 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 
 ## Verification
 
+### Floating chat reads top to bottom (2026-10-10)
+
+The floating Olio chat listed the newest turn first. It now reads like a messenger: turns go oldest to newest down the panel, and a short conversation sits just above the composer. Opening the chat or sending a request scrolls to the newest turn, and a growing reply is followed only while you're at the bottom, so scrolling up to read older turns isn't interrupted. The full-page Ask & Act keeps newest-first, because its composer is at the top. `e2e/specs/olio-chat-order.spec.ts` sends three requests and checks their order and that the view ends at the newest. It fails on the old order.
+
+Tested locally on macOS in Chromium only: `npm run check`, `npm test`, `npm run build`, and `npx playwright test` (36 passed; the 4 `viewports.spec.ts` failures already on `main` are unchanged). Not checked in the Tauri window.
+
 ### Olio launcher always invites you to talk (2026-10-10)
 
 The floating chat's greeting used to be a separate, dismissible bubble. After one dismissal (remembered in `localStorage`) Olio sat in the corner with no visible prompt. The launcher is now the brandkit's single button: an always-visible speech bubble ("Hey, I'm Olio. Talk to me — let's find what you need ↗") pointing at the animated Olio. The bubble's text is the button's accessible name, which passes axe's `label-content-name-mismatch` rule. The dismiss control and its storage key are gone.

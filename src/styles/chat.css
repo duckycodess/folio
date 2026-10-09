@@ -135,10 +135,16 @@
 
 .olio-chat-messages {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
+  min-height: 0;
   gap: var(--space-3);
   padding: var(--space-3);
   overflow-y: auto;
+}
+/* A short conversation sits just above the composer, as in a messenger. */
+.olio-chat-messages.has-turns > :first-child {
+  margin-top: auto;
 }
 .olio-chat-welcome {
   padding: var(--space-2) 0;
