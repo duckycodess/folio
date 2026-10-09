@@ -24,13 +24,14 @@ describe("reader document", () => {
     expect(readerDocument("home", plan, listed(notes))).toBe(undefined);
   });
 
-  it("shows files opened from Graph or Ask & Act, which list their own results", () => {
+  it("shows files opened from Graph, Ask & Act, Activity or Organize, none of which filter their own file mentions", () => {
     expect(readerDocument("graph", plan, [])).toBe(plan);
     expect(readerDocument("assistant", plan, [])).toBe(plan);
+    expect(readerDocument("activity", plan, [])).toBe(plan);
+    expect(readerDocument("organize", plan, [])).toBe(plan);
   });
 
-  it("doesn't open the reader over Organize or Model Lab", () => {
-    expect(readerDocument("organize", plan, listed(plan))).toBe(undefined);
+  it("doesn't open the reader over Model Lab, which never names a file", () => {
     expect(readerDocument("modelLab", plan, listed(plan))).toBe(undefined);
   });
 });
@@ -43,7 +44,7 @@ describe("listed selection", () => {
     expect(listedSelection(plan, listed(plan, notes))).toBe(plan);
   });
 
-  it("drops a chosen file the search leaves out, so Organize can't act on it", () => {
+  it("drops a chosen file the current search or filters leave out", () => {
     expect(listedSelection(plan, listed(notes))).toBe(undefined);
     expect(listedSelection(undefined, listed(plan))).toBe(undefined);
   });

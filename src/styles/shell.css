@@ -1,14 +1,43 @@
-/* Layout: sidebar | main | document panel. Breakpoints: docs/design.md. */
+/* Layout: sidebar | main | [separator | reader]. Which of sidebar-rail,
+   reader-split and reader-overlay apply is computed from the app's own
+   measured width in AppShell.tsx (../app/shellLayout.ts), not a fixed
+   window breakpoint (#67): closing the reader can bring sidebar labels back
+   below 1180px, and a wide reader can collapse the sidebar above it. */
 .app {
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   height: 100vh;
   overflow: hidden;
 }
-.app.has-document {
-  grid-template-columns:
-    var(--sidebar-width) minmax(0, 1fr)
-    var(--detail-width);
+.app.sidebar-rail {
+  grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr);
+}
+/* Split: the list and the reader sit side by side, with a draggable
+   separator between them (--detail-width is set inline from the resized,
+   clamped width). */
+.app.reader-split {
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) 6px var(
+      --detail-width
+    );
+}
+.app.sidebar-rail.reader-split {
+  grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr) 6px var(
+      --detail-width
+    );
+}
+.resize-handle {
+  position: relative;
+  cursor: col-resize;
+  touch-action: none;
+}
+.resize-handle::before {
+  content: "";
+  position: absolute;
+  inset: 0 -4px;
+}
+.resize-handle:hover,
+.resize-handle:focus-visible {
+  background: var(--color-border-strong);
 }
 
 .skip-link {
@@ -121,6 +150,10 @@
 
 /* Main column */
 .main-column {
+  /* Placed explicitly: the overlay reader shares this cell, and grid places
+     explicit items first, so auto-placement would push the list out of it. */
+  grid-column: 2;
+  grid-row: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -184,6 +217,13 @@
   gap: var(--space-1);
   min-width: 0;
 }
+/* Narrow Home (#67 item 6): the mascot gives up its room so "Your
+   workspace" fits on one line instead of wrapping. */
+@media (max-width: 480px) {
+  .page-header-home .olio {
+    display: none;
+  }
+}
 .page-header-compact .page-title {
   font: var(--text-title);
   font-size: 1.5rem;
@@ -246,6 +286,32 @@
   border-left: 1px solid var(--color-border);
   background: var(--color-surface);
 }
+/* Overlay: shares the main column's grid cell instead of a column of its
+   own, floats over the list (which stays mounted behind it, scroll position
+   and all), and respects reduced motion for its one-time slide-in. */
+.app.reader-overlay .document-panel {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+  align-self: stretch;
+  width: var(--detail-width);
+  max-width: 100%;
+  border-left: 0;
+  z-index: 5;
+  box-shadow: var(--shadow-float);
+  animation: reader-slide-in 0.18s ease-out;
+}
+@keyframes reader-slide-in {
+  from {
+    transform: translateX(16px);
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app.reader-overlay .document-panel {
+    animation: none;
+  }
+}
 .document-panel-header {
   display: flex;
   align-items: flex-start;
@@ -253,6 +319,12 @@
   padding: var(--space-5) var(--space-4) var(--space-4);
 }
 .document-back {
+  display: none;
+}
+.document-panel-overlay .document-back {
+  display: inline-flex;
+}
+.document-panel-overlay .document-close {
   display: none;
 }
 .document-heading {
@@ -477,102 +549,47 @@
 }
 
 /* Icon rail: 1024px windows and narrower. */
+/* The icon rail: which class applies is computed in AppShell.tsx from the
+   app's measured width (plus whether the reader is open and how wide), not
+   a fixed breakpoint, so a wide window keeps labels even with the reader
+   open and a narrow one collapses sooner than it used to (#67 item 5). */
+.app.sidebar-rail .sidebar {
+  padding-inline: var(--space-2);
+  align-items: center;
+}
+.app.sidebar-rail .wordmark {
+  padding: 0;
+  font-size: 1.5rem;
+}
+.app.sidebar-rail .wordmark-full {
+  display: none;
+}
+.app.sidebar-rail .wordmark-short {
+  display: inline;
+}
+.app.sidebar-rail .nav-item {
+  justify-content: center;
+  padding: 0;
+  width: 44px;
+}
+.app.sidebar-rail .nav-label,
+.app.sidebar-rail .status-text {
+  display: none;
+}
+.app.sidebar-rail .status-pill {
+  justify-content: center;
+  width: 44px;
+  padding: var(--space-3) 0;
+}
+
 @media (max-width: 1180px) {
-  .app {
-    grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr);
-  }
-  .app.has-document {
-    grid-template-columns:
-      var(--sidebar-rail-width) minmax(0, 1fr)
-      var(--detail-width);
-  }
-  .sidebar {
-    padding-inline: var(--space-2);
-    align-items: center;
-  }
-  .wordmark {
-    padding: 0;
-    font-size: 1.5rem;
-  }
-  .wordmark-full {
-    display: none;
-  }
-  .wordmark-short {
-    display: inline;
-  }
-  .nav-item {
-    justify-content: center;
-    padding: 0;
-    width: 44px;
-  }
-  .nav-label,
-  .status-text {
-    display: none;
-  }
-  .status-pill {
-    justify-content: center;
-    width: 44px;
-    padding: var(--space-3) 0;
-  }
   .topbar,
   .main {
     padding-inline: var(--space-6);
   }
 }
 
-/* 700px minimum and 200% zoom: the document replaces the list. Search and
-   notices (read errors among them) stay visible above it. */
 @media (max-width: 860px) {
-  .app.has-document {
-    grid-template-columns: var(--sidebar-rail-width) minmax(0, 1fr);
-    grid-template-rows: auto auto minmax(0, 1fr);
-  }
-  .app.has-document .sidebar {
-    grid-row: 1 / -1;
-  }
-  .app.has-document .main-column {
-    display: contents;
-  }
-  .app.has-document .topbar {
-    grid-column: 2;
-    grid-row: 1;
-  }
-  .app.has-document .main {
-    grid-column: 2;
-    grid-row: 2;
-    overflow: visible;
-    padding-block: 0;
-  }
-  /* The list gives way to the reader, but the view's <h1> stays for screen
-     readers so the page keeps its main heading. */
-  .app.has-document .main > .view > :not(.page-header, .home-search) {
-    display: none;
-  }
-  .app.has-document .main > .view > .page-header {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-    white-space: nowrap;
-  }
-  .app.has-document .main > .notice {
-    margin: var(--space-3) 0 0;
-  }
-  .app.has-document .document-panel {
-    grid-column: 2;
-    grid-row: 3;
-  }
-  .document-panel {
-    border-left: 0;
-  }
-  .document-back {
-    display: inline-flex;
-  }
-  .document-close {
-    display: none;
-  }
   .topbar {
     flex-wrap: wrap;
     gap: var(--space-2);
@@ -586,8 +603,24 @@
   }
 }
 
+/* While a file is open, Home's mascot, tagline, pinned/recent strips, the
+   empty collections placeholder and the workspace source banner give way to
+   the file list and the reader, so both are on the first screen together at
+   1024×768 and 1280×850 (#67 item 3) — not only in short windows. */
+.app.has-document .page-header-home .olio,
+.app.has-document .page-header-home .page-tagline,
+.app.has-document .home-strip,
+.app.has-document .home-collections-empty,
+.app.has-document .workspace-source {
+  display: none;
+}
+.app.has-document .view {
+  gap: var(--space-4);
+}
+
 /* Short windows, down to the 600px minimum height: keep at least five file
-   rows on the first screen. The Home title stays available to screen readers. */
+   rows on the first screen even without a document open. The Home title
+   stays available to screen readers. */
 @media (max-height: 767px) {
   .page-header:not(.page-header-compact) {
     position: absolute;
@@ -735,10 +768,22 @@
 /* Home's search (#43): centred under the header, full width when narrow. */
 .home-search {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
+  gap: var(--space-2);
 }
 .home-search .search-field {
   max-width: 640px;
+}
+/* Narrow Home (#67 item 6): the ⌘K / Ctrl K hint gives up its room so the
+   placeholder ("Search files, ideas, or projects") isn't cut off. */
+@media (max-width: 480px) {
+  .home-search .search-field-shortcut {
+    display: none;
+  }
+  .home-search .search-field input {
+    padding-right: var(--space-3);
+  }
 }
 
 /* Model Lab: model setup cards and per-task results. */
@@ -818,6 +863,7 @@
 .home-filters {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   align-items: center;
   gap: var(--space-3);
 }
@@ -830,13 +876,27 @@
 .filter .select {
   max-width: 14rem;
 }
-.home-filters {
-  justify-content: center;
-}
 .filter-label {
   font: var(--text-small);
   font-weight: 600;
   color: var(--color-text-secondary);
+}
+/* Narrow Home (#67 item 6): each filter wraps as a label-above-control pair
+   instead of a label-beside-select row that ends up centred as a whole. */
+@media (max-width: 480px) {
+  .home-filters {
+    justify-content: stretch;
+    align-items: stretch;
+  }
+  .filter {
+    flex: 1 1 100%;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-1);
+  }
+  .filter .select {
+    max-width: none;
+  }
 }
 .select {
   min-height: 36px;
@@ -1355,6 +1415,11 @@
 .change-line.is-undone > span:not(.muted) {
   text-decoration: line-through;
   color: var(--color-text-secondary);
+}
+/* Opens the file at its current path (#67): same size as the rest of the
+   line, not the larger default link-button text. */
+.change-line-path {
+  font: inherit;
 }
 
 /* Ask & Act changes: the exact text diff and Ripple passages. */

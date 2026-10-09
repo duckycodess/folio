@@ -27,6 +27,12 @@ interface DocumentPanelProps {
   actions?: RowMenuItem[];
   onClose: () => void;
   onNavigate: (view: ViewId) => void;
+  /**
+   * True when there isn't room to show the list and the reader side by
+   * side, so the reader covers the list as an overlay instead (#67). The
+   * list stays mounted behind it; Back and Escape return to it.
+   */
+  isOverlay?: boolean;
 }
 
 export function DocumentPanel({
@@ -37,6 +43,7 @@ export function DocumentPanel({
   actions,
   onClose,
   onNavigate,
+  isOverlay = false,
 }: DocumentPanelProps) {
   // Evidence opened from Related or Graph shows the passage in Details.
   const focus =
@@ -68,19 +75,29 @@ export function DocumentPanel({
   const id = useId();
   const heading = useRef<HTMLHeadingElement>(null);
 
-  // The panel is keyed by document, so this runs each time one opens. In
-  // narrow windows the panel replaces the list, so the row that opened it is
-  // hidden; elsewhere focus stays on the list unless it was lost (a Related
-  // link replaced the previous panel).
+  // The panel is keyed by document, so this runs each time one opens. As an
+  // overlay it covers the row that opened it, so focus moves into the panel;
+  // otherwise focus stays on the list unless it was lost (a Related link
+  // replaced the previous panel).
   useEffect(() => {
     const active = window.document.activeElement;
-    if (
-      window.matchMedia("(max-width: 860px)").matches ||
-      !active ||
-      active === window.document.body
-    )
+    if (isOverlay || !active || active === window.document.body)
       heading.current?.focus();
+    // Only on mount: a focus change afterwards (e.g. a tab click) is the
+    // user's, not something to override.
   }, []);
+
+  // When the window narrows while the panel is open, it starts overlaying
+  // the list, which becomes inert: focus there would be lost, so it moves in.
+  const wasOverlay = useRef(isOverlay);
+  useEffect(() => {
+    const became = isOverlay && !wasOverlay.current;
+    wasOverlay.current = isOverlay;
+    if (!became) return;
+    const panel = heading.current?.closest("aside");
+    if (!panel?.contains(window.document.activeElement))
+      heading.current?.focus();
+  }, [isOverlay]);
 
   function onTabKeyDown(event: KeyboardEvent, index: number) {
     const next =
@@ -96,7 +113,10 @@ export function DocumentPanel({
   }
 
   return (
-    <aside className="document-panel" aria-label={`${document.name} details`}>
+    <aside
+      className={`document-panel${isOverlay ? " document-panel-overlay" : ""}`}
+      aria-label={`${document.name} details`}
+    >
       <div className="document-panel-header">
         <button
           type="button"
