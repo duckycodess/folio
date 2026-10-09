@@ -198,6 +198,21 @@ describe("a single-plan action", () => {
     expect(planAction(refused, { type: "undoStarted", request: 5 })).toBe(
       refused,
     );
+    // Previewing it again from the refusal checks afresh and clears the error.
+    const again = planAction(refused, {
+      type: "undoPreviewStarted",
+      request: 5,
+    });
+    expect(again.stage).toBe("previewingUndo");
+    expect(again.undoPreflight).toBeNull();
+    expect(again.error).toBeNull();
+    expect(
+      planAction(again, {
+        type: "undoPreviewed",
+        request: 5,
+        preflight: UNDOABLE,
+      }).stage,
+    ).toBe("undoPreview");
   });
 
   it("offers Undo only when something was saved with history", () => {

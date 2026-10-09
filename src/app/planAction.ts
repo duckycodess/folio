@@ -126,7 +126,11 @@ export function planAction(
     case "applied":
       return { ...state, stage: "result", report: event.report };
     case "undoPreviewStarted":
-      return (state.stage === "result" || state.stage === "undone") &&
+      // Also from a shown preflight, so "Preview again" after a refused Undo
+      // checks afresh instead of leaving only "Keep the changes".
+      return (state.stage === "result" ||
+        state.stage === "undone" ||
+        state.stage === "undoPreview") &&
         hasUndoableChange(state.report)
         ? {
             ...state,
