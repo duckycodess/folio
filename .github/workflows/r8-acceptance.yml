@@ -231,6 +231,16 @@ jobs:
               except OSError as error:
                   return f"unavailable: {error}"
 
+          def cpu_model():
+              try:
+                  with open("/proc/cpuinfo", encoding="utf-8") as stream:
+                      for line in stream:
+                          if line.startswith("model name"):
+                              return line.split(":", 1)[1].strip()
+                  return "unavailable: model name was not reported"
+              except (OSError, IndexError) as error:
+                  return f"unavailable: {error}"
+
           def command(*args):
               try:
                   return subprocess.check_output(args, text=True).strip()
@@ -251,7 +261,7 @@ jobs:
               "runner": {
                   "os": platform.platform(),
                   "kernel": platform.release(),
-                  "cpuModel": first_line("/proc/cpuinfo").removeprefix("model name\t: "),
+                  "cpuModel": cpu_model(),
                   "logicalCpus": os.cpu_count(),
                   "memTotal": first_line("/proc/meminfo"),
               },
