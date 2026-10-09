@@ -220,6 +220,13 @@ export interface DocumentRecord {
   contentHash?: ContentHash;
   /** Decoded UTF-8 text, present only once the document has been read. */
   content?: string;
+  /**
+   * For a read PDF: each page's text in `content`, as UTF-8 byte offsets, in
+   * page order. Absent for TXT and Markdown.
+   */
+  pages?: { page: number; start: number; end: number }[];
+  /** For a read PDF: pages whose text couldn't be extracted. */
+  unreadablePages?: number[];
 }
 
 /* -------------------------------------------------------- source passages */
