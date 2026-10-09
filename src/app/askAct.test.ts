@@ -189,7 +189,7 @@ describe("namedFiles", () => {
     } as DocumentRecord;
   }
   const documents = [
-    doc("career/VILAR_Resume.pdf"),
+    doc("career/Sample_Resume.pdf"),
     doc("career/cover-letter.md"),
     doc("notes/resume-tips.md"),
     doc("notes/budget.txt"),
@@ -198,29 +198,39 @@ describe("namedFiles", () => {
   it("finds a file by the name written in the request, whatever else it says", () => {
     const { named, exact } = namedFiles(
       documents,
-      "VILAR_Resume.pdf fine files",
+      "Sample_Resume.pdf fine files",
     );
     expect(named.map((each) => each.document.relativePath)).toEqual([
-      "career/VILAR_Resume.pdf",
+      "career/Sample_Resume.pdf",
     ]);
     expect(exact.map((each) => each.relativePath)).toEqual([
-      "career/VILAR_Resume.pdf",
+      "career/Sample_Resume.pdf",
     ]);
   });
 
   it("names a file without its extension or case, but only exact names are written out", () => {
-    const { named, exact } = namedFiles(documents, "find vilar resume");
+    const { named, exact } = namedFiles(documents, "find sample resume");
     expect(named.map((each) => each.document.name)).toEqual([
-      "VILAR_Resume.pdf",
+      "Sample_Resume.pdf",
     ]);
     expect(exact).toEqual([]);
+  });
+
+  it("writes out a file name only as a whole name", () => {
+    const files = [doc("a/notes.md"), doc("a/old-notes.md")];
+    const { exact } = namedFiles(files, "summarize old-notes.md please");
+    expect(exact.map((each) => each.name)).toEqual(["old-notes.md"]);
+    // Sentence punctuation after a name still counts as writing it out.
+    expect(
+      namedFiles(files, "Summarize notes.md.").exact.map((each) => each.name),
+    ).toEqual(["notes.md"]);
   });
 
   it("lists files sharing a word with the request after named ones", () => {
     const { named, partial } = namedFiles(documents, "my resume");
     expect(named).toEqual([]);
     expect(partial.map((each) => each.document.name)).toEqual([
-      "VILAR_Resume.pdf",
+      "Sample_Resume.pdf",
       "resume-tips.md",
     ]);
     expect(partial.every((each) => each.method === "keyword")).toBe(true);

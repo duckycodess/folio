@@ -1329,7 +1329,7 @@ Likely cause: `build_interpretation_messages`'s few-shot examples were all mutat
 
 ### Ask & Act finds files by name (2026-10-10)
 
-"VILAR_Resume.pdf find files" found nothing in a folder holding that file: Ask & Act's search (`search` in `src/app/useAskAct.ts`, used by Find and by the interpreter's search and summarize intents) sent the request to the index, which scores only file text, never file names. Home search already merged a local name match; Ask & Act did not.
+"Sample_Resume.pdf find files" found nothing in a folder holding that file: Ask & Act's search (`search` in `src/app/useAskAct.ts`, used by Find and by the interpreter's search and summarize intents) sent the request to the index, which scores only file text, never file names. Home search already merged a local name match; Ask & Act did not.
 
 **Fix:** `namedFiles` (`src/app/askAct.ts`) matches the request's words against file names. A file whose every name word (extension aside) is in the request is listed first, then the index's results, then files sharing a longer word with the request. Name matches are labelled keyword matches with no passages, never semantic. If the index can't answer (not prepared, no embedding model) but a name matches, the name matches are shown instead of the error. A summarize request whose text writes out exactly one file's full name now uses that file instead of asking the user to choose.
 

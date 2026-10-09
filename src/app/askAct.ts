@@ -121,8 +121,21 @@ function lowerWords(value: string): string[] {
 }
 
 /**
+ * Whether `written` spells out `name` as a whole file name, so naming
+ * `old-notes.md` doesn't also name `notes.md`.
+ */
+function writesName(written: string, name: string): boolean {
+  const wanted = name.normalize("NFKC").toLocaleLowerCase();
+  const escaped = wanted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `(?<![\\p{L}\\p{N}_.-])${escaped}(?![\\p{L}\\p{N}_-])`,
+    "u",
+  ).test(written);
+}
+
+/**
  * Files the request names. The index scores only file text, so without this
- * "find VILAR_Resume.pdf" finds nothing unless the resume's text says so. A
+ * "find Sample_Resume.pdf" finds nothing unless the resume's text says so. A
  * file is `named` when every word of its name (extension aside) is in the
  * request, and `partial` when its name shares a longer word with it.
  * `exact` holds the files whose full name, extension included, is written in
@@ -162,9 +175,7 @@ export function namedFiles(
     named,
     exact: named
       .map(({ document }) => document)
-      .filter((document) =>
-        written.includes(document.name.normalize("NFKC").toLocaleLowerCase()),
-      ),
+      .filter((document) => writesName(written, document.name)),
     partial: partial
       .sort((a, b) => b.matched - a.matched || byPath(a.result, b.result))
       .map(({ result }) => result),
