@@ -48,6 +48,34 @@ fn wrong_case(task: &str, case: &SuiteCase) -> Evaluation {
     }
 }
 
+/// The paths of the top `RETRIEVAL_LIMIT` distinct contents, as search limits
+/// them: a byte-identical copy is listed with its original and doesn't take one
+/// of the five places.
+fn top_distinct(results: &[SearchResult]) -> Vec<&str> {
+    let mut seen = std::collections::HashSet::new();
+    let mut distinct = 0_usize;
+    let mut top = Vec::new();
+    for result in results {
+        let identity = result.document.content_hash.as_deref().or_else(|| {
+            result
+                .passages
+                .first()
+                .map(|passage| passage.document_content_hash.as_str())
+        });
+        if !identity.is_some_and(|hash| seen.contains(hash)) {
+            if distinct >= RETRIEVAL_LIMIT {
+                continue;
+            }
+            distinct += 1;
+            if let Some(hash) = identity {
+                seen.insert(hash);
+            }
+        }
+        top.push(result.document.relative_path.as_str());
+    }
+    top
+}
+
 /// `results` are the hybrid results in rank order; document ids are the
 /// corpus-relative paths.
 pub fn check_retrieval(case: &SuiteCase, results: &[SearchResult]) -> Evaluation {
@@ -59,11 +87,7 @@ pub fn check_retrieval(case: &SuiteCase, results: &[SearchResult]) -> Evaluation
     else {
         return wrong_case("retrieval", case);
     };
-    let top: Vec<&str> = results
-        .iter()
-        .take(RETRIEVAL_LIMIT)
-        .map(|result| result.document.relative_path.as_str())
-        .collect();
+    let top = top_distinct(results);
     let found = relevant_documents
         .iter()
         .filter(|path| top.contains(&path.as_str()))
@@ -492,6 +516,46 @@ mod tests {
         results.push(hit("projects/project-plan.md"));
         let evaluation = check_retrieval(&case("retrieval-fil"), &results);
         assert_eq!(evaluation.correctness, Some(false));
+    }
+
+    #[test]
+    fn an_identical_copy_does_not_take_one_of_the_five_places() {
+        let ranked = |paths: &[&str]| -> Vec<SearchResult> {
+            paths
+                .iter()
+                .map(|path| {
+                    let mut result = hit(path);
+                    // The copy has the same bytes, so the same content hash.
+                    if path.contains("project-plan") {
+                        result.document.content_hash = Some("sha256:plan".into());
+                    }
+                    result
+                })
+                .collect()
+        };
+        // Six entries, five distinct contents: the sixth entry is in the top 5.
+        let results = ranked(&[
+            "projects/project-plan.md",
+            "archive/project-plan-copy.md",
+            "projects/submission-checklist.md",
+            "meetings/meeting-notes.md",
+            "filler/0.md",
+            "notes/tala-sa-proyekto.md",
+        ]);
+        let evaluation = check_retrieval(&case("retrieval-en"), &results);
+        assert_eq!(passed(&evaluation, "allRelevantInTop5"), Some(true));
+
+        // A negative at the fifth distinct place is caught.
+        let results = ranked(&[
+            "projects/project-plan.md",
+            "archive/project-plan-copy.md",
+            "projects/submission-checklist.md",
+            "meetings/meeting-notes.md",
+            "notes/tala-sa-proyekto.md",
+            "personal/grocery-list.md",
+        ]);
+        let evaluation = check_retrieval(&case("retrieval-en"), &results);
+        assert_eq!(passed(&evaluation, "noNegativeInTop5"), Some(false));
     }
 
     #[test]
