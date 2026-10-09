@@ -116,6 +116,43 @@ generation. No lock is held across discovery compute.
 - The default `/usr/bin/cargo` (1.75) cannot read this lockfile; use the rustup
   toolchain.
 
+### After review (TJ)
+
+- File previews, Ripple, Connections and coverage read the model store
+  leniently: a store that can't be read (corrupt `settings.json`, a selected
+  model a manifest update dropped) gives links-only results instead of refusing
+  every Rename, Move, Edit or Delete preview. `prepare_plan` reads the store
+  only when it computes Ripple itself, and `list_relationships` reads it before
+  taking the index lock.
+- Coverage counts only currently eligible documents, so a new file is never
+  reported as compared because another file lost its vector. `stale` documents
+  stay comparable with their last good chunks, in admission, tile checks and
+  coverage alike. Skipped jobs are excluded in SQL, so they can't hide a
+  runnable one, and coverage is one windowed query instead of O(n²).
+- Candidate eviction and deletion query each endpoint separately, using new
+  `(space, type, source)` and `(space, type, target)` indexes in 008.
+- Shared facts: a clause with two or more dates, or with a reschedule, cancel or
+  past-value word (English, Filipino, Taglish), gives no date fact, so "moved
+  from October 20 to October 27" no longer matches "deadline is October 20".
+  "Wag" negates. "May 12 kalahok" is a count, not May 12.
+- Impact explanations read at most `MAX_PASSAGES` passages and skip generation
+  without evidence. `refresh_ai_connections` takes the shared refresh lock, so
+  it can't clear a running refresh's Stop.
+- `LocalAiRefresh.embedding`, `discovery` and `ended`, and
+  `AiRelationshipRefresh.spaceFingerprint`, are absent rather than `null`; the
+  first two are declared in TS and `docs/contracts.md`.
+- Graph and plan previews read whether a writing model is ready from the shell
+  instead of a `useModels` of their own, which re-verified every model file on
+  each open. A refresh always clears its Stop notice when it ends, its progress
+  listener can't leak, and a busy provider isn't shown as a failure. Graph says
+  "so far" while coverage is unknown and shows the coverage notice once.
+- Checked on Linux/WSL: Folio 280 passed/2 ignored, folio-core 201 passed/2
+  ignored; `npm run format:check`, `check`, `test` (442 passed, 9 todo),
+  `build` and `check:bundle` passed. Browser journeys: 31 passed, 4 failed. The
+  4 are the viewport axe checks (`region`: `.olio-chat-greeting` outside a
+  landmark), which fail the same way on this branch before these changes and on
+  `main`.
+
 ## PR #68 merge resolution
 
 Merged `main` at `7efb4b5` into the Model Lab branch. The native dependency
