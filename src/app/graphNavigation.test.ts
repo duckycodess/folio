@@ -70,8 +70,28 @@ describe("moving through the map with arrow keys", () => {
     expect(press(from("center"), "ArrowUp").focusedId).toBe("north");
     // South-east is 45° from both right and down; down has only it.
     expect(press(from("center"), "ArrowDown").focusedId).toBe("southeast");
-    // Right: south-east (85 away, 45°) is nearer than east (100 away, 0°).
-    expect(press(from("center"), "ArrowRight").focusedId).toBe("southeast");
+  });
+
+  it("prefers the file straight ahead over a slightly nearer diagonal one", () => {
+    // East: 100 away at 0° scores 100. South-east: 85 away at 45° scores 120.
+    expect(press(from("center"), "ArrowRight").focusedId).toBe("east");
+  });
+
+  it("still picks a much nearer diagonal file over a distant straight one", () => {
+    const near = map(
+      { center: [0, 0], farEast: [300, 0], nearDiagonal: [30, 30] },
+      [
+        ["center", "farEast"],
+        ["center", "nearDiagonal"],
+      ],
+    );
+    // Near diagonal: 42 away at 45° scores 60, far east scores 300.
+    const state = graphNavigation(from("center"), {
+      type: "key",
+      key: "ArrowRight",
+      map: near,
+    });
+    expect(state.focusedId).toBe("nearDiagonal");
   });
 
   it("only follows connections", () => {

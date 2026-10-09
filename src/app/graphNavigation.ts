@@ -79,8 +79,11 @@ const CONE = 0.5;
 export const NOTHING_THAT_WAY = "No connected file that way";
 
 /**
- * The nearest connected file within 60° of the arrow's direction. Ties go to
- * the file closer to the arrow's line, then to the first by path.
+ * The connected file within 60° of the arrow's direction with the lowest
+ * score, `distance / cos(angle)`: straight ahead counts at its distance, 45°
+ * off at 1.41 times it and 60° off at twice it. A file straight ahead beats a
+ * slightly nearer diagonal one, while a much nearer diagonal one still wins.
+ * Ties go to the file closer to the arrow's line, then to the first by path.
  */
 export function neighbourInDirection(
   map: NavigationMap,
@@ -90,7 +93,7 @@ export function neighbourInDirection(
   const direction = DIRECTIONS[key];
   const origin = map.positions.get(from);
   if (!direction || !origin) return null;
-  let best: { id: string; distance: number; cos: number; rank: number } | null =
+  let best: { id: string; score: number; cos: number; rank: number } | null =
     null;
   for (const id of map.neighbours.get(from) ?? []) {
     const point = map.positions.get(id);
@@ -101,14 +104,15 @@ export function neighbourInDirection(
     if (distance === 0) continue;
     const cos = (dx * direction.x + dy * direction.y) / distance;
     if (cos < CONE) continue;
+    const score = distance / cos;
     const rank = map.order.indexOf(id);
     if (
       !best ||
-      distance < best.distance ||
-      (distance === best.distance &&
+      score < best.score ||
+      (score === best.score &&
         (cos > best.cos || (cos === best.cos && rank < best.rank)))
     )
-      best = { id, distance, cos, rank };
+      best = { id, score, cos, rank };
   }
   return best?.id ?? null;
 }

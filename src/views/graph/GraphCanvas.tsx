@@ -241,7 +241,9 @@ export function GraphCanvas({
     return () => observer.disconnect();
   }, []);
 
-  // Wheel and trackpad pinch zoom; React's wheel listener can't prevent scrolling.
+  // Ctrl/⌘ + wheel zooms; a plain wheel scrolls the page. Chromium and WebKit
+  // report a trackpad pinch as a wheel with ctrlKey, so pinching zooms too.
+  // React's wheel listener is passive and can't prevent the browser's zoom.
   const latest = useRef({ viewport, layout });
   latest.current = { viewport, layout };
   useEffect(() => {
@@ -249,10 +251,13 @@ export function GraphCanvas({
     if (!element) return;
     function onWheel(event: WheelEvent) {
       const current = latest.current.viewport;
-      if (!current) return;
+      if (!current || !(event.ctrlKey || event.metaKey)) return;
       event.preventDefault();
       const rect = element!.getBoundingClientRect();
-      const factor = Math.exp(-event.deltaY * (event.ctrlKey ? 0.01 : 0.0015));
+      // A pinch sends small deltas, a wheel notch large ones.
+      const factor = Math.exp(
+        -event.deltaY * (Math.abs(event.deltaY) < 50 ? 0.01 : 0.0015),
+      );
       setMoved({
         layout: latest.current.layout,
         viewport: zoomAt(current, factor, {
@@ -642,8 +647,8 @@ export function GraphCanvas({
       </div>
       <p id={`${ids}-hint`} className="graph-hint">
         Arrow keys follow connections. Page Up and Page Down go through every
-        file. Enter opens a file. + and − zoom; 0 fits the map. Drag to move the
-        map or a file.
+        file. Enter opens a file. + and − zoom; 0 fits the map. Ctrl or ⌘ with
+        the scroll wheel, or a pinch, zooms too. Drag to move the map or a file.
       </p>
     </div>
   );
