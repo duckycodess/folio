@@ -44,6 +44,12 @@ file. A filename the operating system reports as invalid Unicode is refused with
 `pathUnsupportedEncoding`; `list_documents` reports it under `skipped` instead of
 inventing a name for it.
 
+Which of these a given system can actually produce differs: macOS refuses to
+create a filename that is not valid UTF-8, and on Windows a backslash is the
+path separator rather than a filename character. The refusals are pure string
+logic and are tested on every platform; the fixtures that need such a file on
+disk are scoped to the systems that can hold one.
+
 macOS reports decomposed filenames and Windows composed ones, so normalization
 happens before an identity is formed. A destination Folio would create is also
 checked for names Windows cannot store (`assertPortableDestination`).

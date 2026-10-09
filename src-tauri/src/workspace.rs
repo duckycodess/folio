@@ -405,7 +405,12 @@ mod tests {
         assert!(listing.skipped.is_empty());
     }
 
-    #[cfg(unix)]
+    // macOS rejects a filename that is not valid UTF-8 at creation time
+    // ("Illegal byte sequence"), and Windows filenames are UTF-16, so only a
+    // host that stores arbitrary bytes can put Folio in this situation. The
+    // refusal itself is covered everywhere by
+    // `identity::tests::refuses_a_filename_that_is_not_valid_unicode`.
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn reports_a_file_it_cannot_identify_instead_of_dropping_it() {
         use std::ffi::OsStr;

@@ -242,22 +242,62 @@ mod tests {
     }
 
     #[test]
-    fn keeps_a_backslash_in_a_unix_filename_out_of_an_identity() {
+    fn refuses_a_separator_ambiguous_path_on_every_platform() {
         // The old implementation rewrote '\\' into '/', which silently renamed
-        // a legitimate Unix file into a two-segment path.
+        // a legitimate Unix file into a two-segment path. The refusal is pure
+        // string logic, so it holds wherever Folio runs.
         assert_eq!(
             normalize_relative_path("notes\\paalala.md")
                 .unwrap_err()
                 .code,
             ErrorCode::PathNotRelative
         );
+    }
+
+    // A file really named `notes\paalala.md` can only exist where '\' is an
+    // ordinary filename character. On Windows it is the path separator, so
+    // there is no such file to identify and nothing to assert.
+    #[cfg(unix)]
+    #[test]
+    fn keeps_a_backslash_in_a_unix_filename_out_of_an_identity() {
         let root = tempfile::tempdir().unwrap();
-        let name = "notes\\paalala.md";
-        let file = root.path().join(name);
+        let file = root.path().join("notes\\paalala.md");
         fs::write(&file, "x").unwrap();
         assert_eq!(
             relative_path_below(root.path(), &file).unwrap_err().code,
             ErrorCode::PathNotRelative
+        );
+    }
+
+    // A name the operating system accepts but Unicode cannot represent. Folio
+    // refuses to identify it rather than replacing the bad bytes with U+FFFD
+    // and presenting an invented name. Building the name needs no filesystem,
+    // so this holds even where such a file cannot be created.
+    #[cfg(unix)]
+    #[test]
+    fn refuses_a_filename_that_is_not_valid_unicode() {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt;
+        let root = Path::new("/folio-root");
+        let entry = root.join(OsStr::from_bytes(b"tala-\xff.md"));
+        assert_eq!(
+            relative_path_below(root, &entry).unwrap_err().code,
+            ErrorCode::PathUnsupportedEncoding
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn refuses_a_filename_that_is_not_valid_unicode() {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::OsStringExt;
+        let root = Path::new("C:\\folio-root");
+        // A lone high surrogate: a valid Windows filename, not valid Unicode.
+        let name = OsString::from_wide(&[0x74, 0x61, 0xd800, 0x2e, 0x6d, 0x64]);
+        let entry = root.join(name);
+        assert_eq!(
+            relative_path_below(root, &entry).unwrap_err().code,
+            ErrorCode::PathUnsupportedEncoding
         );
     }
 
