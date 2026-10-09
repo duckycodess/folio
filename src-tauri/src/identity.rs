@@ -92,7 +92,8 @@ pub fn assert_portable_destination(raw: &str) -> Result<String, FolioError> {
     for segment in path.split('/') {
         let unportable = segment.chars().any(|c| NOT_PORTABLE.contains(&c))
             || segment.ends_with(' ')
-            || segment.ends_with('.');
+            || segment.ends_with('.')
+            || folio_core::interpretation::is_windows_reserved_name(segment);
         if unportable {
             return Err(error(
                 ErrorCode::OperationUnsupported,
@@ -343,6 +344,28 @@ mod tests {
             assert_portable_destination("notes/plano-2026.md").unwrap(),
             "notes/plano-2026.md"
         );
+        for reserved in [
+            "notes/nul.md",
+            "CON.txt",
+            "aux",
+            "notes/com1.md",
+            "LPT9.tar.gz",
+        ] {
+            assert_eq!(
+                assert_portable_destination(reserved).unwrap_err().code,
+                ErrorCode::OperationUnsupported,
+                "{reserved} was accepted"
+            );
+        }
+        // Only the exact device names are reserved.
+        for allowed in [
+            "notes/null.md",
+            "console.txt",
+            "com10.md",
+            "auxiliary/plan.md",
+        ] {
+            assert!(assert_portable_destination(allowed).is_ok(), "{allowed}");
+        }
     }
 
     #[test]

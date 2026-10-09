@@ -25,6 +25,23 @@ describe("failures crossing the boundary", () => {
     expect(failure.details?.reportedCode).toBe("somethingNewerNativeSent");
   });
 
+  it("keeps sanctioned context on an internal provider failure", () => {
+    const failure = toFolioError({
+      code: "internal",
+      message: "The local model returned invalid JSON.",
+      details: {
+        reportedCode: "invalidModelOutput",
+        outputDigest: "digest-a",
+      },
+    });
+    expect(failure).toBeInstanceOf(FolioError);
+    expect(failure.code).toBe("internal");
+    expect(failure.details).toEqual({
+      reportedCode: "invalidModelOutput",
+      outputDigest: "digest-a",
+    });
+  });
+
   it("carries details as strings, exactly like the native map", () => {
     const failure = toFolioError({
       code: "planStateInvalid",
