@@ -2,11 +2,13 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type {
   ActionPlan,
   ApplyReport,
+  Approval,
   DuplicateGroup,
   ExplicitReference,
   FileOperation,
   HistoryEntry,
   IndexedDocument,
+  IndexProgress,
   OrganizationSuggestions,
   ScanSummary,
   SearchResult,
@@ -158,6 +160,43 @@ describe("the browser-journey fake native core", () => {
     });
     expect(plan.digest).toBe(await planDigest(plan));
     expect(plan.impacts).toEqual([]);
+  });
+
+  it("keeps the approved native plan separate from caller arguments and previews", async () => {
+    const operation = await renameOperation();
+    const canonical = structuredClone(operation);
+    const preparing = call<ActionPlan>("prepare_plan", {
+      workspaceId: WORKSPACE_ID,
+      operations: [operation],
+    });
+    if (operation.kind !== "rename") throw new Error("Expected rename fixture");
+    operation.destinationRelativePath = "projects/mutated-input.md";
+    const preview = await preparing;
+    expect(preview.operations).toEqual([canonical]);
+    const { id, digest } = preview;
+    const shownOperation = preview.operations[0];
+    if (shownOperation.kind !== "rename") throw new Error("Expected rename preview");
+    shownOperation.destinationRelativePath = "projects/mutated-preview.md";
+    preview.digest = `sha256:${"0".repeat(64)}`;
+    preview.expiresAt = 0;
+
+    const approval = await call<Approval>("approve_plan", {
+      workspaceId: WORKSPACE_ID,
+      planId: id,
+      planDigest: digest,
+    });
+    approval.planDigest = preview.digest;
+    const report = await call<ApplyReport>("apply_plan", {
+      workspaceId: WORKSPACE_ID,
+      planId: id,
+    });
+    expect(report.batch.stopReason).toBe("completed");
+    expect(control().readFile(PLAN)).toBeNull();
+    expect(control().readFile("projects/community-learning-project.md")).toContain(
+      "Community Learning Project",
+    );
+    expect(control().readFile("projects/mutated-input.md")).toBeNull();
+    expect(control().readFile("projects/mutated-preview.md")).toBeNull();
   });
 
   it("refuses the same plans the shared preflight refuses", async () => {
@@ -499,13 +538,29 @@ describe("the browser-journey fake native core", () => {
   it("stops a scan with a cancelled summary rather than an error", async () => {
     installFakeNativeCore(options({ preIndexed: false, scanStepMs: 5 }));
     await call<WorkspaceInfo | null>("choose_workspace");
+    const internals = scope.__TAURI_INTERNALS__!;
+    let callbackId = 0;
+    const firstIndexed = new Promise<void>((resolve) => {
+      callbackId = internals.transformCallback((event) => {
+        const progress = (event as { payload: IndexProgress }).payload;
+        if (progress.phase === "indexing" && progress.processed >= 1) resolve();
+      });
+    });
+    await call("plugin:event|listen", {
+      event: "folio://index-progress",
+      handler: callbackId,
+    });
     const scan = call<ScanSummary>("scan_workspace", {
       workspaceId: WORKSPACE_ID,
       recheckUnreadable: false,
     });
-    await new Promise((resolve) => setTimeout(resolve, 12));
+    await firstIndexed;
     await call("cancel_indexing");
     const summary = await scan;
+    await call("plugin:event|unlisten", {
+      event: "folio://index-progress",
+      eventId: callbackId,
+    });
     expect(summary.cancelled).toBe(true);
     // Whatever was already indexed is kept, and the rest is simply not there.
     expect(summary.total).toBeGreaterThan(0);

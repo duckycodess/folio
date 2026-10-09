@@ -71,6 +71,15 @@ export interface FakeScope {
  * filesystem, local inference, or any platform. It is a browser test double.
  */
 export function installFakeNativeCore(options: FakeNativeOptions): void {
+  // Native arguments and replies cross a JSON boundary. Keep page objects
+  // separate from native state, including the test controls' own inputs.
+  function wireCopy<T>(value: T): T {
+    return value === undefined
+      ? value
+      : (JSON.parse(JSON.stringify(value)) as T);
+  }
+
+  options = wireCopy(options);
   /** Grepped for by `scripts/assert-production-excludes-fake.mjs`. */
   const SENTINEL = "folio-e2e-fake-native-core";
   const INDEX_PROGRESS_EVENT = "folio://index-progress";
@@ -90,7 +99,9 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
     details?: FolioErrorDetails,
   ): never {
     // The wire shape a native `Result::Err` serializes: never an `Error`.
-    throw details ? { code, message, details } : { code, message };
+    throw details
+      ? { code, message, details: wireCopy(details) }
+      : { code, message };
   }
 
   async function sha256(bytes: Uint8Array): Promise<ContentHash> {
@@ -325,7 +336,8 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
   function emit(event: string, payload: unknown): void {
     const handlers = listeners.get(event);
     if (!handlers) return;
-    for (const [id, handler] of handlers) handler({ event, id, payload });
+    for (const [id, handler] of handlers)
+      handler({ event, id, payload: wireCopy(payload) });
   }
 
   /* ------------------------------------------------------- the local index */
@@ -1551,6 +1563,8 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
     command: string,
     args: Record<string, unknown> = {},
   ): Promise<unknown> {
+    // Capture the caller's values before yielding, as an IPC request does.
+    const wireArgs = wireCopy(args);
     await ready;
     invoked.push(command);
     const injected = failOnce.get(command) ?? failAlways.get(command);
@@ -1569,13 +1583,13 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
       fail("internal", `This build has no command named ${command}.`, {
         command,
       });
-    return handler(args);
+    return wireCopy(await handler(wireArgs));
   }
 
   const control: FakeControl = {
     sentinel: SENTINEL,
-    failNext: (command, failure) => failOnce.set(command, failure),
-    failAlways: (command, failure) => failAlways.set(command, failure),
+    failNext: (command, failure) => failOnce.set(command, wireCopy(failure)),
+    failAlways: (command, failure) => failAlways.set(command, wireCopy(failure)),
     clearFailures: () => {
       failOnce.clear();
       failAlways.clear();
@@ -1584,10 +1598,10 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
       scanStepMs = ms;
     },
     setSkipped: (entries) => {
-      skipped = entries;
+      skipped = wireCopy(entries);
     },
     setWriter: (behaviour) => {
-      writer = behaviour;
+      writer = wireCopy(behaviour);
     },
     externalEdit: (relativePath, content) => {
       const entry = files.get(relativePath);
@@ -1604,7 +1618,7 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
     readFile: (relativePath) => files.get(relativePath)?.content ?? null,
     listFiles: () => Array.from(files.keys()).sort(),
     calls: () => invoked.slice(),
-    lastScan: () => lastScan,
+    lastScan: () => wireCopy(lastScan),
   };
 
   scope.isTauri = true;
