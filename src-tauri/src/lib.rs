@@ -56,6 +56,8 @@ use workspace::{
 };
 
 const INDEX_PROGRESS_EVENT: &str = "folio://index-progress";
+/// Reading and embedding progress while an AI request brings the index up to date.
+const PREPARING_PROGRESS_EVENT: &str = "folio://preparing-progress";
 
 /// How long a preview stays current. Approval and application both re-check it.
 const PLAN_LIFETIME_MS: i64 = 5 * 60 * 1000;
@@ -75,6 +77,9 @@ struct Folio {
     /// provider lock across the whole run.
     embedding_sync: Arc<Mutex<()>>,
     cancel_embedding_sync: Arc<AtomicBool>,
+    /// Stops the index refresh of the AI request in flight (set by
+    /// `cancel_generation`, cleared when the next request starts).
+    cancel_ai_request: Arc<AtomicBool>,
 }
 
 impl Folio {
@@ -89,6 +94,7 @@ impl Folio {
             cancel_apply: Arc::new(AtomicBool::new(false)),
             embedding_sync: Arc::new(Mutex::new(())),
             cancel_embedding_sync: Arc::new(AtomicBool::new(false)),
+            cancel_ai_request: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -381,6 +387,102 @@ impl embedding_sync::PassageEmbedder for NativePassageEmbedder {
             )
             .with_detail("component", "embedding")
         })
+    }
+}
+
+impl evidence::Embedder for NativePassageEmbedder {
+    fn provider_space(&mut self) -> db::NativeResult<Option<ProviderEmbeddingSpace>> {
+        refuse_during_lab(&self.lab_state)?;
+        with_embedding_provider_guarded(
+            &self.app,
+            &self.embedding_state,
+            || refuse_during_lab(&self.lab_state),
+            |provider| Ok(provider.space().clone()),
+        )
+    }
+
+    fn embed_query(
+        &mut self,
+        text: &str,
+        cancel: &AtomicBool,
+    ) -> db::NativeResult<folio_core::embeddings::QueryEmbedding> {
+        with_embedding_provider_guarded(
+            &self.app,
+            &self.embedding_state,
+            || refuse_during_lab(&self.lab_state),
+            |provider| provider.embed_query(text, Some(cancel)).map_err(native_error),
+        )?
+        .ok_or_else(|| {
+            error(
+                ErrorCode::ModelNotInstalled,
+                "The selected embedding model is no longer installed.",
+            )
+            .with_detail("component", "embedding")
+        })
+    }
+}
+
+/// Everything one AI request needs to read the persistent index. Cheap to
+/// build on the async side, then moved into the blocking task.
+struct AiRequest {
+    app: AppHandle,
+    root: ScopedRoot,
+    index_path: PathBuf,
+    scanning: Arc<Mutex<()>>,
+    embedding_sync: Arc<Mutex<()>>,
+    cancel: Arc<AtomicBool>,
+    embedding_state: EmbeddingState,
+    lab_state: lab_commands::LabState,
+}
+
+impl AiRequest {
+    fn new(
+        app: &AppHandle,
+        state: &Folio,
+        embedding_state: &EmbeddingState,
+        lab_state: &lab_commands::LabState,
+        workspace_id: &str,
+    ) -> Result<Self, FolioError> {
+        Ok(Self {
+            app: app.clone(),
+            root: ai_boundary::resolve_workspace(state, workspace_id)?,
+            index_path: state.index_path.clone(),
+            scanning: state.scanning.clone(),
+            embedding_sync: state.embedding_sync.clone(),
+            cancel: state.cancel_ai_request.clone(),
+            embedding_state: embedding_state.clone(),
+            lab_state: lab_state.clone(),
+        })
+    }
+
+    /// Runs `work` against the folder's persistent index on its own
+    /// connection. The first thing `work` asks of the index brings it up to
+    /// date, reporting `folio://preparing-progress` meanwhile.
+    fn run<R>(
+        self,
+        work: impl FnOnce(&mut evidence::LocalIndex<'_, NativePassageEmbedder>) -> Result<R, FolioError>,
+    ) -> Result<R, FolioError> {
+        self.cancel.store(false, Ordering::Release);
+        let mut conn = db::open(&self.index_path)?;
+        let mut embedder = NativePassageEmbedder {
+            app: self.app.clone(),
+            embedding_state: self.embedding_state.clone(),
+            lab_state: self.lab_state.clone(),
+        };
+        let app = self.app.clone();
+        let mut sink = move |progress: evidence::PreparingProgress| {
+            let _ = app.emit(PREPARING_PROGRESS_EVENT, progress);
+        };
+        let mut index = evidence::LocalIndex::new(
+            &mut conn,
+            &self.root,
+            &self.scanning,
+            &self.embedding_sync,
+            &mut embedder,
+            &self.cancel,
+            &mut sink,
+        );
+        work(&mut index)
     }
 }
 
@@ -1518,54 +1620,34 @@ fn ensure_snapshot(
     Ok(snapshot)
 }
 
+/// Hybrid semantic search over the persistent index, or FTS5 keyword search
+/// (labelled `keyword`) when no embedding model is selected. Brings the index
+/// up to date first; a Model Lab run makes it `providerBusy`.
 #[tauri::command]
 async fn semantic_search(
     app: AppHandle,
     state: State<'_, Folio>,
-    index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
+    lab_state: State<'_, lab_commands::LabState>,
     workspace_id: String,
     query: String,
     limit: Option<usize>,
 ) -> Result<Vec<ProviderSearchResult>, FolioError> {
-    let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
-    let index_state = index_state.inner().clone();
-    let embedding_state = embedding_state.inner().clone();
+    let request = AiRequest::new(
+        &app,
+        state.inner(),
+        embedding_state.inner(),
+        lab_state.inner(),
+        &workspace_id,
+    )?;
     Ok(run_blocking::<_, FolioError, _>(move || {
-        let snapshot = ensure_snapshot(&app, &embedding_state, &root, &index_state)?;
-        let limit = limit.unwrap_or(10).clamp(1, 50);
-        if snapshot.embedding_space.is_none() {
-            return Ok(snapshot.retriever.keyword(
-                &snapshot.documents,
-                &snapshot.chunks,
+        request.run(|index| {
+            index.search(
                 &query,
-                limit,
-            ));
-        }
-        let query_embedding = with_embedding_provider(&app, &embedding_state, |provider| {
-            provider.embed_query(&query, None).map_err(native_error)
-        })?
-        .ok_or_else(|| NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::ModelNotInstalled,
-            message: "The selected embedding model is no longer installed.".into(),
-            detail: None,
-        })?;
-        Ok(snapshot
-            .retriever
-            .search(
-                &snapshot.documents,
-                &snapshot.chunks,
-                &query,
-                Some(&query_embedding),
-                limit,
+                evidence::Scope::Folder,
+                limit.unwrap_or(10).clamp(1, 50),
             )
-            .map_err(|failure| {
-                annotate_embedding_space_failure(
-                    failure,
-                    snapshot.embedding_space.as_ref().expect("semantic space"),
-                    &query_embedding.space,
-                )
-            })?)
+        })
     })
     .await?)
 }
@@ -1752,7 +1834,12 @@ fn cancel_generation_now(generation_state: &GenerationState) -> Result<(), Nativ
 }
 
 #[tauri::command]
-fn cancel_generation(generation_state: State<'_, GenerationState>) -> Result<(), FolioError> {
+fn cancel_generation(
+    state: State<'_, Folio>,
+    generation_state: State<'_, GenerationState>,
+) -> Result<(), FolioError> {
+    // The request may still be reading or embedding, before it holds the slot.
+    state.cancel_ai_request.store(true, Ordering::Release);
     Ok(cancel_generation_now(generation_state.inner())?)
 }
 
