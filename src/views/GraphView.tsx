@@ -14,12 +14,11 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import {
-  isAvailable as aiAvailable,
-  summarizeRelationships,
-} from "../adapters/ai";
+import { summarizeRelationships } from "../adapters/ai";
 import { folderChoices } from "../app/fileActions";
+import { isGenerationReady } from "../app/models";
 import type { RelationshipsState } from "../app/useRelationships";
+import { useModels } from "../app/useModels";
 import type { WorkspaceState } from "../app/useWorkspace";
 import { describeConnection } from "../domain/connections";
 import { hasSearchWords } from "../domain/discovery";
@@ -29,6 +28,7 @@ import {
   folderSpread,
   graphPairs,
   isConfirmed,
+  relationshipSummaryScope,
   type GraphPair,
   type GraphStart,
 } from "../domain/graphScope";
@@ -197,6 +197,10 @@ export function GraphView({
   relations: RelationshipsState;
 }) {
   const { request } = relations;
+  const models = useModels();
+  const generationReady =
+    models.load === "ready" &&
+    isGenerationReady(models.groups, models.setup, models.runtime);
   useEffect(request, [request]);
   const ids = useId();
   const documents = useMemo(
@@ -249,35 +253,48 @@ export function GraphView({
   const confirmed = pairs.filter((pair) => isConfirmed(pair.connection));
   const suggested = pairs.filter((pair) => !isConfirmed(pair.connection));
   const spread = folderSpread(pairs);
-  const summaryDocumentIds = useMemo(
-    () => [...new Set(pairs.flatMap(({ from, to }) => [from.id, to.id]))],
-    [pairs],
+  const summaryScope = useMemo(
+    () =>
+      relationshipSummaryScope(
+        pairs,
+        start.kind === "file" ? start.documentId : undefined,
+      ),
+    [pairs, start],
   );
+  const summaryDocumentIds = summaryScope.documentIds;
   const summaryScopeKey = summaryDocumentIds.join("|");
   const [summary, setSummary] = useState<GroundedResult | null>(null);
   const [summaryBusy, setSummaryBusy] = useState(false);
   const [summaryError, setSummaryError] = useState<FolioError | null>(null);
+  const summaryRequest = useRef(0);
   useEffect(() => {
+    summaryRequest.current += 1;
     setSummary(null);
     setSummaryError(null);
-  }, [summaryScopeKey, start.kind === "file" ? start.documentId : ""]);
+    setSummaryBusy(false);
+  }, [
+    summaryScopeKey,
+    summaryScope.totalDocuments,
+    start.kind === "file" ? start.documentId : "",
+  ]);
   async function writeRelationshipSummary() {
     const folderId = workspace.workspace?.id;
     if (!folderId || summaryDocumentIds.length === 0) return;
+    const requestId = ++summaryRequest.current;
     setSummaryBusy(true);
     setSummaryError(null);
     try {
-      setSummary(
-        await summarizeRelationships(
-          folderId,
-          summaryDocumentIds,
-          start.kind === "file" ? start.documentId : undefined,
-        ),
+      const result = await summarizeRelationships(
+        folderId,
+        summaryDocumentIds,
+        start.kind === "file" ? start.documentId : undefined,
       );
+      if (requestId === summaryRequest.current) setSummary(result);
     } catch (cause) {
-      setSummaryError(toFolioError(cause));
+      if (requestId === summaryRequest.current)
+        setSummaryError(toFolioError(cause));
     } finally {
-      setSummaryBusy(false);
+      if (requestId === summaryRequest.current) setSummaryBusy(false);
     }
   }
   const [mode, setMode] = useState<GraphMode>(rememberedMode);
@@ -500,7 +517,7 @@ export function GraphView({
           <div className="form-actions">
             <Button
               variant="primary"
-              disabled={summaryBusy || !aiAvailable()}
+              disabled={summaryBusy || !generationReady}
               onClick={() => void writeRelationshipSummary()}
             >
               {summaryBusy
@@ -508,11 +525,18 @@ export function GraphView({
                 : "Write relationship summary"}
             </Button>
           </div>
-          {!aiAvailable() && (
+          {!generationReady && (
             <p className="muted">
-              Relationship summaries are available in the Folio desktop app
-              through its local model boundary. The connections and evidence
-              above do not need a model.
+              Set up and select an installed writing model and runtime in Model
+              Lab to write a relationship summary. The connections and
+              evidence above do not need a model.
+            </p>
+          )}
+          {summaryScope.totalDocuments > summaryDocumentIds.length && (
+            <p className="muted">
+              This preview is based on {summaryDocumentIds.length} of{" "}
+              {summaryScope.totalDocuments} connected files, prioritizing the
+              selected file and its strongest neighbours.
             </p>
           )}
           {summaryError && (

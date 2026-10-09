@@ -17,6 +17,67 @@ export interface GraphPair {
   connection: Connection;
 }
 
+export const RELATIONSHIP_SUMMARY_SCOPE_CAP = 50;
+
+export interface RelationshipSummaryScope {
+  documentIds: DocumentId[];
+  totalDocuments: number;
+}
+
+function connectionStrength(connection: Connection): number {
+  if (connection.score !== undefined) return connection.score;
+  if (connection.confidence !== undefined) return connection.confidence;
+  return connection.kind === "explicitReference" ||
+    connection.kind === "exactDuplicate"
+    ? 1
+    : 0;
+}
+
+/**
+ * Chooses a bounded summary scope without changing the graph shown to the
+ * reader. A selected file comes first, followed by its strongest neighbours;
+ * the remaining strongest pairs fill the scope deterministically.
+ */
+export function relationshipSummaryScope(
+  pairs: GraphPair[],
+  focusDocumentId?: DocumentId,
+  max = RELATIONSHIP_SUMMARY_SCOPE_CAP,
+): RelationshipSummaryScope {
+  const all = new Set<DocumentId>();
+  for (const pair of pairs) {
+    all.add(pair.from.id);
+    all.add(pair.to.id);
+  }
+  const limit = Math.max(0, max);
+  const ids: DocumentId[] = [];
+  const add = (id: DocumentId) => {
+    if (ids.length < limit && !ids.includes(id)) ids.push(id);
+  };
+  const ranked = pairs
+    .map((pair, index) => ({ pair, index }))
+    .sort(
+      (left, right) =>
+        connectionStrength(right.pair.connection) -
+          connectionStrength(left.pair.connection) ||
+        left.index - right.index,
+    );
+  if (focusDocumentId && all.has(focusDocumentId)) add(focusDocumentId);
+  for (const { pair } of ranked) {
+    if (
+      focusDocumentId &&
+      (pair.from.id === focusDocumentId || pair.to.id === focusDocumentId)
+    ) {
+      add(pair.from.id);
+      add(pair.to.id);
+    }
+  }
+  for (const { pair } of ranked) {
+    add(pair.from.id);
+    add(pair.to.id);
+  }
+  return { documentIds: ids, totalDocuments: all.size };
+}
+
 function inFolder(document: DocumentRecord, folder: string): boolean {
   return !folder || document.relativePath.startsWith(`${folder}/`);
 }

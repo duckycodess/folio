@@ -5,6 +5,7 @@ import {
   folderSpread,
   graphPairs,
   isConfirmed,
+  relationshipSummaryScope,
   startingFiles,
 } from "./graphScope";
 import { WORKSPACE, documentId } from "./test-support";
@@ -167,5 +168,29 @@ describe("folderSpread", () => {
       { folder: "archive", files: 1 },
       { folder: "meetings", files: 1 },
     ]);
+  });
+});
+
+describe("relationship summary scope", () => {
+  it("keeps the focused file and strongest neighbours within the cap", () => {
+    const focus = file("focus.md", "focus");
+    const neighbours = Array.from({ length: 59 }, (_, index) =>
+      file(`near/${String(index).padStart(2, "0")}.md`, "near"),
+    );
+    const pairs = neighbours.map((to, index) => ({
+      from: focus,
+      to,
+      connection: {
+        ...SIMILAR_PLAN_BUDGET,
+        otherId: to.id,
+        score: 1 - index / 100,
+      },
+    }));
+    const scope = relationshipSummaryScope(pairs, focus.id);
+    expect(scope.totalDocuments).toBe(60);
+    expect(scope.documentIds).toHaveLength(50);
+    expect(scope.documentIds[0]).toBe(focus.id);
+    expect(scope.documentIds[1]).toBe(neighbours[0].id);
+    expect(scope.documentIds.at(-1)).toBe(neighbours[48].id);
   });
 });
