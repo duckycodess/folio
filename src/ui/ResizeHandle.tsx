@@ -27,6 +27,8 @@ export function ResizeHandle({
   const dragStart = useRef<{ pointerX: number; width: number } | null>(null);
 
   function onPointerDown(event: PointerEvent<HTMLDivElement>) {
+    // Only the primary button (or a touch or pen contact) drags.
+    if (event.button !== 0) return;
     event.currentTarget.setPointerCapture(event.pointerId);
     dragStart.current = { pointerX: event.clientX, width: value };
   }
@@ -77,6 +79,10 @@ export function ResizeHandle({
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
+      // A cancelled touch or pen drag, or capture lost some other way, ends
+      // the drag too, so a later hover can't resize the reader.
+      onPointerCancel={onPointerUp}
+      onLostPointerCapture={() => (dragStart.current = null)}
       onKeyDown={onKeyDown}
     />
   );

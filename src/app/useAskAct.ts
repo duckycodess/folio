@@ -18,6 +18,7 @@ import {
   addTurn,
   inScope,
   summaryTarget,
+  targetsChosenFile,
   updateTurn,
   type AskOutcome,
   type AskTurn,
@@ -41,7 +42,8 @@ export interface AskActController {
   turns: AskTurn[];
   busy: boolean;
   find: (request: string) => void;
-  ask: (request: string) => void;
+  /** `chosen` is the file the user picked; a change must target it. */
+  ask: (request: string, chosen?: DocumentRecord) => void;
   /** Summarizes the chosen file of an earlier turn. */
   chooseForSummary: (turnId: number, document: DocumentRecord) => void;
   cancel: () => void;
@@ -139,6 +141,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
     action: AskTurn["action"],
     request: string,
     work: (folder: string) => Promise<AskOutcome>,
+    chosen?: DocumentRecord,
   ) {
     const text = request.trim();
     if (!folderId || busy || !text) return;
@@ -151,6 +154,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
         request: text,
         action,
         status: "running",
+        chosen,
       }),
     }));
     try {
@@ -181,6 +185,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
   async function interpret(
     folder: string,
     request: string,
+    chosen?: DocumentRecord,
   ): Promise<AskOutcome> {
     const meaning = await interpretRequest(folder, request);
     switch (meaning.status) {
@@ -213,6 +218,10 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
       case "needsClarification":
         return { type: "clarify", question: meaning.question };
       case "proposal":
+        // Naming the chosen file in the request doesn't bind the model, so
+        // a change to any other file is refused here, before any preview.
+        if (chosen && !targetsChosenFile(meaning.proposal, chosen.id))
+          return { type: "otherFile", proposal: meaning.proposal, chosen };
         return { type: "proposal", proposal: meaning.proposal };
       case "unsupported":
         return { type: "unsupported", reason: meaning.reason };
@@ -246,8 +255,13 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
         query: request.trim(),
         results: await search(folder, request),
       })),
-    ask: (request) =>
-      void run("ask", request, (folder) => interpret(folder, request)),
+    ask: (request, chosen) =>
+      void run(
+        "ask",
+        request,
+        (folder) => interpret(folder, request, chosen),
+        chosen,
+      ),
     chooseForSummary: (turnId, document) => {
       if (!folderId) return;
       void summarize(folderId, document.id);

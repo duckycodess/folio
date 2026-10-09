@@ -7,6 +7,7 @@ import {
   SIDEBAR_RAIL_WIDTH,
   clampReaderWidth,
   computeShellLayout,
+  readerMaxWidth,
 } from "./shellLayout";
 
 describe("clampReaderWidth", () => {
@@ -20,7 +21,28 @@ describe("clampReaderWidth", () => {
   });
 
   it("never exceeds 60% of the window", () => {
-    expect(clampReaderWidth(2000, 1000)).toBe(600);
+    expect(clampReaderWidth(4000, 2000)).toBe(1200);
+  });
+
+  it("never grows so wide that it has to overlay the list", () => {
+    // At 1024px, 60% would be 614px, but only 540px fits beside the list.
+    expect(clampReaderWidth(4000, 1024)).toBe(
+      1024 - SIDEBAR_RAIL_WIDTH - LIST_MIN_WIDTH,
+    );
+    expect(readerMaxWidth(1024)).toBe(540);
+    // From the first width where both minimums fit beside the rail.
+    const fits = SIDEBAR_RAIL_WIDTH + LIST_MIN_WIDTH + READER_MIN_WIDTH;
+    for (const width of [fits, 900, 1024, 1100, 1210, 1280]) {
+      const layout = computeShellLayout(width, true, readerMaxWidth(width));
+      expect(layout.readerMode).toBe("split");
+    }
+  });
+
+  it("narrows a width remembered in a larger window instead of overlaying", () => {
+    const remembered = clampReaderWidth(4000, 1440);
+    const layout = computeShellLayout(1024, true, remembered);
+    expect(layout.readerMode).toBe("split");
+    expect(layout.readerWidth).toBe(540);
   });
 
   it("falls back to the default for a non-finite request", () => {

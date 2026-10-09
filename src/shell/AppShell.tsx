@@ -31,8 +31,8 @@ import {
   clampReaderWidth,
   computeShellLayout,
   loadReaderWidth,
-  READER_MAX_RATIO,
   READER_MIN_WIDTH,
+  readerMaxWidth,
   saveReaderWidth,
 } from "../app/shellLayout";
 import { useElementWidth } from "../app/useElementWidth";
@@ -210,12 +210,31 @@ export function AppShell() {
   }, [readingId]);
 
   // The listener is added once and reads the latest render through this ref.
-  const latest = useRef({ showsDocument, closeDocument, openHome });
-  latest.current = { showsDocument, closeDocument, openHome };
+  const overlay = layout.readerMode === "overlay";
+  function closeOverlay() {
+    setPanelTab(null);
+    workspace.clearSelection();
+  }
+  const latest = useRef({
+    showsDocument,
+    closeDocument,
+    openHome,
+    overlay,
+    closeOverlay,
+  });
+  latest.current = {
+    showsDocument,
+    closeDocument,
+    openHome,
+    overlay,
+    closeOverlay,
+  };
 
   function openHome() {
-    if (view === "home") focusHomeSearch();
-    else setView("home");
+    if (view !== "home") setView("home");
+    else if (!overlay) focusHomeSearch();
+    // Otherwise the effect below focuses search once the overlay has closed:
+    // the list behind it, search included, is inert until then.
   }
 
   function focusHomeSearch() {
@@ -225,8 +244,8 @@ export function AppShell() {
   }
 
   useEffect(() => {
-    if (view === "home" && focusSearch.current) focusHomeSearch();
-  }, [view]);
+    if (view === "home" && !overlay && focusSearch.current) focusHomeSearch();
+  }, [view, overlay]);
 
   function fileActions(document: DocumentRecord): RowMenuItem[] {
     return [
@@ -294,8 +313,10 @@ export function AppShell() {
       }
       if (!isSearchShortcut(event, platform)) return;
       event.preventDefault();
-      // Search lives on Home (#43): go there, then focus it.
+      // Search lives on Home (#43): go there, then focus it. A reader that
+      // overlays the list makes search inert, so it closes first.
       focusSearch.current = true;
+      if (latest.current.overlay) latest.current.closeOverlay();
       latest.current.openHome();
     }
     window.addEventListener("keydown", onKeyDown);
@@ -564,10 +585,7 @@ export function AppShell() {
             label="Resize the reader"
             value={layout.readerWidth}
             min={READER_MIN_WIDTH}
-            max={Math.max(
-              READER_MIN_WIDTH,
-              Math.floor(appWidth * READER_MAX_RATIO),
-            )}
+            max={readerMaxWidth(appWidth)}
             onChange={resizeReader}
           />
         )}

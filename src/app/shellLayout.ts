@@ -29,15 +29,26 @@ export interface ShellLayout {
   readerWidth: number;
 }
 
+/**
+ * The widest the reader may be in this window: never past READER_MAX_RATIO,
+ * and, whenever the list's minimum and the reader's minimum fit side by
+ * side, never so wide that it has to overlay the list. Resizing therefore
+ * can't push the reader out of split view, and a width remembered from a
+ * larger window narrows to fit instead of overlaying.
+ */
+export function readerMaxWidth(windowWidth: number): number {
+  const byRatio = Math.floor(windowWidth * READER_MAX_RATIO);
+  const beside = windowWidth - SIDEBAR_RAIL_WIDTH - LIST_MIN_WIDTH;
+  const max = beside >= READER_MIN_WIDTH ? Math.min(byRatio, beside) : byRatio;
+  return Math.max(READER_MIN_WIDTH, max);
+}
+
 /** Keeps a requested reader width inside its allowed range for this window. */
 export function clampReaderWidth(
   requestedWidth: number,
   windowWidth: number,
 ): number {
-  const max = Math.max(
-    READER_MIN_WIDTH,
-    Math.floor(windowWidth * READER_MAX_RATIO),
-  );
+  const max = readerMaxWidth(windowWidth);
   if (!Number.isFinite(requestedWidth)) return READER_DEFAULT_WIDTH;
   return Math.min(max, Math.max(READER_MIN_WIDTH, requestedWidth));
 }

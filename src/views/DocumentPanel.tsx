@@ -87,6 +87,18 @@ export function DocumentPanel({
     // user's, not something to override.
   }, []);
 
+  // When the window narrows while the panel is open, it starts overlaying
+  // the list, which becomes inert: focus there would be lost, so it moves in.
+  const wasOverlay = useRef(isOverlay);
+  useEffect(() => {
+    const became = isOverlay && !wasOverlay.current;
+    wasOverlay.current = isOverlay;
+    if (!became) return;
+    const panel = heading.current?.closest("aside");
+    if (!panel?.contains(window.document.activeElement))
+      heading.current?.focus();
+  }, [isOverlay]);
+
   function onTabKeyDown(event: KeyboardEvent, index: number) {
     const next =
       event.key === "ArrowRight"

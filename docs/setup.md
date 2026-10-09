@@ -10,7 +10,7 @@ The browser preview reads only synthetic fixtures. It does not grant local-folde
 
 Install [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS, including the Rust stable toolchain. Windows needs the documented C++ build tools and WebView2 prerequisites; macOS needs the documented Xcode command-line tools. Run `npm run tauri dev`. Select a folder through the native folder picker. The backend indexes TXT, Markdown and text-based PDFs in that folder into `folio.sqlite` in the OS application-data directory, with SQLite FTS5 keyword search. Folders chosen in the picker can be reopened in later sessions without the dialog. Changes made outside Folio are picked up on the next scan; there is no live file watcher.
 
-Use `npm run tauri build` on the intended target OS to compile. Native code and installers need actual target-platform verification. The initial bundle configuration is disabled until runtime/model packaging and platform installer assets are integrated; CI native checks compile/test the shell but do not publish a consumer installer. Source SVG and PNG/ICO window icons are included.
+Use `npm run tauri build` on the intended target OS to compile. Native code and installers need actual target-platform verification. The default bundle configuration remains disabled. A dedicated manual packaging override prepares test installers; see the installer preparation section below. Existing native test CI compiles/tests the shell and does not build a consumer installer. Source SVG and PNG/ICO window icons are included.
 
 ## WSL
 
@@ -20,7 +20,7 @@ Use WSL for frontend and shared checks if convenient. Develop and verify the Win
 
 Weights and inference binaries are deliberately excluded from Git. Model downloads will be explicit, user-triggered setup actions with revision/hash and disk size displayed. The default footprint must include tokenizer and runtime files. Reference `docs/architecture.md` for candidate models and runtime adapters.
 
-Issue #4 connects the local providers in `folio-core`: in-process ONNX Runtime embeddings and a pinned llama.cpp `llama-server` child bound to `127.0.0.1`. Ollama is not used; installing it does not connect it to Folio. AI actions stay behind explicit model setup and are not yet reachable from the UI.
+Issue #4 connects the local providers in `folio-core`: in-process ONNX Runtime embeddings and a pinned llama.cpp `llama-server` child bound to `127.0.0.1`. Ollama is not used; installing it does not connect it to Folio. Model Lab provides explicit model/runtime installation, cancellation, selection and removal. AI-dependent actions still require setup; packaged first-run setup and full offline integration remain unverified.
 
 ## Issue #4 local provider development
 
@@ -55,3 +55,7 @@ gh repo create duckycodess/folio --public --description "Search, Organize, Summa
 ```
 
 The prepared working tree is committed locally. The archive contains its source snapshot and excludes `.git`; initialize and commit it first if using the archive. Never put tokens into remote URLs or commit real documents. Public creation is authorized by the user's request; use an available authenticated creation method.
+
+## Installer preparation
+
+Issue #10 adds a manual Windows x64 / Apple Silicon macOS packaging workflow through an explicit configuration override. Default bundling remains disabled. These artifacts are unsigned Windows / ad-hoc macOS test builds, not a verified consumer release. No model weights or llama.cpp downloads are added. See [packaging instructions and later clean-machine validation](packaging.md) for build commands, artifact checksums, evidence limits and pending native/offline/resource checks.

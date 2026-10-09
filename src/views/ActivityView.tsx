@@ -171,7 +171,16 @@ function ActivityItem({
           <li key={entry.id}>
             <ChangeLine
               entry={entry}
-              document={documents.find((d) => d.id === entry.documentId)}
+              // The link shows the path after the change, so it opens the
+              // file now at that path. A rename's history keeps the old
+              // path's identity, which is gone once the folder is rescanned.
+              document={
+                entry.afterRelativePath === undefined
+                  ? undefined
+                  : documents.find(
+                      (d) => d.relativePath === entry.afterRelativePath,
+                    )
+              }
               onOpenFile={onOpenFile}
             />
           </li>
