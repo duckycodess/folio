@@ -226,6 +226,37 @@ export function impactGroups(impacts: ImpactCandidate[]): ImpactGroups {
   return groups;
 }
 
+/**
+ * The note above a deletion's impacts, saying only what is true of them:
+ * links break, copies stay, and anything else is the user's to check.
+ */
+export function deletionImpactNote(groups: ImpactGroups): string {
+  const { links, copies, inferred, other } = groups;
+  if (!links.length && !copies.length && !inferred.length && !other.length)
+    return "Folio found no file that links to this one, no identical copy and nothing related. That doesn't guarantee nothing else refers to it.";
+  const parts = ["Folio won't change these files."];
+  if (links.length)
+    parts.push(
+      "Links to the deleted file will stop working until you fix them or undo the deletion.",
+    );
+  if (copies.length) parts.push("Identical copies stay where they are.");
+  if (inferred.length || other.length)
+    parts.push("Check the related files yourself afterwards.");
+  return parts.join(" ");
+}
+
+/**
+ * The badge on one impact. An edit's candidates need review; for a deletion
+ * a link breaks, while a copy or a related file only gets its provenance.
+ */
+export function impactBadge(
+  impact: ImpactCandidate,
+  deletion: boolean,
+): string | null {
+  if (!deletion) return "Needs review";
+  return impactKind(impact) === "links" ? "Link will break" : null;
+}
+
 /** How Folio knows a candidate is related, and whether to label it AI. */
 export function impactProvenance(impact: ImpactCandidate): {
   label: string;

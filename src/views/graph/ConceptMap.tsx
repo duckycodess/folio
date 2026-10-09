@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { graphActions, type GraphActionKind } from "../../app/graphActions";
 import type { RelationshipsState } from "../../app/useRelationships";
 import type { WorkspaceState } from "../../app/useWorkspace";
 import { connectionsFor, type ConnectionKind } from "../../domain/connections";
@@ -10,7 +11,9 @@ import {
   type GraphPair,
 } from "../../domain/graph";
 import { useAnnounce } from "../../ui/Announcer";
+import type { DocumentRecord } from "../../domain/contracts";
 import { Notice } from "../../ui/Notice";
+import { RowMenu } from "../../ui/RowMenu";
 import { ConnectionItem } from "../Connections";
 import { GraphCanvas } from "./GraphCanvas";
 import { GraphLegend } from "./GraphLegend";
@@ -27,12 +30,23 @@ export function ConceptMap({
   workspace,
   relations,
   pairs,
+  onFileAction,
 }: {
   workspace: WorkspaceState;
   relations: RelationshipsState;
   pairs: GraphPair[];
+  onFileAction: (kind: GraphActionKind, document: DocumentRecord) => void;
 }) {
   const announce = useAnnounce();
+  const frame = useRef<HTMLDivElement>(null);
+  // Shift+F10 or a right-click on a node asks for its actions menu.
+  // `pending` until the menu has opened, or the file it asked for turns out
+  // not to be the one open, so it never reopens later.
+  const [actionsRequest, setActionsRequest] = useState({
+    id: "",
+    count: 0,
+    pending: false,
+  });
   const { documents, selected } = workspace;
   const graph = useMemo(() => buildGraph(documents, pairs), [documents, pairs]);
   const large = graph.nodes.length > MAX_MAP_NODES;
@@ -73,6 +87,23 @@ export function ConceptMap({
     announce(`Opened ${document.name} in the reader.`);
   }
 
+  /** Opens a node's actions: it becomes the open file, then its menu opens. */
+  function requestActions(id: string) {
+    if (workspace.selected?.id !== id) open(id);
+    setActionsRequest((current) => ({
+      id,
+      count: current.count + 1,
+      pending: true,
+    }));
+  }
+
+  /** After a menu opened from the map closes, focus goes back to its node. */
+  function focusNode(id: string) {
+    frame.current
+      ?.querySelector<SVGGElement>(`[data-node-id="${CSS.escape(id)}"]`)
+      ?.focus();
+  }
+
   function close() {
     const name = workspace.selected?.name;
     workspace.clearSelection();
@@ -90,6 +121,15 @@ export function ConceptMap({
         relations.duplicates,
       ).filter((connection) => byId.has(connection.otherId))
     : [];
+  // The request only answers the file it was made for. If that file didn't
+  // become the open one on the map (its read failed, or it's filtered off),
+  // drop it rather than open the menu when the file is selected later.
+  const pendingFor = actionsRequest.pending ? actionsRequest.id : null;
+  useEffect(() => {
+    if (pendingFor !== null && selectedOnMap?.id !== pendingFor)
+      setActionsRequest((current) => ({ ...current, pending: false }));
+  }, [pendingFor, selectedOnMap?.id]);
+
   const summary = `${plural(shown.nodes.length, "file", "files")}, ${plural(
     shown.edges.length,
     "connection",
@@ -97,7 +137,7 @@ export function ConceptMap({
   )} shown`;
 
   return (
-    <div className="concept-map">
+    <div className="concept-map" ref={frame}>
       {large && (
         <Notice tone="info">
           This folder has {graph.nodes.length} files, more than the map can show
@@ -116,6 +156,7 @@ export function ConceptMap({
         label={`Concept map: ${summary}`}
         onOpen={open}
         onClose={close}
+        onActions={requestActions}
       />
       <GraphLegend counts={counts} hidden={hidden} onToggle={toggle} />
       {selectedOnMap && (
@@ -123,10 +164,34 @@ export function ConceptMap({
           className="graph-selection"
           aria-label={`Connections of ${selectedOnMap.name}`}
         >
-          <h3 className="subsection-title">
-            {selectedOnMap.name}:{" "}
-            {plural(connections.length, "connection", "connections")}
-          </h3>
+          <div className="graph-selection-head">
+            <h3 className="subsection-title">
+              {selectedOnMap.name}:{" "}
+              {plural(connections.length, "connection", "connections")}
+            </h3>
+            <RowMenu
+              label={`Actions for ${selectedOnMap.name}`}
+              tabbable
+              items={graphActions(workspace, selectedOnMap).map((action) => ({
+                id: action.kind,
+                label: action.label,
+                disabledReason: action.disabledReason,
+                onSelect: () => onFileAction(action.kind, selectedOnMap),
+              }))}
+              openRequest={
+                actionsRequest.pending && actionsRequest.id === selectedOnMap.id
+                  ? actionsRequest.count
+                  : 0
+              }
+              onRequestOpened={() =>
+                setActionsRequest((current) => ({
+                  ...current,
+                  pending: false,
+                }))
+              }
+              restoreFocus={() => focusNode(selectedOnMap.id)}
+            />
+          </div>
           {connections.length ? (
             <ul className="related-list">
               {connections.map((connection) => (
