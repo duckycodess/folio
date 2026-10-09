@@ -443,12 +443,16 @@ describe("the browser-journey fake native core", () => {
     expect(
       control().readFile("projects/community-learning-project.md"),
     ).not.toBeNull();
-    // Nothing was recorded, so Undo has nothing to reverse and says so.
-    const preview = await call<UndoPreflight>("preview_undo", {
-      workspaceId: WORKSPACE_ID,
-      planId: plan.id,
-    });
-    expect(preview.entryIds).toEqual([]);
+    // Nothing was recorded, so, as in the native writer, Undo knows no
+    // history for the plan rather than offering an empty preview.
+    expect(
+      (
+        await rejection("preview_undo", {
+          workspaceId: WORKSPACE_ID,
+          planId: plan.id,
+        })
+      ).code,
+    ).toBe("historyUnknown");
     expect(
       (
         await rejection("undo_plan", {
@@ -457,7 +461,7 @@ describe("the browser-journey fake native core", () => {
           entryIds: [],
         })
       ).code,
-    ).toBe("planStateInvalid");
+    ).toBe("historyUnknown");
   });
 
   it("refuses a whole-batch Undo when a file changed afterwards", async () => {

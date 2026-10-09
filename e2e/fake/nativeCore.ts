@@ -1026,10 +1026,17 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
 
   /* ------------------------------------------------------------------ undo */
 
+  /**
+   * A plan's entries not yet undone. Like the native writer, a plan with no
+   * recorded history at all is `historyUnknown`, not an empty Undo.
+   */
   function pendingEntries(planId: string): StoredHistory[] {
-    return history.filter(
-      (entry) => entry.planId === planId && entry.undoneAt === undefined,
-    );
+    const recorded = history.filter((entry) => entry.planId === planId);
+    if (!recorded.length)
+      fail("historyUnknown", "Folio has no recorded changes for that plan.", {
+        planId,
+      });
+    return recorded.filter((entry) => entry.undoneAt === undefined);
   }
 
   async function undoConflicts(
