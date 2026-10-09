@@ -16,6 +16,13 @@
   - **Save as new document…** shows the exact Markdown first, then the native create plan, Approve, and the result with Undo. It never overwrites a file. The dialog stays open while the change applies, Done closes it, and focus returns to the button that opened it.
   - Without a model, the shared recovery notice links to Model Lab. The browser preview says summaries need the desktop app, and sample files say a folder is needed.
   - Summaries are kept for the session (up to 20 files) in one store that Ask & Act can also write to. Ask & Act doesn't request summaries yet (#36).
+- Ask & Act changes ([#23](https://github.com/duckycodess/folio/issues/23)). A change Olio understood gets **Preview change…**, which opens the exact native preview.
+  - **Rename, move, create:** they become plan operations that pin the revision Olio read and refuse to overwrite.
+  - **Edits:** they come from `prepare_passage_edit`, which needs the text to appear exactly once. They're refused if the file changed after Olio read it.
+  - **Preview:** it shows the plan rows, the exact text change in that one file, and Ripple passages in related files, labelled "Needs review" and never changed.
+  - **Approve:** Approve and apply uses the shared approval, which echoes the plan digest, then shows the result with Preview Undo.
+  - **Dialog:** it can't be dismissed while applying, Done and Close return focus, and Cancel says nothing was changed.
+  - **Ambiguous files:** when several files could match, nothing is planned until the user picks one. Then Olio reads the request again with that file named.
 - Ask & Act workspace ([#36](https://github.com/duckycodess/folio/issues/36)), using #15's retrieval, interpretation and answers.
   - Ask & Act is a full page with Olio. The search scope (the open folder, or one folder inside it) and the index state stay visible. The index state shows prepared files and skipped files with reasons, and labels keyword-only search when there's no search model.
   - **Find files** runs `semantic_search` and needs no writing model. Each result has the file name, path, a method badge (keyword, semantic, or keyword + semantic, as the native result says), a reason, quoted excerpts that open the passage, and Open file. The reader opens beside Ask & Act.
@@ -114,6 +121,29 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 8-GB measurement is claimed here.
 
 ## Verification
+
+### Ask & Act changes (2026-10-10, issue #23)
+
+Checked on macOS with Node.js 26.10.0, on #36's branch:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 248 passed, 9 todo. New cases in `src/app/proposals.test.ts` cover:
+  - operations pinning the observed revision with `expectedDestination: "absent"`;
+  - Markdown vs plain-text creates;
+  - edits left to the native core;
+  - the exact changed region, with its line, including inserts, deletes and no change;
+  - the re-asked request naming the chosen file.
+- With a **mocked** native core in headless Chromium:
+  - "Hanapin yung project plan at palitan ang deadline…" listed candidates with no plan prepared, and choosing `plan.md` re-asked with that file;
+  - Preview change… showed `Edit | school/plan.md`, the inserted " (due October 23)", and `school/notes 1.md` as Needs review;
+  - nothing was applied before approval, and approval echoed the plan digest;
+  - the result read "Saved 1 change", with Preview Undo;
+  - Done closed the dialog and returned focus to Preview change…;
+  - a proposal from an older revision was refused before any plan was made;
+  - a rename previewed `school/plan.md → school/project-plan.md`, and Cancel then Close applied nothing;
+  - nothing scrolls sideways at 700px.
+
+Not verified: real interpretation output (#15 lists the Taglish deadline case as pending), conflict-aware Undo against the real writer, and screen readers.
 
 ### Ask & Act workspace (2026-10-10, issue #36)
 
