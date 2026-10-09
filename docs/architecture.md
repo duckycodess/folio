@@ -64,3 +64,17 @@ The starter includes a deterministic approval state machine; durable filesystem 
 - [Qwen3 language coverage](https://qwenlm.github.io/blog/qwen3/), [published Qwen3 variants](https://ollama.com/library/qwen3/tags), [Qwen RAG example](https://qwen.readthedocs.io/en/latest/framework/LlamaIndex.html).
 
 Published model file sizes exclude runtime, tokenizer, context cache, app, index, and history. Document implementation measurements separately in `docs/status.md`.
+
+## Issue #4 implementation boundary
+
+The local-provider implementation lives in the pure-Rust `src-tauri/crates/folio-core` workspace member so contract, safety, retrieval, grounding, and interpretation tests do not require WebKitGTK. The Tauri crate is a thin command adapter: it authorizes a selected folder for reads, stores models/runtime files under the OS application-data directory, and returns typed results. It does not add a filesystem or shell plugin to the webview.
+
+The embedding adapter is ONNX Runtime plus `tokenizers`, using the pinned multilingual E5-small int8 files, `query: ` and `passage: ` prefixes, attention-masked mean pooling, L2 normalization, a 512-token limit, and batches of at most 16 with no more than two intra-op threads. Its embedding-space fingerprint includes both file hashes, preprocessing, and the interim chunker revision. The exact in-memory vector index rejects a different fingerprint; changing the selected model drops the old space rather than comparing vectors across revisions. Until #3 supplies persisted chunks and FTS5, `InterimTextChunker` and the Rust keyword path are explicit interim seams. Keyword results are labelled `keyword`, never `semantic`.
+
+The generation adapter launches a verified manifest runtime with a fixed argument vector, a random per-process API key, and `127.0.0.1` only. Requests use the local OpenAI-compatible endpoint, bounded context/output settings, deterministic temperature/seed defaults, schema-constrained JSON, and Qwen thinking disabled. One provider instance permits one active generation; it exposes explicit unload and performs best-effort child cleanup through its owner. Runtime/model installation is explicit, size- and SHA-256-verified, atomic, and confined to app data.
+
+Summaries and answers are `GroundedAnswer` display data, never actions. Source passages are UTF-16-offset evidence, are delimited as untrusted prompt data, and have their citations validated against the passages supplied to that stage. Map/reduce limits return `partialSummary` with coverage rather than silently truncating. A question with no retrieved evidence returns `insufficientEvidence` without calling generation.
+
+Interpretation receives only the user's request and a fixed schema/examples. Its deterministic resolver handles exact filename-stem matches, ambiguity, current-content exact-find checks, duplicate-path information, safe TXT/Markdown destinations, and unsupported delete. It emits a typed `OperationProposal` only; #4 adds no approval, apply, write, ActionPlan, or Ripple path. The native #5 approval engine remains authoritative for any future filesystem change.
+
+The Q5 completion gate and Q6/Q7 processing/competition policies remain provisional because those interview decisions were not accepted. The implementation records them as named limits and a single-generation policy, not as settled product vocabulary.

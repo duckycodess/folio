@@ -22,6 +22,26 @@ Weights and inference binaries are deliberately excluded from Git. Model downloa
 
 No runtime adapter is connected in this starter. Installing Ollama alone does not connect it to Folio. Implement T2 against the existing provider interfaces, use loopback-only endpoints, and measure on the fixed suite before enabling AI actions.
 
+## Issue #4 local provider development
+
+Run Rust commands with the rustup toolchain first on hosts where `/usr/bin/cargo` is older:
+
+```bash
+PATH="$HOME/.cargo/bin:$PATH" cargo test --manifest-path src-tauri/crates/folio-core/Cargo.toml
+```
+
+The pure `folio-core` tests are the portable deterministic gate. The full Tauri crate additionally needs the target desktop libraries. On this WSL host `webkit2gtk-4.1`, `libsoup-3.0`, `javascriptcoregtk-4.1`, and `librsvg2` development packages are absent; `sudo -n` requires a password. Do not install them from an automated agent session. If desired, the user can authorize the documented Tauri prerequisites interactively, then rerun:
+
+```bash
+PATH="$HOME/.cargo/bin:$PATH" cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+Windows verification uses a disposable copy with `.git`, `node_modules`, build targets, model files, and generated output excluded. The verified machine has Windows Node/npm, Rust/Cargo, Visual Studio Community with VC.Tools.x86.x64, and working PowerShell interop. The native shell still needs a successful current Windows Rust/Cargo build and a real desktop launch before claiming Windows interaction verification. macOS requires an actual macOS build/run.
+
+Models and runtimes are installed only through the explicit native commands into app data. The pinned embedding files and Qwen/llama.cpp assets are listed in `src-tauri/resources/model-manifest.json`; installation verifies declared byte counts and SHA-256 values before atomic rename. A model file, runtime binary, or generated answer in a fixture test is not an inference result. Real provider smoke tests must identify the model revision, runtime, host, and whether output was reviewed.
+
+The browser preview intentionally returns a typed `runtimeMissing` adapter error for AI operations. It never presents fixture text as local inference. #4 does not run Model Lab or write benchmark records; that remains the strictly sequential disposable-corpus work in #8 after the #4 review/merge sequence.
+
 ## Publishing the prepared starter
 
 The intended new repository is `duckycodess/folio`, public. Do not overwrite an existing repository without checking its contents. If GitHub CLI is available and authenticated, the repository creation command is:
