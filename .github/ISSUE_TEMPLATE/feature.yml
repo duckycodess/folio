@@ -8,6 +8,7 @@ body:
       label: Area
       options:
         [
+          Onboarding,
           Search,
           Organize,
           Summarize,
