@@ -1,5 +1,7 @@
 import {
+  Compass,
   FlaskConical,
+  History,
   Folders,
   House,
   Monitor,
@@ -19,7 +21,14 @@ import {
   type ThemePreference,
 } from "../app/theme";
 import { useRelationships } from "../app/useRelationships";
+import { useActivity } from "../app/useActivity";
 import { useHome } from "../app/useHome";
+import {
+  loadOnboardingCompleted,
+  saveOnboardingCompleted,
+} from "../app/onboardingStorage";
+import { shouldStartOnboarding } from "../domain/onboarding";
+import { OnboardingView } from "../views/OnboardingView";
 import { hasFilters, passesFilters } from "../domain/homeFilters";
 import { useWorkspace, type WorkspaceSourceKind } from "../app/useWorkspace";
 import { simulatedCode } from "../adapters/simulate";
@@ -39,6 +48,7 @@ import {
 } from "../views/FileActionDialog";
 import { GraphView } from "../views/GraphView";
 import { HomeView } from "../views/HomeView";
+import { ActivityView } from "../views/ActivityView";
 import { ModelLabView } from "../views/ModelLabView";
 import { OrganizeView } from "../views/OrganizeView";
 import {
@@ -57,6 +67,7 @@ const ICONS: Record<ViewId, LucideIcon> = {
   organize: Folders,
   graph: Waypoints,
   assistant: Sparkles,
+  activity: History,
   modelLab: FlaskConical,
 };
 
@@ -77,6 +88,7 @@ const TITLES: Record<ViewId, string> = {
   organize: "Organize",
   graph: "Graph",
   assistant: "Ask & Act",
+  activity: "Activity",
   modelLab: "Model Lab",
 };
 
@@ -92,12 +104,29 @@ export function AppShell() {
   const workspace = useWorkspace();
   const drafts = useDrafts();
   const relations = useRelationships(workspace);
+  // Read whenever the folder changes, so Activity is current when opened.
+  // An Undo from Activity changes files too: re-read the index's links.
+  const activity = useActivity(workspace, relations.refresh);
+  // After Folio changes files: re-read the index's links and the history.
+  const filesChanged = () => {
+    relations.refresh();
+    activity.reload();
+  };
   const home = useHome(workspace);
+  // First run in the desktop app; reopened from the sidebar's settings.
+  const [welcome, setWelcome] = useState(() =>
+    shouldStartOnboarding(workspace.nativeAvailable, loadOnboardingCompleted()),
+  );
+  function finishWelcome(next?: ViewId) {
+    saveOnboardingCompleted();
+    setWelcome(false);
+    if (next) setView(next);
+  }
   // Above the views, so an apply in progress survives switching views.
-  const organize = useOrganize(workspace, relations.refresh);
+  const organize = useOrganize(workspace, filesChanged);
   // Home's Rename and Move have their own plan, so they never show up in
   // Organize (and the reverse).
-  const fileAction = useOrganize(workspace, relations.refresh);
+  const fileAction = useOrganize(workspace, filesChanged);
   const [actionDialog, setActionDialog] = useState<{
     kind: FileActionKind;
     document: DocumentRecord;
@@ -259,6 +288,17 @@ export function AppShell() {
       workspace.clearSelection();
   }
 
+  if (welcome)
+    return (
+      <AnnouncerProvider>
+        <OnboardingView
+          workspace={workspace}
+          relations={relations}
+          onFinish={finishWelcome}
+        />
+      </AnnouncerProvider>
+    );
+
   return (
     <AnnouncerProvider>
       <div className={`app${showsDocument ? " has-document" : ""}`}>
@@ -286,6 +326,20 @@ export function AppShell() {
                 onSelect={setView}
               />
             </nav>
+            {workspace.nativeAvailable && (
+              <button
+                type="button"
+                className="nav-item"
+                aria-label="Setup guide"
+                title="Setup guide"
+                onClick={() => setWelcome(true)}
+              >
+                <Compass size={20} aria-hidden="true" />
+                <span className="nav-label" aria-hidden="true">
+                  Setup guide
+                </span>
+              </button>
+            )}
             <button
               type="button"
               className="nav-item theme-switch"
@@ -414,6 +468,9 @@ export function AppShell() {
                     void workspace.selectDocument(document);
                   }}
                 />
+              )}
+              {view === "activity" && (
+                <ActivityView workspace={workspace} activity={activity} />
               )}
               {view === "modelLab" && <ModelLabView />}
             </AnnouncerProvider>

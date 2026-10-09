@@ -98,6 +98,10 @@ interface NativeDocumentText {
   contentHash: ContentHash;
   sizeBytes: number;
   modifiedAtMs: number | null;
+  /** PDFs only: each page's UTF-8 byte range in `content`. */
+  pages?: { page: number; start: number; end: number }[];
+  /** PDFs only: pages whose text couldn't be extracted. */
+  unreadablePages?: number[];
 }
 
 function toRecord(row: NativeDocument): DocumentRecord {
@@ -167,6 +171,10 @@ export async function readNativeDocument(
         ? { modifiedAtMs: read.modifiedAtMs }
         : {}),
       title: read.content.match(/^# (.+)$/m)?.[1] ?? document.name,
+      ...(read.pages?.length ? { pages: read.pages } : {}),
+      ...(read.unreadablePages?.length
+        ? { unreadablePages: read.unreadablePages }
+        : {}),
     };
   } catch (cause) {
     throw toFolioError(cause);

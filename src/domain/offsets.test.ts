@@ -6,6 +6,7 @@ import {
   utf16IndexToUtf8Offset,
   utf8Length,
   utf8OffsetToUtf16Index,
+  utf8OffsetsToUtf16Indices,
 } from "./offsets";
 import { hashText } from "./hash";
 import { isFolioError } from "./errors";
@@ -82,5 +83,29 @@ describe("source offsets", () => {
       code = isFolioError(cause) ? cause.code : String(cause);
     }
     expect(code).toBe("evidenceInvalid");
+  });
+});
+
+describe("one-pass offset conversion", () => {
+  it("matches the single-offset conversion for every offset", () => {
+    const text = "Niño — 😀 ok\uD800!";
+    const all = Array.from({ length: utf8Length(text) + 1 }, (_, i) => i);
+    const valid = all.filter((offset) => {
+      try {
+        utf8OffsetToUtf16Index(text, offset);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    expect(utf8OffsetsToUtf16Indices(text, valid)).toEqual(
+      valid.map((offset) => utf8OffsetToUtf16Index(text, offset)),
+    );
+  });
+
+  it("refuses offsets inside a character, past the end or out of order", () => {
+    expect(() => utf8OffsetsToUtf16Indices("ñ", [1])).toThrow();
+    expect(() => utf8OffsetsToUtf16Indices("ab", [3])).toThrow();
+    expect(() => utf8OffsetsToUtf16Indices("abc", [2, 1])).toThrow();
   });
 });
