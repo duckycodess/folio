@@ -1,0 +1,85 @@
+name: Model Lab measurements
+
+# Manual only. Downloads the pinned models you name, runs the fixed labelled
+# suite on a hosted runner and uploads the records. Nothing runs on push or
+# pull request, and nothing is substituted for a model or platform that was not
+# requested. Model task outcomes are measurements, not job failures.
+on:
+  workflow_dispatch:
+    inputs:
+      os:
+        description: Runner (macOS results are needed before any target-platform claim)
+        type: choice
+        options: [windows-latest, macos-latest]
+        default: windows-latest
+      embedding_model:
+        description: Pinned embedding model id
+        type: string
+        default: multilingual-e5-small-int8
+      generation_models:
+        description: >-
+          Pinned generation model ids, comma separated, run one at a time in this order.
+          Evaluation-only candidates (qwen3.5-0.8b-q4-k-m, qwen3.5-2b-q4-k-m,
+          gemma-sea-lion-v4.5-e2b-q4-k-m) are accepted by name; they are never run by default
+        type: string
+        default: qwen3-0.6b-q4-k-m
+
+permissions:
+  contents: read
+
+concurrency:
+  group: model-lab
+  cancel-in-progress: false
+
+jobs:
+  measure:
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 120
+    env:
+      FOLIO_LAB_EMBEDDING_MODEL: ${{ inputs.embedding_model }}
+      FOLIO_LAB_GENERATION_MODELS: ${{ inputs.generation_models }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Choose the pinned runtime and paths for this runner
+        shell: bash
+        run: |
+          # The runner context is not available in job-level env, so paths are set here.
+          echo "FOLIO_LAB_DATA_DIR=$RUNNER_TEMP/folio-lab-data" >> "$GITHUB_ENV"
+          echo "FOLIO_LAB_OUTPUT=$RUNNER_TEMP/model-lab-results.json" >> "$GITHUB_ENV"
+          case "${{ inputs.os }}" in
+            windows-latest) echo "FOLIO_LAB_RUNTIME_ID=llama-b11524-win-cpu-x64" >> "$GITHUB_ENV" ;;
+            macos-latest) echo "FOLIO_LAB_RUNTIME_ID=llama-b11524-macos-arm64" >> "$GITHUB_ENV" ;;
+            *) echo "::error::Unsupported runner ${{ inputs.os }}"; exit 1 ;;
+          esac
+      - name: Check the request and disk before downloading
+        shell: bash
+        env:
+          LAB_EMBEDDING: ${{ inputs.embedding_model }}
+          LAB_MODELS: ${{ inputs.generation_models }}
+        run: |
+          LAB_DATA_DIR="$FOLIO_LAB_DATA_DIR" LAB_RUNTIME_ID="$FOLIO_LAB_RUNTIME_ID" python scripts/model_lab_plan.py
+      - name: Install the pinned files and run the lab
+        shell: bash
+        run: >
+          cargo test --release --manifest-path src-tauri/crates/folio-core/Cargo.toml
+          --test model_lab_real -- --ignored --nocapture
+      - name: Summarize
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "$FOLIO_LAB_OUTPUT" ]; then
+            python scripts/model_lab_summary.py "$FOLIO_LAB_OUTPUT"
+          else
+            echo "No results file was written." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: model-lab-results-${{ inputs.os }}
+          path: ${{ runner.temp }}/model-lab-results.json
+          retention-days: 14
+          if-no-files-found: warn

@@ -253,6 +253,74 @@ or owned by someone else) is refused rather than replaced. Edits and deletions
 keep the content Undo needs for the 100 most recent applied plans; older edit
 and delete entries remain listed with `recoverable: false`.
 
+## Model Lab results (issue #8, proposal for TJ)
+
+`BenchmarkResult` is unchanged. `BenchmarkRecord` extends it additively in
+`src/domain/contracts.ts` and stays assignable to it; the serde mirror lives in
+`folio-core::lab`. `fixtures/contracts/benchmark-record.json` is a contract
+example with placeholder values, not a measurement.
+
+- **Separate tasks.** Retrieval, interpretation, summary and edit are separate
+  records. There is no per-model, per-task or overall score, and no field
+  carries one.
+- **`correctness`** is set only by deterministic checks against the labelled
+  suite. A summary record keeps `correctness: null` until a person reviews it,
+  and a review never writes `correctness` either. `reviews: []` means Not
+  reviewed. Reviews are appended with the `outputSha256` of the output the
+  reviewer read; `output` and `outputSha256` are never overwritten.
+- **Cold and repeat.** `cold: true` means the first request after the process
+  restarted (`timing.requestPosition: "firstRequestAfterServerRestart"`);
+  `cold: false` is the immediate repeat on the same process. Startup time is
+  `timing.processStartMs`, outside `taskDurationMs`. The operating system's
+  file cache is not controlled (`conditions.pageCache: "notControlled"`).
+  `serverSettings` records the llama-server startup warmup and prompt-cache
+  settings used; it is `null` for retrieval rows, which run in-process.
+  One pair per case is an initial observation, not a stable estimate.
+- **Memory.** Each `memory` entry names its process and states what span the
+  peak covers (`scope`) and how it was read (`method`). A process-lifetime peak
+  is never presented as one task's memory, and it is never whole-device RAM.
+  An unavailable peak is `null` with `unavailableReason`.
+  `peakProcessRamBytes` is the generation-process entry for generation tasks,
+  the Folio-process entry for retrieval, or `null`.
+- **App activity.** `conditions.appActivity` is `notControlled`: a run holds the
+  generation slot and the install lock, but the app's own search or indexing may
+  still reload its embedding session and use CPU, so a run on a busy app is not
+  comparable to one on an idle app.
+- **Outcome.** `outcomeKind` is `valid`, `invalidModelOutput`, `timedOut`,
+  `runtimeError` or `cancelled`, and `retryNeeded` is true exactly when it is
+  neither `valid` nor `cancelled`. A failed outcome has `correctness: false`, or
+  `null` for a summary, which is never graded here; the cause is `outcomeKind`,
+  so a timeout is never mistaken for a summary that is merely waiting for review.
+  A resolved `InvalidModelOutput` result is `invalidModelOutput`; a provider
+  `TimedOut` is `timedOut`; start and I/O failures are `runtimeError`.
+- **Runtime backend.** `runtimeDetail.backend` (llama.cpp rows) keeps the
+  runtime id, the manifest platform, the `llama-server --list-devices` output as
+  printed and `gpuOffload`. Model Lab requests CPU-only, so its llama.cpp rows
+  are `disabled`, and `flags` holds what it passed: `--n-gpu-layers 0` and
+  `--device none`. `runtimeDefault` means no offload setting was passed and the
+  runtime chose. A listing without a GPU is never read as proof that the CPU
+  was used (macOS builds can offload to the integrated GPU by default).
+- **Catalog provenance.** `model.catalog` is `product` or `evaluationCandidate`
+  and `model.evaluationOnly` is true exactly for a candidate. `model.license` is
+  the license the catalog records, not a legal conclusion, and
+  `model.licenseNote` carries a caveat such as conflicting publisher metadata.
+  A measured candidate is not thereby supported or recommended.
+- **CPU-only verification.** The lab launches llama-server with `--n-gpu-layers 0
+--device none` (llama.cpp b11524: `none` means don't offload) and records those
+  `flags`. `cpuOnlyVerified` is `true` only when the server's own output reported
+  zero offloaded layers and named no GPU backend, `false` when it reported
+  offloaded layers, and `null` when that cannot be told; `validate()` refuses
+  `true` alongside offloaded layers or without the request. ONNX Runtime rows use
+  the default CPU execution provider (no GPU provider is registered), stated in
+  the runtime version.
+- **Sizes.** `modelFileBytes` equals `modelDiskBytes`: the model's own files.
+  It is not an installed size. `host.installedRamBytes` is installed capacity,
+  not usage.
+- **Persistence.** Records are stored as versioned JSON (`schemaVersion: 1`) in
+  the existing `benchmark_results` table and outlive removal of the model.
+- **Apply.** `apply` is always `notRun` with its reason; Model Lab never
+  bypasses the native approval engine.
+
 ## What is not implemented yet
 
 Local embedding and generation are issues #4 and #8, including model-generated
