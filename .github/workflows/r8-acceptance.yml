@@ -11,19 +11,7 @@ on:
       - "src-tauri/resources/model-manifest.json"
       - "src-tauri/crates/folio-core/Cargo.toml"
       - "src-tauri/crates/folio-core/src/**"
-      - "src-tauri/crates/folio-core/tests/real_acceptance.rs"
-      - "fixtures/documents/**"
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - ".github/workflows/r8-acceptance.yml"
-      - "scripts/r8_fetch_models.py"
-      - "scripts/r8_monitor_rss.py"
-      - "src-tauri/Cargo.lock"
-      - "src-tauri/resources/model-manifest.json"
-      - "src-tauri/crates/folio-core/Cargo.toml"
-      - "src-tauri/crates/folio-core/src/**"
-      - "src-tauri/crates/folio-core/tests/real_acceptance.rs"
+      - "src-tauri/crates/folio-core/tests/**"
       - "fixtures/documents/**"
   workflow_dispatch:
 
@@ -467,6 +455,15 @@ jobs:
             "$offline_image" \
             "$FOLIO_R8_TEST_BINARY" --ignored --test-threads=1 --nocapture \
             2>&1 | tee "$offline_dir/offline.log"
+
+      - name: Run deterministic folio-core tests
+        if: always() && steps.compile.outcome == 'success'
+        timeout-minutes: 20
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --manifest-path src-tauri/crates/folio-core/Cargo.toml 2>&1 \
+            | tee "$RUNNER_TEMP/folio-r8/core-tests.log"
 
       - name: Upload R8 evidence and logs
         if: always()
