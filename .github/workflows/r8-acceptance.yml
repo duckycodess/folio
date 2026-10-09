@@ -200,6 +200,7 @@ jobs:
           ort_library="$(find "$GITHUB_WORKSPACE/target" \( -type f -o -type l \) -name 'libonnxruntime.so*' -print -quit 2>/dev/null || true)"
           if [[ -z "$ort_library" ]]; then
             echo "ready=static" >> "$GITHUB_OUTPUT"
+            echo "FOLIO_ORT_LIBRARY_DIR=" >> "$GITHUB_ENV"
             echo "FOLIO_ORT_LINKAGE=static" >> "$GITHUB_ENV"
             echo "ONNX Runtime linkage is static; no separate libonnxruntime.so needs to be mounted." > "$RUNNER_TEMP/folio-r8/ort-linkage.txt"
           else
