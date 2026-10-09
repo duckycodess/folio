@@ -20,16 +20,8 @@ import { Modal } from "../ui/Modal";
 import { Notice } from "../ui/Notice";
 import { Progress } from "../ui/Progress";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
+import { CitedSentences } from "./CitedSentences";
 import { PreviewStep, ResultStep } from "./OrganizeFlowPanel";
-
-const EXCERPT_LENGTH = 120;
-
-function excerpt(text: string): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > EXCERPT_LENGTH
-    ? `${flat.slice(0, EXCERPT_LENGTH - 1)}…`
-    : flat;
-}
 
 /**
  * Save a summary as a new Markdown file next to its source: the exact file
@@ -137,11 +129,6 @@ function SummaryResult({
   const [saving, setSaving] = useState(false);
   const stale = isStale(result, document);
   const covered = coveredPercent(result, document);
-  const sources: string[] = [];
-  const numberOf = (key: string) => {
-    if (!sources.includes(key)) sources.push(key);
-    return sources.indexOf(key) + 1;
-  };
 
   if (result.kind === "insufficientEvidence")
     return (
@@ -179,44 +166,7 @@ function SummaryResult({
           longer match.
         </Notice>
       )}
-      <ol className="summary-points">
-        {result.sentences.map((sentence, index) => (
-          <li key={index}>
-            {sentence.text}{" "}
-            {sentence.citations.length ? (
-              sentence.citations.map((citation) => {
-                const n = numberOf(
-                  `${citation.documentId}|${citation.start}|${citation.end}`,
-                );
-                return (
-                  <button
-                    key={`${citation.start}-${citation.end}`}
-                    type="button"
-                    className="citation"
-                    aria-label={`Source ${n}${citation.page !== undefined ? `, page ${citation.page}` : ""}: ${excerpt(citation.text)}`}
-                    title={excerpt(citation.text)}
-                    onClick={() => relations.openPassage(citation)}
-                  >
-                    {n}
-                  </button>
-                );
-              })
-            ) : (
-              <span className="muted">(no source)</span>
-            )}
-          </li>
-        ))}
-      </ol>
-      {result.uncitedSentenceCount > 0 && (
-        <p className="muted">
-          {result.uncitedSentenceCount}{" "}
-          {result.uncitedSentenceCount === 1
-            ? "point has no source"
-            : "points have no source"}
-          . Check {result.uncitedSentenceCount === 1 ? "it" : "them"} against
-          the file.
-        </p>
-      )}
+      <CitedSentences result={result} onOpen={relations.openPassage} />
       <div className="form-actions">
         <Button variant="primary" onClick={() => setSaving(true)}>
           Save as new document…

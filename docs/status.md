@@ -16,6 +16,17 @@
   - **Save as new document…** shows the exact Markdown first, then the native create plan, Approve, and the result with Undo. It never overwrites a file.
   - Without a model, the shared recovery notice links to Model Lab. The browser preview says summaries need the desktop app, and sample files say a folder is needed.
   - Summaries are kept for the session (up to 20 files) in one store that Ask & Act can also write to. Ask & Act doesn't request summaries yet (#36).
+- Ask & Act workspace ([#36](https://github.com/duckycodess/folio/issues/36)), using #15's retrieval, interpretation and answers.
+  - Ask & Act is a full page with Olio. The search scope (the open folder, or one folder inside it) and the index state stay visible. The index state shows prepared files and skipped files with reasons, and labels keyword-only search when there's no search model.
+  - **Find files** runs `semantic_search` and needs no writing model. Each result has the file name, path, a method badge (keyword, semantic, or keyword + semantic, as the native result says), a reason, quoted excerpts that open the passage, and Open file. The reader opens beside Ask & Act.
+  - **Ask Olio** runs `interpret_request`:
+    - questions get cited answers from `answer_question`, or an honest "couldn't find enough";
+    - searches list results;
+    - summaries go to the file's Summary tab (#20), and if several files could match, the user chooses first;
+    - change requests are shown as understood but not previewable here yet, with nothing changed;
+    - clarifications, unsupported requests and unreadable model output say so.
+  - One request runs at a time and can be cancelled. Cancelling and errors keep the request text. Earlier replies stay readable, and replies are kept when leaving Ask & Act until another folder is opened.
+  - With a subfolder scope, questions still use the whole folder, and the page says so.
 - Home as the file browser ([#42](https://github.com/duckycodess/folio/issues/42), [#43](https://github.com/duckycodess/folio/issues/43), ADR 0010). The Files tab is gone. Home lists every file, sorted by path, with a count. Each row has a keyboard-accessible ⋯ menu (Open, Rename…, Move to folder…, Show related), and the document panel has the same menu. Rename and Move use the exact preview, Approve and Undo flow from #22, in a dialog. The search field is only on Home, centred, and ⌘K / Ctrl K from any page opens Home and focuses it. Rows take an optional `renderDetail` slot for #19's search evidence. With the sample files, Rename and Move explain that a folder is needed.
 - Organize flow ([issue #22](https://github.com/duckycodess/folio/issues/22)), desktop only. Analyze re-indexes the open folder, with live progress and Stop, then lists exact duplicates (by content, never moved or deleted) and filename suggestions to tick. The exact preview shows every from → to path from the native plan. Approve echoes that plan's digest and applies it. The result is worded from the per-file outcomes, so a batch that stopped partway never says nothing changed. It shows what was recorded in history and offers a Preview Undo. A refused apply keeps the preview, with Preview again. The Rename form uses the same native plan with a folder open. With the sample files, Organize explains that a folder is needed. Virtual collections are still not available.
 - Keyword filtering (explicitly labelled), actual Markdown-link discovery in fixture text, source content views, and a list of those explicit links with their evidence (Graph view).
@@ -88,6 +99,36 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 8-GB measurement is claimed here.
 
 ## Verification
+
+### Ask & Act workspace (2026-10-10, issue #36)
+
+Checked on macOS with Node.js 26.10.0, on #20's branch (#48 with #15 merged in):
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 181 passed, 9 todo.
+  - New cases in `src/app/askAct.test.ts` cover:
+    - method labels (only embedding results are "semantic");
+    - match reasons;
+    - scope (`research` doesn't include `research-old`);
+    - choosing the summary target;
+    - bounded turns;
+    - proposal wording.
+  - `reader.test.ts` now covers the reader beside Ask & Act.
+- Browser preview: "Ask & Act needs the desktop app".
+- With a **mocked** native core in headless Chromium:
+  - Find listed 3 files with badges, reasons and excerpts, and Open file showed the reader beside Ask & Act;
+  - a question gave a cited answer, and a citation opened the highlighted passage;
+  - an ambiguous summary request asked which file;
+  - "Ibuod itong notes" summarized `notes 1.md`, and Open Summary tab showed it;
+  - a rename proposal and a file-selection request each said nothing was changed;
+  - a clarification and an unsupported request were each answered in words;
+  - Cancel kept the request text, and all 9 replies stayed;
+  - skipped files were listed;
+  - replies survived opening a file and going back at 700px, and visiting Home and returning;
+  - with no writing model, Ask Olio linked to Model Lab while Find still worked;
+  - nothing scrolls sideways at 700px.
+
+Not verified: real models (interpretation accuracy and Taglish requests are still pending in #15), searching several authorized folders at once (Folio opens one folder at a time), and screen readers. At narrow widths, closing the reader from Ask & Act moves focus to the top of the page.
 
 ### Summary tab (2026-10-10, issue #20)
 
