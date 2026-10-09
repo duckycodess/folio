@@ -38,7 +38,10 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
-use contracts::{ActionPlan, Approval, FileOperation, HistoryEntry, ImpactCandidate, UndoPreflight};
+use contracts::{
+    ActionPlan, Approval, FileOperation, HistoryEntry, ImpactCandidate, ImpactStrength,
+    RelationshipKind, UndoPreflight,
+};
 use error::{error, ErrorCode, FolioError};
 use index::{
     AiRelationshipRefresh, ChunkVector, DuplicateGroup, EmbeddingSpace, IndexProgress,
@@ -115,6 +118,22 @@ fn core_passage(passage: &contracts::SourcePassage) -> CoreSourcePassage {
         end: passage.end,
         text: passage.text.clone(),
         page: passage.page,
+    }
+}
+
+fn impact_relationship_label(candidate: &ImpactCandidate) -> &'static str {
+    match candidate.relationship_type {
+        Some(RelationshipKind::ExplicitReference) => "document link",
+        Some(RelationshipKind::Similarity) => "similarity",
+        Some(RelationshipKind::SharedFactCandidate) => "shared fact candidate",
+        None => "content-only relation",
+    }
+}
+
+fn impact_strength_label(strength: ImpactStrength) -> &'static str {
+    match strength {
+        ImpactStrength::Evidence => "evidence",
+        ImpactStrength::SimilarityOnly => "similarity-only review hint",
     }
 }
 
@@ -565,14 +584,10 @@ async fn explain_impact(
                 .with_detail("reason", "wrongEvidenceDocument"));
             }
         }
-        let instruction = format!(
-            "Explain why this file is a Ripple review candidate. Use only the supplied evidence. The native review reason is: {}",
-            candidate.reason
-        );
         if candidate.evidence.is_empty() {
             return Ok(grounding::answer_question(
                 None,
-                &instruction,
+                grounding::IMPACT_EXPLANATION_INSTRUCTION,
                 Vec::new(),
                 Language::Unknown,
                 &AtomicBool::new(false),
@@ -606,7 +621,9 @@ async fn explain_impact(
         let (provider, cancel) = acquire_generation(&app, &generation_state)?;
         let result = grounding::impact_explanation(
             provider.as_ref(),
-            &instruction,
+            impact_relationship_label(&candidate),
+            impact_strength_label(candidate.strength),
+            &candidate.reason,
             candidate.evidence.iter().map(core_passage).collect(),
             language,
             cancel.as_ref(),
