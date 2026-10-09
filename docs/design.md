@@ -139,17 +139,17 @@ Define dark values under `@media (prefers-color-scheme: dark)` and a `data-theme
 
 The **folio wordmark** is the brandkit's gold rounded logotype with black eyes, not Manrope. The sidebar shows `src/assets/brand/folio-wordmark.png` (the gold row of the brandkit's `folio-transparent-versions.png`, transparent, 534×191) at 178px wide, with the motto **Search. Organize. Summarize** centred 9px beneath it in 10px DM Sans. The icon rail keeps the whole wordmark at 48px and drops the motto. Do not recreate the wordmark with CSS or a font; replace the PNG with an SVG if the design owner exports one.
 
-| Token             | Size / line height                   | Weight  | Use                                                  |
-| ----------------- | ------------------------------------ | ------- | ---------------------------------------------------- |
-| `--text-display`  | 32 / 40                              | 700     | Page title ("Your workspace")                        |
-| `--text-title`    | 20 / 28                              | 600     | Panel title (file name in the detail panel)          |
-| `--text-heading`  | 16 / 24                              | 600     | Section headings ("Smart collections", "Key points") |
-| `--text-body`     | 14 / 20                              | 400     | Body, table cells, summaries                         |
-| `--text-label`    | 14 / 20                              | 500     | Buttons, nav items, tabs                             |
-| `--text-small`    | 12 / 16                              | 400–500 | Metadata, badges, captions — minimum size            |
-| `--text-overline` | 12 / 16, +0.12em tracking, uppercase | 500     | Rare section labels only                             |
+| Token             | Size / line height                               | Weight  | Use                                                  |
+| ----------------- | ------------------------------------------------ | ------- | ---------------------------------------------------- |
+| `--text-display`  | 34 / 40, −0.032em (28 / 36 when short or narrow) | 800     | Every page title, the same on every page             |
+| `--text-title`    | 20 / 28                                          | 700     | Panel title (file name in the detail panel)          |
+| `--text-heading`  | 16 / 24                                          | 700     | Section headings ("Smart collections", "Key points") |
+| `--text-body`     | 14 / 20                                          | 400     | Body, table cells, summaries                         |
+| `--text-label`    | 14 / 20                                          | 500     | Buttons, nav items, tabs                             |
+| `--text-small`    | 12 / 16                                          | 400–500 | Metadata, badges, captions — minimum size            |
+| `--text-overline` | 12 / 16, +0.12em tracking, uppercase             | 500     | Rare section labels only                             |
 
-The tagline style under the page title ("Everything in its place.") uses `--text-heading` at weight 400 with `0.04em` letter spacing in `--color-text-secondary`. No text below 12px. Use `font-variant-numeric: tabular-nums` for sizes, dates and counts in tables.
+The tagline under every page title ("Everything in its place.") is DM Sans 15px / 1.6 in `--color-text-secondary`, with no added tracking (brandkit `.sub`). Page content, notices included, shares one `--content-max-width` (1080px), and the page leaves `--launcher-clearance` (184px) at the bottom so the floating Olio never covers the last control. Checkboxes and radios use `accent-color: var(--color-focus)`. No text below 12px. Use `font-variant-numeric: tabular-nums` for sizes, dates and counts in tables.
 
 ## Spacing, radius and elevation
 
@@ -220,7 +220,7 @@ Active item: `--sidebar-item-active` background, 3px gold bar on the left edge, 
 - _Primary_: gold fill, charcoal label, optional leading icon ("+ New"). Hover sunflower, pressed honey, disabled 40% opacity with `not-allowed`. One primary button per view.
 - _Secondary_: white fill, 1px `--color-border-strong`, charcoal label ("Open").
 - _Ghost/row action_: no border until hover ("✦ Summarize" in the table row).
-- Minimum hit area 32px high (40px for primary).
+- Every button is 36px high, primary included, so buttons side by side line up; primary is told apart by its gold fill. Button groups (`.form-actions`, `.panel-actions`) keep an 8px gap.
 
 **Search field**
 

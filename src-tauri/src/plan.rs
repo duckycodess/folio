@@ -176,6 +176,18 @@ fn assert_editable(relative: &str) -> Result<(), FolioError> {
     Ok(())
 }
 
+/// TXT, Markdown and PDF files can be renamed or moved.
+fn assert_relocatable(relative: &str) -> Result<(), FolioError> {
+    if media_type_for_path(relative).is_none() {
+        return Err(error(
+            ErrorCode::UnsupportedMediaType,
+            "Folio renames and moves only TXT, Markdown and PDF files.",
+        )
+        .with_detail("path", relative));
+    }
+    Ok(())
+}
+
 /// Check every operation in a batch against the real filesystem before any file
 /// changes, as the accepted batch-failure policy requires. This function never
 /// writes.
@@ -203,10 +215,20 @@ pub fn preflight_plan(root: &Path, plan: &ActionPlan, now: i64) -> Result<(), Fo
     let mut checked: Vec<(Option<String>, Option<String>)> =
         Vec::with_capacity(plan.operations.len());
     for operation in &plan.operations {
+        // A rename or move keeps the file's bytes, so a read-only PDF can be
+        // relocated; only its text can't change.
+        let relocation = matches!(
+            operation,
+            FileOperation::Rename { .. } | FileOperation::Move { .. }
+        );
         let source = match operation.source_path() {
             Some(raw) => {
                 let source = normalize_relative_path(raw)?;
-                assert_editable(&source)?;
+                if relocation {
+                    assert_relocatable(&source)?;
+                } else {
+                    assert_editable(&source)?;
+                }
                 Some(source)
             }
             None => None,
@@ -214,7 +236,20 @@ pub fn preflight_plan(root: &Path, plan: &ActionPlan, now: i64) -> Result<(), Fo
         let destination = match operation.destination_path() {
             Some(raw) => {
                 let destination = assert_portable_destination(raw)?;
-                assert_editable(&destination)?;
+                if relocation {
+                    assert_relocatable(&destination)?;
+                    if media_type_for_path(&destination)
+                        != source.as_deref().and_then(media_type_for_path)
+                    {
+                        return Err(error(
+                            ErrorCode::OperationUnsupported,
+                            "A rename or move keeps the file's extension.",
+                        )
+                        .with_detail("path", destination));
+                    }
+                } else {
+                    assert_editable(&destination)?;
+                }
                 if source.as_deref().map(target_key) == Some(target_key(&destination)) {
                     return Err(error(
                         ErrorCode::OperationUnsupported,

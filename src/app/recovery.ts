@@ -7,7 +7,9 @@ export type RecoveryActionKind =
   | "chooseFolder"
   | "openModelLab"
   | "previewAgain"
-  | "chooseAnotherName";
+  | "chooseAnotherName"
+  /** Stop what holds the local model, then run this request. */
+  | "stopAndRetry";
 
 /** Where an error comes from, and so where the browser preview can demo it. */
 export type RecoveryFlow =
@@ -296,15 +298,35 @@ const PARTIAL_UNDO: Partial<Record<FolioErrorCode, string>> = {
     "Folio undid part of this change, then stopped because a file changed afterwards. Preview Undo again to finish.",
 };
 
+/** What the native core says holds the local model (`providerBusy`'s `holder`). */
+const BUSY_HOLDER: Record<string, string> = {
+  summary: "Folio is writing a summary",
+  answer: "Folio is answering another question",
+  interpretation: "Folio is reading another request",
+  relationshipSummary: "Folio is summarizing connections in Graph",
+  impactExplanation: "Folio is explaining a related file in a preview",
+  organizeSuggestions: "Folio is naming suggestions in Organize",
+  modelLab: "Model Lab is measuring models",
+};
+
 /**
  * The wording and next step for any failure, known code or not. `stage`
  * matters only for change-related codes; see `RecoveryStage`.
  */
 export function recoveryFor(
-  error: Pick<FolioError, "code">,
+  error: Pick<FolioError, "code"> & Partial<Pick<FolioError, "details">>,
   stage: RecoveryStage = "refused",
 ): Recovery {
   const base = RECOVERY[error.code] ?? RECOVERY.internal;
+  const holder = error.details?.holder;
+  if (error.code === "providerBusy" && holder && BUSY_HOLDER[holder])
+    return {
+      ...base,
+      title: BUSY_HOLDER[holder],
+      message:
+        "Folio runs one AI task at a time. Stop it to run your request now, or try again when it finishes. Your request is kept.",
+      action: { kind: "stopAndRetry", label: "Stop it and try again" },
+    };
   if (base.flow !== "changes" || base.afterWrite || stage === "refused")
     return base;
   const reason = base.message.replace(` ${NOTHING_CHANGED}`, "");
