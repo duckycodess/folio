@@ -1,0 +1,39 @@
+name: Folio implementation task
+description: A bounded implementation task for the SOS workflow
+title: "[Folio] "
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        [
+          Search,
+          Organize,
+          Summarize,
+          Relationships and Ripple,
+          Native actions and history,
+          Models and Model Lab,
+          Packaging,
+        ]
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: User behavior
+      description: State the concrete trigger and resulting behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Include evidence, offline behavior, applicable languages, and failure cases.
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies and ownership
+      description: Reference blocking tasks and the track's contracts. Labels do not auto-dispatch workers unless explicitly authorized.

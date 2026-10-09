@@ -1,0 +1,73 @@
+[
+  {
+    "id": "retrieval-en",
+    "task": "retrieval",
+    "input": "Community Learning Project submission deadline",
+    "relevantDocuments": [
+      "projects/project-plan.md",
+      "projects/submission-checklist.md",
+      "meetings/meeting-notes.md",
+      "notes/tala-sa-proyekto.md"
+    ],
+    "negativeDocuments": [
+      "personal/grocery-list.md"
+    ]
+  },
+  {
+    "id": "retrieval-fil",
+    "task": "retrieval",
+    "input": "Hanapin ang plano at huling araw ng pagpasa ng proyekto",
+    "relevantDocuments": [
+      "projects/project-plan.md",
+      "notes/tala-sa-proyekto.md",
+      "projects/submission-checklist.md"
+    ]
+  },
+  {
+    "id": "retrieval-taglish",
+    "task": "retrieval",
+    "input": "Saan yung notes about consent ng interview participants?",
+    "relevantDocuments": [
+      "research/methodology-notes.md",
+      "research/tala-sa-pamamaraan.md",
+      "research/review-reminders.md"
+    ]
+  },
+  {
+    "id": "summary-fil",
+    "task": "summary",
+    "input": "Ibuod ang project plan sa Filipino.",
+    "document": "projects/project-plan.md",
+    "requiredFacts": [
+      "October 20 deadline",
+      "12 volunteer students",
+      "October 24 presentation"
+    ],
+    "requireSources": true
+  },
+  {
+    "id": "action-taglish",
+    "task": "interpretation",
+    "input": "Palitan sa project plan ang deadline na October 20 to October 23.",
+    "expectedOperation": "edit",
+    "expectedTarget": "projects/project-plan.md",
+    "expectedBefore": "October 20",
+    "expectedAfter": "October 23"
+  },
+  {
+    "id": "ripple-deadline",
+    "task": "edit",
+    "input": "Change Community Learning Project submission deadline to October 23.",
+    "expectedTarget": "projects/project-plan.md",
+    "reviewCandidates": [
+      "meetings/meeting-notes.md",
+      "projects/submission-checklist.md",
+      "notes/tala-sa-proyekto.md"
+    ],
+    "unrelatedSameDate": [
+      "courses/math-review.md",
+      "courses/pagsasanay-sa-math.md"
+    ],
+    "unchangedRelatedFiles": true
+  }
+]
