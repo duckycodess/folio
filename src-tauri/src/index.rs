@@ -256,7 +256,7 @@ pub fn scan_workspace(conn: &mut Connection, root: &ScopedRoot, cancel: &AtomicB
                 tx.commit()?;
                 break 'batches;
             }
-            match index_file(&tx, &root.id, file, existing.get(&file.relative))? {
+            match index_file(&tx, &root.id, file, existing.get(&file.relative), false)? {
                 Outcome::Unchanged => summary.unchanged += 1,
                 Outcome::Added => summary.added += 1,
                 Outcome::Updated => summary.updated += 1,
@@ -281,9 +281,10 @@ pub fn scan_workspace(conn: &mut Connection, root: &ScopedRoot, cancel: &AtomicB
     Ok(summary)
 }
 
-fn index_file(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior: Option<&Existing>) -> NativeResult<Outcome> {
+/// `verify` skips the size/mtime shortcut and compares content hashes, for files Folio just wrote.
+fn index_file(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior: Option<&Existing>, verify: bool) -> NativeResult<Outcome> {
     if let Some(prior) = prior {
-        if prior.size == file.size && prior.modified == file.modified { return Ok(Outcome::Unchanged); }
+        if !verify && prior.size == file.size && prior.modified == file.modified { return Ok(Outcome::Unchanged); }
     }
     let bytes = match workspace::read_bounded(&file.path, file.kind.max_bytes()) {
         Ok(bytes) => Some(bytes),
@@ -384,10 +385,39 @@ pub fn clear_derived(tx: &Transaction<'_>, document_id: &str) -> NativeResult<()
     Ok(())
 }
 
-fn forget_document(tx: &Transaction<'_>, document_id: &str) -> NativeResult<()> {
+pub fn forget_document(tx: &Transaction<'_>, document_id: &str) -> NativeResult<()> {
     // History survives the document so applied changes stay recoverable.
     tx.execute("UPDATE history SET document_id = NULL WHERE document_id = ?1", [document_id])?;
     tx.execute("DELETE FROM documents WHERE id = ?1", [document_id])?;
+    Ok(())
+}
+
+/// Re-indexes specific files after Folio changed them, then rebuilds link relationships.
+/// Paths that no longer exist are removed from the index.
+pub fn refresh_paths(conn: &mut Connection, root: &ScopedRoot, relative_paths: &[String]) -> NativeResult<()> {
+    let tx = conn.transaction()?;
+    for relative in relative_paths {
+        let prior = tx
+            .query_row("SELECT id, size_bytes, modified_at, content_hash, status FROM documents WHERE workspace_id = ?1 AND relative_path = ?2", [&root.id, relative], |row| {
+                Ok(Existing { id: row.get(0)?, size: row.get(1)?, modified: row.get(2)?, hash: row.get(3)?, status: row.get(4)? })
+            })
+            .optional()?;
+        let path = match workspace::resolve_document(&root.path, relative) {
+            Ok(path) => path,
+            Err(error) if error.code == ErrorCode::NotFound => {
+                if let Some(prior) = prior { forget_document(&tx, &prior.id)?; }
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let kind = MediaKind::from_path(&path).ok_or_else(|| fail(ErrorCode::Unsupported, "Folio indexes TXT, Markdown and text-based PDF files."))?;
+        let metadata = std::fs::metadata(&path)?;
+        let modified = metadata.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map(|elapsed| elapsed.as_nanos().to_string()).unwrap_or_default();
+        let file = Found { relative: relative.clone(), path, kind, size: metadata.len() as i64, modified };
+        index_file(&tx, &root.id, &file, prior.as_ref(), true)?;
+    }
+    rebuild_explicit_references(&tx, &root.id)?;
+    tx.commit()?;
     Ok(())
 }
 

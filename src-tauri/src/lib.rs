@@ -1,7 +1,10 @@
+mod actions;
 mod db;
 mod error;
 mod extract;
 mod index;
+mod organize;
+mod ripple;
 mod workspace;
 
 use std::path::PathBuf;
@@ -10,8 +13,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use rusqlite::Connection;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
+use actions::{ApplyResult, FileOperation, HistoryEntry, PlanPreview, RealFileSystem, UndoResult};
 use error::{fail, ErrorCode, NativeError, NativeResult};
 use index::{ChunkVector, DuplicateGroup, EmbeddingSpace, IndexProgress, IndexedDocument, PendingChunk, Relationship, ScanSummary, SearchHit, VectorCandidate};
+use organize::OrganizeSuggestions;
 use workspace::{KnownWorkspace, ScopedRoot, WorkspaceInfo};
 
 const INDEX_PROGRESS_EVENT: &str = "folio://index-progress";
@@ -38,6 +43,14 @@ impl AppState {
             .filter(|root| root.id == workspace_id)
             .cloned()
             .ok_or_else(|| fail(ErrorCode::NotAuthorized, "Select an authorized folder first."))
+    }
+
+    /// File changes wait for indexing to finish so a scan never reads a half-applied plan.
+    fn idle(&self) -> NativeResult<()> {
+        if self.indexing.load(Ordering::SeqCst) {
+            return Err(fail(ErrorCode::Busy, "Indexing is running. Try again when it finishes."));
+        }
+        Ok(())
     }
 
     fn activate(&self, root: ScopedRoot) -> NativeResult<WorkspaceInfo> {
@@ -146,6 +159,45 @@ async fn vector_candidates(state: State<'_, AppState>, workspace_id: String, spa
     index::vector_candidates(&*state.conn()?, &workspace_id, &space_id, &vector, k.unwrap_or(20))
 }
 
+/// Builds an exact, expiring preview. Writes nothing; operations come from this request only.
+#[tauri::command]
+async fn create_plan(state: State<'_, AppState>, workspace_id: String, operations: Vec<FileOperation>) -> NativeResult<PlanPreview> {
+    let root = state.authorized(&workspace_id)?;
+    actions::create_plan(&*state.conn()?, &root, operations, actions::now_ms())
+}
+
+#[tauri::command]
+async fn approve_plan(state: State<'_, AppState>, workspace_id: String, plan_id: String, digest: String) -> NativeResult<PlanPreview> {
+    state.authorized(&workspace_id)?;
+    actions::approve_plan(&*state.conn()?, &workspace_id, &plan_id, &digest, actions::now_ms())
+}
+
+#[tauri::command]
+async fn apply_plan(state: State<'_, AppState>, workspace_id: String, plan_id: String) -> NativeResult<ApplyResult> {
+    let root = state.authorized(&workspace_id)?;
+    state.idle()?;
+    actions::apply_plan(&mut *state.conn()?, &root, &plan_id, actions::now_ms(), &RealFileSystem)
+}
+
+#[tauri::command]
+async fn undo_plan(state: State<'_, AppState>, workspace_id: String, plan_id: String) -> NativeResult<UndoResult> {
+    let root = state.authorized(&workspace_id)?;
+    state.idle()?;
+    actions::undo_plan(&mut *state.conn()?, &root, &plan_id, actions::now_ms(), &RealFileSystem)
+}
+
+#[tauri::command]
+async fn list_history(state: State<'_, AppState>, workspace_id: String) -> NativeResult<Vec<HistoryEntry>> {
+    state.authorized(&workspace_id)?;
+    actions::list_history(&*state.conn()?, &workspace_id)
+}
+
+#[tauri::command]
+async fn organize_suggestions(state: State<'_, AppState>, workspace_id: String) -> NativeResult<OrganizeSuggestions> {
+    let root = state.authorized(&workspace_id)?;
+    organize::suggestions(&*state.conn()?, &root)
+}
+
 fn open_state(app: &AppHandle) -> Result<AppState, NativeError> {
     let directory = app.path().app_data_dir().map_err(|error| fail(ErrorCode::Io, error.to_string()))?;
     std::fs::create_dir_all(&directory)?;
@@ -177,7 +229,13 @@ pub fn run() {
             register_embedding_space,
             pending_embedding_chunks,
             put_embeddings,
-            vector_candidates
+            vector_candidates,
+            create_plan,
+            approve_plan,
+            apply_plan,
+            undo_plan,
+            list_history,
+            organize_suggestions
         ])
         .run(tauri::generate_context!())
         .expect("Folio could not start");

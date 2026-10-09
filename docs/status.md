@@ -21,9 +21,18 @@
 - Exact-duplicate groups are confirmed by re-reading and comparing bytes.
 - Embedding store for the provider track: registered spaces keyed by model/revision/quantization/dimensions/preprocessing, per-space pending-chunk listing, vector storage with dimension checks, and exact cosine search within one space only. No embedding model is connected.
 
+## Native actions, Ripple, history and undo (issue #5)
+
+- Native plans bound to workspace, document ids, exact paths and expected SHA-256 hashes; 10-minute expiry; SHA-256 digest that approval must echo. Previews write nothing.
+- Operations: TXT/Markdown passage edit (the passage must occur exactly once), create, rename (same folder), move (existing folder). PDF content edits, path/symlink escapes, collisions, missing folders, stale index entries and unknown document ids are refused.
+- Apply re-checks every target and destination, writes via a hidden temp file + rename, records history (previous content kept for the last 100 plans), then refreshes the affected index entries and links. A failed write reverts earlier writes where the file is still what Folio wrote and reports what was restored; the index is not updated.
+- Undo reverses a whole plan after verifying every file still matches what Folio wrote; otherwise `UNDO_CONFLICT` and nothing changes.
+- Ripple: documents linked to/from the target that mention the replaced value are evidence; byte-identical copies are similarity-only; unrelated documents that share the value are omitted. No generated explanations yet (provider track).
+- Organize: verified duplicate groups (evidence only) and title-based filename suggestions that become rename plans.
+
 ## Pending
 
-Multilingual embedding integration, semantic search, model lifecycle/downloads, local generation, AI summaries, command interpretation, shared-fact discovery, durable apply/undo/history, UI use of the native index (the current UI still searches loaded content), live file watching, multi-folder workspaces, and real Model Lab results.
+Multilingual embedding integration, semantic search, model lifecycle/downloads, local generation, AI summaries, command interpretation, model-generated Ripple explanations and similarity candidates, shared-fact discovery, creating folders during moves, UI use of the native index and action commands (the current UI still searches loaded content and only previews a string), live file watching, multi-folder workspaces, and real Model Lab results.
 
 No AI or save completion should be presented until the corresponding native/provider implementation succeeds. Model sizes, installed size, memory targets, and platform support remain subject to measurements.
 
@@ -40,7 +49,13 @@ Checked on 2026-10-09 with Node.js 24.19.0:
 
 Checked on 2026-10-09 on Windows 11 (x64) with Rust 1.91.1 and Node.js 20.20.2 (below the 22.12 engines baseline; CI uses 22):
 
-- `cargo test --manifest-path src-tauri/Cargo.toml`: 34 passed, 1 ignored (the PDF-fixture generator). Covers migrations/FTS5, UTF-16 chunk and excerpt offsets on non-ASCII text, PDF per-page extraction, scanned and corrupt PDFs, an unchanged second scan, external edit/delete invalidation (chunks, relationships, caches, vectors), stale-on-failure, hidden/dependency/symlink exclusion, an escaping symlink read (it actually ran on this Windows host), `..`/absolute paths, lost folders, cancellation, progress phases, link evidence (including the copy's broken link), byte-verified duplicates, restart persistence and reopen, and embedding-space isolation.
+- `cargo test --manifest-path src-tauri/Cargo.toml`: 51 passed, 1 ignored (the PDF-fixture generator). Issue #3 coverage: Covers migrations/FTS5, UTF-16 chunk and excerpt offsets on non-ASCII text, PDF per-page extraction, scanned and corrupt PDFs, an unchanged second scan, external edit/delete invalidation (chunks, relationships, caches, vectors), stale-on-failure, hidden/dependency/symlink exclusion, an escaping symlink read (it actually ran on this Windows host), `..`/absolute paths, lost folders, cancellation, progress phases, link evidence (including the copy's broken link), byte-verified duplicates, restart persistence and reopen, and embedding-space isolation.
+  Issue #5 coverage, with real writes against temporary fixture copies (which have CRLF line endings on this host):
+  - Ripple deadline case: the three linked notes are flagged, the copy is similarity-only, the math files are absent, and only `projects/project-plan.md` changes on disk.
+  - Refusals with no file changes: apply without approval, expired plans, a UI-invented digest, a tampered stored plan, an external edit after approval, rename collision, `..`/absolute/symlinked-folder destinations, a missing folder, a PDF edit, ambiguous or missing passages, path-as-id, and a stale index.
+  - Create, rename and move change real files and record history; the renamed document keeps its id.
+  - Injected failure on the second write reverts the first and leaves the index unchanged.
+  - Undo restores bytes and paths and refuses after external edits; a create's undo refuses if the new file was changed; pruned history is listed but can't be undone.
 - `npm run check`, `npm test` (9 passed), `npm run build`: passed after the adapter/contract additions.
 - `npm run tauri dev` on Windows: the app boots and creates `folio.sqlite` (plus WAL files) in `%APPDATA%\dev.folio.desktop`. The folder picker, scan and search were not exercised through the real window, since that needs a person at the dialog.
 - Not run: any macOS native test. macOS relies on the CI `desktop-check` job.

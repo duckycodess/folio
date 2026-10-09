@@ -95,8 +95,15 @@ export type FileOperation =
     }
   | { kind: "create"; destinationRelativePath: string; content: string };
 
+/**
+ * Folio Ripple review candidate. Never an operation: candidates are not changed.
+ * `evidence`: links to/from the target and mentions the replaced value.
+ * `similarityOnly`: related another way (e.g. a byte-identical copy); no claim it must change.
+ */
 export interface ImpactCandidate {
   documentId: DocumentId;
+  /** Present on native previews. */
+  relativePath?: string;
   reason: string;
   evidence: SourcePassage[];
   strength: "evidence" | "similarityOnly";
@@ -134,7 +141,18 @@ export type NativeErrorCode =
   | "BUSY"
   | "EMBEDDING_SPACE_MISMATCH"
   | "IO"
-  | "DATABASE";
+  | "DATABASE"
+  | "TARGET_CHANGED"
+  | "STALE_INDEX"
+  | "AMBIGUOUS_EDIT"
+  | "UNSUPPORTED_EDIT"
+  | "COLLISION"
+  | "APPROVAL_REQUIRED"
+  | "PLAN_EXPIRED"
+  | "PLAN_CHANGED"
+  | "PLAN_STATE"
+  | "UNDO_CONFLICT"
+  | "UNDO_UNAVAILABLE";
 
 /** Every native command rejects with this shape. */
 export interface NativeError {
@@ -220,4 +238,88 @@ export interface BenchmarkResult {
   correctness: boolean | null;
   peakProcessRamBytes: number | null;
   modelDiskBytes: number;
+}
+
+/**
+ * Native edit semantics: `before` must occur exactly once in the current file and is
+ * replaced by `after`. Rename keeps the folder; move needs an existing destination folder.
+ */
+export interface OperationDiff {
+  kind: FileOperation["kind"];
+  documentId: DocumentId | null;
+  sourcePath: string | null;
+  destinationPath: string;
+  /** The affected line before and after an edit; the opening of a created file. */
+  beforeExcerpt: string | null;
+  afterExcerpt: string | null;
+}
+
+export type PlanStatus =
+  "preview" | "approved" | "applied" | "expired" | "failed";
+
+/** A native, expiring preview. Approval must echo `digest`; previews are not saved files. */
+export interface PlanPreview extends ActionPlan {
+  diffs: OperationDiff[];
+  digest: string;
+  status: PlanStatus;
+  statusMessage: string | null;
+}
+
+export interface RevertReport {
+  operationIndex: number;
+  path: string;
+  reverted: boolean;
+  message: string | null;
+}
+
+/** `failed` lists which earlier writes were reverted; nothing is claimed as atomic. */
+export interface ApplyResult {
+  planId: string;
+  status: "applied" | "failed";
+  message: string | null;
+  failedOperationIndex: number | null;
+  reverts: RevertReport[];
+  indexRefreshed: boolean;
+}
+
+export interface UndoResult {
+  planId: string;
+  status: "undone" | "partial";
+  message: string | null;
+  undoneOperations: number[];
+  indexRefreshed: boolean;
+}
+
+export interface HistoryOperation {
+  index: number;
+  kind: FileOperation["kind"];
+  documentId: DocumentId | null;
+  beforePath: string | null;
+  afterPath: string | null;
+  beforeHash: string | null;
+  afterHash: string | null;
+  undoneAt: string | null;
+}
+
+/** One applied plan. Older entries stay listed after their recoverable content is pruned. */
+export interface HistoryEntry {
+  planId: string;
+  appliedAt: string | null;
+  undoable: boolean;
+  undone: boolean;
+  operations: HistoryOperation[];
+}
+
+export interface FilenameSuggestion {
+  documentId: DocumentId;
+  relativePath: string;
+  suggestedRelativePath: string;
+  contentHash: string;
+  reason: string;
+}
+
+/** Duplicates are evidence only; a filename suggestion becomes a rename plan when chosen. */
+export interface OrganizeSuggestions {
+  duplicates: DuplicateGroup[];
+  filenames: FilenameSuggestion[];
 }

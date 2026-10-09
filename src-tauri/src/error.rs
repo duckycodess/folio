@@ -12,6 +12,20 @@ pub enum ErrorCode {
     InvalidInput,
     Busy,
     EmbeddingSpaceMismatch,
+    /// A target's bytes no longer match the preview; a new preview is required.
+    TargetChanged,
+    /// The index is behind the file on disk; refresh before planning a change.
+    StaleIndex,
+    AmbiguousEdit,
+    UnsupportedEdit,
+    Collision,
+    ApprovalRequired,
+    PlanExpired,
+    /// The approved digest does not match the stored plan.
+    PlanChanged,
+    PlanState,
+    UndoConflict,
+    UndoUnavailable,
     Io,
     Database,
 }

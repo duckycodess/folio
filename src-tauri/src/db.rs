@@ -6,6 +6,7 @@ use crate::error::NativeResult;
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/001_initial.sql"),
     include_str!("../migrations/002_index_state.sql"),
+    include_str!("../migrations/003_actions.sql"),
 ];
 
 pub fn open(path: &Path) -> NativeResult<Connection> {

@@ -54,7 +54,7 @@ On save, move, rename, external modification, or deletion: update identity/path 
 
 The native core creates an expiring plan tied to workspace identity, canonical target paths, expected file hashes, exact operations, and evidence. Approval applies to that exact plan. Changed targets or changed operations require a new preview. Reject path escape, symlink escape, collisions, and unsupported operations. Write via temporary file/replace where supported, record recoverable content, and handle rollback honestly. Undo also checks the current file hash so it cannot destroy unrelated external edits.
 
-The starter includes a deterministic approval state machine; durable filesystem application and history remain an implementation task. The UI must never invent an approval token that the native core treats as authoritative.
+The native core (`src-tauri/src/actions.rs`) stores plans, approvals and history in SQLite; `src/domain/approval.ts` remains a UI-side mirror of the state machine. The UI must never invent an approval token that the native core treats as authoritative: approval needs a stored plan whose digest matches. Ripple rules, failed-write handling and plan-level undo are recorded in ADR 0006.
 
 ## Sources
 
