@@ -114,6 +114,7 @@ pub enum SuiteCase {
         id: String,
         input: String,
         expected_target: String,
+        expected_after: String,
         review_candidates: Vec<String>,
         unrelated_same_date: Vec<String>,
         unchanged_related_files: bool,
@@ -253,7 +254,7 @@ mod tests {
     fn hashes_are_pinned_so_a_changed_fixture_is_a_deliberate_decision() {
         assert_eq!(
             Suite::embedded().unwrap().sha256,
-            "8219a624a06918f3d2aadd5d23b09d2403e5d1e7ecfd410a1fb7e7a65c3ffa45"
+            "16b6d9fbe4aef9d187c4d36112332c2169943e4a37a535a81f8b78f5d05e11bb"
         );
         assert_eq!(
             Corpus::embedded().sha256,
