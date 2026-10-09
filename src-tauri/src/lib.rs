@@ -1,3 +1,9 @@
+mod config_guard;
+mod contract_fixtures;
+mod contracts;
+mod error;
+mod identity;
+mod plan;
 mod workspace;
 
 use folio_core::chunking::{sha256, Chunk, ChunkSource, InterimTextChunker, TextDocument};
@@ -17,17 +23,47 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
-use workspace::{DocumentMetadata, ScopedRoot};
+use contracts::{ActionPlan, Approval, FileOperation, ImpactCandidate};
+use error::{error, ErrorCode, FolioError};
+use plan::PlanRegistry;
+use workspace::{DocumentListing, DocumentText, ScopedRoot, WorkspaceInfo, WorkspaceRegistry};
 
 type WorkspaceState = Arc<Mutex<Option<ScopedRoot>>>;
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WorkspaceInfo {
-    id: String,
-    root_path: String,
+/// The issue #2 native boundary owns workspace identities and plan authority.
+/// The issue #4 provider state remains separately managed below so AI requests
+/// cannot mint or apply an action plan.
+struct Folio {
+    workspaces: Mutex<WorkspaceRegistry>,
+    plans: Mutex<PlanRegistry>,
+}
+
+impl Folio {
+    fn new() -> Self {
+        Self {
+            workspaces: Mutex::new(WorkspaceRegistry::new()),
+            plans: Mutex::new(PlanRegistry::new()),
+        }
+    }
+}
+
+const PLAN_LIFETIME_MS: i64 = 5 * 60 * 1000;
+
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis() as i64)
+        .unwrap_or_default()
+}
+
+fn unavailable_state() -> FolioError {
+    error(
+        ErrorCode::Internal,
+        "Folio's workspace or plan state is unavailable.",
+    )
 }
 
 #[derive(Clone)]
@@ -192,48 +228,100 @@ fn unload_embedding(embedding_state: &EmbeddingState) -> Result<(), NativeProvid
 #[tauri::command]
 async fn choose_workspace(
     app: AppHandle,
-    state: State<'_, WorkspaceState>,
-) -> Result<Option<WorkspaceInfo>, String> {
-    let folder = app.dialog().file().blocking_pick_folder();
-    let Some(folder) = folder else {
+    state: State<'_, Folio>,
+    provider_workspace: State<'_, WorkspaceState>,
+) -> Result<Option<WorkspaceInfo>, FolioError> {
+    let Some(folder) = app.dialog().file().blocking_pick_folder() else {
         return Ok(None);
     };
     let path = folder
         .into_path()
-        .map_err(|error| error.to_string())?
-        .canonicalize()
-        .map_err(|error| error.to_string())?;
-    if !path.is_dir() {
-        return Err("Choose a directory.".into());
-    }
-    let id = uuid::Uuid::new_v4().to_string();
-    let info = WorkspaceInfo {
-        id: id.clone(),
-        root_path: path.to_string_lossy().into_owned(),
+        .map_err(|cause| error(ErrorCode::WorkspaceUnavailable, cause.to_string()))?;
+    let info = {
+        let mut workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
+        workspaces.authorize(&path)?
     };
-    *state
+    let root = {
+        let workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
+        workspaces.resolve(&info.id)?
+    };
+    *provider_workspace
         .lock()
-        .map_err(|_| "Workspace state is unavailable.")? = Some(ScopedRoot { id, path });
+        .map_err(|_| unavailable_state())? = Some(root);
     Ok(Some(info))
 }
 
 #[tauri::command]
 async fn list_documents(
-    state: State<'_, WorkspaceState>,
+    state: State<'_, Folio>,
     workspace_id: String,
-) -> Result<Vec<DocumentMetadata>, String> {
-    let root = authorized(state.inner(), &workspace_id)?;
-    workspace::list_documents(&root.path)
+) -> Result<DocumentListing, FolioError> {
+    let workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
+    let root = workspaces.resolve(&workspace_id)?;
+    workspace::list_documents(&root)
 }
 
 #[tauri::command]
 async fn read_document(
-    state: State<'_, WorkspaceState>,
+    state: State<'_, Folio>,
     workspace_id: String,
     relative_path: String,
-) -> Result<String, String> {
-    let root = authorized(state.inner(), &workspace_id)?;
+) -> Result<DocumentText, FolioError> {
+    let workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
+    let root = workspaces.resolve(&workspace_id)?;
     workspace::read_text(&root.path, &relative_path)
+}
+
+/// Prepare an exact proposal. This is read-only; the issue #5 writer is not
+/// present on the #4 path and no AI result can bypass this plan boundary.
+#[tauri::command]
+async fn prepare_plan(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    operations: Vec<FileOperation>,
+    impacts: Option<Vec<ImpactCandidate>>,
+) -> Result<ActionPlan, FolioError> {
+    let workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
+    let root = workspaces.resolve(&workspace_id)?;
+    let mut plans = state.plans.lock().map_err(|_| unavailable_state())?;
+    let now = now_ms();
+    let plan = plans.prepare(
+        &workspace_id,
+        operations,
+        impacts.unwrap_or_default(),
+        now,
+        PLAN_LIFETIME_MS,
+    )?;
+    plan::preflight_plan(&root.path, &plan, now)?;
+    Ok(plan)
+}
+
+/// Approval binds to the native-issued plan identity and digest.
+#[tauri::command]
+async fn approve_plan(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    plan_id: String,
+    plan_digest: String,
+) -> Result<Approval, FolioError> {
+    let workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
+    workspaces.resolve(&workspace_id)?;
+    let mut plans = state.plans.lock().map_err(|_| unavailable_state())?;
+    plans.approve(&plan_id, &plan_digest, now_ms())
+}
+
+/// No file write is claimed here. The native writer remains issue #5.
+#[tauri::command]
+async fn apply_plan(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    plan_id: String,
+) -> Result<(), FolioError> {
+    let workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
+    let root = workspaces.resolve(&workspace_id)?;
+    let plans = state.plans.lock().map_err(|_| unavailable_state())?;
+    plans.assert_can_apply(&root.path, &plan_id, now_ms())?;
+    Err(plan::apply_not_implemented(&plan_id))
 }
 
 #[tauri::command]
@@ -399,7 +487,7 @@ fn runtime_id_for_host() -> &'static str {
 }
 
 fn load_corpus(
-    root: &Path,
+    root: &ScopedRoot,
 ) -> Result<
     (
         Vec<DocumentRecord>,
@@ -409,7 +497,9 @@ fn load_corpus(
     ),
     String,
 > {
-    let metadata = workspace::list_documents(root)?;
+    let metadata = workspace::list_documents(root)
+        .map_err(|error| error.to_string())?
+        .documents;
     let mut documents = Vec::new();
     let mut contents = HashMap::new();
     let mut text_documents = Vec::new();
@@ -423,12 +513,12 @@ fn load_corpus(
         if !matches!(extension.as_str(), "txt" | "md") {
             continue;
         }
-        let content = match workspace::read_text(root, &row.relative_path) {
-            Ok(content) => content,
+        let content = match workspace::read_text(&root.path, &row.relative_path) {
+            Ok(content) => content.content,
             Err(reason) => {
                 skipped_documents.push(SkippedDocument {
                     relative_path: row.relative_path,
-                    reason,
+                    reason: reason.to_string(),
                 });
                 continue;
             }
@@ -554,8 +644,12 @@ fn build_snapshot(
     workspace_id: &str,
     root: &Path,
 ) -> Result<IndexSnapshot, NativeProviderError> {
+    let scoped_root = ScopedRoot {
+        id: workspace_id.to_string(),
+        path: root.to_path_buf(),
+    };
     let (documents, _contents, chunks, skipped_documents) =
-        load_corpus(root).map_err(|error| NativeProviderError {
+        load_corpus(&scoped_root).map_err(|error| NativeProviderError {
             code: folio_core::contracts::ProviderErrorCode::IoError,
             message: error,
             detail: None,
@@ -871,13 +965,13 @@ async fn summarize_document(
                 message,
                 detail: None,
             })?;
-        let content = workspace::read_text(&root.path, &document_id).map_err(|message| {
-            NativeProviderError {
+        let content = workspace::read_text(&root.path, &document_id)
+            .map_err(|error| NativeProviderError {
                 code: folio_core::contracts::ProviderErrorCode::IoError,
-                message,
+                message: error.to_string(),
                 detail: None,
-            }
-        })?;
+            })?
+            .content;
         let record = DocumentRecord {
             id: document_id.clone(),
             relative_path: document_id.clone(),
@@ -1030,7 +1124,7 @@ async fn interpret_request(
                 detail: None,
             })?;
         let (documents, contents, chunks, _skipped_documents) =
-            load_corpus(&root.path).map_err(|message| NativeProviderError {
+            load_corpus(&root).map_err(|message| NativeProviderError {
                 code: folio_core::contracts::ProviderErrorCode::IoError,
                 message,
                 detail: None,
@@ -1077,7 +1171,11 @@ mod tests {
         fs::write(root.path().join("valid.md"), "valid content").unwrap();
         fs::write(root.path().join("invalid.md"), [0xff, 0xfe]).unwrap();
 
-        let (documents, contents, chunks, skipped) = load_corpus(root.path()).unwrap();
+        let scoped_root = ScopedRoot {
+            id: "test-workspace".into(),
+            path: root.path().to_path_buf(),
+        };
+        let (documents, contents, chunks, skipped) = load_corpus(&scoped_root).unwrap();
         assert_eq!(documents.len(), 1);
         assert_eq!(contents.len(), 1);
         assert_eq!(chunks.len(), 1);
@@ -1099,6 +1197,7 @@ async fn unload_generation(
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .manage(Folio::new())
         .manage(Arc::new(Mutex::new(None::<ScopedRoot>)))
         .manage(Arc::new(Mutex::new(None::<IndexSnapshot>)))
         .manage(Arc::new(Mutex::new(None::<EmbeddingSlot>)))
@@ -1108,6 +1207,9 @@ pub fn run() {
             choose_workspace,
             list_documents,
             read_document,
+            prepare_plan,
+            approve_plan,
+            apply_plan,
             list_models,
             verify_model,
             install_model,

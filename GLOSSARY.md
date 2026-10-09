@@ -69,3 +69,33 @@ _Avoid_: Cross-device or cloud synchronization.
 
 **Model Lab**: The settings area for choosing local models and inspecting actual task measurements.
 _Avoid_: Fabricated benchmarks or the main product identity.
+
+**Workspace Identity**: The stable identifier of an authorized folder, unchanged across restarts of Folio.
+_Avoid_: A new identifier each time the same folder is chosen.
+
+**Document Identity**: The stable identifier of a document inside a workspace, unchanged by editing its contents.
+_Avoid_: A bare file path, or an identifier derived from the document's text.
+
+**Source Offset**: The position of a passage inside a document, counted in UTF-8 bytes of its text.
+_Avoid_: A character count, a UTF-16 index, or an offset without a stated unit.
+
+**Document Revision**: The content hash a passage, relationship or operation was derived from.
+_Avoid_: Evidence presented without the version of the file it came from.
+
+**Embedding Space**: The model revision, quantization, dimensions and preprocessing a set of vectors was produced with.
+_Avoid_: Comparing vectors from two spaces, or treating equal dimensions as the same space.
+
+**Plan Digest**: The fingerprint of an action plan's exact operations, to which an approval is bound.
+_Avoid_: Approval of a plan identifier whose operations have since changed.
+
+**Preflight**: The check of every target in a plan before any file is changed.
+_Avoid_: Discovering an unusable target midway through a batch.
+
+**Operation Outcome**: The durable record of one operation as succeeded, failed, cancelled or not started.
+_Avoid_: A single result for a whole batch, or a reported save the filesystem did not make.
+
+**Batch**: The ordered operations of one approved plan, applied together and reported per operation.
+_Avoid_: A promise that every file changes or none does.
+
+**Undo Conflict**: A file that no longer matches what Folio saved, which stops the whole Undo.
+_Avoid_: Reversing part of a batch, or discarding a newer external edit.

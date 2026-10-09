@@ -20,8 +20,10 @@ folio-core = { path = "crates/folio-core" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
-uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+unicode-normalization = "0.1"
 walkdir = "2"
 
 [dev-dependencies]
+serde_json = "1"
 tempfile = "3"

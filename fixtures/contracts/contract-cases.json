@@ -1,0 +1,318 @@
+{
+  "identity": {
+    "workspaceId": [
+      {
+        "canonicalRootPath": "/home/mag-aaral/Mga Dokumento",
+        "expected": "628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c"
+      },
+      {
+        "canonicalRootPath": "\\\\?\\C:\\Users\\mag-aaral\\Documents",
+        "expected": "2d0e75fe4b181375389ec2ddc0970fa3b694824e5445082362d799b6054e19b5"
+      }
+    ],
+    "normalizeRelativePath": {
+      "accepted": [
+        {
+          "input": "projects/project-plan.md",
+          "expected": "projects/project-plan.md"
+        },
+        {
+          "input": "courses/pagsasanay-ñ.md",
+          "expected": "courses/pagsasanay-ñ.md"
+        },
+        {
+          "input": "notes/tala sa proyekto.md",
+          "expected": "notes/tala sa proyekto.md"
+        },
+        {
+          "input": "a.md",
+          "expected": "a.md"
+        }
+      ],
+      "rejected": [
+        {
+          "input": "",
+          "code": "pathNotRelative"
+        },
+        {
+          "input": "/etc/passwd",
+          "code": "pathNotRelative"
+        },
+        {
+          "input": "C:/Users/mag-aaral/notes.md",
+          "code": "pathNotRelative"
+        },
+        {
+          "input": "notes\\paalala.md",
+          "code": "pathNotRelative"
+        },
+        {
+          "input": "notes/\u0000paalala.md",
+          "code": "pathNotRelative"
+        },
+        {
+          "input": "notes//paalala.md",
+          "code": "pathNotRelative"
+        },
+        {
+          "input": "../outside.md",
+          "code": "pathEscapesWorkspace"
+        },
+        {
+          "input": "notes/../../outside.md",
+          "code": "pathEscapesWorkspace"
+        },
+        {
+          "input": "notes/./paalala.md",
+          "code": "pathEscapesWorkspace"
+        }
+      ]
+    },
+    "documentId": [
+      {
+        "workspaceId": "628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c",
+        "relativePath": "projects/project-plan.md",
+        "expected": "628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:projects/project-plan.md"
+      },
+      {
+        "workspaceId": "628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c",
+        "relativePath": "courses/pagsasanay-ñ.md",
+        "expected": "628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:courses/pagsasanay-ñ.md"
+      }
+    ],
+    "portableDestination": {
+      "rejected": [
+        {
+          "input": "notes/plano?.md",
+          "code": "operationUnsupported"
+        },
+        {
+          "input": "notes/plano.md ",
+          "code": "operationUnsupported"
+        },
+        {
+          "input": "notes/plano:2026.md",
+          "code": "operationUnsupported"
+        }
+      ]
+    },
+    "mediaType": [
+      {
+        "path": "notes/paalala.md",
+        "expected": "text/markdown"
+      },
+      {
+        "path": "notes/paalala.MD",
+        "expected": "text/markdown"
+      },
+      {
+        "path": "notes/paalala.txt",
+        "expected": "text/plain"
+      },
+      {
+        "path": "research/paper.pdf",
+        "expected": "application/pdf"
+      },
+      {
+        "path": "notes/paalala.docx",
+        "expected": null
+      },
+      {
+        "path": "notes/paalala",
+        "expected": null
+      }
+    ],
+    "embeddingSpaceFingerprint": [
+      {
+        "space": {
+          "modelId": "intfloat/multilingual-e5-small",
+          "revision": "r1",
+          "quantization": "q8",
+          "dimensions": 384,
+          "preprocessingFingerprint": "query-passage-v1"
+        },
+        "expected": "folio-space-v1/intfloat%2Fmultilingual-e5-small/r1/q8/384/query-passage-v1"
+      },
+      {
+        "space": {
+          "modelId": "a%2Fb",
+          "revision": "r1",
+          "quantization": "q8",
+          "dimensions": 384,
+          "preprocessingFingerprint": "raw-text"
+        },
+        "expected": "folio-space-v1/a%252Fb/r1/q8/384/raw-text"
+      }
+    ]
+  },
+  "offsets": {
+    "cases": [
+      {
+        "label": "filipino",
+        "text": "Ang pagpupulong ay sa Biyernes, ika-20 ng Oktubre.",
+        "utf8Length": 50,
+        "utf16Length": 50,
+        "passage": {
+          "start": 3,
+          "end": 50,
+          "text": " pagpupulong ay sa Biyernes, ika-20 ng Oktubre."
+        },
+        "contentHash": "sha256:2dbd3cd6e86e9a72956ca68803d5b85f66add2c462173edb5c8be6ebfd4d0087"
+      },
+      {
+        "label": "taglish-with-enye",
+        "text": "Hanapin yung project plan ni Niña at palitan ang deadline.",
+        "utf8Length": 59,
+        "utf16Length": 58,
+        "passage": {
+          "start": 7,
+          "end": 59,
+          "text": " yung project plan ni Niña at palitan ang deadline."
+        },
+        "contentHash": "sha256:275c9fd2b909d01a404dfeb3f11a0feaa041c88e37bfc1d09b213467b4cb02f5"
+      },
+      {
+        "label": "combining-and-emoji",
+        "text": "Deadline 📅 nã October 20 → October 23",
+        "utf8Length": 44,
+        "utf16Length": 39,
+        "passage": {
+          "start": 8,
+          "end": 44,
+          "text": " 📅 nã October 20 → October 23"
+        },
+        "contentHash": "sha256:22ed901f04c43a50f9bd9abac892290832d17422eb6216e7fdcf9e020bd95eec"
+      }
+    ],
+    "invalid": [
+      {
+        "label": "mid-character",
+        "text": "Deadline 📅 nã October 20 → October 23",
+        "start": 10,
+        "end": 44
+      }
+    ]
+  },
+  "plans": [
+    {
+      "plan": {
+        "id": "plan-taglish-deadline",
+        "workspaceId": "628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c",
+        "createdAt": 1760000000000,
+        "expiresAt": 1760000300000,
+        "operations": [
+          {
+            "kind": "edit",
+            "documentId": "628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:projects/project-plan.md",
+            "relativePath": "projects/project-plan.md",
+            "expectedContentHash": "sha256:320be3167ed3f71f16f45dc2546d09944cb0049fc25482369e165e56f152531a",
+            "after": "Deadline: October 23\n"
+          }
+        ],
+        "impacts": [],
+        "digest": "sha256:fa06ffe44112cb37a734d89fadf364cf9a4426963568de66249b96f275b74599"
+      },
+      "canonical": "FOLIO-PLAN-V1\n21:plan-taglish-deadline\n64:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c\n13:1760000000000\n13:1760000300000\n1:1\n4:edit\n89:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:projects/project-plan.md\n24:projects/project-plan.md\n71:sha256:320be3167ed3f71f16f45dc2546d09944cb0049fc25482369e165e56f152531a\n21:Deadline: October 23\n\n",
+      "canonicalByteLength": 373,
+      "digest": "sha256:fa06ffe44112cb37a734d89fadf364cf9a4426963568de66249b96f275b74599"
+    },
+    {
+      "plan": {
+        "id": "plan-batch-filipino",
+        "workspaceId": "628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c",
+        "createdAt": 1760000000000,
+        "expiresAt": 1760000300000,
+        "operations": [
+          {
+            "kind": "edit",
+            "documentId": "628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:projects/project-plan.md",
+            "relativePath": "projects/project-plan.md",
+            "expectedContentHash": "sha256:320be3167ed3f71f16f45dc2546d09944cb0049fc25482369e165e56f152531a",
+            "after": "Deadline: October 23\n"
+          },
+          {
+            "kind": "rename",
+            "documentId": "628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:notes/paalala.md",
+            "relativePath": "notes/paalala.md",
+            "expectedContentHash": "sha256:a3af21e57291727b87bf893dceef62cbef14824f70813f3476cdf9f148b49fd3",
+            "destinationRelativePath": "notes/paalala-oktubre.md",
+            "expectedDestination": "absent"
+          },
+          {
+            "kind": "create",
+            "destinationRelativePath": "courses/pagsasanay-ñ.md",
+            "mediaType": "text/markdown",
+            "content": "Paalala: ang huling araw ay ika-23 ng Oktubre 📅\n",
+            "expectedDestination": "absent"
+          }
+        ],
+        "impacts": [],
+        "digest": "sha256:ceaa26ffa44b497d10a217d48ef069d2d3ff2f6ff8df17585b84e3b5c05be5c1"
+      },
+      "canonical": "FOLIO-PLAN-V1\n19:plan-batch-filipino\n64:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c\n13:1760000000000\n13:1760000300000\n1:3\n4:edit\n89:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:projects/project-plan.md\n24:projects/project-plan.md\n71:sha256:320be3167ed3f71f16f45dc2546d09944cb0049fc25482369e165e56f152531a\n21:Deadline: October 23\n\n6:rename\n81:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:notes/paalala.md\n16:notes/paalala.md\n71:sha256:a3af21e57291727b87bf893dceef62cbef14824f70813f3476cdf9f148b49fd3\n24:notes/paalala-oktubre.md\n6:create\n24:courses/pagsasanay-ñ.md\n13:text/markdown\n51:Paalala: ang huling araw ay ika-23 ng Oktubre 📅\n\n",
+      "canonicalByteLength": 697,
+      "digest": "sha256:ceaa26ffa44b497d10a217d48ef069d2d3ff2f6ff8df17585b84e3b5c05be5c1"
+    }
+  ],
+  "hashes": [
+    {
+      "text": "",
+      "expected": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "text": "Ang pagpupulong ay sa Biyernes.",
+      "expected": "sha256:0a3d5053b72abf58bac19077b3ca3db14881d84530ca2d0e773b7a2f551fa3a0"
+    },
+    {
+      "text": "Paalala: ang huling araw ay ika-23 ng Oktubre 📅\n",
+      "expected": "sha256:60856855d91f70c2a5d62cf6d3dc76dd18cd8d0c3cbaa70c050f1b2ae79cfafb"
+    }
+  ],
+  "errorCodes": [
+    "workspaceNotAuthorized",
+    "workspaceUnavailable",
+    "pathNotRelative",
+    "pathEscapesWorkspace",
+    "pathUnsupportedEncoding",
+    "documentUnavailable",
+    "documentTooLarge",
+    "documentNotText",
+    "unsupportedMediaType",
+    "planUnknown",
+    "planEmpty",
+    "planExpired",
+    "planStateInvalid",
+    "planDigestMismatch",
+    "approvalRequired",
+    "approvalStale",
+    "duplicateOperationTarget",
+    "targetMissing",
+    "targetChanged",
+    "destinationExists",
+    "operationUnsupported",
+    "historyRequired",
+    "historyUnknown",
+    "undoConflict",
+    "writerNotImplemented",
+    "modelNotInstalled",
+    "modelLoadFailed",
+    "providerBusy",
+    "cancelled",
+    "contextOverflow",
+    "embeddingSpaceMismatch",
+    "evidenceInvalid",
+    "internal"
+  ],
+  "operationStatuses": [
+    "succeeded",
+    "failed",
+    "cancelled",
+    "notStarted"
+  ],
+  "batchStopReasons": [
+    "completed",
+    "failed",
+    "cancelled"
+  ],
+  "offsetUnit": "utf8Byte"
+}
