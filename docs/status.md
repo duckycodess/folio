@@ -297,7 +297,12 @@ its corpus from.
   width, so no single sentence could match them all. A voice-control user would
   have been naming a control the browser could not match
   (`label-content-name-mismatch`). The row is now spoken as the columns it
-  shows; the column each value belongs to is in the heading row above it.
+  shows. The heading row is hidden from assistive tech, so the date is spoken
+  with a hidden "modified" (or "no modified date" for "—"); the keyboard spec
+  checks the row's accessible name for it.
+- The fake's Undo for a plan with no recorded history (after
+  `historyRequired`) answered with an empty, undoable preview. Like the native
+  writer, `preview_undo` and `undo_plan` now refuse it with `historyUnknown`.
 - The same mismatch on Graph and Related evidence excerpts, and on search
   excerpts. Each now carries its purpose as a visually hidden prefix to the
   visible text instead of an `aria-label` that replaced it.
