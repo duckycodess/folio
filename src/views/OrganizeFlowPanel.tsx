@@ -347,6 +347,12 @@ function FileChanges({
   const { state } = organize;
   const { assist } = state;
   const result = assist.result;
+  const stopped = useRef<HTMLParagraphElement>(null);
+  // The Stop button is gone once pressed; focus goes to what happened instead.
+  const stopping = assist.status === "stopping";
+  useEffect(() => {
+    if (stopping) stopped.current?.focus();
+  }, [stopping]);
   const titled = state.suggestions?.filenames ?? [];
   const named = result?.filenames ?? [];
   const moves = result?.destinations ?? [];
@@ -415,9 +421,8 @@ function FileChanges({
               )}
           </ul>
         ) : (
-          assist.status !== "working" && (
-            <p className="muted">No name changes to suggest.</p>
-          )
+          assist.status !== "working" &&
+          !stopping && <p className="muted">No name changes to suggest.</p>
         )}
         {result?.naming === "generationModelMissing" &&
           result.filenameCandidates > 0 && (
@@ -426,7 +431,8 @@ function FileChanges({
               {result.filenameCandidates === 1
                 ? "file has a generic name"
                 : "files have generic names"}{" "}
-              and no heading. Naming{" "}
+              and no title to name{" "}
+              {result.filenameCandidates === 1 ? "it" : "them"} by. Naming{" "}
               {result.filenameCandidates === 1 ? "it" : "them"} needs a local
               generation model.
             </p>
@@ -436,8 +442,10 @@ function FileChanges({
         )}
         {result?.naming === "failed" && (
           <Notice tone="warning">
-            Folio couldn't name files with the local AI
+            Folio couldn't name {named.length ? "every file" : "files"} with the
+            local AI
             {result.namingError ? `: ${result.namingError.message}` : "."}
+            {named.length ? " Names already written stay." : ""}
           </Notice>
         )}
       </fieldset>
@@ -476,6 +484,18 @@ function FileChanges({
         </p>
       )}
 
+      {(assist.status === "stopping" || assist.status === "stopped") && (
+        <p ref={stopped} tabIndex={-1} className="muted">
+          {assist.status === "stopping"
+            ? "Stopping the local AI. Names already written and folder suggestions found so far will still appear."
+            : "The local AI stopped."}{" "}
+          {assist.status === "stopped" && (
+            <button type="button" className="link-button" onClick={onRetry}>
+              Ask again
+            </button>
+          )}
+        </p>
+      )}
       {assist.status === "working" && (
         <div className="flow-step">
           <Progress label="Asking the local AI for clearer names and folders" />

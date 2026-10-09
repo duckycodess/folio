@@ -40,9 +40,13 @@ function documentOfKey(key: string): DocumentId {
   return key.slice(key.indexOf(":") + 1);
 }
 
-/** The local models' renames and moves, which arrive after the analysis. */
+/**
+ * The local models' renames and moves, which arrive after the analysis.
+ * `stopping` waits for the reply to a stopped request, which carries the names
+ * already written and the moves; `stopped` is a stopped request that failed.
+ */
 export interface AssistState {
-  status: "idle" | "working" | "ready" | "failed";
+  status: "idle" | "working" | "stopping" | "stopped" | "ready" | "failed";
   /** Only the reply to this request may change what's shown. */
   request: number;
   result: FileChangeSuggestions | null;
@@ -95,8 +99,11 @@ export type OrganizeEvent =
   | { type: "assistStarted"; request: number }
   | { type: "assisted"; request: number; result: FileChangeSuggestions }
   | { type: "assistFailed"; request: number; error: FolioError }
-  /** Stop takes a new request number, so a late reply can't come back. */
-  | { type: "assistStopped"; request: number }
+  /**
+   * Stop keeps the request number: the stopped request's reply still lands,
+   * with the names written before the stop and the moves already found.
+   */
+  | { type: "assistStopped" }
   | { type: "prepareStarted"; request: number; operations: FileOperation[] }
   | { type: "prepared"; request: number; plan: ActionPlan }
   | { type: "applyStarted"; request: number }
@@ -158,6 +165,12 @@ const REPLIES = new Set<OrganizeEvent["type"]>([
   "applied",
   "failed",
 ]);
+
+function awaitingReply(state: OrganizeState): boolean {
+  return (
+    state.assist.status === "working" || state.assist.status === "stopping"
+  );
+}
 
 /** Where the flow rests when there is no plan in flight. */
 function resting(state: OrganizeState): OrganizeStage {
@@ -227,28 +240,26 @@ export function organizeFlow(
         assist: { ...ASSIST_IDLE, status: "working", request: event.request },
       };
     case "assisted":
-      if (
-        event.request !== state.assist.request ||
-        state.assist.status !== "working"
-      )
+      if (event.request !== state.assist.request || !awaitingReply(state))
         return state;
       return {
         ...state,
         assist: { ...state.assist, status: "ready", result: event.result },
       };
     case "assistFailed":
-      if (
-        event.request !== state.assist.request ||
-        state.assist.status !== "working"
-      )
+      if (event.request !== state.assist.request || !awaitingReply(state))
         return state;
+      // A stopped request's refusal is the stop itself, not a failure to show.
       return {
         ...state,
-        assist: { ...state.assist, status: "failed", error: event.error },
+        assist:
+          state.assist.status === "stopping"
+            ? { ...state.assist, status: "stopped" }
+            : { ...state.assist, status: "failed", error: event.error },
       };
     case "assistStopped":
       return state.assist.status === "working"
-        ? { ...state, assist: { ...ASSIST_IDLE, request: event.request } }
+        ? { ...state, assist: { ...state.assist, status: "stopping" } }
         : state;
     case "prepareStarted":
       return {

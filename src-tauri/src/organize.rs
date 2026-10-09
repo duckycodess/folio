@@ -106,11 +106,21 @@ fn split_name(relative_path: &str) -> Option<(&str, &str, &str)> {
     Some((folder, stem, extension))
 }
 
+/// The paths no further suggestion may take, ignoring case: every file's own
+/// path and every title-based name. Model names and moves share one set, so no
+/// two suggestions Folio offers can target the same new path.
+pub fn taken_paths(documents: &[DocumentRecord], titled: &[OrganizationSuggestion]) -> HashSet<String> {
+    documents
+        .iter()
+        .map(|document| document.relative_path.to_lowercase())
+        .chain(titled.iter().map(|suggestion| suggestion.suggested_relative_path.to_lowercase()))
+        .collect()
+}
+
 /// Model-written names as rename suggestions, keeping each file's folder and
 /// extension. `documents` are the files the names were written from, with the
 /// revision read; the rename is refused later if a file changed since.
-pub fn model_filenames(root: &ScopedRoot, documents: &[DocumentRecord], generated: &[GeneratedFilename]) -> Vec<OrganizationSuggestion> {
-    let mut taken: HashSet<String> = documents.iter().map(|document| document.relative_path.to_lowercase()).collect();
+pub fn model_filenames(root: &ScopedRoot, documents: &[DocumentRecord], generated: &[GeneratedFilename], taken: &mut HashSet<String>) -> Vec<OrganizationSuggestion> {
     let mut suggestions = Vec::new();
     for name in generated {
         let Some(document) = documents.iter().find(|document| document.id == name.document_id) else { continue };
@@ -121,7 +131,7 @@ pub fn model_filenames(root: &ScopedRoot, documents: &[DocumentRecord], generate
             continue;
         }
         let suggested = if folder.is_empty() { format!("{slug}.{extension}") } else { format!("{folder}/{slug}.{extension}") };
-        let Some(suggested) = free_destination(root, &document.relative_path, suggested, &mut taken) else { continue };
+        let Some(suggested) = free_destination(root, &document.relative_path, suggested, taken) else { continue };
         suggestions.push(OrganizationSuggestion {
             document_id: document.id.clone(),
             relative_path: document.relative_path.clone(),
@@ -159,8 +169,7 @@ pub struct DestinationSuggestion {
     pub operation: FileOperation,
 }
 
-pub fn destinations(root: &ScopedRoot, documents: &[DocumentRecord], candidates: Vec<DestinationCandidate>) -> Vec<DestinationSuggestion> {
-    let mut taken: HashSet<String> = documents.iter().map(|document| document.relative_path.to_lowercase()).collect();
+pub fn destinations(root: &ScopedRoot, documents: &[DocumentRecord], candidates: Vec<DestinationCandidate>, taken: &mut HashSet<String>) -> Vec<DestinationSuggestion> {
     let mut suggestions = Vec::new();
     for candidate in candidates {
         let Some(document) = documents.iter().find(|document| document.id == candidate.document_id) else { continue };
@@ -170,7 +179,7 @@ pub fn destinations(root: &ScopedRoot, documents: &[DocumentRecord], candidates:
         }
         let name = document.relative_path.rsplit('/').next().unwrap_or(&document.relative_path);
         let suggested = if candidate.folder.is_empty() { name.to_owned() } else { format!("{}/{name}", candidate.folder) };
-        let Some(suggested) = free_destination(root, &document.relative_path, suggested, &mut taken) else { continue };
+        let Some(suggested) = free_destination(root, &document.relative_path, suggested, taken) else { continue };
         let place = if candidate.folder.is_empty() { "the top of the folder".to_owned() } else { format!("\u{201c}{}\u{201d}", candidate.folder) };
         suggestions.push(DestinationSuggestion {
             document_id: document.id.clone(),
@@ -296,19 +305,52 @@ mod tests {
             generated(&pdf, "Consent guide"),
             generated(&plan, "   "),
         ];
-        let suggestions = model_filenames(&root, &documents, &names);
+        let suggestions = model_filenames(&root, &documents, &names, &mut taken_paths(&documents, &[]));
         assert_eq!(suggestions.len(), 1, "{suggestions:?}");
         let rename = &suggestions[0];
         assert_eq!(rename.suggested_relative_path, "notes/gastos-sa-biyahe.txt");
         assert!(rename.generated.is_some(), "a model-written name is labelled as generated");
         assert!(matches!(&rename.operation, FileOperation::Rename { expected_content_hash, .. } if Some(expected_content_hash) == draft.content_hash.as_ref()));
         // A .txt file keeps its extension; the same words in another folder are free.
-        let draft_only = model_filenames(&root, &[draft.clone()], &[generated(&draft, "Project plan")]);
+        let draft_only = model_filenames(&root, &[draft.clone()], &[generated(&draft, "Project plan")], &mut taken_paths(&[draft.clone()], &[]));
         assert_eq!(draft_only[0].suggested_relative_path, "notes/project-plan.txt");
         // Two names for the same new path: only the first is kept.
-        let both = model_filenames(&root, &documents, &[generated(&untitled, "Trip"), generated(&draft, "Trip")]);
+        let both = model_filenames(&root, &documents, &[generated(&untitled, "Trip"), generated(&draft, "Trip")], &mut taken_paths(&documents, &[]));
         assert_eq!(both.iter().map(|item| item.suggested_relative_path.as_str()).collect::<Vec<_>>(), ["notes/trip.md", "notes/trip.txt"]);
-        assert!(model_filenames(&root, &documents, &[generated(&draft, "Draft")]).is_empty(), "an unchanged name is not a suggestion");
+        assert!(model_filenames(&root, &documents, &[generated(&draft, "Draft")], &mut taken_paths(&documents, &[])).is_empty(), "an unchanged name is not a suggestion");
+    }
+
+    fn candidate(document: &DocumentRecord, folder: &str) -> DestinationCandidate {
+        let passage = SourcePassage { document_id: document.id.clone(), document_content_hash: document.content_hash.clone().unwrap(), offset_unit: Default::default(), start: 0, end: 1, text: "#".into(), page: None };
+        DestinationCandidate {
+            document_id: document.id.clone(),
+            relative_path: document.relative_path.clone(),
+            folder: folder.into(),
+            similarity: 0.95,
+            current_similarity: 0.5,
+            passage: passage.clone(),
+            evidence: passage,
+            space_fingerprint: "space".into(),
+        }
+    }
+
+    #[test]
+    fn model_names_and_moves_never_target_the_path_of_another_suggestion() {
+        let (folder, mut conn, root) = fixture_workspace();
+        std::fs::write(folder.path().join("projects/untitled.md"), "Mga gastos sa biyahe.").unwrap();
+        scan(&mut conn, &root);
+        // The title-based list already offers projects/community-learning-project.md.
+        let titled = filename_suggestions(&conn, &root).unwrap();
+        assert!(titled.iter().any(|item| item.suggested_relative_path == "projects/community-learning-project.md"));
+        let (untitled, copy) = (record(&root, "projects/untitled.md"), record(&root, "archive/project-plan-copy.md"));
+        let documents = vec![untitled.clone(), copy.clone()];
+        let mut taken = taken_paths(&documents, &titled);
+        assert!(model_filenames(&root, &documents, &[generated(&untitled, "Community Learning Project")], &mut taken).is_empty(), "the title-based name holds that path");
+        // A model name takes projects/project-plan-copy.md first, so the move there is not offered.
+        let named = model_filenames(&root, &documents, &[generated(&untitled, "Project plan copy")], &mut taken);
+        assert_eq!(named[0].suggested_relative_path, "projects/project-plan-copy.md");
+        assert!(destinations(&root, &documents, vec![candidate(&copy, "projects")], &mut taken).is_empty());
+        assert_eq!(destinations(&root, &documents, vec![candidate(&copy, "projects")], &mut taken_paths(&documents, &titled)).len(), 1, "the move alone is offered");
     }
 
     #[test]
@@ -317,20 +359,11 @@ mod tests {
         let notes = record(&root, "meetings/meeting-notes.md");
         let copy = record(&root, "archive/project-plan-copy.md");
         let pdf = record(&root, "research/consent-form-guide.pdf");
-        let candidate = |document: &DocumentRecord, folder: &str| DestinationCandidate {
-            document_id: document.id.clone(),
-            relative_path: document.relative_path.clone(),
-            folder: folder.into(),
-            similarity: 0.95,
-            current_similarity: 0.5,
-            passage: SourcePassage { document_id: document.id.clone(), document_content_hash: document.content_hash.clone().unwrap(), offset_unit: Default::default(), start: 0, end: 1, text: "#".into(), page: None },
-            evidence: SourcePassage { document_id: document.id.clone(), document_content_hash: document.content_hash.clone().unwrap(), offset_unit: Default::default(), start: 0, end: 1, text: "#".into(), page: None },
-            space_fingerprint: "space".into(),
-        };
         let found = destinations(
             &root,
             &[notes.clone(), copy.clone(), pdf.clone()],
             vec![candidate(&notes, "projects"), candidate(&copy, "missing-folder"), candidate(&pdf, "projects")],
+            &mut taken_paths(&[notes.clone(), copy.clone(), pdf.clone()], &[]),
         );
         assert_eq!(found.len(), 1, "a folder that doesn't exist, and a PDF, are never destinations");
         assert_eq!(found[0].suggested_relative_path, "projects/meeting-notes.md");
@@ -338,6 +371,6 @@ mod tests {
         assert!(matches!(&found[0].operation, FileOperation::Move { destination_relative_path, .. } if destination_relative_path == "projects/meeting-notes.md"));
         // A same-named file already in the folder is never replaced.
         std::fs::write(root.path.join("projects/meeting-notes.md"), "occupied").unwrap();
-        assert!(destinations(&root, &[notes.clone()], vec![candidate(&notes, "projects")]).is_empty());
+        assert!(destinations(&root, &[notes.clone()], vec![candidate(&notes, "projects")], &mut taken_paths(&[notes.clone()], &[])).is_empty());
     }
 }

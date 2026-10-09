@@ -36,12 +36,14 @@ const GENERIC_WORDS: &[&str] = &[
     "edited", "export", "page", "memo", "of", "bago", "bagong", "dokumento", "tala", "kopya", "walang", "pamagat",
 ];
 
-/// Whether to ask the model for a filename: an editable file with no heading
-/// (so no title-based name), whose name is only generic words, numbers or dates.
-pub fn needs_a_name(document: &DocumentRecord) -> bool {
+/// Whether to ask the model for a filename: an editable file without a
+/// title-based name suggestion, whose name is only generic words, numbers or
+/// dates. The index's title (a heading, or else a short first line) decides
+/// the title-based names, so the caller says whether one was suggested.
+pub fn needs_a_name(document: &DocumentRecord, has_title_name: bool) -> bool {
     let editable = matches!(document.media_type.as_str(), "text/markdown" | "text/plain");
     let Some((stem, _)) = document.name.rsplit_once('.') else { return false };
-    editable && document.title == document.name && is_generic_stem(stem)
+    editable && !has_title_name && is_generic_stem(stem)
 }
 
 pub fn is_generic_stem(stem: &str) -> bool {
@@ -84,16 +86,18 @@ struct FilenameOutput {
 }
 
 /// One bounded request per file, through the caller's generation slot. A name
-/// without a supplied citation is dropped. Names written before a stop are kept.
+/// without a supplied citation is dropped, and so is a file whose reply is
+/// malformed. The names written before a stop or a provider failure are always
+/// returned, with the outcome or the failure beside them.
 pub fn name_files(
     provider: &dyn GenerationProvider,
     files: &[(DocumentRecord, Vec<SourcePassage>)],
     cancel: &AtomicBool,
-) -> CoreResult<(Vec<GeneratedFilename>, NamingOutcome)> {
+) -> (Vec<GeneratedFilename>, CoreResult<NamingOutcome>) {
     let mut named = Vec::new();
     for (document, passages) in files.iter().take(MAX_NAMED_FILES) {
         if cancel.load(Ordering::Relaxed) {
-            return Ok((named, NamingOutcome::Cancelled));
+            return (named, Ok(NamingOutcome::Cancelled));
         }
         if passages.is_empty() {
             continue;
@@ -101,12 +105,14 @@ pub fn name_files(
         let language = grounding::detect_language(&passages.iter().map(|passage| passage.text.as_str()).collect::<Vec<_>>().join("\n"));
         let messages = build_filename_messages(passages, &language);
         let budget = GenerationBudget { max_output_tokens: FILENAME_OUTPUT_TOKENS, ..GenerationBudget::default() };
-        let output = match provider.generate_json(&filename_schema(), &messages, &budget, cancel) {
-            Ok(output) => output,
-            Err(failure) if grounding::is_cancelled(&failure) => return Ok((named, NamingOutcome::Cancelled)),
-            Err(failure) => return Err(failure),
+        let parsed = provider.generate_json(&filename_schema(), &messages, &budget, cancel).and_then(grounding::parse_output::<FilenameOutput>);
+        let parsed = match parsed {
+            Ok(parsed) => parsed,
+            Err(failure) if grounding::is_cancelled(&failure) => return (named, Ok(NamingOutcome::Cancelled)),
+            // One malformed reply costs only that file's name.
+            Err(failure) if is_invalid_output(&failure) => continue,
+            Err(failure) => return (named, Err(failure)),
         };
-        let parsed: FilenameOutput = grounding::parse_output(output)?;
         let labels = grounding::labels_for_group(passages, 0);
         let mut citations = Vec::new();
         for id in parsed.citations {
@@ -129,7 +135,11 @@ pub fn name_files(
             });
         }
     }
-    Ok((named, NamingOutcome::Named))
+    (named, Ok(NamingOutcome::Named))
+}
+
+fn is_invalid_output(failure: &CoreError) -> bool {
+    matches!(failure, CoreError::Provider(provider) if provider.code == crate::contracts::ProviderErrorCode::InvalidModelOutput)
 }
 
 fn filename_schema() -> Value {
@@ -340,19 +350,20 @@ mod tests {
     }
 
     #[test]
-    fn only_headingless_files_with_generic_names_are_named_by_the_model() {
-        let named = |path: &str, content: &str| needs_a_name(&text_document(path, content).record);
-        assert!(named("untitled.md", "Mga gastos sa proyekto."));
-        assert!(named("notes/New Document (2).txt", "Budget for the trip."));
-        assert!(named("final_final_v3.md", "Thesis abstract."));
-        assert!(named("Scan 0001.txt", "Consent form."));
-        assert!(named("2026-10-01.md", "Meeting about deadlines."));
-        assert!(named("bagong-tala.md", "Paalala sa pulong."));
-        assert!(!named("meeting-notes.md", "Meeting about deadlines."), "a descriptive name stays");
-        assert!(!named("untitled.md", "# Budget\nThe title already names it."), "a heading gives a title-based name instead");
+    fn only_files_without_a_title_name_and_with_generic_names_are_named_by_the_model() {
+        let named = |path: &str| needs_a_name(&text_document(path, "Some text.").record, false);
+        assert!(named("untitled.md"));
+        assert!(named("notes/New Document (2).txt"));
+        assert!(named("final_final_v3.md"));
+        assert!(named("Scan 0001.txt"));
+        assert!(named("2026-10-01.md"));
+        assert!(named("bagong-tala.md"));
+        assert!(!named("meeting-notes.md"), "a descriptive name stays");
+        let titled = text_document("untitled.md", "Trip budget\n\nA first line already names it.").record;
+        assert!(!needs_a_name(&titled, true), "a title-based name is suggested instead");
         let mut pdf = text_document("scan.pdf", "Extracted text.").record;
         pdf.media_type = "application/pdf".into();
-        assert!(!needs_a_name(&pdf), "PDFs are read-only, so they are never renamed");
+        assert!(!needs_a_name(&pdf, false), "PDFs are read-only, so they are never renamed");
     }
 
     #[test]
@@ -441,8 +452,8 @@ mod tests {
             ]),
             prompts: Mutex::new(Vec::new()),
         };
-        let (named, outcome) = name_files(&provider, &files, &AtomicBool::new(false)).unwrap();
-        assert_eq!(outcome, NamingOutcome::Named);
+        let (named, outcome) = name_files(&provider, &files, &AtomicBool::new(false));
+        assert_eq!(outcome.unwrap(), NamingOutcome::Named);
         let texts = named.iter().map(|name| (name.document_id.as_str(), name.text.as_str())).collect::<Vec<_>>();
         // The uncited name is dropped; the extension a model added is not kept.
         assert_eq!(texts, [("w:untitled.md", "Badyet ng proyekto"), ("w:scan.md", "Thesis defense schedule")]);
@@ -463,8 +474,26 @@ mod tests {
             ]),
             prompts: Mutex::new(Vec::new()),
         };
-        let (named, outcome) = name_files(&provider, &files, &AtomicBool::new(false)).unwrap();
-        assert_eq!(outcome, NamingOutcome::Cancelled);
+        let (named, outcome) = name_files(&provider, &files, &AtomicBool::new(false));
+        assert_eq!(outcome.unwrap(), NamingOutcome::Cancelled);
         assert_eq!(named.len(), 1);
+    }
+
+    #[test]
+    fn a_bad_reply_costs_only_its_own_file_and_a_failure_keeps_earlier_names() {
+        let files = vec![file("untitled.md", "Mga gastos sa proyekto."), file("draft.md", "Second file."), file("scan.md", "Thesis schedule."), file("notes.md", "Fourth file.")];
+        let provider = Scripted {
+            replies: Mutex::new(vec![
+                Ok(json!({ "name": "Gastos sa proyekto", "citations": ["C1"] })),
+                Ok(json!({ "name": 7, "citations": ["C1"] })),
+                Ok(json!({ "name": "Thesis schedule", "citations": ["C1"] })),
+                Err(CoreError::Provider(NativeProviderErrorError::new(ProviderErrorCode::RuntimeStartFailed, "the server stopped"))),
+            ]),
+            prompts: Mutex::new(Vec::new()),
+        };
+        let (named, outcome) = name_files(&provider, &files, &AtomicBool::new(false));
+        let texts = named.iter().map(|name| name.text.as_str()).collect::<Vec<_>>();
+        assert_eq!(texts, ["Gastos sa proyekto", "Thesis schedule"], "the malformed reply skipped only draft.md");
+        assert!(matches!(outcome, Err(CoreError::Provider(provider)) if provider.code == ProviderErrorCode::RuntimeStartFailed));
     }
 }

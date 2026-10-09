@@ -210,15 +210,32 @@ describe("the local models' renames and moves", () => {
     expect(chosenOperations(state)).toEqual([]);
   });
 
-  it("drops a late reply and starts over with a new analysis", () => {
-    const stopped = run(
+  it("keeps what a stopped request already found", () => {
+    const partial: FileChangeSuggestions = { ...MODEL, naming: "cancelled" };
+    const stopping = run(
       ...toPreview.slice(0, 2),
       { type: "assistStarted", request: 7 },
-      { type: "assistStopped", request: 8 },
-      { type: "assisted", request: 7, result: MODEL },
+      { type: "assistStopped" },
     );
-    expect(stopped.assist.status).toBe("idle");
-    expect(stopped.assist.result).toBeNull();
+    expect(stopping.assist.status).toBe("stopping");
+    const stopped = organizeFlow(stopping, {
+      type: "assisted",
+      request: 7,
+      result: partial,
+    });
+    expect(stopped.assist.status).toBe("ready");
+    expect(stopped.assist.result).toBe(partial);
+    // A stopped request that is refused is just stopped, not a failure.
+    const refused = organizeFlow(stopping, {
+      type: "assistFailed",
+      request: 7,
+      error: folioError("cancelled", "These suggestions were stopped."),
+    });
+    expect(refused.assist.status).toBe("stopped");
+    expect(refused.assist.error).toBeNull();
+  });
+
+  it("drops a late reply and starts over with a new analysis", () => {
     const again = run(...assisted, { type: "analyzeStarted", request: 9 });
     expect(again.assist.result).toBeNull();
     expect(again.chosen).toEqual([]);
@@ -227,6 +244,16 @@ describe("the local models' renames and moves", () => {
       organizeFlow(again, { type: "assisted", request: 7, result: MODEL })
         .assist.result,
     ).toBeNull();
+    // Nor does a reply to a request a newer one replaced.
+    const newer = run(
+      ...toPreview.slice(0, 2),
+      { type: "assistStarted", request: 7 },
+      { type: "assistStopped" },
+      { type: "assistStarted", request: 8 },
+      { type: "assisted", request: 7, result: MODEL },
+    );
+    expect(newer.assist.status).toBe("working");
+    expect(newer.assist.result).toBeNull();
   });
 
   it("keeps the analysis when the local models fail", () => {

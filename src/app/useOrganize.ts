@@ -24,7 +24,7 @@ import type {
   UndoReport,
 } from "../domain/contracts";
 import { folioError, toFolioError, type FolioError } from "../domain/errors";
-import { cancelGeneration } from "../adapters/ai";
+import { stopSuggestions } from "../adapters/collections";
 import {
   chosenOperations,
   ORGANIZE_START,
@@ -61,7 +61,10 @@ export interface OrganizeController {
    * files, or the whole folder). Resolves once they arrive, fail or stop.
    */
   suggestWithModel: () => Promise<void>;
-  /** Stops the local models' suggestions; one generation runs at a time. */
+  /**
+   * Stops the local models' suggestions natively, and only theirs. The names
+   * already written and the moves found so far still arrive.
+   */
   stopAssist: () => void;
   previewChosen: () => void;
   /** Renames a file in place, or moves it to another folder, via an exact plan. */
@@ -301,8 +304,9 @@ export function useOrganize(
     suggestWithModel,
     stopAssist: () => {
       if (state.assist.status !== "working") return;
-      dispatch({ type: "assistStopped", request: ++assistNext.current });
-      void cancelGeneration().catch(() => undefined);
+      // The stopped request's reply still lands, with what it already found.
+      dispatch({ type: "assistStopped" });
+      void stopSuggestions().catch(() => undefined);
     },
     previewChosen: () => {
       const operations = chosenOperations(state);

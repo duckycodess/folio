@@ -2111,9 +2111,10 @@ async fn suggest_collections(
 #[serde(rename_all = "camelCase")]
 struct FileChangeSuggestions {
     filenames: Vec<OrganizationSuggestion>,
-    /// Files with generic names and no heading that the model was asked to name.
+    /// Files with generic names and no title-based name that the model was asked to name.
     filename_candidates: usize,
     /// As for collections: `named`, `cancelled`, `generationModelMissing`, `failed` or `notNeeded`.
+    /// Names written before a stop or a failure are kept.
     naming: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     naming_error: Option<FolioError>,
@@ -2122,6 +2123,10 @@ struct FileChangeSuggestions {
     destination_status: &'static str,
 }
 
+/// Runs inside a suggestion run, like `suggest_collections`: Stop ends it
+/// before it takes the generation slot or between files, and never another
+/// feature's generation. A stop after the folder was read still returns the
+/// moves and the names already written, with `naming: "cancelled"`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 async fn suggest_file_changes(
@@ -2130,18 +2135,31 @@ async fn suggest_file_changes(
     index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
     generation_state: State<'_, GenerationState>,
+    runs: State<'_, SuggestionRuns>,
     workspace_id: String,
     collection_id: Option<String>,
 ) -> Result<FileChangeSuggestions, FolioError> {
     let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
-    let members = collection_id.as_deref().map(|id| collections::present_member_ids(&*state.index()?, &root, id)).transpose()?;
+    // The title-based names Organize already lists, for the whole folder. No
+    // other suggestion may take their paths, and their files aren't sent to the model.
+    let (members, titled) = {
+        let index = state.index()?;
+        let members = collection_id.as_deref().map(|id| collections::present_member_ids(&index, &root, id)).transpose()?;
+        (members, organize::filename_suggestions(&index, &root)?)
+    };
     let index_state = index_state.inner().clone();
     let embedding_state = embedding_state.inner().clone();
     let generation_state = generation_state.inner().clone();
+    let runs = runs.inner().clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
+        let run = begin_suggestion_run(&runs, &generation_state);
+        let _serial = runs.serial.lock().map_err(|_| unavailable_state())?;
+        if run.stopped() {
+            return Err(suggestion_stopped());
+        }
         let snapshot = ensure_snapshot(&app, &embedding_state, &root, &index_state)?;
         let in_scope = |document: &DocumentRecord| members.as_ref().is_none_or(|members| members.contains(&document.id));
-        let (destination_status, destinations) = match snapshot.embedding_space.as_ref() {
+        let (destination_status, found) = match snapshot.embedding_space.as_ref() {
             None => ("embeddingModelMissing", Vec::new()),
             Some(space) => {
                 let (chunks, vectors) = snapshot.retriever.vector_index.indexed(space).ok_or_else(|| NativeProviderError {
@@ -2150,37 +2168,34 @@ async fn suggest_file_changes(
                     detail: None,
                 })?;
                 let eligible = |document: &DocumentRecord| in_scope(document) && identity::is_editable_media_type(&document.media_type);
-                let found = folio_core::file_suggestions::suggest_destinations(&snapshot.documents, chunks, vectors, space, &eligible).map_err(native_error)?;
-                ("suggested", organize::destinations(&root, &snapshot.documents, found))
+                ("suggested", folio_core::file_suggestions::suggest_destinations(&snapshot.documents, chunks, vectors, space, &eligible).map_err(native_error)?)
             }
         };
+        let has_title_name = |document: &DocumentRecord| titled.iter().any(|suggestion| suggestion.document_id == document.id);
         let candidates = snapshot
             .documents
             .iter()
-            .filter(|document| in_scope(document) && folio_core::file_suggestions::needs_a_name(document))
+            .filter(|document| in_scope(document) && folio_core::file_suggestions::needs_a_name(document, has_title_name(document)))
             .take(folio_core::file_suggestions::MAX_NAMED_FILES)
             .map(|document| (document.clone(), folio_core::file_suggestions::filename_passages(document, document.content.as_deref().unwrap_or_default())))
             .collect::<Vec<_>>();
-        let (naming, naming_error, filenames) = if candidates.is_empty() {
+        let (naming, naming_error, names) = if candidates.is_empty() {
             ("notNeeded", None, Vec::new())
         } else {
-            match acquire_generation(&app, &generation_state) {
+            match generate_in_run(&app, &generation_state, &run, |provider, cancel| folio_core::file_suggestions::name_files(provider, &candidates, cancel)) {
                 Err(failure) if failure.code == folio_core::contracts::ProviderErrorCode::ModelNotInstalled => ("generationModelMissing", None, Vec::new()),
                 Err(failure) => ("failed", Some(FolioError::from(failure)), Vec::new()),
-                Ok((provider, cancel)) => {
-                    let named = folio_core::file_suggestions::name_files(provider.as_ref(), &candidates, cancel.as_ref());
-                    finish_generation(&generation_state, &cancel)?;
-                    match named {
-                        Ok((names, outcome)) => (
-                            if outcome == NamingOutcome::Named { "named" } else { "cancelled" },
-                            None,
-                            organize::model_filenames(&root, &snapshot.documents, &names),
-                        ),
-                        Err(failure) => ("failed", Some(FolioError::from(native_error(failure))), Vec::new()),
-                    }
-                }
+                Ok(None) => ("cancelled", None, Vec::new()),
+                Ok(Some((names, Ok(NamingOutcome::Named)))) => ("named", None, names),
+                Ok(Some((names, Ok(NamingOutcome::Cancelled)))) => ("cancelled", None, names),
+                Ok(Some((names, Err(failure)))) => ("failed", Some(FolioError::from(native_error(failure))), names),
             }
         };
+        // One set of taken paths across every list, so no two suggestions can
+        // target the same new path and be refused together at preview.
+        let mut taken = organize::taken_paths(&snapshot.documents, &titled);
+        let filenames = organize::model_filenames(&root, &snapshot.documents, &names, &mut taken);
+        let destinations = organize::destinations(&root, &snapshot.documents, found, &mut taken);
         Ok(FileChangeSuggestions { filenames, filename_candidates: candidates.len(), naming, naming_error, destinations, destination_status })
     })
     .await?)

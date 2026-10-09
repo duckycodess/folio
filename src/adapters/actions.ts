@@ -175,7 +175,8 @@ export function organizationSuggestions(
 /**
  * Renames for files with generic names (local generation model) and moves into
  * existing folders whose files are closer in meaning (local embedding model).
- * Stop with `cancelGeneration`; names written so far are kept.
+ * Stop with `stopSuggestions`: a request stopped after the folder was read
+ * resolves with the moves and the names written so far (`naming: "cancelled"`).
  */
 export function suggestFileChanges(
   workspaceId: WorkspaceId,

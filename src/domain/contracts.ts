@@ -1207,7 +1207,7 @@ export interface DestinationSuggestion {
 /** Renames and moves from the local models; each still needs a preview and approval. */
 export interface FileChangeSuggestions {
   filenames: OrganizationSuggestion[];
-  /** Files with generic names and no heading that the model was asked to name. */
+  /** Files with generic names and no title-based name that the model was asked to name. */
   filenameCandidates: number;
   naming: CollectionNaming;
   namingError?: FolioErrorPayload;
