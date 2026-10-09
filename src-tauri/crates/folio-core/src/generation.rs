@@ -4,7 +4,8 @@ use crate::models::VerifiedModelFile;
 use reqwest::blocking::Client;
 use serde::Serialize;
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader};
+use std::fs;
+use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -67,6 +68,9 @@ struct RunningServer {
     port: u16,
     api_key: String,
     last_used: Instant,
+    /// Closing this handle (including when Folio itself dies) kills the child.
+    #[cfg(windows)]
+    _job: Option<job::KillOnClose>,
 }
 
 #[derive(Default)]
@@ -137,11 +141,14 @@ impl LlamaServerProvider {
         })
     }
 
+    /// Fixed launch arguments. The per-process key is passed as a file (not
+    /// on the command line, where other local users could read it), and the
+    /// `/slots` endpoint is disabled so it cannot expose prompt state.
     pub fn build_server_args(
         executable: &Path,
         model_path: &Path,
         port: u16,
-        api_key: &str,
+        api_key_file: &Path,
         threads: usize,
     ) -> Vec<String> {
         vec![
@@ -150,8 +157,9 @@ impl LlamaServerProvider {
             "127.0.0.1".into(),
             "--port".into(),
             port.to_string(),
-            "--api-key".into(),
-            api_key.into(),
+            "--api-key-file".into(),
+            api_key_file.to_string_lossy().into_owned(),
+            "--no-slots".into(),
             "-m".into(),
             model_path.to_string_lossy().into_owned(),
             "-c".into(),
@@ -190,26 +198,36 @@ impl LlamaServerProvider {
         }
         let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
         let api_key = Uuid::new_v4().simple().to_string();
+        let key_file = write_api_key_file(&api_key)?;
         let args = Self::build_server_args(
             &self.executable,
             &self.model.path,
             port,
-            &api_key,
+            &key_file,
             self.threads,
         );
-        let child = Command::new(&self.executable)
+        let mut command = Command::new(&self.executable);
+        command
             .args(args.iter().skip(1))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| {
-                CoreError::Provider(NativeProviderErrorError::new(
-                    ProviderErrorCode::RuntimeStartFailed,
-                    format!("Could not start llama.cpp: {error}"),
-                ))
-            })?;
+            .stderr(Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // CREATE_NO_WINDOW: no console window for each model load.
+            command.creation_flags(0x0800_0000);
+        }
+        let child = command.spawn().map_err(|error| {
+            let _ = fs::remove_file(&key_file);
+            CoreError::Provider(NativeProviderErrorError::new(
+                ProviderErrorCode::RuntimeStartFailed,
+                format!("Could not start llama.cpp: {error}"),
+            ))
+        })?;
         state.running = Some(RunningServer {
+            #[cfg(windows)]
+            _job: job::KillOnClose::assign(&child).ok(),
             child,
             port,
             api_key: api_key.clone(),
@@ -218,32 +236,56 @@ impl LlamaServerProvider {
         drop(state);
         let url = loopback_url(port)?;
         let deadline = Instant::now() + GENERATION_TIMEOUT.min(Duration::from_secs(30));
-        loop {
+        let ready = loop {
             if cancel.load(Ordering::Relaxed) {
                 let _ = self.unload();
-                return Err(provider(
+                break Err(provider(
                     ProviderErrorCode::Cancelled,
                     "Generation cancelled.",
                 ));
             }
+            // A child that exits during startup (for example because the port
+            // was taken) fails now, before any request carries the key.
+            if let Some(status) = self.exited_child_status() {
+                let _ = self.unload();
+                break Err(provider(
+                    ProviderErrorCode::RuntimeStartFailed,
+                    format!("llama.cpp exited during startup ({status})."),
+                ));
+            }
+            // /health needs no key, so a port squatter never receives it here.
             if self
                 .client
                 .get(format!("{url}/health"))
-                .header("Authorization", format!("Bearer {api_key}"))
                 .send()
                 .is_ok_and(|response| response.status().is_success())
+                && self.exited_child_status().is_none()
             {
-                return Ok((url, api_key));
+                break Ok((url.clone(), api_key.clone()));
             }
             if Instant::now() >= deadline {
                 let _ = self.unload();
-                return Err(provider(
+                break Err(provider(
                     ProviderErrorCode::RuntimeStartFailed,
                     "llama.cpp did not become ready before the startup timeout.",
                 ));
             }
             thread::sleep(Duration::from_millis(100));
-        }
+        };
+        // The server has read the key by the time it answers /health.
+        let _ = fs::remove_file(&key_file);
+        ready
+    }
+
+    fn exited_child_status(&self) -> Option<String> {
+        let mut state = self.state.lock().ok()?;
+        let running = state.running.as_mut()?;
+        running
+            .child
+            .try_wait()
+            .ok()
+            .flatten()
+            .map(|status| status.to_string())
     }
 
     pub fn cancel_active(&self) -> CoreResult<()> {
@@ -493,6 +535,75 @@ pub fn check_request_length(text: &str) -> CoreResult<()> {
     Ok(())
 }
 
+/// Write the per-process key to a new file readable only by this user.
+fn write_api_key_file(api_key: &str) -> CoreResult<PathBuf> {
+    let path = std::env::temp_dir().join(format!("folio-llama-key-{}", Uuid::new_v4().simple()));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&path)?;
+    file.write_all(api_key.as_bytes())?;
+    file.sync_all()?;
+    Ok(path)
+}
+
+#[cfg(windows)]
+mod job {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    /// A Windows Job Object that kills its process when the handle closes,
+    /// including when Folio exits or crashes.
+    pub struct KillOnClose(HANDLE);
+
+    // The handle is only closed, never shared across threads concurrently.
+    unsafe impl Send for KillOnClose {}
+
+    impl KillOnClose {
+        pub fn assign(child: &std::process::Child) -> std::io::Result<Self> {
+            unsafe {
+                let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+                if job.is_null() {
+                    return Err(std::io::Error::last_os_error());
+                }
+                let job = Self(job);
+                let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+                limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                if SetInformationJobObject(
+                    job.0,
+                    JobObjectExtendedLimitInformation,
+                    &limits as *const _ as *const core::ffi::c_void,
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                ) == 0
+                {
+                    return Err(std::io::Error::last_os_error());
+                }
+                if AssignProcessToJobObject(job.0, child.as_raw_handle() as HANDLE) == 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(job)
+            }
+        }
+    }
+
+    impl Drop for KillOnClose {
+        fn drop(&mut self) {
+            unsafe {
+                CloseHandle(self.0);
+            }
+        }
+    }
+}
+
 pub fn loopback_url(port: u16) -> CoreResult<String> {
     if port == 0 {
         return Err(CoreError::Message("A loopback port is required.".into()));
@@ -567,7 +678,7 @@ mod tests {
             Path::new("/opt/llama-server"),
             Path::new("/data/models/qwen.gguf"),
             43210,
-            "random-key",
+            Path::new("/tmp/folio-llama-key-test"),
             3,
         );
         assert!(args
@@ -575,9 +686,26 @@ mod tests {
             .any(|pair| pair[0] == "--host" && pair[1] == "127.0.0.1"));
         assert!(args
             .windows(2)
-            .any(|pair| pair[0] == "--api-key" && pair[1] == "random-key"));
+            .any(|pair| pair[0] == "--api-key-file" && pair[1] == "/tmp/folio-llama-key-test"));
+        assert!(!args.iter().any(|arg| arg == "--api-key"));
+        assert!(args.iter().any(|arg| arg == "--no-slots"));
         assert!(args.iter().any(|arg| arg == "--jinja"));
         assert!(!args.iter().any(|arg| arg.contains("sh -c")));
+    }
+
+    #[test]
+    fn api_key_files_are_private_and_hold_only_the_key() {
+        let path = write_api_key_file("per-process-key").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "per-process-key");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -624,6 +752,8 @@ mod tests {
         .unwrap();
         let child = Command::new("sleep").arg("5").spawn().unwrap();
         provider.state.lock().unwrap().running = Some(RunningServer {
+            #[cfg(windows)]
+            _job: None,
             child,
             port: 1,
             api_key: "test".into(),
@@ -676,6 +806,8 @@ mod tests {
         .unwrap();
         let child = Command::new("sleep").arg("5").spawn().unwrap();
         provider.state.lock().unwrap().running = Some(RunningServer {
+            #[cfg(windows)]
+            _job: None,
             child,
             port: 1,
             api_key: "test".into(),
