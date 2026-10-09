@@ -429,9 +429,16 @@ pub(crate) async fn run_model_lab(
     let generation_state = generation_state.inner().clone();
     let embedding_state = embedding_state.inner().clone();
     let lab_state = lab_state.inner().clone();
+    let install_state = install_state.inner().clone();
     run_blocking::<_, FolioError, _>(move || {
         let store = model_store(&app)?;
-        check_lab_selection(&store, &request.embedding_model_id, &request.generation_model_ids)?;
+        let candidates = candidate_store(&app_data_dir(&app)?)?;
+        check_lab_selection(
+            &store,
+            &candidates,
+            &request.embedding_model_id,
+            &request.generation_model_ids,
+        )?;
         store
             .verified_runtime_executable(runtime_id_for_host())
             .map_err(native_error)?;
