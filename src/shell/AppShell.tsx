@@ -24,7 +24,7 @@ import { useHome } from "../app/useHome";
 import {
   loadOnboardingCompleted,
   saveOnboardingCompleted,
-} from "../app/onboarding";
+} from "../app/onboardingStorage";
 import { shouldStartOnboarding } from "../domain/onboarding";
 import { OnboardingView } from "../views/OnboardingView";
 import { hasFilters, passesFilters } from "../domain/homeFilters";

@@ -85,6 +85,19 @@ describe("first findings", () => {
     ).toEqual([]);
   });
 
+  it("counts a link written both ways once", () => {
+    const found = firstFindings(
+      [
+        link("projects/checklist.md", "projects/project-plan.md"),
+        link("projects/project-plan.md", "projects/checklist.md"),
+        link("meetings/meeting-notes.md", "projects/project-plan.md"),
+      ],
+      [],
+      files,
+    );
+    expect(found).toHaveLength(2);
+  });
+
   it("stops at the limit", () => {
     const many = files.slice(1).map((file) => link(file.id, files[0].id));
     expect(firstFindings(many, [], files, 2)).toHaveLength(2);

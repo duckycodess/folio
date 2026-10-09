@@ -967,6 +967,8 @@
   .onboarding-card {
     padding: var(--space-5);
   }
+}
+
 /* Graph: where to start, and confirmed vs suggested connections. */
 .graph-start {
   display: flex;

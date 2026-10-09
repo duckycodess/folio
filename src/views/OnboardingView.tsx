@@ -236,9 +236,9 @@ function LocalAi({ headingRef }: { headingRef: HeadingRef }) {
       <Title headingRef={headingRef}>Local AI (optional)</Title>
       <p>
         Summaries, finding files by meaning, and Ask &amp; Act use a local AI
-        model that runs on this computer. You can set one up later in Model Lab,
-        which shows each model's size before anything downloads. Nothing is
-        downloaded during this setup.
+        model that runs on this computer. Model setup is coming in a later
+        version. Folio will show each model's size and ask before downloading
+        anything. Nothing is downloaded during this setup.
       </p>
       <p className="muted">
         Without a model, browsing your files and keyword search work as usual,
@@ -336,6 +336,21 @@ function Found({
       <Title headingRef={headingRef}>What Folio found</Title>
       {relations.coverage === "loading" ? (
         <p className="muted">Looking at your indexed files…</p>
+      ) : relations.coverage === "failed" ? (
+        // A failed read is not a result: say so, and still offer the way on.
+        <>
+          {relations.failure && (
+            <RecoveryNotice
+              error={relations.failure}
+              actions={{ retry: relations.refresh }}
+            />
+          )}
+          <div className="onboarding-inline-actions">
+            <Button onClick={() => onFinish("home")}>Search your files</Button>
+            <Button onClick={() => onFinish("organize")}>Organize</Button>
+            <Button onClick={() => onFinish("assistant")}>Ask &amp; Act</Button>
+          </div>
+        </>
       ) : findings.length ? (
         <>
           <p>From the files in your folder:</p>

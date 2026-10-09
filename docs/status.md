@@ -123,6 +123,13 @@ Checked on macOS with Node.js 26.10.0:
   - finishing opens Home, the Setup guide reopens it, and it doesn't return after a reload;
   - no horizontal scroll at 700px.
 
+After Gab's review:
+
+- the local AI step says model setup is coming in a later version, instead of describing a Model Lab that doesn't exist yet;
+- a failed read of the index's links shows the recovery notice with the workflow buttons, not "nothing found" (checked in the browser with the read mocked to fail);
+- a link written both ways counts once;
+- the storage helper is now `src/app/onboardingStorage.ts`.
+
 Not verified: the real picker and index in the desktop app, offline use after setup, model setup (waits on #24), screen readers, and the Tauri webview.
 
 ### Home filters, pins and recent files (2026-10-10, issue #33)

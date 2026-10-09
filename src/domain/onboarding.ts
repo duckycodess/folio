@@ -91,12 +91,18 @@ export function firstFindings(
           folderOf(a.source.relativePath) !== folderOf(a.target.relativePath),
         ),
     );
-  for (const { edge, source, target } of links)
+  // A link written both ways is one finding.
+  const shown = new Set<string>();
+  for (const { edge, source, target } of links) {
+    const pair = [source.id, target.id].sort().join("\u0000");
+    if (shown.has(pair)) continue;
+    shown.add(pair);
     findings.push({
       kind: "link",
       title: `${source.name} links to ${target.name}`,
       files: [source, target],
       evidence: edge.evidence[0]?.text,
     });
+  }
   return findings.slice(0, limit);
 }
