@@ -6,6 +6,8 @@
 
 pub const CORE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub mod chunking;
 pub mod contracts;
+pub mod embeddings;
 pub mod error;
 pub mod models;
