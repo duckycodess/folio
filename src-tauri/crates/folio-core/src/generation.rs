@@ -109,11 +109,7 @@ impl LlamaServerProvider {
                 "The verified generation model file is unavailable.",
             ));
         }
-        let client = Client::builder()
-            .connect_timeout(Duration::from_secs(2))
-            .timeout(GENERATION_TIMEOUT)
-            .build()
-            .map_err(|error| CoreError::Message(format!("HTTP client setup failed: {error}")))?;
+        let client = loopback_client(GENERATION_TIMEOUT)?;
         let state = Arc::new(Mutex::new(ServerState::default()));
         let active = Arc::new(AtomicBool::new(false));
         let reaper_stop = Arc::new(AtomicBool::new(false));
@@ -439,6 +435,19 @@ impl Drop for ActiveGuard<'_> {
     fn drop(&mut self) {
         self.0.store(false, Ordering::Release);
     }
+}
+
+/// HTTP client for the local inference server only. System and environment
+/// proxies are ignored: reqwest honours `HTTP_PROXY` even for `127.0.0.1`,
+/// which would send prompts, retrieved passages and the per-process key to a
+/// proxy instead of the loopback server.
+pub fn loopback_client(timeout: Duration) -> CoreResult<Client> {
+    Client::builder()
+        .no_proxy()
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(timeout)
+        .build()
+        .map_err(|error| CoreError::Message(format!("HTTP client setup failed: {error}")))
 }
 
 pub fn loopback_url(port: u16) -> CoreResult<String> {
