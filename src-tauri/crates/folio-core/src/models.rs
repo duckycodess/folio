@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -631,11 +633,29 @@ fn find_runtime_executable(root: &Path) -> Option<PathBuf> {
         } else if matches!(
             path.file_name().and_then(|name| name.to_str()),
             Some("llama-server") | Some("llama-server.exe")
-        ) {
+        ) && is_executable_file(&path)
+        {
             return Some(path);
         }
     }
     None
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 fn extract_runtime_archive(archive: &Path, destination: &Path) -> CoreResult<()> {
@@ -676,8 +696,12 @@ fn extract_runtime_archive(archive: &Path, destination: &Path) -> CoreResult<()>
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
             }
-            let mut output = File::create(target)?;
+            let mut output = File::create(&target)?;
             std::io::copy(&mut entry, &mut output)?;
+            #[cfg(unix)]
+            if let Some(mode) = entry.unix_mode() {
+                fs::set_permissions(&target, fs::Permissions::from_mode(mode & 0o755))?;
+            }
         }
         return Ok(());
     }
@@ -695,6 +719,10 @@ fn extract_runtime_archive(archive: &Path, destination: &Path) -> CoreResult<()>
     {
         let mut entry = entry.map_err(|error| CoreError::Archive(error.to_string()))?;
         let entry_type = entry.header().entry_type();
+        let mode = entry
+            .header()
+            .mode()
+            .map_err(|error| CoreError::Archive(error.to_string()))?;
         if entry_type.is_symlink() || entry_type.is_hard_link() {
             return Err(CoreError::Archive(
                 "Runtime archive contains a link.".into(),
@@ -722,8 +750,10 @@ fn extract_runtime_archive(archive: &Path, destination: &Path) -> CoreResult<()>
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
         }
-        let mut output = File::create(target)?;
+        let mut output = File::create(&target)?;
         std::io::copy(&mut entry, &mut output)?;
+        #[cfg(unix)]
+        fs::set_permissions(&target, fs::Permissions::from_mode(mode & 0o755))?;
     }
     Ok(())
 }
@@ -736,7 +766,15 @@ pub fn sha256_bytes(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     #[cfg(unix)]
+    use flate2::write::GzEncoder;
+    #[cfg(unix)]
+    use flate2::Compression;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    #[cfg(unix)]
+    use tar::{Builder, Header};
 
     fn descriptor(bytes: &[u8]) -> ModelDescriptor {
         ModelDescriptor {
@@ -831,6 +869,66 @@ mod tests {
         store.remove_model("test-model").unwrap();
         assert!(!temp.path().join("models/test-model").exists());
         assert_eq!(fs::read_to_string(lab_file).unwrap(), "record\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tar_runtime_extraction_preserves_executable_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive_path = temp.path().join("runtime.tar.gz");
+        let archive = File::create(&archive_path).unwrap();
+        let encoder = GzEncoder::new(archive, Compression::default());
+        let mut builder = Builder::new(encoder);
+        let bytes = b"#!/bin/sh\n";
+        let mut header = Header::new_gnu();
+        header.set_path("llama-b11524/llama-server").unwrap();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder.append(&header, &bytes[..]).unwrap();
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap();
+
+        let destination = temp.path().join("runtime");
+        fs::create_dir_all(&destination).unwrap();
+        extract_runtime_archive(&archive_path, &destination).unwrap();
+        let executable = destination.join("llama-b11524/llama-server");
+        assert_ne!(
+            fs::metadata(&executable).unwrap().permissions().mode() & 0o111,
+            0
+        );
+        assert_eq!(find_runtime_executable(&destination), Some(executable));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_status_requires_an_executable_server() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = ModelStore::with_manifest(
+            temp.path(),
+            ModelManifest {
+                schema_version: 1,
+                models: Vec::new(),
+                runtimes: vec![RuntimeDescriptor {
+                    id: "test-runtime".into(),
+                    name: "Test runtime".into(),
+                    version: "test".into(),
+                    platform: "test".into(),
+                    files: Vec::new(),
+                }],
+            },
+        )
+        .unwrap();
+        let executable = temp
+            .path()
+            .join("runtime/llama.cpp/test-runtime/llama-server");
+        fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        fs::write(&executable, b"not executable").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let status = store.runtime_status("test-runtime").unwrap();
+        assert!(!status.installed);
+        assert!(status.executable_path.is_none());
     }
 
     #[test]
