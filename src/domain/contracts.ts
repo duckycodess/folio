@@ -461,6 +461,10 @@ export interface ModelSetup {
   hostRuntimeId: string;
   /** Exact download size of that runtime, from the pinned manifest. */
   hostRuntimeBytes: number | null;
+  /** The whole device's physical RAM; never Folio's own process memory. */
+  deviceMemoryBytes: number | null;
+  /** Free space on the disk that holds Folio's models. */
+  availableDiskBytes: number | null;
 }
 
 /** One file of a model or runtime download (`folio://model-progress`). */

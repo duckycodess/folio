@@ -117,6 +117,82 @@ export function totalDownloadBytes(
   };
 }
 
+/**
+ * Folio targets computers with 8 GB of RAM (an unmeasured target). Operating
+ * systems report a little less than the installed amount, so an 8 GB computer
+ * that reports 7.6 GB still counts.
+ */
+const RAM_TARGET_BYTES = 7.5 * 1024 ** 3;
+
+/** The default setup stays within Folio's under-1-GB install target. */
+const DEFAULT_BUDGET_BYTES = 1024 ** 3;
+
+export interface SetupAdvice {
+  /**
+   * One model per job: the installed one (the one in use first), or else the
+   * smallest recommended (non-optional) one.
+   */
+  rows: ModelRow[];
+  /** Those rows still to download. */
+  pending: ModelRow[];
+  /** Exact bytes the pending downloads take, the runtime's when needed. */
+  downloadBytes: number;
+  /** A runtime download is needed but the manifest doesn't list its size. */
+  runtimeUnknown: boolean;
+  withinBudget: boolean;
+  /** Known, and below what Folio targets. Unknown RAM is never "below". */
+  belowRamTarget: boolean;
+  /** Known, and smaller than the downloads. Unknown space is never "short". */
+  shortOfSpace: boolean;
+}
+
+/**
+ * What onboarding recommends. A job that has a model installed keeps it, so a
+ * model just set up stays in place; otherwise its smallest recommended model.
+ * Larger optional packs are never recommended; they stay a choice with their
+ * sizes shown.
+ */
+export function setupAdvice(
+  groups: ModelGroup[],
+  setup: ModelSetup | null,
+  runtime: RuntimeStatus | null,
+): SetupAdvice {
+  const rows = groups.flatMap((group) => {
+    const installed = group.rows
+      .filter((row) => row.state?.status === "installed")
+      .sort((a, b) => Number(b.selected) - Number(a.selected))[0];
+    const smallest = group.rows
+      .filter((row) => !row.descriptor.optionalPack)
+      .sort((a, b) => a.downloadBytes - b.downloadBytes)[0];
+    const row = installed ?? smallest;
+    return row ? [row] : [];
+  });
+  const pending = rows.filter((row) => row.state?.status !== "installed");
+  const needsRuntime = pending.some((row) =>
+    installSteps(row.descriptor, runtime).includes("runtime"),
+  );
+  const runtimeBytes = needsRuntime ? setup?.hostRuntimeBytes : 0;
+  const bytes =
+    pending.reduce((total, row) => total + row.downloadBytes, 0) +
+    (runtimeBytes ?? 0);
+  const memory = setup?.deviceMemoryBytes ?? null;
+  const free = setup?.availableDiskBytes ?? null;
+  return {
+    rows,
+    pending,
+    downloadBytes: bytes,
+    runtimeUnknown: needsRuntime && runtimeBytes == null,
+    withinBudget: bytes < DEFAULT_BUDGET_BYTES,
+    belowRamTarget: memory !== null && memory < RAM_TARGET_BYTES,
+    shortOfSpace: free !== null && free < bytes,
+  };
+}
+
+/** "16 GB": whole gigabytes for RAM, as computers are sold. */
+export function memorySize(bytes: number): string {
+  return `${Math.round(bytes / 1024 ** 3)} GB`;
+}
+
 /** Whole-item progress, or `undefined` when the total isn't known. */
 export function progressPercent(
   progress: DownloadProgress | null,

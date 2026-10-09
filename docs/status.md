@@ -65,13 +65,13 @@
   - It names the blocking file and changes nothing when the preview refuses it, and it's absent when the earlier version wasn't kept.
   - Success is shown only from the native Undo report; a partial Undo uses the partial-Undo wording.
   - Failed attempts and the action's source aren't recorded by the native history yet (#35), and the page says so.
-- First-run onboarding ([issue #14](https://github.com/duckycodess/folio/issues/14), partly): in the desktop app, five skippable steps, shown until completed or skipped and reopened from the sidebar's "Setup guide".
+- First-run onboarding ([issue #14](https://github.com/duckycodess/folio/issues/14)): in the desktop app, five skippable steps, shown until completed or skipped and reopened from the sidebar's "Setup guide".
   1. Welcome.
   2. Choose a folder: nothing is read before the system picker returns one, and a cancelled picker changes nothing.
-  3. Local AI: explains what it's for and that Model Lab shows sizes before any download. Nothing downloads here.
+  3. Local AI: this computer's RAM (the whole device's) and the free space on the disk that holds Folio's models, from `model_setup`, or "Unknown" when the system doesn't say. For each job it recommends the smallest non-optional model, or keeps the one already installed, with its revision and exact download size, the runtime counted when it's needed, and whether that stays within the 1 GB target. Each model downloads only from its own Download button, shows progress, and can be cancelled. Back, Skip and Continue wait while a download runs. A download that's bigger than the free space is disabled and says why. Below 8 GB of RAM a warning says the models may run slowly, and that speeds haven't been measured. Larger optional models sit under "Other models" with their sizes.
   4. Index: real phases, Stop, and "Continue to Home while indexing".
   5. What Folio found: exact duplicates and links between files from the indexed folder, with paths and the linking text, or an honest empty state with Search, Organize and Ask & Act.
-  - The model recommendation (device RAM, disk, exact size and revision) is not built yet; it waits on #24 (PR #52).
+  - Model Lab uses the same model rows (`ModelCard`), so its Download is also disabled when the disk is known to be too full.
 - Keyword filtering (explicitly labelled), actual Markdown-link discovery in fixture text, source content views, and a list of those explicit links with their evidence (Graph view).
 - Graph concept map, read-only ([issue #45](https://github.com/duckycodess/folio/issues/45), first of three PRs): Graph opens on a Map, with a Map / List switch; both show the connections for the chosen starting point (all files, a file, a folder or a topic, from #40), and the list keeps Confirmed and Suggested apart. Map and list come from the same pairs (`src/domain/graphScope.ts`). Every file is a node, connected or not. Links are solid with arrowheads, identical copies a double line; dashed lines labelled "AI" are drawn only for embedding or model provenance, which nothing produces yet, so the legend says AI connections will appear when a model produces them. A legend checkbox hides each kind. The layout is deterministic d3-force run synchronously (no animation). Pan, zoom (+ / − / 0, Ctrl or ⌘ + wheel, trackpad or touch pinch; a plain wheel scrolls the page), and dragging a file (it stays pinned and its neighbours settle) work. Keyboard: one Tab stop, arrows follow connections within 60°, preferring the file straight ahead (lowest distance / cos(angle)), Page Up/Down and Home/End go through every file by path, Enter opens the file in the reader, Escape closes it. Selecting a file lists its connections with evidence under the map. Above 400 files the map shows the selected (or most connected) file's neighbourhood with a note. Rename, move, edit and delete from the map, and Shift+F10, are not built yet.
 - Tauri folder picker and scoped native listing/TXT/Markdown reading commands.
@@ -177,7 +177,32 @@ After Gab's review:
 - a link written both ways counts once;
 - the storage helper is now `src/app/onboardingStorage.ts`.
 
-Not verified: the real picker and index in the desktop app, offline use after setup, model setup (waits on #24), screen readers, and the Tauri webview.
+Not verified: the real picker and index in the desktop app, offline use after setup, screen readers, and the Tauri webview.
+
+### Onboarding's local AI step (2026-10-10, issue #14)
+
+Checked on macOS with Node.js 26.10.0, on `main` after #63 and #64:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 282 passed, 9 todo. New cases in `src/app/models.test.ts` cover the recommendation:
+  - the smallest non-optional model per job, never an optional pack;
+  - a job's installed model kept in place, and only the rest counted;
+  - the runtime counted only when it's needed, and an unlisted runtime size said, not guessed;
+  - low RAM and too little space flagged only when the device reports them, with an 8 GB computer that reports 7.6 GB still counting as 8 GB;
+  - the 1 GB check.
+- Headless Chromium, with the native core **mocked** (`window.__TAURI_INTERNALS__`, a test harness):
+  - with 16 GB and 50 GB free, it recommended multilingual-e5-small and Qwen3-0.6B Q4_K_M, 519.0 MB together with the runtime, within the 1 GB target, each showing its revision and exact bytes;
+  - nothing was downloaded before a Download press (only `list_models`, `model_setup`, `runtime_status` and `verify_model` ran);
+  - those model checks now run when onboarding opens, so "no native command runs before the folder is picked" above now holds only for workspace commands: the model checks read Folio's own model store, never the user's folders;
+  - during a download, Back, Skip for now and Continue were disabled; Cancel download showed "Download cancelled… wasn't set up." and freed them;
+  - after both downloads, both models stayed in place as installed and in use, with "A model is set up for each job";
+  - with 300 MB free, a warning showed and the writing model's Download was disabled with the reason, while the 129 MB search model stayed available;
+  - with 4 GB of RAM, the 8 GB warning showed;
+  - with no figures from the system, both read "Unknown";
+  - no horizontal scroll at 700px.
+- Native (`folio_core::device`): device RAM from `sysctl hw.memsize` on macOS, `GlobalMemoryStatusEx` on Windows and `/proc/meminfo` on Linux; free space from `statvfs` or `GetDiskFreeSpaceExW`, measured at the nearest existing folder. **Not built or run on this host** (no Rust toolchain); its tests run only in CI's `desktop-check` on macOS and Windows.
+
+Not verified: real downloads and the real figures in the Tauri app, an interrupted download or a hash mismatch against the real store (they surface through the shared recovery notice and the "Damaged: download again" state), and screen readers.
 
 ### Ask Olio launcher and #20 review fixes (2026-10-10, issues #37 and #20)
 

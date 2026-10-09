@@ -1,5 +1,13 @@
 import { FolderPlus, Link2, Copy } from "lucide-react";
 import { useEffect, useRef, useState, type RefObject } from "react";
+import {
+  exactSize,
+  memorySize,
+  modelName,
+  ROLE_LABELS,
+  setupAdvice,
+} from "../app/models";
+import { useModels, type ModelsController } from "../app/useModels";
 import type { RelationshipsState } from "../app/useRelationships";
 import type { WorkspaceState } from "../app/useWorkspace";
 import {
@@ -11,9 +19,11 @@ import {
 } from "../domain/onboarding";
 import type { ViewId } from "../shell/navigation";
 import { Button } from "../ui/Button";
+import { Notice } from "../ui/Notice";
 import { Olio } from "../ui/Olio";
 import { Progress } from "../ui/Progress";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
+import { ModelCard } from "./ModelCard";
 
 const PHASES: Record<string, string> = {
   discovering: "Finding files",
@@ -33,7 +43,8 @@ interface OnboardingProps {
 /**
  * First-run setup (#14), in five skippable steps: welcome, a folder, local AI,
  * indexing, and what Folio found. Nothing is read before the user picks a
- * folder in the system picker, and nothing is downloaded here.
+ * folder in the system picker, and a model downloads only from its own
+ * button, after its exact size and revision are shown.
  */
 export function OnboardingView({
   workspace,
@@ -43,6 +54,10 @@ export function OnboardingView({
   const [step, setStep] = useState<OnboardingStep>("welcome");
   const heading = useRef<HTMLHeadingElement>(null);
   const index = ONBOARDING_STEPS.indexOf(step);
+  // Held here so a download in progress keeps the steps from changing under
+  // it; Cancel download stays available.
+  const models = useModels();
+  const downloading = models.installing !== null;
 
   // Each step's heading takes focus, so keyboard and screen-reader users
   // start at the top of it.
@@ -65,7 +80,7 @@ export function OnboardingView({
         {step === "folder" && (
           <ChooseFolder workspace={workspace} headingRef={heading} />
         )}
-        {step === "ai" && <LocalAi headingRef={heading} />}
+        {step === "ai" && <LocalAi headingRef={heading} models={models} />}
         {step === "index" && (
           <IndexFolder
             workspace={workspace}
@@ -83,19 +98,24 @@ export function OnboardingView({
         )}
         {step !== "welcome" && (
           <div className="onboarding-actions">
-            <Button variant="ghost" onClick={() => go(previousStep(step))}>
+            <Button
+              variant="ghost"
+              disabled={downloading}
+              onClick={() => go(previousStep(step))}
+            >
               Back
             </Button>
             <span className="onboarding-spacer" />
             {step !== "found" && (
               <>
-                <Button variant="ghost" onClick={next}>
+                <Button variant="ghost" disabled={downloading} onClick={next}>
                   Skip for now
                 </Button>
                 <Button
                   variant="primary"
                   onClick={next}
                   disabled={
+                    downloading ||
                     (step === "folder" && workspace.source !== "folder") ||
                     (step === "index" && workspace.search.index !== "ready")
                   }
@@ -230,20 +250,135 @@ function ChooseFolder({
   );
 }
 
-function LocalAi({ headingRef }: { headingRef: HeadingRef }) {
+function LocalAi({
+  headingRef,
+  models,
+}: {
+  headingRef: HeadingRef;
+  models: ModelsController;
+}) {
+  const advice = setupAdvice(models.groups, models.setup, models.runtime);
+  const recommended = new Set(advice.rows.map((row) => row.descriptor.id));
+  const others = models.groups.flatMap((group) =>
+    group.rows.filter((row) => !recommended.has(row.descriptor.id)),
+  );
+  const memory = models.setup?.deviceMemoryBytes ?? null;
+  const free = models.setup?.availableDiskBytes ?? null;
+  const size = (bytes: number) => exactSize(bytes).split(" (")[0];
+
   return (
     <>
       <Title headingRef={headingRef}>Local AI (optional)</Title>
       <p>
-        Summaries, finding files by meaning, and Ask &amp; Act use a local AI
-        model that runs on this computer. Model setup is coming in a later
-        version. Folio will show each model's size and ask before downloading
-        anything. Nothing is downloaded during this setup.
+        Summaries, finding files by meaning, and Ask &amp; Act use local AI
+        models that run on this computer. Nothing downloads until you press a
+        model's Download button.
       </p>
       <p className="muted">
         Without a model, browsing your files and keyword search work as usual,
-        and AI features explain what they need.
+        and AI features explain what they need. You can set models up later in
+        Model Lab.
       </p>
+      {models.error && (
+        <RecoveryNotice
+          error={models.error}
+          actions={{ retry: models.reload }}
+          onDismiss={models.dismiss}
+        />
+      )}
+      {models.notice && <Notice tone="info">{models.notice}</Notice>}
+      {models.load === "loading" ? (
+        <Progress label="Checking this computer and the installed models" />
+      ) : models.load === "ready" ? (
+        <>
+          <dl className="model-facts onboarding-device">
+            <dt>This computer's RAM</dt>
+            <dd>
+              {memory === null
+                ? "Unknown"
+                : `${memorySize(memory)} (the whole computer)`}
+            </dd>
+            <dt>Free space</dt>
+            <dd>
+              {free === null
+                ? "Unknown"
+                : `${size(free)} on the disk Folio keeps models on`}
+            </dd>
+          </dl>
+          {advice.belowRamTarget && memory !== null && (
+            <Notice tone="warning">
+              Folio is designed for computers with at least 8 GB of RAM, and
+              this one has {memorySize(memory)}. The models may run slowly or
+              not at all. Speeds on this computer haven't been measured.
+            </Notice>
+          )}
+          {advice.rows.length > 0 && (
+            <>
+              <h2 className="section-title">Recommended</h2>
+              {advice.pending.length === 0 ? (
+                <p>
+                  A model is set up for each job. You can change them in Model
+                  Lab.
+                </p>
+              ) : (
+                <p>
+                  {advice.pending
+                    .map(
+                      (row) =>
+                        `${ROLE_LABELS[row.descriptor.role].title}: ${modelName(row.descriptor)}`,
+                    )
+                    .join(". ")}
+                  . {advice.pending.length > 1 ? "Together they" : "It"}{" "}
+                  {advice.pending.length > 1 ? "download" : "downloads"}{" "}
+                  {size(advice.downloadBytes)}
+                  {advice.runtimeUnknown
+                    ? ", plus a runtime whose size isn't listed"
+                    : ""}
+                  {advice.withinBudget ? ", within Folio's 1 GB target" : ""}.
+                  {advice.pending.length > 1 &&
+                    " Each downloads separately, so you can set up just one."}
+                </p>
+              )}
+              {advice.shortOfSpace && free !== null && (
+                <Notice tone="warning">
+                  The disk Folio uses has {size(free)} free, less than the{" "}
+                  {size(advice.downloadBytes)} these need. Free up space, or
+                  skip for now.
+                </Notice>
+              )}
+              <ul className="model-list">
+                {advice.rows.map((row) => (
+                  <ModelCard
+                    key={row.descriptor.id}
+                    row={row}
+                    models={models}
+                  />
+                ))}
+              </ul>
+            </>
+          )}
+          {others.length > 0 && (
+            <details className="onboarding-more">
+              <summary>Other models, including larger optional ones</summary>
+              <ul className="model-list">
+                {others.map((row) => (
+                  <ModelCard
+                    key={row.descriptor.id}
+                    row={row}
+                    models={models}
+                  />
+                ))}
+              </ul>
+            </details>
+          )}
+          <p className="muted">
+            Sizes are the exact downloads from Folio's pinned list. The space a
+            model takes once installed isn't measured.
+          </p>
+        </>
+      ) : models.load === "desktopOnly" ? (
+        <p className="muted">Model setup works in the desktop app.</p>
+      ) : null}
     </>
   );
 }

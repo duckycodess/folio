@@ -1002,6 +1002,20 @@
 .onboarding-result .progress {
   width: 100%;
 }
+/* Local AI step: model rows and notices use the card's full width. */
+.onboarding-card > .model-list,
+.onboarding-card > .notice,
+.onboarding-card > .progress,
+.onboarding-more {
+  width: 100%;
+}
+.onboarding-more summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.onboarding-more .model-list {
+  margin-top: var(--space-3);
+}
 .onboarding-actions,
 .onboarding-inline-actions {
   display: flex;

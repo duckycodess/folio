@@ -13,7 +13,9 @@ import {
   modelName,
   progressPercent,
   ramLabel,
+  memorySize,
   resultsByTask,
+  setupAdvice,
   totalDownloadBytes,
 } from "./models";
 
@@ -48,6 +50,8 @@ const SETUP: ModelSetup = {
   selectedGeneration: "small",
   hostRuntimeId: "llama-macos-arm64",
   hostRuntimeBytes: 12,
+  deviceMemoryBytes: 16 * 1024 ** 3,
+  availableDiskBytes: 50 * 1024 ** 3,
 };
 const NO_RUNTIME: RuntimeStatus = {
   id: "llama",
@@ -122,6 +126,91 @@ describe("model setup", () => {
         totalBytes: 100,
       }),
     ).toBe(25);
+  });
+});
+
+describe("onboarding's model recommendation", () => {
+  const MID = model("mid", "generation", [600]);
+  const GB = 1024 ** 3;
+  const notInstalled = (id: string) =>
+    ({ id, status: "notInstalled" }) as const;
+  const states = {
+    e5: notInstalled("e5"),
+    small: notInstalled("small"),
+    mid: notInstalled("mid"),
+    large: notInstalled("large"),
+  };
+  const groups = modelGroups([E5, LARGE, MID, SMALL], states, SETUP);
+
+  it("recommends the smallest non-optional model for each job, never an optional pack", () => {
+    const advice = setupAdvice(groups, SETUP, NO_RUNTIME);
+    expect(advice.rows.map((row) => row.descriptor.id)).toEqual([
+      "e5",
+      "small",
+    ]);
+    // 120 + 400 + the 12-byte runtime the writing model needs.
+    expect(advice.downloadBytes).toBe(532);
+    expect(advice.runtimeUnknown).toBe(false);
+    expect(advice.withinBudget).toBe(true);
+  });
+
+  it("keeps a job's installed model in place and downloads only the rest", () => {
+    const installed = modelGroups(
+      [E5, LARGE, SMALL],
+      { ...states, large: { id: "large", status: "installed" } },
+      SETUP,
+    );
+    const advice = setupAdvice(installed, SETUP, RUNTIME);
+    expect(advice.rows.map((row) => row.descriptor.id)).toEqual([
+      "e5",
+      "large",
+    ]);
+    expect(advice.pending.map((row) => row.descriptor.id)).toEqual(["e5"]);
+    expect(advice.downloadBytes).toBe(120);
+  });
+
+  it("says when the runtime's size isn't listed instead of guessing", () => {
+    const advice = setupAdvice(
+      groups,
+      { ...SETUP, hostRuntimeBytes: null },
+      NO_RUNTIME,
+    );
+    expect(advice).toMatchObject({ downloadBytes: 520, runtimeUnknown: true });
+  });
+
+  it("flags low RAM and too little space only when the device reports them", () => {
+    const low = {
+      ...SETUP,
+      deviceMemoryBytes: 4 * GB,
+      availableDiskBytes: 500,
+    };
+    expect(setupAdvice(groups, low, RUNTIME)).toMatchObject({
+      belowRamTarget: true,
+      shortOfSpace: true,
+    });
+    const unknown = {
+      ...SETUP,
+      deviceMemoryBytes: null,
+      availableDiskBytes: null,
+    };
+    expect(setupAdvice(groups, unknown, RUNTIME)).toMatchObject({
+      belowRamTarget: false,
+      shortOfSpace: false,
+    });
+    // An 8 GB computer reports a little less than 8 GB.
+    const eight = { ...SETUP, deviceMemoryBytes: 7.6 * GB };
+    expect(setupAdvice(groups, eight, RUNTIME).belowRamTarget).toBe(false);
+    expect(memorySize(7.6 * GB)).toBe("8 GB");
+  });
+
+  it("checks the default setup against the under-1-GB target", () => {
+    const big = model("big-e5", "embedding", [GB]);
+    const advice = setupAdvice(
+      modelGroups([big], { "big-e5": notInstalled("big-e5") }, SETUP),
+      SETUP,
+      RUNTIME,
+    );
+    expect(advice.withinBudget).toBe(false);
   });
 });
 
