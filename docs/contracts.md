@@ -102,6 +102,31 @@ Vectors are compared only within one embedding space, identified by
 `folio-space-v1/<modelId>/<revision>/<quantization>/<dimensions>/<preprocessing>`
 with `%` and `/` escaped.
 
+The additive native commands `sync_embeddings(workspaceId)` and
+`cancel_embedding_sync()` fill the persistent chunk-vector store from the
+selected local embedding provider. The result is `EmbeddingSyncSummary` with
+`workspaceId`, `spaceFingerprint`, `stored`, `droppedStale`, `cancelled` and
+`complete`. The loop embeds the exact pending `chunk.text` and echoes the
+received `contentHash`; a `chunkChanged` or `chunkMissing` refusal is dropped
+and re-listed silently, while every other evidence failure, model-space or
+vector-dimension mismatch is reported. A second sync returns `providerBusy`.
+For Model Lab, the initial provider-space probe and every sync batch check the
+Lab state while holding `EmbeddingState`, before any embedding provider load.
+If Lab starts while a sync holds that lock, the current provider batch may
+finish; Lab then waits to unload the slot, and the sync's next guarded batch
+returns `providerBusy` with `details.reason = "modelLabRunning"`. Batches
+already committed remain. Existing snapshot `semantic_search` can still
+reload the product embedding provider during a Lab run; that is the
+pre-existing #8 limitation, and #27 does not migrate live search to this
+persistent store. Cancellation keeps already committed batches and reports
+their cumulative counts. Persistent chunks use the separate `chunk-text-v1`
+stored space, so these vectors are not comparable to the title/path snapshot
+space. No UI trigger is implied by these commands. The native index owns the
+all-or-nothing
+`Immediate` transaction that rechecks each chunk hash before storing vectors;
+the retry loop only filters the returned `ChunkVector` batch and never
+recomputes a hash. This additive contract is for TJ review.
+
 ## Providers
 
 Embedding and generation stay behind separate interfaces. An adapter rejects
