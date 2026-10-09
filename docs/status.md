@@ -16,6 +16,10 @@ Multilingual embedding integration, semantic search, SQLite connection, text-PDF
 
 No AI or save completion should be presented until the corresponding native/provider implementation succeeds. Model sizes, installed size, memory targets, and platform support remain subject to measurements.
 
+## Issue #4 planning follow-up
+
+Recorded accepted model-selection, independent acceptance-suite, clarification, and full/partial-summary policies in `docs/grill-with-docs.md`; added Partial Summary vocabulary to `GLOSSARY.md`. The combined issues #4/#8 follow-up also settled objective checks plus TJ factual review (unreviewed summaries are not passes), and disposable benchmark workspaces with native approval for actual apply tests. Earlier Q5–Q7 proposals remain unaccepted. No inference or runtime functionality was implemented. This follow-up changed documentation only; no code tests or model benchmarks were run.
+
 ## Verification
 
 Checked on 2026-10-09 with Node.js 24.19.0:
