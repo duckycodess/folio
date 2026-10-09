@@ -246,6 +246,7 @@ function TurnBody({
                     run: (document) =>
                       ask.ask(
                         requestForFile(turn.request, document.relativePath),
+                        document,
                       ),
                   }
             }
@@ -289,6 +290,14 @@ function TurnBody({
       return (
         <Notice tone="info">
           Olio can't do that here: {outcome.reason} Nothing was changed.
+        </Notice>
+      );
+    case "otherFile":
+      return (
+        <Notice tone="warning">
+          Olio proposed a change to another file than the one you chose (
+          {outcome.chosen.relativePath}): {describeProposal(outcome.proposal)}.
+          Nothing was changed. Try naming the change more precisely.
         </Notice>
       );
     case "unreadable":
@@ -535,7 +544,7 @@ export function AssistantView({
                 onRetry={() =>
                   turn.action === "find"
                     ? ask.find(turn.request)
-                    : ask.ask(turn.request)
+                    : ask.ask(turn.request, turn.chosen)
                 }
                 onNavigate={onNavigate}
                 onPreviewChange={previewChange}

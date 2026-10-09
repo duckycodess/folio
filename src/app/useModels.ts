@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   cancelInstall,
   installModel,
@@ -59,6 +65,33 @@ export interface ModelsController {
 }
 
 /**
+ * The running download, kept outside Model Lab: the native download goes on
+ * when the user leaves the page, so its progress and Cancel must still be
+ * there when they come back. `finished` counts downloads that ended, so a
+ * page opened meanwhile reads the model store again.
+ */
+let activeInstall: ModelInstall | null = null;
+let finishedInstalls = 0;
+const installListeners = new Set<() => void>();
+
+function setInstalling(
+  next:
+    | ModelInstall
+    | null
+    | ((current: ModelInstall | null) => ModelInstall | null),
+) {
+  const value = typeof next === "function" ? next(activeInstall) : next;
+  if (activeInstall !== null && value === null) finishedInstalls += 1;
+  activeInstall = value;
+  installListeners.forEach((listener) => listener());
+}
+
+function subscribeInstall(listener: () => void) {
+  installListeners.add(listener);
+  return () => installListeners.delete(listener);
+}
+
+/**
  * Model setup through the native model store. Downloads start only from a
  * button press, use the pinned manifest's sizes and hashes, and can be
  * cancelled. Nothing here touches the user's files.
@@ -71,7 +104,14 @@ export function useModels(): ModelsController {
   const [states, setStates] = useState<Record<string, ModelInstallState>>({});
   const [setup, setSetup] = useState<ModelSetup | null>(null);
   const [runtime, setRuntime] = useState<RuntimeStatus | null>(null);
-  const [installing, setInstalling] = useState<ModelInstall | null>(null);
+  const installing = useSyncExternalStore(
+    subscribeInstall,
+    () => activeInstall,
+  );
+  const finished = useSyncExternalStore(
+    subscribeInstall,
+    () => finishedInstalls,
+  );
   const [saving, setSaving] = useState<string | null>(null);
   const [error, setError] = useState<FolioError | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -139,8 +179,21 @@ export function useModels(): ModelsController {
     };
   }, [generation, refreshSetup, verifyAll]);
 
+  // A download started on an earlier visit to Model Lab can end while this
+  // one is open; read the model store again so its result shows. A download
+  // started here refreshes itself.
+  const seenFinished = useRef(finished);
+  const installedHere = useRef(false);
+  useEffect(() => {
+    if (finished === seenFinished.current) return;
+    seenFinished.current = finished;
+    if (installedHere.current) installedHere.current = false;
+    else setGeneration((value) => value + 1);
+  }, [finished]);
+
   async function install(descriptor: ModelDescriptor) {
-    if (installing || !setup) return;
+    if (activeInstall || !setup) return;
+    installedHere.current = true;
     setError(null);
     setNotice(null);
     const steps = installSteps(descriptor, runtime);
@@ -180,7 +233,8 @@ export function useModels(): ModelsController {
       void refreshSetup().catch(() => undefined);
     } finally {
       stop();
-      if (mounted.current) setInstalling(null);
+      // Always cleared, even if Model Lab was left meanwhile.
+      setInstalling(null);
     }
   }
 
