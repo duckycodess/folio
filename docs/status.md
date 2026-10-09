@@ -445,6 +445,24 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 
 ## Verification
 
+### Floating chat reads top to bottom (2026-10-10)
+
+The floating Olio chat listed the newest turn first. It now reads like a messenger: turns go oldest to newest down the panel, and a short conversation sits just above the composer. Opening the chat or sending a request scrolls to the newest turn, and a growing reply is followed only while you're at the bottom, so scrolling up to read older turns isn't interrupted. The full-page Ask & Act keeps newest-first, because its composer is at the top. `e2e/specs/olio-chat-order.spec.ts` sends three requests and checks their order and that the view ends at the newest. It fails on the old order.
+
+Tested locally on macOS in Chromium only: `npm run check`, `npm test`, `npm run build`, and `npx playwright test` (36 passed; the 4 `viewports.spec.ts` failures already on `main` are unchanged). Not checked in the Tauri window.
+
+### Olio launcher always invites you to talk (2026-10-10)
+
+The floating chat's greeting used to be a separate, dismissible bubble. After one dismissal (remembered in `localStorage`) Olio sat in the corner with no visible prompt. The launcher is now the brandkit's single button: an always-visible speech bubble ("Hey, I'm Olio. Talk to me — let's find what you need ↗") pointing at the animated Olio. The bubble's text is the button's accessible name, which passes axe's `label-content-name-mismatch` rule. The dismiss control and its storage key are gone.
+
+Tested locally on macOS in Chromium only: `npm run check`, `npm test`, `npm run build`, and `npx playwright test` (35 passed; the 4 `viewports.spec.ts` failures already on `main` are unchanged). Screenshots checked at 1400px and 600px widths. Not checked in the Tauri window.
+
+### Window scrolled past the shell on long pages (2026-10-10)
+
+On Model Lab, the window could scroll below the app and show bare background under a short sidebar. The cause was the announcer's visually-hidden live region, which is absolutely positioned at the end of the content but had no positioned ancestor, so it stretched the document to 1663px in an 880px window. `.app` is now `position: relative`, so its `overflow: hidden` clips such regions. `e2e/specs/shell-height.spec.ts` checks that Home, Model Lab, Activity and Organize keep the document exactly one window tall. It fails without the fix (1663 vs 880) and passes with it.
+
+Tested locally on macOS in Chromium only: `npm run check`, `npm test`, `npm run build`, and `npx playwright test` (35 passed). The 4 `viewports.spec.ts` failures already on `main` are unchanged. Not checked in the Tauri window.
+
 ### Brandkit logo, tokens and selected file (2026-10-10)
 
 The sidebar's interim text wordmark is replaced by the brandkit's gold eye wordmark (`src/assets/brand/folio-wordmark.png`, cut from `folio-transparent-versions.png`) with the motto "Search. Organize. Summarize". The icon rail shows the wordmark at 48px without the motto. The app now uses the brandkit's ivory `#FAF9F5` canvas, `#232620` text, `#E8E9E2` dividers, 222px sidebar, 68px white header and 36px gutters, and the selected file row is solid gold. The brandkit's muted `#7A7E75` was not adopted because it fails AA (3.93:1 on the canvas). The floating chat's greeting now uses the brandkit copy and sits in a labelled `aside` landmark, which fixes an axe `region` violation on `main`.

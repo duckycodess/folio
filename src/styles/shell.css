@@ -3,7 +3,11 @@
    measured width in AppShell.tsx (../app/shellLayout.ts), not a fixed
    window breakpoint (#67): closing the reader can bring sidebar labels back
    below 1180px, and a wide reader can collapse the sidebar above it. */
+/* Relative so absolutely positioned descendants (the announcer's
+   visually-hidden live regions at the end of a long page) are clipped by
+   the shell instead of stretching the window past 100vh. */
 .app {
+  position: relative;
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
   height: 100vh;
