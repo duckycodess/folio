@@ -5,7 +5,7 @@ Research for issue #8, 2026-10-10. **These are evaluation-only candidates, not s
 - The default models and the under-1-GB default-install target are unchanged.
 - Nothing here was downloaded or run. File facts come from the Hugging Face API (`/api/models/<repo>?blobs=true`, LFS `sha256`) on the date above. Language and evaluation statements come from each model's own card.
 - **Weights, runtime RAM, speed and Filipino/Taglish task quality are unmeasured.**
-- **Catalog.** The pins are in `src-tauri/resources/model-evaluation-candidates.json`, a catalog apart from the product manifest. Candidates install only through Model Lab into `<app data>/model-lab/candidates`, are never listed by `list_models` or accepted by `select_model`, and are labelled `evaluationOnly` in every result. On 2026-10-10 each pin's commit, file size and LFS SHA-256 were re-checked against the Hugging Face revision API and each download URL answered a HEAD request (no weights downloaded); the license tags read Apache-2.0 for both Qwen entries and MIT for SEA-LION. The Gemma 4 E2B, Ministral 3 3B and LFM2.5-1.2B pins were added and checked the same way later on 2026-10-10 (Apache-2.0, Apache-2.0 and `lfm1.0`).
+- **Catalog.** The pins are in `src-tauri/resources/model-evaluation-candidates.json`, a catalog apart from the product manifest. Candidates install only through Model Lab into `<app data>/model-lab/candidates`, are never listed by `list_models` or accepted by `select_model`, and are labelled `evaluationOnly` in every result. On 2026-10-10 each pin's commit, file size and LFS SHA-256 were re-checked against the Hugging Face revision API and each download URL answered a HEAD request (no weights downloaded); the license tags read Apache-2.0 for both Qwen entries and MIT for SEA-LION. The Gemma 4 E2B, Ministral 3 3B and LFM2.5-1.2B pins were added and checked the same way later on 2026-10-10 (Apache-2.0, Apache-2.0 and `lfm1.0`), as was the Granite 4.0 Micro pin (Apache-2.0).
 
 ## Shortlist
 
@@ -17,11 +17,12 @@ Research for issue #8, 2026-10-10. **These are evaluation-only candidates, not s
 | Gemma 4 E2B (Q4_K_M)                | generation, the SEA-LION base without Filipino post-training           | `unsloth/gemma-4-E2B-it-GGUF` @ `0314792d7f1f7e229411f620751375812bb9faf2`                                        | `gemma-4-E2B-it-Q4_K_M.gguf`               | 3,106,738,272 | `740185b21d22ceb83a11c3aa62ad5842ef32c70f6096d756bbee85a1e4ec34b8` |
 | Ministral 3 3B Instruct (Q4_K_M)    | generation, different family                                           | `mistralai/Ministral-3-3B-Instruct-2512-GGUF` @ `eb599d408350ea2bb60452cb86be7c7b2fc28227` (publisher's own GGUF) | `Ministral-3-3B-Instruct-2512-Q4_K_M.gguf` | 2,147,023,008 | `9ed150d4367e68df0ac8e1540f6ddc65b42d0ee26378329d1ecbca60f93fc5f8` |
 | LFM2.5-1.2B Instruct (Q4_K_M)       | generation, small and fast, different family                           | `LiquidAI/LFM2.5-1.2B-Instruct-GGUF` @ `8ed288026e23958ad9dfa92d53ed773a8eee7125` (publisher's own GGUF)          | `LFM2.5-1.2B-Instruct-Q4_K_M.gguf`         | 730,895,168   | `b1b3de114215d9507409a662a501a631095a479a419584e8a2ded6304b19b4f5` |
+| Granite 4.0 Micro (Q4_K_M)          | generation, dense 3B, different family                                 | `ibm-granite/granite-4.0-micro-GGUF` @ `ec48475f0c811d812fbfb61975717a9c36eeb652` (publisher's own GGUF)          | `granite-4.0-micro-Q4_K_M.gguf`            | 2,099,502,528 | `97c417dcc0534b0737c74016fb2af083cb17c3b51eaac621192d23961b7024eb` |
 
 Download URL form: `https://huggingface.co/<repo>/resolve/<commit>/<file>`.
 
 - Only the text GGUF is listed. The multimodal projector files (`mmproj-*.gguf`) are not needed for Folio's text tasks and are excluded.
-- The runtime is the existing pinned llama.cpp **b11524**. Its `src/llama-arch.cpp` at that tag declares the `qwen35`, `gemma4`, `mistral3` and `lfm2` architectures (fetched from `ggml-org/llama.cpp` at ref `b11524`). Real loading is still unverified.
+- The runtime is the existing pinned llama.cpp **b11524**. Its `src/llama-arch.cpp` at that tag declares the `qwen35`, `gemma4`, `mistral3`, `lfm2` and `granite` architectures (fetched from `ggml-org/llama.cpp` at ref `b11524`). Real loading is still unverified.
 
 ### Qwen3.5-0.8B and Qwen3.5-2B
 
@@ -66,6 +67,13 @@ Download URL form: `https://huggingface.co/<repo>/resolve/<commit>/<file>`.
 - **Language coverage:** the card lists en, ar, zh, fr, de, ja, ko and es. **Tagalog is not listed.**
 - **Footprint:** about 0.73 GB, the only candidate besides Qwen3.5-0.8B that fits beside the default install's size budget.
 - **GGUF provenance:** the publisher's own Q4_K_M.
+
+### Granite 4.0 Micro
+
+- **Source model:** `ibm-granite/granite-4.0-micro` @ `56111ae135df9c53a78c99028e7bc24035a9e979`, a dense 3B model (llama.cpp architecture `granite`), unlike the hybrid Granite 4.0 H models.
+- **License:** Apache-2.0; not gated.
+- **Language coverage:** the card lists English, German, Spanish, French, Japanese, Portuguese, Arabic, Czech, Italian, Korean, Dutch and Chinese. **Tagalog is not listed**; the card suggests few-shot examples for other languages.
+- **GGUF provenance:** the publisher's own Q4_K_M, about 2.1 GB.
 
 ## Considered, not shortlisted
 

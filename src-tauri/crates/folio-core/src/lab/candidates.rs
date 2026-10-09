@@ -145,6 +145,14 @@ mod tests {
             730_895_168,
             "b1b3de114215d9507409a662a501a631095a479a419584e8a2ded6304b19b4f5",
         ),
+        (
+            "granite-4.0-micro-q4-k-m",
+            "ibm-granite/granite-4.0-micro-GGUF",
+            "ec48475f0c811d812fbfb61975717a9c36eeb652",
+            "granite-4.0-micro-Q4_K_M.gguf",
+            2_099_502_528,
+            "97c417dcc0534b0737c74016fb2af083cb17c3b51eaac621192d23961b7024eb",
+        ),
     ];
 
     #[test]

@@ -124,6 +124,26 @@
       "evaluationOnly": true,
       "licenseNote": "Not an OSI license: the publisher's LFM Open License v1.0 (lfm1.0). Review its terms, including any commercial-use conditions, before any redistribution or product use; Folio only downloads from the pinned URL and does not redistribute.",
       "note": "Publisher's own GGUF of LiquidAI/LFM2.5-1.2B-Instruct (@ 0f604ada3f766f9f257460c4c9f0b5d6f69d431b). The card's language list (en, ar, zh, fr, de, ja, ko, es) does not include Tagalog."
+    },
+    {
+      "id": "granite-4.0-micro-q4-k-m",
+      "role": "generation",
+      "repo": "ibm-granite/granite-4.0-micro-GGUF",
+      "revision": "ec48475f0c811d812fbfb61975717a9c36eeb652",
+      "files": [
+        {
+          "path": "granite-4.0-micro-Q4_K_M.gguf",
+          "sha256": "97c417dcc0534b0737c74016fb2af083cb17c3b51eaac621192d23961b7024eb",
+          "bytes": 2099502528,
+          "downloadUrl": "https://huggingface.co/ibm-granite/granite-4.0-micro-GGUF/resolve/ec48475f0c811d812fbfb61975717a9c36eeb652/granite-4.0-micro-Q4_K_M.gguf"
+        }
+      ],
+      "quantization": "Q4_K_M",
+      "license": "apache-2.0",
+      "runtime": "llama.cpp",
+      "optionalPack": true,
+      "evaluationOnly": true,
+      "note": "Publisher's own GGUF of ibm-granite/granite-4.0-micro (@ 56111ae135df9c53a78c99028e7bc24035a9e979), a dense 3B model. The card's language list (English, German, Spanish, French, Japanese, Portuguese, Arabic, Czech, Italian, Korean, Dutch, Chinese) does not include Tagalog."
     }
   ],
   "runtimes": []
