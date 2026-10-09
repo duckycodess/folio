@@ -22,6 +22,18 @@ The updated product context (2026-10-09) adds workflows that sit beside these jo
 | Relationship graph     | Graph → Start from a file, folder or topic → Explore connections and evidence → Open related files    | Confirmed links are shown apart from suggested ones (#40).                                  |
 | Activity and recovery  | Activity → Pick an entry → See what changed, when, and before/after paths → Undo when it's safe       | Lists only what Folio recorded as changed; previews and analyses never appear (#34).        |
 
+## First run
+
+On first launch in the desktop app, onboarding leads to a useful workspace in five steps, each of which can be skipped (#14). It can be reopened from the sidebar's Setup guide.
+
+1. **Welcome:** Search. Organize. Summarize. No account, and AI runs on this computer.
+2. **Choose a folder:** nothing is read until the system folder picker returns a folder.
+3. **Local AI (optional):** the computer's RAM and free disk space, the recommended model for each job with its revision and exact download size, and a Download button per model. Skipping keeps browsing and keyword search working.
+4. **Index:** real progress with Stop, and Continue to Home while indexing.
+5. **What Folio found:** exact duplicates and links from the user's own indexed files, with paths and evidence, or an honest empty state that points to Search, Organize and Ask & Act.
+
+After onboarding, journeys A, B and C start from their own pages as before.
+
 ## Shared request pipeline
 
 1. Receive the request, including English, Filipino, or Taglish.
