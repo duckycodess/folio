@@ -129,11 +129,16 @@ export function explainImpact(
   return call("explain_impact", { workspaceId, planId, documentId });
 }
 
+/**
+ * `chosenDocumentId` is the file the user picked for this request: a rename,
+ * move or edit then targets it, whatever the model calls the file.
+ */
 export function interpretRequest(
   workspaceId: string,
   text: string,
+  chosenDocumentId?: DocumentId,
 ): Promise<InterpretationResult> {
-  return call("interpret_request", { workspaceId, text });
+  return call("interpret_request", { workspaceId, text, chosenDocumentId });
 }
 
 export function unloadGeneration(): Promise<void> {
