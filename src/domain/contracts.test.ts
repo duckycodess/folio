@@ -15,7 +15,13 @@ import type {
   ModelDescriptor,
   FolioErrorPayload,
   SourcePassage,
+  AiCoverageState,
+  AiRefreshEnd,
+  AiRefreshPhase,
+  AiRelationshipCoverage,
+  Relationship,
 } from "./contracts";
+import { validateRelationship } from "./relationships";
 
 function hasOnlyCamelCaseKeys(value: unknown): boolean {
   if (Array.isArray(value)) return value.every(hasOnlyCamelCaseKeys);
@@ -466,5 +472,58 @@ describe("Model Lab record contract (issue #8)", () => {
         correctness: null,
       }),
     ).toBe(false);
+  });
+});
+
+describe("the AI relationship wire shapes from the shared fixture", () => {
+  const ai = cases.aiRelationships;
+
+  it("accepts the similarity and shared-fact encodings native sends", () => {
+    const similarity = ai.similarity as unknown as Relationship;
+    const shared = ai.sharedFactCandidate as unknown as Relationship;
+    expect(() => validateRelationship(similarity)).not.toThrow();
+    expect(() => validateRelationship(shared)).not.toThrow();
+    // A candidate has no confidence and no score on the wire.
+    expect("confidence" in shared).toBe(false);
+    expect("score" in shared).toBe(false);
+    expect(hasOnlyCamelCaseKeys(ai)).toBe(true);
+  });
+
+  it("names the same coverage states, phases and run ends as the native core", () => {
+    const states: AiCoverageState[] = [
+      "noActiveSpace",
+      "embeddingIncomplete",
+      "partial",
+      "complete",
+    ];
+    expect(ai.coverageStates).toEqual(states);
+    const ends: AiRefreshEnd[] = [
+      "complete",
+      "budgetExhausted",
+      "cancelled",
+      "spaceChanged",
+    ];
+    expect(ai.refreshEnds).toEqual(ends);
+    const phases: AiRefreshPhase[] = [
+      "embedding",
+      "admitting",
+      "relationships",
+    ];
+    expect(ai.refreshPhases).toEqual(phases);
+  });
+
+  it("reads native coverage without inventing a space when there is none", () => {
+    for (const entry of ai.coverage as unknown as AiRelationshipCoverage[]) {
+      expect(states(entry)).toBe(true);
+      if (entry.state === "noActiveSpace")
+        expect(entry.spaceFingerprint).toBeUndefined();
+      else expect(entry.spaceFingerprint).toMatch(/^folio-space-v1\//);
+    }
+    function states(entry: AiRelationshipCoverage) {
+      return (
+        entry.eligibleDocuments <= entry.indexedDocuments &&
+        entry.pairsRemaining >= 0
+      );
+    }
   });
 });
