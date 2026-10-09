@@ -1,13 +1,13 @@
 //! Source-grounded summaries and answers.
 //!
-//! This module deliberately returns display-only [`GroundedAnswer`] values. It
+//! This module deliberately returns display-only [`GroundedResult`] values. It
 //! never parses generated text as an operation and it has no filesystem
 //! capability. Retrieved passages are explicitly marked as untrusted in the
 //! prompt so document text cannot masquerade as provider instructions.
 
 use crate::chunking::Chunk;
 use crate::contracts::{
-    CoverageEntry, CoverageRange, GroundedAnswer, GroundedAnswerKind, GroundedSentence, Language,
+    CoverageEntry, CoverageRange, GroundedAnswerKind, GroundedResult, GroundedSentence, Language,
     OffsetUnit, SourcePassage,
 };
 use crate::error::{CoreError, CoreResult, NativeProviderErrorError};
@@ -125,9 +125,13 @@ pub fn summarize_document(
     passages: Vec<SourcePassage>,
     language: Language,
     cancel: &AtomicBool,
-) -> CoreResult<GroundedAnswer> {
+) -> CoreResult<GroundedResult> {
     if passages.is_empty() {
-        return Ok(insufficient_answer(provider.model_id(), Vec::new()));
+        return Ok(insufficient_answer(
+            provider.model_id(),
+            provider.revision(),
+            Vec::new(),
+        ));
     }
     validate_passage_sizes(&passages)?;
 
@@ -166,6 +170,7 @@ pub fn summarize_document(
         }
         return Ok(insufficient_answer(
             provider.model_id(),
+            provider.revision(),
             coverage_for(&passages, processed),
         ));
     }
@@ -220,6 +225,7 @@ pub fn summarize_document(
     };
     Ok(build_answer(
         provider.model_id(),
+        provider.revision(),
         sentences,
         passages.iter().take(processed).cloned().collect(),
         if model_says_insufficient {
@@ -242,12 +248,16 @@ pub fn answer_question(
     passages: Vec<SourcePassage>,
     language: Language,
     cancel: &AtomicBool,
-) -> CoreResult<GroundedAnswer> {
+) -> CoreResult<GroundedResult> {
     let Some(provider) = provider else {
-        return Ok(insufficient_answer("none", Vec::new()));
+        return Ok(insufficient_answer("none", "none", Vec::new()));
     };
     if passages.is_empty() {
-        return Ok(insufficient_answer(provider.model_id(), Vec::new()));
+        return Ok(insufficient_answer(
+            provider.model_id(),
+            provider.revision(),
+            Vec::new(),
+        ));
     }
     validate_passage_sizes(&passages)?;
     if cancel.load(Ordering::Relaxed) {
@@ -274,6 +284,7 @@ pub fn answer_question(
     };
     Ok(build_answer(
         provider.model_id(),
+        provider.revision(),
         sentences,
         passages,
         kind,
@@ -283,11 +294,12 @@ pub fn answer_question(
 
 fn build_answer(
     model_id: &str,
+    revision: &str,
     sentences: Vec<GroundedSentence>,
     processed: Vec<SourcePassage>,
     kind: GroundedAnswerKind,
     coverage_complete: bool,
-) -> GroundedAnswer {
+) -> GroundedResult {
     let text = sentences
         .iter()
         .map(|sentence| sentence.text.as_str())
@@ -307,26 +319,35 @@ fn build_answer(
         .iter()
         .filter(|sentence| sentence.citations.is_empty())
         .count() as u32;
-    GroundedAnswer {
+    let coverage_ranges = coverage_for_with_complete(&processed, coverage_complete);
+    GroundedResult {
         text,
         sources,
+        coverage: coverage_ids(&coverage_ranges),
+        model_id: model_id.into(),
+        revision: revision.into(),
         kind,
         sentences,
-        coverage: coverage_for_with_complete(&processed, coverage_complete),
+        coverage_ranges,
         uncited_sentence_count,
-        model_id: model_id.into(),
     }
 }
 
-fn insufficient_answer(model_id: &str, coverage: Vec<CoverageEntry>) -> GroundedAnswer {
-    GroundedAnswer {
+fn insufficient_answer(
+    model_id: &str,
+    revision: &str,
+    coverage_ranges: Vec<CoverageEntry>,
+) -> GroundedResult {
+    GroundedResult {
         text: "Insufficient evidence in the supplied documents.".into(),
         sources: Vec::new(),
+        coverage: coverage_ids(&coverage_ranges),
+        model_id: model_id.into(),
+        revision: revision.into(),
         kind: GroundedAnswerKind::InsufficientEvidence,
         sentences: Vec::new(),
-        coverage,
+        coverage_ranges,
         uncited_sentence_count: 0,
-        model_id: model_id.into(),
     }
 }
 
@@ -480,6 +501,13 @@ fn coverage_for_with_complete(
                 complete: coverage_complete,
             }
         })
+        .collect()
+}
+
+fn coverage_ids(coverage_ranges: &[CoverageEntry]) -> Vec<String> {
+    coverage_ranges
+        .iter()
+        .map(|entry| entry.document_id.clone())
         .collect()
 }
 
@@ -780,7 +808,7 @@ mod tests {
         .unwrap();
         assert_eq!(answer.sources.len(), 1);
         assert_eq!(answer.uncited_sentence_count, 1);
-        assert_eq!(answer.coverage[0].ranges[0].start, 0);
+        assert_eq!(answer.coverage_ranges[0].ranges[0].start, 0);
     }
 
     #[test]
@@ -818,7 +846,7 @@ mod tests {
         let answer =
             summarize_document(&provider, passages, Language::En, &AtomicBool::new(false)).unwrap();
         assert_eq!(answer.kind, GroundedAnswerKind::PartialSummary);
-        assert!(!answer.coverage[0].complete);
+        assert!(!answer.coverage_ranges[0].complete);
     }
 
     #[test]

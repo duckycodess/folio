@@ -372,14 +372,21 @@ export interface CoverageEntry {
 export interface GroundedAnswer {
   text: string;
   sources: SourcePassage[];
+  /** Documents the answer claims to cover — retrieved excerpts, not the corpus. */
+  coverage: DocumentId[];
+  modelId: string;
+  revision: string;
+}
+
+/**
+ * Issue #4's additive result shape. It remains structurally assignable to the
+ * frozen #2 GroundedAnswer while preserving sentence-level evidence details.
+ */
+export interface GroundedResult extends GroundedAnswer {
   kind: GroundedAnswerKind;
   sentences: GroundedSentence[];
-  /** Retrieved evidence coverage, never an assertion about the whole corpus. */
-  coverage: CoverageEntry[];
+  coverageRanges: CoverageEntry[];
   uncitedSentenceCount: number;
-  modelId: string;
-  /** Provider revision, when the adapter exposes it. */
-  revision?: string;
 }
 
 /** A model run either answers from evidence or reports that it has none. */

@@ -5,6 +5,7 @@ import groundedAnswer from "../../fixtures/contracts/grounded-answer.json";
 import interpretationResult from "../../fixtures/contracts/interpretation-result.json";
 import type {
   GroundedAnswer,
+  GroundedResult,
   InterpretationResult,
   ModelDescriptor,
   FolioErrorPayload,
@@ -31,14 +32,19 @@ describe("native contract goldens", () => {
   });
 
   it("keeps grounded citations and interpretation statuses typed", () => {
-    const answer = groundedAnswer as GroundedAnswer;
-    const result = interpretationResult as InterpretationResult;
-    expect(answer.kind).toBe("fileSummary");
+    const result = groundedAnswer as GroundedResult;
+    const answer: GroundedAnswer = result;
+    const interpretation = interpretationResult as InterpretationResult;
+    expect(result.kind).toBe("fileSummary");
     expect(answer.sources[0].documentId).toBe(
       "fixtures:projects/project-plan.md",
     );
-    expect(result.status).toBe("needsClarification");
+    expect(answer.coverage).toEqual(["fixtures:projects/project-plan.md"]);
+    expect(answer.revision).toBe("revision-a");
+    expect(result.coverageRanges[0].offsetUnit).toBe("utf8Byte");
+    expect(interpretation.status).toBe("needsClarification");
     expect(hasOnlyCamelCaseKeys(answer)).toBe(true);
     expect(hasOnlyCamelCaseKeys(result)).toBe(true);
+    expect(hasOnlyCamelCaseKeys(interpretation)).toBe(true);
   });
 });

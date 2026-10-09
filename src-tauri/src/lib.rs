@@ -11,7 +11,7 @@ use contracts::{ActionPlan, Approval, FileOperation, ImpactCandidate};
 use error::{error, ErrorCode, FolioError};
 use folio_core::chunking::{Chunk, ChunkSource, InterimTextChunker, TextDocument};
 use folio_core::contracts::{
-    DocumentRecord, EmbeddingSpace, GroundedAnswer, InterpretationResult, Language,
+    DocumentRecord, EmbeddingSpace, GroundedResult, InterpretationResult, Language,
     ModelDescriptor, ModelInstallState, ModelInstallStatus, ModelRole, NativeProviderError,
     SearchResult,
 };
@@ -1005,7 +1005,7 @@ async fn summarize_document(
     generation_state: State<'_, GenerationState>,
     workspace_id: String,
     document_id: String,
-) -> Result<GroundedAnswer, FolioError> {
+) -> Result<GroundedResult, FolioError> {
     let relative_path = ai_boundary::parse_document_id(&workspace_id, &document_id)?;
     let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
     let generation_state = generation_state.inner().clone();
@@ -1045,7 +1045,7 @@ async fn answer_question(
     workspace_id: String,
     question: String,
     document_id: Option<String>,
-) -> Result<GroundedAnswer, FolioError> {
+) -> Result<GroundedResult, FolioError> {
     let document_id = ai_boundary::validate_document_filter(&workspace_id, document_id.as_deref())?;
     let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
     let index_state = index_state.inner().clone();

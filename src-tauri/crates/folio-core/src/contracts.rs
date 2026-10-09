@@ -109,11 +109,23 @@ pub struct CoverageEntry {
 pub struct GroundedAnswer {
     pub text: String,
     pub sources: Vec<SourcePassage>,
+    pub coverage: Vec<DocumentId>,
+    pub model_id: String,
+    pub revision: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroundedResult {
+    pub text: String,
+    pub sources: Vec<SourcePassage>,
+    pub coverage: Vec<DocumentId>,
+    pub model_id: String,
+    pub revision: String,
     pub kind: GroundedAnswerKind,
     pub sentences: Vec<GroundedSentence>,
-    pub coverage: Vec<CoverageEntry>,
+    pub coverage_ranges: Vec<CoverageEntry>,
     pub uncited_sentence_count: u32,
-    pub model_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -321,7 +333,7 @@ mod contract_tests {
     }
 
     #[test]
-    fn grounded_answer_round_trips() {
+    fn grounded_result_round_trips() {
         let passage = SourcePassage {
             document_id: "fixtures:projects/project-plan.md".into(),
             document_content_hash:
@@ -334,15 +346,18 @@ mod contract_tests {
         };
         round_trip(
             "grounded-answer",
-            serde_json::to_value(GroundedAnswer {
+            serde_json::to_value(GroundedResult {
                 text: "Ang deadline ay October 20.".into(),
                 sources: vec![passage.clone()],
+                coverage: vec!["fixtures:projects/project-plan.md".into()],
+                model_id: "qwen3-0.6b-q4".into(),
+                revision: "revision-a".into(),
                 kind: GroundedAnswerKind::FileSummary,
                 sentences: vec![GroundedSentence {
                     text: "Ang deadline ay October 20.".into(),
                     citations: vec![passage],
                 }],
-                coverage: vec![CoverageEntry {
+                coverage_ranges: vec![CoverageEntry {
                     document_id: "fixtures:projects/project-plan.md".into(),
                     document_content_hash:
                         "sha256:8a1cd1bb4f42b6836f0b671648dd3ef81e28a5b08e5d96c72e7e094ea75786ef"
@@ -352,7 +367,6 @@ mod contract_tests {
                     complete: true,
                 }],
                 uncited_sentence_count: 0,
-                model_id: "qwen3-0.6b-q4".into(),
             })
             .unwrap(),
         );

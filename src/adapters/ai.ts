@@ -1,6 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
-  GroundedAnswer,
+  GroundedResult,
   IndexStatus,
   InterpretationResult,
   SearchResult,
@@ -48,7 +48,7 @@ export function semanticSearch(
 export function summarizeDocument(
   workspaceId: string,
   documentId: string,
-): Promise<GroundedAnswer> {
+): Promise<GroundedResult> {
   return call("summarize_document", { workspaceId, documentId });
 }
 
@@ -56,7 +56,7 @@ export function answerQuestion(
   workspaceId: string,
   question: string,
   documentId?: string,
-): Promise<GroundedAnswer> {
+): Promise<GroundedResult> {
   return call("answer_question", { workspaceId, question, documentId });
 }
 
