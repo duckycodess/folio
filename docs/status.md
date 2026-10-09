@@ -15,7 +15,19 @@
   - The summary is labelled as a generated preview that's not saved or reviewed, with its model and revision. A partial summary says how much of the file it covered. "Not enough information" is shown instead of a summary, and a file that changed afterwards gets a warning.
   - **Save as new document…** shows the exact Markdown first, then the native create plan, Approve, and the result with Undo. It never overwrites a file. The dialog stays open while the change applies, Done closes it, and focus returns to the button that opened it.
   - Without a model, the shared recovery notice links to Model Lab. The browser preview says summaries need the desktop app, and sample files say a folder is needed.
+  - A partial summary's coverage is measured against the file's extracted text, never its size on disk, so a PDF isn't understated. Without the text, it only says "Partial summary". Clearing never drops a running summary.
   - Summaries are kept for the session (up to 20 files) in one store that Ask & Act can also write to. Ask & Act doesn't request summaries yet (#36).
+- Ask Olio launcher ([#37](https://github.com/duckycodess/folio/issues/37)).
+  - Home has a labelled **Ask Olio** button under the centred search field, and a "Hello! Need a deeper search?" greeting that stays dismissed on this device once dismissed. There's no extra Olio image: Home keeps its one in the header.
+  - The button opens Ask & Act with Home's search as the request and Home's folder filter as the scope. Both stay editable, and nothing is sent.
+  - Coming back to Home restores its search, filters, open file and scroll position. ⌘K / Ctrl K still focuses Home search.
+- Ask & Act changes ([#23](https://github.com/duckycodess/folio/issues/23)). A change Olio understood gets **Preview change…**, which opens the exact native preview.
+  - **Rename, move, create:** they become plan operations that pin the revision Olio read and refuse to overwrite.
+  - **Edits:** they come from `prepare_passage_edit`, which needs the text to appear exactly once. They're refused if the file changed after Olio read it.
+  - **Preview:** it shows the plan rows, the exact text change in that one file, and Ripple passages in related files, labelled "Needs review" and never changed.
+  - **Approve:** Approve and apply uses the shared approval, which echoes the plan digest, then shows the result with Preview Undo.
+  - **Dialog:** it can't be dismissed while applying, Done and Close return focus, and Cancel says nothing was changed.
+  - **Ambiguous files:** when several files could match, nothing is planned until the user picks one. Then Olio reads the request again with that file named.
 - Ask & Act workspace ([#36](https://github.com/duckycodess/folio/issues/36)), using #15's retrieval, interpretation and answers.
   - Ask & Act is a full page with Olio. The search scope (the open folder, or one folder inside it) and the index state stay visible. The index state shows prepared files and skipped files with reasons, and labels keyword-only search when there's no search model.
   - **Find files** runs `semantic_search` and needs no writing model. Each result has the file name, path, a method badge (keyword, semantic, or keyword + semantic, as the native result says), a reason, quoted excerpts that open the passage, and Open file. The reader opens beside Ask & Act.
@@ -27,6 +39,15 @@
     - clarifications, unsupported requests and unreadable model output say so.
   - One request runs at a time and can be cancelled. Cancelling and errors keep the request text. Earlier replies stay readable, and replies are kept when leaving Ask & Act until another folder is opened.
   - With a subfolder scope, questions still use the whole folder, and the page says so.
+- Model setup and Model Lab ([#24](https://github.com/duckycodess/folio/issues/24)), on top of #15's model store.
+  - Model Lab lists the pinned models by job: a "Search model" for embeddings and a "Writing model" for generation. Each shows its revision, its exact download size in bytes, the runtime, the license and the source.
+  - A writing model also downloads the llama.cpp runtime for this computer when it's missing, and the size shown includes it.
+  - Downloads start only from a button. They show real progress from `folio://model-progress`/`runtime-progress` and can be cancelled. The first model set up for a job becomes the one in use, and another installed model can be chosen with "Use this model".
+  - Remove asks first, and says the user's documents aren't touched.
+  - A new read-only native command, `model_setup`, returns the saved selections and the host runtime's ID and exact size.
+  - The browser preview says setup works in the desktop app.
+  - The results section groups runs by task, with no overall score. Process RAM is labelled as the model process's, and missing measurements say "Not measured" or "Not graded". There are no recorded results yet (#8).
+  - The installed size on disk isn't measured, and the page says so.
 - Graph entry points ([#40](https://github.com/duckycodess/folio/issues/40)): Graph starts from all files, one file, a folder (including connections that leave it) or a keyword topic. With a file open, it starts from that file, and opening a file from the list makes it the new start, with keyboard focus moved to the list's new title. A topic with no letters or digits matches nothing. Confirmed connections (links, identical copies) are listed apart from suggested ones (similarity, possible shared facts), which only appear when the index has them. A "Where these files are" panel counts the connected files per folder. That count isn't a written summary: the relationship summary needs a local model and isn't built. Arrow keys, Home and End move between the files in the list.
 - Home as the file browser ([#42](https://github.com/duckycodess/folio/issues/42), [#43](https://github.com/duckycodess/folio/issues/43), ADR 0010). The Files tab is gone. Home lists every file, sorted by path, with a count. Each row has a keyboard-accessible ⋯ menu (Open, Rename…, Move to folder…, Show related), and the document panel has the same menu. Rename and Move use the exact preview, Approve and Undo flow from #22, in a dialog. The search field is only on Home, centred, and ⌘K / Ctrl K from any page opens Home and focuses it. Rows take an optional `renderDetail` slot for #19's search evidence. With the sample files, Rename and Move explain that a folder is needed. In practice mode (`?simulate=<code>`), they show the simulated refusal instead.
 - Organize flow ([issue #22](https://github.com/duckycodess/folio/issues/22)), desktop only. Analyze re-indexes the open folder, with live progress and Stop, then lists exact duplicates (by content, never moved or deleted) and filename suggestions to tick. The exact preview shows every from → to path from the native plan. Approve echoes that plan's digest and applies it. The result is worded from the per-file outcomes, so a batch that stopped partway never says nothing changed. It shows what was recorded in history and offers a Preview Undo. A refused apply keeps the preview, with Preview again. The Rename form uses the same native plan with a folder open. With the sample files, Organize explains that a folder is needed. Virtual collections are still not available.
@@ -158,6 +179,49 @@ After Gab's review:
 
 Not verified: the real picker and index in the desktop app, offline use after setup, model setup (waits on #24), screen readers, and the Tauri webview.
 
+### Ask Olio launcher and #20 review fixes (2026-10-10, issues #37 and #20)
+
+Checked on macOS with Node.js 26.10.0, on `main` with #52 and #62 merged in:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 257 passed, 9 todo. New cases cover:
+  - coverage measured against extracted text, including multi-byte text and unread text;
+  - a running summary never being cleared.
+- With a **mocked** native core in headless Chromium (1280×600):
+  - the launcher and greeting showed, and Home still had one Olio image;
+  - with "plan" searched and the folder filter on `school`, Ask Olio opened Ask & Act with request "plan" and scope `school`, and no request was sent;
+  - going back to Home kept "plan", `school`, the open file and the scroll position (162px);
+  - ⌘K focused "Search files";
+  - the dismissed greeting stayed dismissed after a reload;
+  - the search field is still centred (168px each side);
+  - nothing scrolls sideways at 700px.
+- The stale-summary check was kept: summary passages carry `read_text`'s hash, which is the hash of the file's bytes for PDFs too (`src-tauri/src/workspace.rs`), the same kind the listing uses.
+
+Not verified: screen readers, and the Tauri app.
+
+### Ask & Act changes (2026-10-10, issue #23)
+
+Checked on macOS with Node.js 26.10.0, on #36's branch:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 248 passed, 9 todo. New cases in `src/app/proposals.test.ts` cover:
+  - operations pinning the observed revision with `expectedDestination: "absent"`;
+  - Markdown vs plain-text creates;
+  - edits left to the native core;
+  - the exact changed region, with its line, including inserts, deletes and no change;
+  - the re-asked request naming the chosen file.
+- With a **mocked** native core in headless Chromium:
+  - "Hanapin yung project plan at palitan ang deadline…" listed candidates with no plan prepared, and choosing `plan.md` re-asked with that file;
+  - Preview change… showed `Edit | school/plan.md`, the inserted " (due October 23)", and `school/notes 1.md` as Needs review;
+  - nothing was applied before approval, and approval echoed the plan digest;
+  - the result read "Saved 1 change", with Preview Undo;
+  - Done closed the dialog and returned focus to Preview change…;
+  - a proposal from an older revision was refused before any plan was made;
+  - a rename previewed `school/plan.md → school/project-plan.md`, and Cancel then Close applied nothing;
+  - nothing scrolls sideways at 700px.
+
+Not verified: real interpretation output (#15 lists the Taglish deadline case as pending), conflict-aware Undo against the real writer, and screen readers.
+
 ### Ask & Act workspace (2026-10-10, issue #36)
 
 Checked on macOS with Node.js 26.10.0, on #20's branch (#48 with #15 merged in):
@@ -277,6 +341,31 @@ After Gab's review:
 - the page says when only the most recent changes are shown.
 
 Not verified: the real native history and Undo, failed or cancelled batches (not recorded until #35), screen readers, and the Tauri webview.
+
+### Model setup and Model Lab (2026-10-10, issue #24)
+
+Checked on macOS with Node.js 26.10.0, on #48 with #15 (`FOLIO-4`) merged in:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 174 passed, 9 todo. New cases in `src/app/models.test.ts` cover:
+  - exact sizes with byte counts;
+  - model names;
+  - grouping by job with the recommended model first and the selected one marked;
+  - the runtime downloaded first only for a writing model that lacks it, and counted in the size or flagged when unknown;
+  - progress never invented without a total;
+  - results kept per task, including empty tasks;
+  - "Not graded" and "Not measured", with RAM never described as the device's.
+- Browser preview without the native core: "Model setup works in the desktop app".
+- With a **mocked** native core in headless Chromium:
+  - downloading Qwen3-0.6B fetched the runtime first (66%), then the model (38%), and the other download buttons were disabled;
+  - Cancel showed "Download cancelled… wasn't set up";
+  - a second download finished, and the model was marked In use;
+  - a second writing model could be installed and chosen;
+  - Remove asked first and returned the model to Not installed;
+  - nothing scrolls sideways at 700px.
+- `model_setup` (Rust): not compiled locally, because this host has no Rust toolchain. CI's `desktop-check` runs `cargo test` on Windows and macOS.
+
+Not verified: real downloads, the real native model store, Tauri event delivery in the app, and screen readers.
 
 ### Home filters, pins and recent files (2026-10-10, issue #33)
 

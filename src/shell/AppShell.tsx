@@ -11,7 +11,7 @@ import {
   Waypoints,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   applyTheme,
   loadTheme,
@@ -40,6 +40,7 @@ import { AnnouncerProvider } from "../ui/Announcer";
 import type { RowMenuItem } from "../ui/RowMenu";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
 import { Notice } from "../ui/Notice";
+import { prefillAskScope } from "../app/useAskAct";
 import { AssistantView } from "../views/AssistantView";
 import { DocumentPanel } from "../views/DocumentPanel";
 import {
@@ -142,6 +143,13 @@ export function AppShell() {
   // Set by ⌘K / Ctrl K on another page; Home focuses search once it shows.
   const focusSearch = useRef(false);
   const [view, setView] = useState<ViewId>("home");
+  // Home's scroll position, restored when coming back from another page.
+  const mainRef = useRef<HTMLElement>(null);
+  const homeScroll = useRef(0);
+  useLayoutEffect(() => {
+    if (view === "home" && mainRef.current)
+      mainRef.current.scrollTop = homeScroll.current;
+  }, [view]);
   const searchInput = useRef<HTMLInputElement>(null);
   const platform = useMemo(currentPlatform, []);
   const [theme, setTheme] = useState<ThemePreference>(loadTheme);
@@ -374,7 +382,16 @@ export function AppShell() {
             </nav>
           </header>
 
-          <main id="main" className="main" tabIndex={-1}>
+          <main
+            id="main"
+            ref={mainRef}
+            className="main"
+            tabIndex={-1}
+            onScroll={(event) => {
+              if (view === "home")
+                homeScroll.current = event.currentTarget.scrollTop;
+            }}
+          >
             {simulatedCode && (
               <Notice tone="info">
                 Practice mode: this preview simulates “
@@ -444,6 +461,15 @@ export function AppShell() {
                   fileActions={fileActions}
                   onOpenPassage={relations.openPassage}
                   home={home}
+                  onAskOlio={() => {
+                    const query = workspace.query.trim();
+                    if (query) drafts.setInstruction(query);
+                    prefillAskScope(
+                      workspace.workspace?.id,
+                      home.filters.folder ?? "",
+                    );
+                    setView("assistant");
+                  }}
                 />
               )}
               {view === "organize" && (

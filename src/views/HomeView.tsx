@@ -19,6 +19,7 @@ import { simulatedFailure } from "../adapters/simulate";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
 import type { RowMenuItem } from "../ui/RowMenu";
 import { SearchField } from "../ui/SearchField";
+import { AskOlioLauncher } from "./AskOlioLauncher";
 import { FileList } from "./FileList";
 import { HomeFilterBar, PinnedFolders, RecentFiles } from "./HomeFilters";
 import { FolderSearchStatus, ResultEvidence } from "./SearchEvidence";
@@ -38,6 +39,8 @@ interface HomeViewProps {
   onOpenPassage: (passage: SourcePassage) => void;
   /** Filters, pinned folders and recent files, kept above the views. */
   home: HomeState;
+  /** Opens Ask & Act with Home's search and folder filled in. */
+  onAskOlio: () => void;
 }
 
 /**
@@ -90,6 +93,11 @@ export function HomeView(props: HomeViewProps) {
             onChange={props.onSearch}
             placeholder="Search files, ideas, or projects"
             shortcut={props.searchShortcut}
+          />
+          <AskOlioLauncher
+            query={workspace.query}
+            folder={props.home.filters.folder}
+            onOpen={props.onAskOlio}
           />
         </div>
       )}
