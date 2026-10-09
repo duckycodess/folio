@@ -59,11 +59,13 @@ export type FolioErrorCode =
   // Anything the caller cannot act on specifically.
   | "internal";
 
-/** Serializable detail values. Keys are documented per code in docs/contracts.md. */
-export type FolioErrorDetails = Record<
-  string,
-  string | number | boolean | null
->;
+/**
+ * Context for a failure, as a flat map of strings. Numbers and absent values are
+ * stringified where they are reported, so this and the native
+ * `BTreeMap<String, String>` carry exactly the same thing. Keys are documented
+ * per code in docs/contracts.md.
+ */
+export type FolioErrorDetails = Record<string, string>;
 
 /** The wire form of a failure. Native `Result::Err` serializes exactly this. */
 export interface FolioErrorPayload {

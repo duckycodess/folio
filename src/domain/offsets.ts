@@ -29,8 +29,8 @@ function isLowSurrogate(code: number): boolean {
 export function utf16IndexToUtf8Offset(text: string, index: number): number {
   if (!Number.isInteger(index) || index < 0 || index > text.length) {
     throw folioError("internal", "A string index is outside the document.", {
-      index,
-      length: text.length,
+      index: String(index),
+      length: String(text.length),
     });
   }
   if (
@@ -42,7 +42,7 @@ export function utf16IndexToUtf8Offset(text: string, index: number): number {
     throw folioError(
       "internal",
       "A string index cannot split a surrogate pair.",
-      { index },
+      { index: String(index) },
     );
   }
   return encoder.encode(text.slice(0, index)).length;
@@ -53,8 +53,8 @@ export function utf8OffsetToUtf16Index(text: string, offset: number): number {
   const bytes = encoder.encode(text);
   if (!Number.isInteger(offset) || offset < 0 || offset > bytes.length) {
     throw folioError("internal", "A source offset is outside the document.", {
-      offset,
-      sizeBytes: bytes.length,
+      offset: String(offset),
+      sizeBytes: String(bytes.length),
     });
   }
   try {
@@ -63,7 +63,7 @@ export function utf8OffsetToUtf16Index(text: string, offset: number): number {
     throw folioError(
       "internal",
       "A source offset must fall on a character boundary.",
-      { offset },
+      { offset: String(offset) },
     );
   }
 }
@@ -83,9 +83,9 @@ export function sliceByUtf8Offsets(
     end > bytes.length
   ) {
     throw folioError("internal", "A source range is outside the document.", {
-      start,
-      end,
-      sizeBytes: bytes.length,
+      start: String(start),
+      end: String(end),
+      sizeBytes: String(bytes.length),
     });
   }
   try {
@@ -94,7 +94,7 @@ export function sliceByUtf8Offsets(
     throw folioError(
       "internal",
       "A source range must fall on character boundaries.",
-      { start, end },
+      { start: String(start), end: String(end) },
     );
   }
 }
@@ -149,7 +149,7 @@ export function assertPassageMatches(
     throw folioError(
       "evidenceInvalid",
       "This passage does not match the document text it points at.",
-      { documentId: passage.documentId, start: passage.start },
+      { documentId: passage.documentId, start: String(passage.start) },
     );
   }
 }

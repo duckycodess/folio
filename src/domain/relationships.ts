@@ -51,14 +51,14 @@ function assertPassages(
     ) {
       throw folioError("evidenceInvalid", "A source range is not usable.", {
         documentId,
-        start: passage.start,
-        end: passage.end,
+        start: String(passage.start),
+        end: String(passage.end),
       });
     }
     if (passage.page !== undefined && passage.page < 1) {
       throw folioError("evidenceInvalid", "Page numbers start at 1.", {
         documentId,
-        page: passage.page,
+        page: String(passage.page),
       });
     }
   }
@@ -67,7 +67,7 @@ function assertPassages(
 function assertUnitInterval(value: number, label: string): void {
   if (!Number.isFinite(value) || value < 0 || value > 1) {
     throw folioError("evidenceInvalid", `${label} must be between 0 and 1.`, {
-      value,
+      value: String(value),
     });
   }
 }

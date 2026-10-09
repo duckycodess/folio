@@ -1,8 +1,16 @@
-import type {
-  FolioErrorCode,
-  FolioErrorDetails,
-  FolioErrorPayload,
+import {
+  FOLIO_ERROR_CODES,
+  type FolioErrorCode,
+  type FolioErrorDetails,
+  type FolioErrorPayload,
 } from "./contracts";
+
+const KNOWN_CODES: ReadonlySet<string> = new Set(FOLIO_ERROR_CODES);
+
+/** True for a code this build of the boundary knows how to act on. */
+export function isFolioErrorCode(value: unknown): value is FolioErrorCode {
+  return typeof value === "string" && KNOWN_CODES.has(value);
+}
 
 /**
  * The single failure type on the boundary. Callers branch on `code`; `message`
@@ -53,19 +61,33 @@ export function isFolioErrorPayload(
   );
 }
 
+/** Keep only string details, stringifying anything a caller got wrong. */
+function toDetails(value: unknown): FolioErrorDetails | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const details: FolioErrorDetails = {};
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    details[key] = typeof entry === "string" ? entry : String(entry);
+  }
+  return Object.keys(details).length ? details : undefined;
+}
+
 /**
  * Normalize anything thrown or rejected into a `FolioError`. A native payload
- * keeps its code; anything else becomes `internal` rather than being presented
- * as a specific, actionable failure.
+ * keeps its code; a code this build does not know becomes `internal` with the
+ * reported code kept as context, so an unrecognized failure is never presented
+ * as a specific, actionable one.
  */
 export function toFolioError(cause: unknown): FolioError {
   if (isFolioError(cause)) return cause;
   if (isFolioErrorPayload(cause)) {
-    return new FolioError(
-      cause.code as FolioErrorCode,
-      cause.message,
-      cause.details,
-    );
+    const details = toDetails(cause.details);
+    if (isFolioErrorCode(cause.code)) {
+      return new FolioError(cause.code, cause.message, details);
+    }
+    return new FolioError("internal", cause.message, {
+      ...details,
+      reportedCode: String(cause.code),
+    });
   }
   if (cause instanceof Error && cause.name === "AbortError") {
     return new FolioError("cancelled", "The request was cancelled.");
