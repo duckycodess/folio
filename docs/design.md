@@ -1,6 +1,6 @@
 # Design system: Golden Daylight
 
-Folio's visual direction is **Golden Daylight**: warm ivory surfaces, a charcoal sidebar, gold reserved for primary actions and brand moments, Inter for all UI text, and **Olio** — a folder-shaped owl — as the mascot. This document turns the brandbook into rules for the replacement UI (#6, #16 and the tickets that build on it).
+Folio's visual direction is **Golden Daylight**: white surfaces, a charcoal sidebar, gold reserved for primary actions and brand moments, Inter for all UI text, and **Olio** — a folder-shaped owl — as the mascot. This document turns the brandbook into rules for the replacement UI (#6, #16 and the tickets that build on it).
 
 ![Golden Daylight brandbook](assets/brandbook-golden-daylight.jpg)
 
@@ -23,14 +23,14 @@ The brandbook is a direction, not a spec of shipped features. Its screens contai
 | `--brand-gold`      | Gold      | `#F5BF18` | Primary button fill, active nav indicator, brand dots, folder icons    |
 | `--brand-sunflower` | Sunflower | `#FFDA2D` | Primary button hover, highlights                                       |
 | `--brand-honey`     | Honey     | `#E9A817` | Primary button pressed, illustration shading                           |
-| `--brand-ivory`     | Ivory     | `#FFFCF3` | App canvas                                                             |
+| `--brand-ivory`     | Ivory     | `#FFFCF3` | Sidebar text, dark-theme text, Olio's dark-mode disc                   |
 | `--brand-charcoal`  | Charcoal  | `#20231F` | Primary text, sidebar background, text on gold, focus ring on light UI |
 
 ### Semantic tokens (light theme)
 
 | Token                    | Value     | Use                                                  |
 | ------------------------ | --------- | ---------------------------------------------------- |
-| `--color-bg`             | `#FFFCF3` | Window canvas                                        |
+| `--color-bg`             | `#FFFFFF` | Window canvas (white, not the brandbook's ivory)     |
 | `--color-surface`        | `#FFFFFF` | Cards, tables, panels, inputs                        |
 | `--color-surface-muted`  | `#FAF7EE` | Table header, hovered rows, secondary panels         |
 | `--color-selected`       | `#FFF6D6` | Selected row and selected card background            |
@@ -55,20 +55,20 @@ The brandbook is a direction, not a spec of shipped features. Its screens contai
 
 ### Contrast rules
 
-Measured with the WCAG 2.x formula:
+Measured with the WCAG 2.x formula on the white canvas and surfaces:
 
 | Pair                  | Ratio   | Allowed for                                                    |
 | --------------------- | ------- | -------------------------------------------------------------- |
-| Charcoal on ivory     | 15.49:1 | All text                                                       |
+| Charcoal on white     | 15.89:1 | All text                                                       |
 | Charcoal on gold      | 9.34:1  | Button labels and icons on gold                                |
-| `#5C5F59` on ivory    | 6.33:1  | Secondary text                                                 |
-| `#6B6E68` on ivory    | 5.05:1  | Tertiary text and placeholders                                 |
-| `#8A6500` on ivory    | 5.19:1  | Links                                                          |
+| `#5C5F59` on white    | 6.49:1  | Secondary text                                                 |
+| `#6B6E68` on white    | 5.18:1  | Tertiary text and placeholders                                 |
+| `#8A6500` on white    | 5.33:1  | Links                                                          |
 | `#B8BAB4` on charcoal | 8.11:1  | Sidebar muted text                                             |
 | Gold on charcoal      | 9.34:1  | Active indicator and focus ring in sidebar                     |
-| `#8A8C86` on ivory    | 3.31:1  | Control borders only — **never text**                          |
-| **Gold on ivory**     | 1.66:1  | **Decoration only** — never text, focus or a meaningful border |
-| **Honey on ivory**    | 2.03:1  | **Decoration only**                                            |
+| `#8A8C86` on white    | 3.40:1  | Control borders only — **never text**                          |
+| **Gold on white**     | 1.70:1  | **Decoration only** — never text, focus or a meaningful border |
+| **Honey on white**    | 2.08:1  | **Decoration only**                                            |
 
 Never put white text on gold. Never rely on color alone: status dots, collection dots and badges always have a text label.
 
