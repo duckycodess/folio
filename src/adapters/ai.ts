@@ -12,7 +12,10 @@ export function isAvailable(): boolean {
   return isTauri();
 }
 
-async function call<T>(command: string, args?: Record<string, unknown>): Promise<T> {
+async function call<T>(
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<T> {
   if (!isAvailable()) {
     throw new NativeAdapterError({
       code: "runtimeMissing",
@@ -23,7 +26,12 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
   try {
     return await invoke<T>(command, args);
   } catch (cause) {
-    if (cause && typeof cause === "object" && "code" in cause && "message" in cause) {
+    if (
+      cause &&
+      typeof cause === "object" &&
+      "code" in cause &&
+      "message" in cause
+    ) {
       throw new NativeAdapterError(cause as NativeProviderError);
     }
     throw new NativeAdapterError({ code: "ioError", message: String(cause) });

@@ -83,11 +83,7 @@ export interface ModelDescriptor {
 }
 
 export type ModelInstallStatus =
-  | "notInstalled"
-  | "downloading"
-  | "verifying"
-  | "installed"
-  | "corrupt";
+  "notInstalled" | "downloading" | "verifying" | "installed" | "corrupt";
 
 export interface ModelInstallState {
   id: string;
@@ -112,10 +108,7 @@ export interface IndexStatus {
 }
 
 export type GroundedAnswerKind =
-  | "fileSummary"
-  | "partialSummary"
-  | "answer"
-  | "insufficientEvidence";
+  "fileSummary" | "partialSummary" | "answer" | "insufficientEvidence";
 
 export interface GroundedSentence {
   text: string;
