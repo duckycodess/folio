@@ -4,6 +4,7 @@
 //! a [`LabSink`]; the application crate persists to SQLite and CI writes JSON.
 
 pub mod checks;
+pub mod host;
 pub mod memory;
 pub mod record;
 pub mod sink;
