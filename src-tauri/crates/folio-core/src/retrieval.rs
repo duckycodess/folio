@@ -179,7 +179,9 @@ pub struct EvidenceGate {
 }
 
 impl EvidenceGate {
-    fn from_scores(mut cosines: Vec<f32>) -> Self {
+    /// The gate over every cosine in scope, not only the top candidates: the
+    /// margin is measured against the median of the whole space.
+    pub fn from_cosines(mut cosines: Vec<f32>) -> Self {
         cosines.sort_by(|a, b| b.total_cmp(a));
         let chunk_count = cosines.len();
         let top_cosine = cosines.first().copied().unwrap_or(0.0);
@@ -207,6 +209,18 @@ impl EvidenceGate {
     }
 }
 
+/// Whether a chunk is a candidate: semantic evidence needs the query to pass
+/// the gate and the chunk to clear the semantic floor; strong keyword
+/// evidence is enough on its own.
+pub fn admits(gate: &EvidenceGate, cosine: f32, keyword: f32) -> bool {
+    (gate.passed && cosine >= MIN_SEMANTIC_SCORE) || keyword >= MIN_KEYWORD_SCORE
+}
+
+/// Cosine plus the bounded keyword tiebreak.
+pub fn fused(cosine: f32, keyword: f32) -> f32 {
+    cosine + KEYWORD_TIEBREAK_WEIGHT * keyword
+}
+
 impl HybridRetriever {
     /// Whether the query has semantic evidence anywhere in the indexed space.
     pub fn evidence_gate(&self, query_embedding: &QueryEmbedding) -> CoreResult<EvidenceGate> {
@@ -226,7 +240,7 @@ impl HybridRetriever {
             .into_iter()
             .map(|(_, cosine)| cosine)
             .collect();
-        Ok(EvidenceGate::from_scores(cosines))
+        Ok(EvidenceGate::from_cosines(cosines))
     }
 
     /// Keyword-only retrieval with BM25 scores normalized to the query's
@@ -251,7 +265,7 @@ impl HybridRetriever {
         document_id: Option<&str>,
         limit: usize,
     ) -> Vec<SearchResult> {
-        let terms = terms(query);
+        let terms = query_terms(query);
         if terms.is_empty() {
             return Vec::new();
         }
@@ -283,7 +297,7 @@ impl HybridRetriever {
         query: &str,
         limit: usize,
     ) -> Vec<SearchResult> {
-        let terms = terms(query);
+        let terms = query_terms(query);
         if terms.is_empty() {
             return Vec::new();
         }
@@ -341,10 +355,7 @@ impl HybridRetriever {
         let scores = self.score_chunks(chunks, query, query_embedding, document_id)?;
         let combined = scores
             .iter()
-            .filter(|(_, score)| {
-                (gate.passed && score.cosine >= MIN_SEMANTIC_SCORE)
-                    || score.keyword >= MIN_KEYWORD_SCORE
-            })
+            .filter(|(_, score)| admits(&gate, score.cosine, score.keyword))
             .map(|(chunk, score)| (chunk, score.cosine, score.fused))
             .collect::<Vec<_>>();
         Ok(self.to_results(
@@ -378,7 +389,7 @@ impl HybridRetriever {
         query_embedding: &QueryEmbedding,
         document_id: Option<&str>,
     ) -> CoreResult<Vec<(Chunk, ChunkScore)>> {
-        let terms = terms(query);
+        let terms = query_terms(query);
         let keyword_by_key = chunks
             .iter()
             .zip(bm25_scores(chunks, &terms))
@@ -399,7 +410,7 @@ impl HybridRetriever {
                     ordinal: chunk.ordinal,
                     cosine,
                     keyword,
-                    fused: cosine + KEYWORD_TIEBREAK_WEIGHT * keyword,
+                    fused: fused(cosine, keyword),
                 };
                 (chunk, score)
             })
@@ -408,58 +419,87 @@ impl HybridRetriever {
         Ok(scored)
     }
 
-    /// Group scored chunks into documents. `limit` counts distinct document
-    /// contents: a byte-identical copy is listed next to its original without
-    /// using another result slot, so duplicates cannot crowd out other
-    /// evidence. Exact-duplicate reporting itself stays with Organize.
+    /// Group scored chunks into documents; see [`group_passages`].
     fn to_results<'a>(
         &self,
         by_id: HashMap<&'a str, &'a DocumentRecord>,
-        mut scored: Vec<(&'a Chunk, f32, f32)>,
+        scored: Vec<(&'a Chunk, f32, f32)>,
         method: SearchMethod,
         space_fingerprint: Option<String>,
         limit: usize,
     ) -> Vec<SearchResult> {
-        scored.sort_by(|a, b| b.2.total_cmp(&a.2));
-        let mut grouped: HashMap<String, (f32, Vec<SourcePassage>)> = HashMap::new();
-        for (chunk, _raw_score, result_score) in scored {
-            let entry = grouped
-                .entry(chunk.document_id.clone())
-                .or_insert_with(|| (result_score, Vec::new()));
-            entry.0 = entry.0.max(result_score);
-            if entry.1.len() < self.max_passages {
-                entry.1.push(SourcePassage {
-                    document_id: chunk.document_id.clone(),
-                    document_content_hash: chunk.content_hash.clone(),
-                    offset_unit: crate::contracts::OffsetUnit::Utf8Byte,
-                    start: chunk.start,
-                    end: chunk.end,
-                    text: chunk.text.clone(),
-                    page: None,
-                });
-            }
-        }
-        let mut results = grouped
+        let passages = scored
             .into_iter()
-            .filter_map(|(document_id, (score, passages))| {
-                by_id
-                    .get(document_id.as_str())
-                    .map(|document| SearchResult {
-                        document: (*document).clone(),
-                        passages,
-                        score,
-                        method: method.clone(),
-                        space_fingerprint: space_fingerprint.clone(),
-                    })
+            .map(|(chunk, _raw_score, result_score)| {
+                (
+                    SourcePassage {
+                        document_id: chunk.document_id.clone(),
+                        document_content_hash: chunk.content_hash.clone(),
+                        offset_unit: crate::contracts::OffsetUnit::Utf8Byte,
+                        start: chunk.start,
+                        end: chunk.end,
+                        text: chunk.text.clone(),
+                        page: None,
+                    },
+                    result_score,
+                )
             })
-            .collect::<Vec<_>>();
-        results.sort_by(|a, b| {
-            b.score
-                .total_cmp(&a.score)
-                .then_with(|| a.document.relative_path.cmp(&b.document.relative_path))
-        });
-        limit_distinct_contents(results, limit)
+            .collect();
+        group_passages(
+            by_id,
+            passages,
+            method,
+            space_fingerprint,
+            self.max_passages,
+            limit,
+        )
     }
+}
+
+/// Group scored passages into documents, best document first. `limit` counts
+/// distinct document contents: a byte-identical copy is listed next to its
+/// original without using another result slot, so duplicates cannot crowd out
+/// other evidence. Exact-duplicate reporting itself stays with Organize.
+/// Passages whose document is not in `by_id` are dropped.
+pub fn group_passages(
+    by_id: HashMap<&str, &DocumentRecord>,
+    mut scored: Vec<(SourcePassage, f32)>,
+    method: SearchMethod,
+    space_fingerprint: Option<String>,
+    max_passages: usize,
+    limit: usize,
+) -> Vec<SearchResult> {
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+    let mut grouped: HashMap<String, (f32, Vec<SourcePassage>)> = HashMap::new();
+    for (passage, result_score) in scored {
+        let entry = grouped
+            .entry(passage.document_id.clone())
+            .or_insert_with(|| (result_score, Vec::new()));
+        entry.0 = entry.0.max(result_score);
+        if entry.1.len() < max_passages {
+            entry.1.push(passage);
+        }
+    }
+    let mut results = grouped
+        .into_iter()
+        .filter_map(|(document_id, (score, passages))| {
+            by_id
+                .get(document_id.as_str())
+                .map(|document| SearchResult {
+                    document: (*document).clone(),
+                    passages,
+                    score,
+                    method: method.clone(),
+                    space_fingerprint: space_fingerprint.clone(),
+                })
+        })
+        .collect::<Vec<_>>();
+    results.sort_by(|a, b| {
+        b.score
+            .total_cmp(&a.score)
+            .then_with(|| a.document.relative_path.cmp(&b.document.relative_path))
+    });
+    limit_distinct_contents(results, limit)
 }
 
 fn documents_by_id(documents: &[DocumentRecord]) -> HashMap<&str, &DocumentRecord> {
@@ -499,14 +539,15 @@ fn limit_distinct_contents(results: Vec<SearchResult>, limit: usize) -> Vec<Sear
     kept
 }
 
-fn tokens(text: &str) -> Vec<String> {
+pub fn tokens(text: &str) -> Vec<String> {
     text.split(|character: char| !character.is_alphanumeric())
         .filter(|token| !token.is_empty())
         .map(str::to_lowercase)
         .collect()
 }
 
-fn terms(query: &str) -> Vec<String> {
+/// The query's distinct lowercase terms, sorted.
+pub fn query_terms(query: &str) -> Vec<String> {
     let mut terms = tokens(query)
         .into_iter()
         .collect::<HashSet<_>>()
@@ -527,11 +568,80 @@ fn is_stop_word(term: &str) -> bool {
     STOP_WORDS.contains(&term)
 }
 
-/// BM25 over the supplied chunks, normalized by the summed IDF weights of the
-/// query's informative terms (the score of a chunk of average length
-/// containing each of them once). Stop words and terms found in nearly every
-/// chunk carry no weight, so a query of only common words has no keyword
-/// evidence. Returns one score in [0, 1] per chunk, aligned with `chunks`.
+/// Corpus statistics BM25 needs: how many chunks are in scope, their average
+/// length in tokens, and how many contain each query term (aligned with the
+/// terms).
+#[derive(Clone, Debug)]
+pub struct Bm25Stats {
+    pub chunk_count: usize,
+    pub average_length: f32,
+    pub document_frequency: Vec<usize>,
+}
+
+/// BM25 normalized by the summed IDF weights of the query's informative terms
+/// (the score of a chunk of average length containing each of them once). Stop
+/// words and terms found in nearly every chunk carry no weight, so a query of
+/// only common words has no keyword evidence. Scores are in [0, 1].
+pub struct Bm25Scorer<'a> {
+    terms: &'a [String],
+    weights: Vec<f32>,
+    maximum: f32,
+    average_length: f32,
+}
+
+impl<'a> Bm25Scorer<'a> {
+    pub fn new(terms: &'a [String], stats: &Bm25Stats) -> Self {
+        let count = stats.chunk_count as f32;
+        let weights = terms
+            .iter()
+            .zip(&stats.document_frequency)
+            .map(|(term, frequency)| {
+                let frequency = *frequency as f32;
+                // Function words ("the", "ang") and a term in nearly every chunk (a
+                // shared header word) say nothing about which chunk is evidence. A
+                // meaningful word that is merely common, such as a project's name,
+                // keeps its (low) weight.
+                if is_stop_word(term) || frequency >= (count * 0.9).max(2.0) {
+                    return 0.0;
+                }
+                (1.0 + (count - frequency + 0.5) / (frequency + 0.5)).ln()
+            })
+            .collect::<Vec<_>>();
+        let maximum = weights.iter().sum::<f32>();
+        Self {
+            terms,
+            weights,
+            maximum,
+            average_length: stats.average_length.max(1.0),
+        }
+    }
+
+    pub fn score(&self, chunk_tokens: &[String]) -> f32 {
+        let length_norm =
+            BM25_K1 * (1.0 - BM25_B + BM25_B * chunk_tokens.len() as f32 / self.average_length);
+        let score = self
+            .terms
+            .iter()
+            .zip(&self.weights)
+            .map(|(term, weight)| {
+                let frequency = chunk_tokens.iter().filter(|token| *token == term).count() as f32;
+                if frequency == 0.0 {
+                    0.0
+                } else {
+                    weight * frequency * (BM25_K1 + 1.0) / (frequency + length_norm)
+                }
+            })
+            .sum::<f32>();
+        if self.maximum > 0.0 {
+            (score / self.maximum).min(1.0)
+        } else {
+            0.0
+        }
+    }
+}
+
+/// BM25 over the supplied chunks. Returns one score in [0, 1] per chunk,
+/// aligned with `chunks`.
 fn bm25_scores(chunks: &[Chunk], terms: &[String]) -> Vec<f32> {
     if chunks.is_empty() || terms.is_empty() {
         return vec![0.0; chunks.len()];
@@ -540,49 +650,24 @@ fn bm25_scores(chunks: &[Chunk], terms: &[String]) -> Vec<f32> {
         .iter()
         .map(|chunk| tokens(&chunk.text))
         .collect::<Vec<_>>();
-    let count = documents.len() as f32;
-    let average_length = (documents.iter().map(Vec::len).sum::<usize>() as f32 / count).max(1.0);
-    let weights = terms
-        .iter()
-        .map(|term| {
-            let frequency = documents
-                .iter()
-                .filter(|tokens| tokens.iter().any(|token| token == term))
-                .count() as f32;
-            // Function words ("the", "ang") and a term in nearly every chunk (a
-            // shared header word) say nothing about which chunk is evidence. A
-            // meaningful word that is merely common, such as a project's name,
-            // keeps its (low) weight.
-            if is_stop_word(term) || frequency >= (count * 0.9).max(2.0) {
-                return 0.0;
-            }
-            (1.0 + (count - frequency + 0.5) / (frequency + 0.5)).ln()
-        })
-        .collect::<Vec<_>>();
-    let maximum = weights.iter().sum::<f32>();
+    let stats = Bm25Stats {
+        chunk_count: documents.len(),
+        average_length: documents.iter().map(Vec::len).sum::<usize>() as f32
+            / documents.len() as f32,
+        document_frequency: terms
+            .iter()
+            .map(|term| {
+                documents
+                    .iter()
+                    .filter(|tokens| tokens.iter().any(|token| token == term))
+                    .count()
+            })
+            .collect(),
+    };
+    let scorer = Bm25Scorer::new(terms, &stats);
     documents
         .iter()
-        .map(|tokens| {
-            let length_norm =
-                BM25_K1 * (1.0 - BM25_B + BM25_B * tokens.len() as f32 / average_length);
-            let score = terms
-                .iter()
-                .zip(&weights)
-                .map(|(term, weight)| {
-                    let frequency = tokens.iter().filter(|token| *token == term).count() as f32;
-                    if frequency == 0.0 {
-                        0.0
-                    } else {
-                        weight * frequency * (BM25_K1 + 1.0) / (frequency + length_norm)
-                    }
-                })
-                .sum::<f32>();
-            if maximum > 0.0 {
-                (score / maximum).min(1.0)
-            } else {
-                0.0
-            }
-        })
+        .map(|tokens| scorer.score(tokens))
         .collect()
 }
 
@@ -878,14 +963,85 @@ mod tests {
 
     #[test]
     fn evidence_gate_uses_the_median_only_with_enough_chunks() {
-        let flat = EvidenceGate::from_scores(vec![0.80, 0.79, 0.79, 0.78, 0.78, 0.77]);
+        let flat = EvidenceGate::from_cosines(vec![0.80, 0.79, 0.79, 0.78, 0.78, 0.77]);
         assert!((flat.margin - 0.015).abs() < 1e-6);
         assert_eq!(flat.chunk_count, 6);
-        let small = EvidenceGate::from_scores(vec![0.9]);
+        let small = EvidenceGate::from_cosines(vec![0.9]);
         assert_eq!(small.margin, 0.0);
         assert_eq!(small.passed, small.top_cosine >= GATE_MIN_TOP_COSINE);
-        let empty = EvidenceGate::from_scores(Vec::new());
+        let empty = EvidenceGate::from_cosines(Vec::new());
         assert!(!empty.passed);
+    }
+
+    #[test]
+    fn admits_applies_the_gate_to_semantic_evidence_but_not_to_strong_keywords() {
+        let open = EvidenceGate::from_cosines(vec![0.95, 0.80, 0.80, 0.80, 0.80, 0.80]);
+        let closed = EvidenceGate::from_cosines(vec![0.80, 0.80, 0.80, 0.80, 0.80, 0.80]);
+        assert!(open.passed && !closed.passed);
+        assert!(admits(&open, MIN_SEMANTIC_SCORE, 0.0));
+        assert!(!admits(&open, MIN_SEMANTIC_SCORE - 0.01, 0.0));
+        assert!(!admits(&closed, 0.99, 0.0), "a closed gate blocks cosine");
+        assert!(admits(&closed, 0.0, MIN_KEYWORD_SCORE));
+        assert!(fused(0.8, 1.0) - 0.8 <= KEYWORD_TIEBREAK_WEIGHT + f32::EPSILON);
+    }
+
+    #[test]
+    fn group_passages_keeps_pages_ranks_documents_and_lists_duplicates_beside_the_original() {
+        let record = |id: &str, hash: &str| DocumentRecord {
+            id: id.into(),
+            workspace_id: "test-workspace".into(),
+            relative_path: id.into(),
+            name: id.into(),
+            title: id.into(),
+            language: Language::Mixed,
+            media_type: "text/markdown".into(),
+            size_bytes: 1,
+            modified_at_ms: None,
+            content: None,
+            content_hash: Some(hash.into()),
+        };
+        let passage = |id: &str, hash: &str, start: usize, page: Option<u32>| SourcePassage {
+            document_id: id.into(),
+            document_content_hash: hash.into(),
+            offset_unit: crate::contracts::OffsetUnit::Utf8Byte,
+            start,
+            end: start + 4,
+            text: "text".into(),
+            page,
+        };
+        let documents = [
+            record("a.md", "sha256:a"),
+            record("a-copy.md", "sha256:a"),
+            record("b.md", "sha256:b"),
+            record("c.md", "sha256:c"),
+        ];
+        let by_id = documents
+            .iter()
+            .map(|document| (document.id.as_str(), document))
+            .collect();
+        let results = group_passages(
+            by_id,
+            vec![
+                (passage("a.md", "sha256:a", 0, Some(2)), 0.9),
+                (passage("a-copy.md", "sha256:a", 0, None), 0.9),
+                (passage("b.md", "sha256:b", 0, None), 0.8),
+                (passage("c.md", "sha256:c", 0, None), 0.7),
+                (passage("gone.md", "sha256:x", 0, None), 1.0),
+            ],
+            SearchMethod::Hybrid,
+            Some("space".into()),
+            3,
+            2,
+        );
+        let ids = results
+            .iter()
+            .map(|result| result.document.id.as_str())
+            .collect::<Vec<_>>();
+        // The copy rides along with its original; two distinct contents fit.
+        assert_eq!(ids, ["a-copy.md", "a.md", "b.md"]);
+        let original = results.iter().find(|r| r.document.id == "a.md").unwrap();
+        assert_eq!(original.passages[0].page, Some(2));
+        assert!(results.iter().all(|r| r.space_fingerprint.as_deref() == Some("space")));
     }
 
     #[test]
