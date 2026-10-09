@@ -110,18 +110,21 @@ export function useCollections(
       (item) => item.id === groupId,
     );
     const draft = suggestions.drafts[groupId];
-    if (!folderId || !group || !draft) return;
+    const folder = folderId;
+    if (!folder || !group || !draft) return;
     dispatch({ type: "keepStarted", groupId });
     try {
       const collection = await keepCollection(
-        folderId,
+        folder,
         cleanCollectionName(draft.name),
         keptMembers(group, draft),
       );
+      if (!stillOpen(folder)) return;
       dispatch({ type: "kept", groupId, collection });
-      if (stillOpen(folderId)) setCollections((list) => [collection, ...list]);
+      setCollections((list) => [collection, ...list]);
     } catch (cause) {
-      dispatch({ type: "keepFailed", groupId, error: toFolioError(cause) });
+      if (stillOpen(folder))
+        dispatch({ type: "keepFailed", groupId, error: toFolioError(cause) });
     }
   }
 
