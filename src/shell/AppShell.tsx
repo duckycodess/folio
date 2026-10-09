@@ -141,10 +141,10 @@ export function AppShell() {
     if (next) setView(next);
   }
   // Above the views, so an apply in progress survives switching views.
-  const organize = useOrganize(workspace, filesChanged);
+  const organize = useOrganize(workspace, "organize", filesChanged);
   // Home's Rename and Move have their own plan, so they never show up in
   // Organize (and the reverse).
-  const fileAction = useOrganize(workspace, filesChanged);
+  const fileAction = useOrganize(workspace, "home", filesChanged);
   const [actionDialog, setActionDialog] = useState<{
     kind: FileActionKind;
     document: DocumentRecord;

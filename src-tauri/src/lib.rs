@@ -48,8 +48,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 use contracts::{
-    ActionPlan, Approval, FileOperation, HistoryEntry, ImpactCandidate, ImpactStrength,
-    RelationshipKind, UndoPreflight,
+    ActionPlan, ActivityBatch, Approval, FileOperation, HistoryEntry, ImpactCandidate,
+    ImpactStrength, PlanSource, RelationshipKind, UndoPreflight,
 };
 use error::{error, ErrorCode, FolioError};
 use index::{
@@ -946,9 +946,14 @@ async fn prepare_plan(
     app: AppHandle,
     state: State<'_, Folio>,
     workspace_id: String,
+    source: PlanSource,
     operations: Vec<FileOperation>,
     impacts: Option<Vec<ImpactCandidate>>,
 ) -> Result<ActionPlan, FolioError> {
+    // `unknown` only describes plans recorded before sources existed.
+    if source == PlanSource::Unknown {
+        return Err(error(ErrorCode::OperationUnsupported, "Say where in Folio this change was started.").with_detail("source", source.as_str()));
+    }
     // Read the model store before taking any lock; only AI rows of the active
     // space reach Ripple.
     let selected = selected_embedding_descriptor(&app)?;
@@ -966,7 +971,7 @@ async fn prepare_plan(
     };
     let mut plans = state.plans.lock().map_err(|_| unavailable_state())?;
     let now = now_ms();
-    let plan = plans.prepare(&workspace_id, operations, impacts, now, PLAN_LIFETIME_MS)?;
+    let plan = plans.prepare(&workspace_id, source, operations, impacts, now, PLAN_LIFETIME_MS)?;
     plan::preflight_plan(&root.path, &plan, now)?;
     Ok(plan)
 }
@@ -1076,6 +1081,19 @@ async fn list_history(
 ) -> Result<Vec<HistoryEntry>, FolioError> {
     state.root(&workspace_id)?;
     writer::list_history(&*state.index()?, &workspace_id, limit.unwrap_or(100))
+}
+
+/// Activity: the plans Folio ran, newest first, one entry per batch with every
+/// operation's outcome. `before` is the plan id the previous page ended with.
+#[tauri::command]
+async fn list_activity(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    limit: Option<usize>,
+    before: Option<String>,
+) -> Result<Vec<ActivityBatch>, FolioError> {
+    state.root(&workspace_id)?;
+    writer::list_activity(&*state.index()?, &workspace_id, limit.unwrap_or(50), before.as_deref())
 }
 
 /// Ripple for an explicit phrase, e.g. the value an interpreter knows it replaced.
@@ -2431,6 +2449,27 @@ mod tests {
     }
 
     #[test]
+    fn every_managed_state_has_its_own_type() {
+        use std::any::TypeId;
+        // Tauri keeps one managed state per type, and a second `.manage` of the
+        // same type panics before any window opens. Keep this list in step
+        // with `run()` and its `setup`.
+        let managed = [
+            ("IndexState", TypeId::of::<IndexState>()),
+            ("EmbeddingState", TypeId::of::<EmbeddingState>()),
+            ("GenerationState", TypeId::of::<GenerationState>()),
+            ("InstallState", TypeId::of::<InstallState>()),
+            ("LabState", TypeId::of::<lab_commands::LabState>()),
+            ("Folio", TypeId::of::<Folio>()),
+        ];
+        for (index, (name, id)) in managed.iter().enumerate() {
+            for (other, other_id) in &managed[index + 1..] {
+                assert_ne!(id, other_id, "{name} and {other} are the same type");
+            }
+        }
+    }
+
+    #[test]
     fn persistent_embedding_sync_refuses_an_active_model_lab_run() {
         let lab_state = lab_commands::LabState::default();
         assert!(refuse_during_lab(&lab_state).is_ok());
@@ -2479,6 +2518,8 @@ pub fn run() {
         .manage(EmbeddingState::default())
         .manage(GenerationState::default())
         .manage(InstallState::default())
+        // Each managed state must be its own type (see
+        // `every_managed_state_has_its_own_type`).
         .manage(lab_commands::LabState::default())
         .setup(|app| {
             let directory = app.path().app_data_dir()?;
@@ -2516,6 +2557,7 @@ pub fn run() {
             preview_undo,
             undo_plan,
             list_history,
+            list_activity,
             ripple_impacts,
             prepare_passage_edit,
             organization_suggestions,

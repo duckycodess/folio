@@ -1,5 +1,6 @@
 import { History, Maximize2, Paperclip, Send, Trash2, X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import { PRACTICE_LABEL } from "../adapters/mockChat";
 import { folderChoices } from "../app/fileActions";
 import { localAiStatusLabel } from "../app/localAi";
 import { matchSlashCommands, parseCommand } from "../app/commands";
@@ -217,7 +218,7 @@ export function FloatingOlioChat({
         <div className="olio-chat-launcher">
           {greeting && (
             <p className="olio-chat-greeting">
-              Hello! Ask Olio about your files.
+              <strong>Hey, I&rsquo;m Olio.</strong> Ask about your files.
               <button
                 type="button"
                 className="icon-button olio-chat-greeting-dismiss"
@@ -235,10 +236,10 @@ export function FloatingOlioChat({
             ref={launcherRef}
             type="button"
             className="olio-chat-launcher-button"
+            aria-label="Ask Olio"
             onClick={launch}
           >
-            <OlioSprite state="idle" size={48} />
-            Ask Olio
+            <OlioSprite state="idle" size={150} />
           </button>
         </div>
       )}
@@ -253,7 +254,7 @@ export function FloatingOlioChat({
           onKeyDown={trapTabWithin}
         >
           <header className="olio-chat-head">
-            <OlioSprite state={ask.busy ? "thinking" : "idle"} size={48} />
+            <OlioSprite state={ask.busy ? "thinking" : "idle"} size={64} />
             <div className="olio-chat-head-text">
               <h2 id={headingId} className="olio-chat-title">
                 Olio
@@ -300,10 +301,45 @@ export function FloatingOlioChat({
             <>
               <div className="olio-chat-messages" aria-live="off">
                 {turns.length === 0 ? (
-                  <p className="muted olio-chat-empty">
-                    Ask Olio to find, explain or summarize your files. Nothing
-                    changes without your approval.
-                  </p>
+                  <div className="olio-chat-welcome">
+                    <h3 className="olio-chat-welcome-title">
+                      Hey, how can I help?
+                    </h3>
+                    <p className="muted">
+                      Find something by meaning, organize your files, or get a
+                      summary. Nothing changes without your approval.
+                    </p>
+                    <button
+                      type="button"
+                      className="olio-chat-welcome-action"
+                      onClick={() => {
+                        setText("/search ");
+                        textareaRef.current?.focus();
+                      }}
+                    >
+                      Find a file
+                    </button>
+                    <button
+                      type="button"
+                      className="olio-chat-welcome-action"
+                      onClick={() => {
+                        onNavigate("organize");
+                        close();
+                      }}
+                    >
+                      Organize my files
+                    </button>
+                    <button
+                      type="button"
+                      className="olio-chat-welcome-action"
+                      onClick={() => {
+                        setText("/summarize ");
+                        textareaRef.current?.focus();
+                      }}
+                    >
+                      Summarize a file
+                    </button>
+                  </div>
                 ) : (
                   turns.map((turn) => (
                     <article key={turn.id} className="olio-chat-turn">
@@ -411,6 +447,11 @@ export function FloatingOlioChat({
                   <span className="visually-hidden">Send</span>
                 </Button>
               </form>
+              <p className="olio-chat-note muted">
+                {ask.desktop
+                  ? "Core work stays on this device."
+                  : PRACTICE_LABEL}
+              </p>
               {(ask.turns.length > 0 || ask.history.length > 0) && (
                 <Button
                   variant="ghost"

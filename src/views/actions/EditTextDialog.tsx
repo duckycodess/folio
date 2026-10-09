@@ -4,7 +4,11 @@ import { fileActionAvailability } from "../../app/fileActions";
 import { usePlanAction } from "../../app/usePlanAction";
 import type { WorkspaceState } from "../../app/useWorkspace";
 import { readNativeDocument } from "../../adapters/workspace";
-import type { DocumentRecord, FileOperation } from "../../domain/contracts";
+import type {
+  DocumentRecord,
+  FileOperation,
+  NewPlanSource,
+} from "../../domain/contracts";
 import { toFolioError, type FolioError } from "../../domain/errors";
 import { restoreLineEndings } from "../../domain/textDiff";
 import { Button } from "../../ui/Button";
@@ -25,15 +29,18 @@ export function EditTextDialog({
   document,
   workspace,
   onClose,
+  source,
   onFilesChanged,
 }: {
   open: boolean;
   document: DocumentRecord;
   workspace: WorkspaceState;
   onClose: () => void;
+  /** Where in Folio the edit starts, for Activity. */
+  source: NewPlanSource;
   onFilesChanged?: () => void;
 }) {
-  const action = usePlanAction(workspace, onFilesChanged);
+  const action = usePlanAction(workspace, source, onFilesChanged);
   const [base, setBase] = useState<EditBase | null>(null);
   const [draft, setDraft] = useState("");
   const [reading, setReading] = useState(false);

@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use crate::contracts::{ActionPlan, Approval, BatchResult, FileOperation, FileOperationKind as Kind, HistoryEntry, UndoPreflight};
+use crate::contracts::{ActionPlan, ActivityBatch, ActivityOperation, Approval, BatchResult, BatchStopReason, FileOperation, FileOperationKind as Kind, HistoryEntry, OperationStatus, PlanSource, UndoPreflight};
 use crate::db::NativeResult;
 use crate::error::{error, ErrorCode, FolioError};
 use crate::extract::MAX_TEXT_BYTES;
@@ -23,6 +23,8 @@ use crate::workspace::{self, ScopedRoot};
 pub const RECOVERABLE_PLANS: usize = 100;
 /// `list_history` never returns more entries than this.
 pub const MAX_HISTORY_ENTRIES: usize = 500;
+/// Most batches one Activity page returns.
+pub const MAX_ACTIVITY_BATCHES: usize = 100;
 
 fn unreadable(cause: std::io::Error, path: &Path) -> FolioError {
     error(ErrorCode::DocumentUnavailable, "A file could not be written.").with_detail("cause", cause.to_string()).with_detail("file", path.to_string_lossy())
@@ -384,8 +386,8 @@ pub fn apply_plan(conn: &mut Connection, root: &ScopedRoot, plan: &ActionPlan, a
         return Err(error(ErrorCode::PlanStateInvalid, "This plan has already been applied. Review a fresh preview.").with_detail("planId", plan.id.as_str()));
     }
     setup.execute(
-        "INSERT INTO action_plans (id, workspace_id, plan_json, plan_digest, status, created_at, expires_at, applied_at) VALUES (?1, ?2, ?3, ?4, 'approved', ?5, ?6, ?7)",
-        params![plan.id, plan.workspace_id, serde_json::to_string(&summarize(plan))?, plan.digest, plan.created_at.to_string(), plan.expires_at.to_string(), now.to_string()],
+        "INSERT INTO action_plans (id, workspace_id, plan_json, plan_digest, status, created_at, expires_at, applied_at, source) VALUES (?1, ?2, ?3, ?4, 'approved', ?5, ?6, ?7, ?8)",
+        params![plan.id, plan.workspace_id, serde_json::to_string(&summarize(plan))?, plan.digest, plan.created_at.to_string(), plan.expires_at.to_string(), now.to_string(), plan.source.as_str()],
     )?;
     setup.execute("INSERT INTO approvals (plan_id, plan_digest, approved_at) VALUES (?1, ?2, ?3)", params![plan.id, approval.plan_digest, approval.approved_at.to_string()])?;
     setup.commit()?;
@@ -445,7 +447,9 @@ pub fn apply_plan(conn: &mut Connection, root: &ScopedRoot, plan: &ActionPlan, a
             _ => "applied",
         };
         let stop_reason = serde_json::to_value(batch.stop_reason)?.as_str().unwrap_or_default().to_owned();
-        conn.execute("UPDATE action_plans SET status = ?1, stop_reason = ?2 WHERE id = ?3", params![status, stop_reason, plan.id])?;
+        // Every operation's outcome is kept, so Activity can show what failed or
+        // never ran, not only what changed.
+        conn.execute("UPDATE action_plans SET status = ?1, stop_reason = ?2, outcome_json = ?3 WHERE id = ?4", params![status, stop_reason, serde_json::to_string(&batch)?, plan.id])?;
         prune_history(conn, &root.id, RECOVERABLE_PLANS)
     })();
     if let Err(failure) = &settled {
@@ -497,6 +501,117 @@ pub fn list_history(conn: &Connection, workspace_id: &str, limit: usize) -> Nati
     ))?;
     let rows = statement.query_map(params![workspace_id, limit.clamp(1, MAX_HISTORY_ENTRIES) as i64], entry_from_row)?;
     Ok(rows.collect::<Result<_, _>>()?)
+}
+
+/// The paths an operation's summary names, as before and after.
+fn summary_paths(kind: Kind, summary: &OperationSummary) -> (Option<String>, Option<String>) {
+    match kind {
+        Kind::Create => (None, summary.destination_relative_path.clone()),
+        Kind::Edit => (summary.relative_path.clone(), summary.relative_path.clone()),
+        Kind::Rename | Kind::Move => (summary.relative_path.clone(), summary.destination_relative_path.clone()),
+        Kind::Delete => (summary.relative_path.clone(), None),
+    }
+}
+
+/// The plans a workspace ran, newest first, one entry per batch, each with every
+/// operation's outcome and history. `before` continues after that plan.
+///
+/// Batches recorded before outcomes were stored are rebuilt from their history:
+/// an operation with a history entry succeeded, and one without has no status,
+/// since its outcome was never recorded.
+pub fn list_activity(conn: &Connection, workspace_id: &str, limit: usize, before: Option<&str>) -> NativeResult<Vec<ActivityBatch>> {
+    let (cursor_at, cursor_row): (i64, i64) = match before {
+        None => (i64::MAX, i64::MAX),
+        Some(plan_id) => conn
+            .query_row(
+                "SELECT CAST(applied_at AS INTEGER), rowid FROM action_plans WHERE id = ?1 AND workspace_id = ?2 AND applied_at IS NOT NULL",
+                params![plan_id, workspace_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| error(ErrorCode::HistoryUnknown, "Folio has no recorded changes for that plan.").with_detail("planId", plan_id))?,
+    };
+    let mut statement = conn.prepare(
+        "SELECT id, source, CAST(applied_at AS INTEGER), stop_reason, outcome_json, plan_json FROM action_plans \
+         WHERE workspace_id = ?1 AND applied_at IS NOT NULL \
+           AND (CAST(applied_at AS INTEGER) < ?2 OR (CAST(applied_at AS INTEGER) = ?2 AND rowid < ?3)) \
+         ORDER BY CAST(applied_at AS INTEGER) DESC, rowid DESC LIMIT ?4",
+    )?;
+    let rows = statement.query_map(params![workspace_id, cursor_at, cursor_row, limit.clamp(1, MAX_ACTIVITY_BATCHES) as i64], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, Option<String>>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, Option<String>>(3)?,
+            row.get::<_, Option<String>>(4)?,
+            row.get::<_, String>(5)?,
+        ))
+    })?;
+    let plans: Vec<_> = rows.collect::<Result<_, _>>()?;
+
+    let mut entries = conn.prepare(&format!("SELECT {HISTORY_COLUMNS} FROM history h WHERE h.plan_id = ?1 ORDER BY h.operation_index"))?;
+    let mut batches = Vec::with_capacity(plans.len());
+    for (plan_id, source, applied_at, stop_reason, outcome_json, plan_json) in plans {
+        let history: Vec<HistoryEntry> = entries.query_map([&plan_id], entry_from_row)?.collect::<Result<_, _>>()?;
+        // Unreadable stored JSON leaves only what history recorded; it never
+        // stops the rest of Activity from loading, but it is not silent either.
+        let summary: Option<PlanSummary> = serde_json::from_str(&plan_json)
+            .inspect_err(|failure| eprintln!("Activity: plan {plan_id} has an unreadable summary, so only its history is listed: {failure}"))
+            .ok();
+        let outcome: Option<BatchResult> = outcome_json.as_deref().and_then(|json| {
+            serde_json::from_str(json)
+                .inspect_err(|failure| eprintln!("Activity: plan {plan_id} has unreadable outcomes, so they are listed as unknown: {failure}"))
+                .ok()
+        });
+        let count = summary
+            .as_ref()
+            .map(|summary| summary.operations.len())
+            .unwrap_or(0)
+            .max(history.iter().map(|entry| entry.operation_index + 1).max().unwrap_or(0));
+        let mut operations = Vec::with_capacity(count);
+        for index in 0..count {
+            let entry = history.iter().find(|entry| entry.operation_index == index).cloned();
+            let summarized = summary.as_ref().and_then(|summary| summary.operations.get(index));
+            let Some(kind) = entry.as_ref().map(|entry| entry.operation_kind).or_else(|| summarized.and_then(|summary| Kind::parse(&summary.kind))) else {
+                // Without a kind there is nothing honest to show for this operation.
+                eprintln!("Activity: plan {plan_id} operation {index} has no recorded kind and is not listed");
+                continue;
+            };
+            let (before_relative_path, after_relative_path) = match (&entry, summarized) {
+                (Some(entry), _) => (entry.before_relative_path.clone(), entry.after_relative_path.clone()),
+                (None, Some(summary)) => summary_paths(kind, summary),
+                (None, None) => (None, None),
+            };
+            let recorded = outcome.as_ref().and_then(|outcome| outcome.outcomes.iter().find(|item| item.operation_index == index));
+            let status = match recorded {
+                Some(item) => Some(item.status),
+                None if entry.is_some() => Some(OperationStatus::Succeeded),
+                None => None,
+            };
+            operations.push(ActivityOperation {
+                operation_index: index,
+                operation_kind: kind,
+                before_relative_path,
+                after_relative_path,
+                status,
+                error: recorded.and_then(|item| item.error.clone()),
+                history: entry,
+            });
+        }
+        let stop_reason = outcome
+            .as_ref()
+            .map(|outcome| outcome.stop_reason)
+            .or_else(|| stop_reason.and_then(|value| serde_json::from_value::<BatchStopReason>(serde_json::Value::String(value)).ok()));
+        batches.push(ActivityBatch {
+            plan_id,
+            source: source.as_deref().map(PlanSource::from_stored).unwrap_or_default(),
+            applied_at,
+            finished_at: outcome.as_ref().map(|outcome| outcome.finished_at),
+            stop_reason,
+            operations,
+        });
+    }
+    Ok(batches)
 }
 
 struct StoredEntry {
@@ -694,7 +809,7 @@ mod tests {
         let impacts = ripple::plan_impacts(conn, root, &operations, active_space).unwrap();
         // Each test plan gets its own creation time, as plans prepared in separate sessions would.
         let created = NOW - 1000 + CREATED.fetch_add(1, Ordering::SeqCst) % 1000;
-        let plan = registry.prepare(&root.id, operations, impacts, created, LIFETIME).unwrap();
+        let plan = registry.prepare(&root.id, PlanSource::Organize, operations, impacts, created, LIFETIME).unwrap();
         plan::preflight_plan(&root.path, &plan, NOW).unwrap();
         let approval = registry.approve(&plan.id, &plan.digest, NOW + 1).unwrap();
         (plan, approval)
@@ -865,6 +980,141 @@ mod tests {
         assert_eq!(statuses(&report), vec![OperationStatus::Succeeded, OperationStatus::Cancelled]);
         assert_eq!(report.batch.stop_reason, BatchStopReason::Cancelled);
         assert!(!folder.path().join("notes/later.md").exists());
+    }
+
+    fn activity(conn: &Connection, root: &ScopedRoot) -> Vec<ActivityBatch> {
+        list_activity(conn, &root.id, MAX_ACTIVITY_BATCHES, None).unwrap()
+    }
+
+    fn activity_statuses(batch: &ActivityBatch) -> Vec<Option<OperationStatus>> {
+        batch.operations.iter().map(|operation| operation.status).collect()
+    }
+
+    #[test]
+    fn activity_records_a_failed_batch_with_its_source_and_every_outcome() {
+        let (_folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let operations = vec![
+            edit(&conn, &root, "projects/project-plan.md", "October 20", "October 23"),
+            relocate(&conn, &root, "notes/paalala.md", "notes/mga-paalala.md", true),
+            create("notes/third.md", "x"),
+        ];
+        let report = apply_with(&mut conn, &root, operations, &Failing::on(2));
+        let batches = activity(&conn, &root);
+        assert_eq!(batches.len(), 1);
+        let batch = &batches[0];
+        assert_eq!((batch.plan_id.as_str(), batch.source), (report.batch.plan_id.as_str(), PlanSource::Organize));
+        assert_eq!(batch.stop_reason, Some(BatchStopReason::Failed));
+        assert_eq!(batch.finished_at, Some(report.batch.finished_at));
+        assert_eq!(activity_statuses(batch), vec![Some(OperationStatus::Succeeded), Some(OperationStatus::Failed), Some(OperationStatus::NotStarted)]);
+        // What changed has its history; what failed has its error and no history;
+        // what never ran still says what it would have done.
+        assert!(batch.operations[0].history.is_some());
+        let failed = &batch.operations[1];
+        assert_eq!(failed.error.as_ref().map(|error| error.code), Some(ErrorCode::DocumentUnavailable));
+        assert!(failed.history.is_none());
+        assert_eq!((failed.before_relative_path.as_deref(), failed.after_relative_path.as_deref()), (Some("notes/paalala.md"), Some("notes/mga-paalala.md")));
+        let unrun = &batch.operations[2];
+        assert_eq!((unrun.operation_kind, unrun.before_relative_path.as_deref(), unrun.after_relative_path.as_deref()), (Kind::Create, None, Some("notes/third.md")));
+    }
+
+    #[test]
+    fn activity_records_a_batch_that_changed_nothing_and_a_cancelled_one() {
+        static CANCEL: AtomicBool = AtomicBool::new(false);
+        let (_folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        // The only operation fails: nothing changed, but the attempt is recorded.
+        apply_with(&mut conn, &root, vec![create("notes/first.md", "x")], &Failing::on(1));
+        let mut registry = PlanRegistry::new();
+        let operations = vec![edit(&conn, &root, "projects/project-plan.md", "October 20", "October 23"), create("notes/later.md", "x")];
+        let (plan, approval) = approved(&conn, &root, &mut registry, operations);
+        let files = Failing { fail_on: usize::MAX, calls: Cell::new(0), cancel_after_first: Some(&CANCEL) };
+        apply_plan(&mut conn, &root, &plan, &approval, NOW + 3, &files, &CANCEL).unwrap();
+
+        let batches = activity(&conn, &root);
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0].plan_id, plan.id, "newest first");
+        assert_eq!(batches[0].stop_reason, Some(BatchStopReason::Cancelled));
+        assert_eq!(activity_statuses(&batches[0]), vec![Some(OperationStatus::Succeeded), Some(OperationStatus::Cancelled)]);
+        assert_eq!(batches[1].stop_reason, Some(BatchStopReason::Failed));
+        assert_eq!(activity_statuses(&batches[1]), vec![Some(OperationStatus::Failed)]);
+        assert!(batches[1].operations[0].history.is_none(), "nothing was changed");
+    }
+
+    #[test]
+    fn activity_keeps_a_write_whose_history_could_not_be_stored_and_an_unrun_delete() {
+        let (folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let operations = vec![
+            edit(&conn, &root, "projects/project-plan.md", "October 20", "October 23"),
+            relocate(&conn, &root, "notes/paalala.md", "notes/mga-paalala.md", true),
+            remove(&conn, &root, "personal/grocery-list.md"),
+        ];
+        // The rename's file is moved, then storing its history fails.
+        conn.execute_batch("CREATE TEMP TRIGGER refuse_history BEFORE INSERT ON history WHEN NEW.operation_index = 1 BEGIN SELECT RAISE(ABORT, 'disk full'); END;").unwrap();
+        apply_with(&mut conn, &root, operations, &RealFileSystem);
+        assert!(folder.path().join("notes/mga-paalala.md").is_file(), "the rename did happen");
+
+        let batch = &activity(&conn, &root)[0];
+        assert_eq!(activity_statuses(batch), vec![Some(OperationStatus::Succeeded), Some(OperationStatus::Failed), Some(OperationStatus::NotStarted)]);
+        let written = &batch.operations[1];
+        assert_eq!(written.error.as_ref().map(|error| error.code), Some(ErrorCode::HistoryRequired));
+        assert!(written.history.is_none());
+        assert_eq!((written.before_relative_path.as_deref(), written.after_relative_path.as_deref()), (Some("notes/paalala.md"), Some("notes/mga-paalala.md")));
+        let unrun = &batch.operations[2];
+        assert_eq!((unrun.operation_kind, unrun.before_relative_path.as_deref(), unrun.after_relative_path.as_deref()), (Kind::Delete, Some("personal/grocery-list.md"), None));
+        assert!(folder.path().join("personal/grocery-list.md").is_file());
+    }
+
+    #[test]
+    fn activity_rebuilds_a_plan_with_an_unreadable_summary_from_its_history() {
+        let (_folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let operations = vec![
+            edit(&conn, &root, "projects/project-plan.md", "October 20", "October 23"),
+            create("notes/second.md", "x"),
+            create("notes/third.md", "x"),
+        ];
+        let report = apply_with(&mut conn, &root, operations, &Failing::on(3));
+        conn.execute("UPDATE action_plans SET plan_json = '{}', outcome_json = 'not json' WHERE id = ?1", [&report.batch.plan_id]).unwrap();
+        // Only history says what happened, so only the operations that left history
+        // can be shown; their outcome is what history proves, nothing more.
+        let batch = &activity(&conn, &root)[0];
+        assert_eq!(batch.operations.iter().map(|operation| operation.operation_index).collect::<Vec<_>>(), vec![0, 1]);
+        assert_eq!(activity_statuses(batch), vec![Some(OperationStatus::Succeeded); 2]);
+        assert_eq!((batch.finished_at, batch.stop_reason), (None, Some(BatchStopReason::Failed)));
+    }
+
+    #[test]
+    fn plans_that_were_prepared_or_approved_but_never_applied_are_not_activity() {
+        let (_folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let mut registry = PlanRegistry::new();
+        approved(&conn, &root, &mut registry, vec![create("notes/never.md", "x")]);
+        registry.prepare(&root.id, PlanSource::Graph, vec![create("notes/preview.md", "x")], Vec::new(), NOW, LIFETIME).unwrap();
+        assert!(activity(&conn, &root).is_empty());
+        apply_with(&mut conn, &root, vec![create("notes/done.md", "x")], &RealFileSystem);
+        assert_eq!(activity(&conn, &root).len(), 1);
+    }
+
+    #[test]
+    fn activity_pages_by_batch_and_keeps_each_batch_whole() {
+        let (_folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        for index in 0..3 {
+            let operations = (0..4).map(|file| create(&format!("notes/batch-{index}-{file}.md"), "x")).collect();
+            apply_with(&mut conn, &root, operations, &RealFileSystem);
+        }
+        let first = list_activity(&conn, &root.id, 2, None).unwrap();
+        assert_eq!(first.len(), 2);
+        assert!(first.iter().all(|batch| batch.operations.len() == 4), "a page never splits a batch");
+        let rest = list_activity(&conn, &root.id, 2, Some(&first[1].plan_id)).unwrap();
+        assert_eq!(rest.len(), 1);
+        let mut seen: Vec<&str> = first.iter().chain(&rest).map(|batch| batch.plan_id.as_str()).collect();
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen.len(), 3, "every batch exactly once");
+        assert_eq!(list_activity(&conn, &root.id, 2, Some("plan-unknown")).unwrap_err().code, ErrorCode::HistoryUnknown);
     }
 
     #[test]
@@ -1194,7 +1444,7 @@ mod tests {
 
         let mut registry = PlanRegistry::new();
         let operations = vec![remove(&conn, &root, "projects/project-plan.md")];
-        let plan = registry.prepare(&root.id, operations, Vec::new(), NOW, LIFETIME).unwrap();
+        let plan = registry.prepare(&root.id, PlanSource::Organize, operations, Vec::new(), NOW, LIFETIME).unwrap();
         plan::preflight_plan(&root.path, &plan, NOW + 1).unwrap();
         assert_eq!(registry.assert_can_apply(&root.path, &plan.id, NOW + 1).unwrap_err().code, ErrorCode::ApprovalRequired);
         assert_eq!(hash_all(folder.path()), untouched, "preparing and checking a deletion write nothing");
@@ -1342,7 +1592,7 @@ mod tests {
         let pdf = "research/consent-form-guide.pdf";
         let original = fs::read(folder.path().join(pdf)).unwrap();
         let mut registry = PlanRegistry::new();
-        let plan = registry.prepare(&root.id, vec![remove(&conn, &root, pdf)], Vec::new(), NOW, LIFETIME).unwrap();
+        let plan = registry.prepare(&root.id, PlanSource::Organize, vec![remove(&conn, &root, pdf)], Vec::new(), NOW, LIFETIME).unwrap();
         assert_eq!(plan::preflight_plan(&root.path, &plan, NOW + 1).unwrap_err().code, ErrorCode::UnsupportedMediaType);
         let approval = registry.approve(&plan.id, &plan.digest, NOW + 1).unwrap();
         assert_eq!(registry.assert_can_apply(&root.path, &plan.id, NOW + 2).unwrap_err().code, ErrorCode::UnsupportedMediaType);
@@ -1393,7 +1643,7 @@ mod tests {
         // A crafted request naming the link: its hash is the target's.
         let operation = FileOperation::Delete { document_id: id_of(&root, "notes/link.md"), relative_path: "notes/link.md".into(), expected_content_hash: content_hash(&original) };
         let mut registry = PlanRegistry::new();
-        let plan = registry.prepare(&root.id, vec![operation], Vec::new(), NOW, LIFETIME).unwrap();
+        let plan = registry.prepare(&root.id, PlanSource::Organize, vec![operation], Vec::new(), NOW, LIFETIME).unwrap();
         let approval = registry.approve(&plan.id, &plan.digest, NOW + 1).unwrap();
         let report = apply_plan(&mut conn, &root, &plan, &approval, NOW + 2, &RealFileSystem, &AtomicBool::new(false)).unwrap();
         assert_eq!(report.batch.outcomes[0].error.as_ref().unwrap().code, ErrorCode::OperationUnsupported);

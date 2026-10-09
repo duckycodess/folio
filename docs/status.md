@@ -253,6 +253,33 @@ real-model quality, or target-device resource use.
 - Migration `005_delete_history.sql` rebuilds `history` so `operation_kind` allows `delete`, keeping existing rows.
 - No UI offers deletion yet: the Graph node actions are #45. The Organize preview names a deletion ("Delete", "Removed") and an all-delete result says "Deleted N files", but nothing builds a delete plan from the UI.
 
+## Activity: plan sources and every batch's outcome (issue #35)
+
+- Every plan now carries its **source**: `home`, `organize`, `graph`, `assistant` or `summary`. Each `useOrganize` / `usePlanAction` caller names its own, `prepare_plan` requires it and refuses `unknown`, and it is part of the canonical bytes (now `FOLIO-PLAN-V2`) in both `plan.rs` and `plan.ts`, so a plan can't be relabelled after approval (ADR 0014). The golden fixtures were regenerated from `generate-contract-cases.py`; each pinned plan has a source.
+- Migration `006_activity.sql` adds `source` (a closed list, `unknown` for earlier plans) and `outcome_json` to `action_plans`. `apply_plan` stores the `BatchResult`, so failed, cancelled and not-started operations keep their status and error. A plan that failed before changing anything is recorded; a plan that was prepared or approved but never applied is not.
+- `list_activity(workspaceId, limit?, before?)` returns one batch per applied plan, newest first, at most 100 per page and never split across pages, with every operation's paths, status, error and history entry. Plans recorded before 006 read as `unknown`; an operation with history is `succeeded`, and one without has no status rather than a guess.
+- Activity uses it: each entry says where it was started ("From Organize"), a batch that stopped says where and why ("Stopped at notes/plan.md: … The earlier change was kept."), a batch that changed nothing says so ("Couldn't move 1 file"), and operations that didn't run are listed with "failed", "cancelled, not started" or "not started". "Show older changes" loads the next page, replacing the 500-row limit that could cut a batch in half. Activity no longer says failures and sources "aren't recorded yet".
+- Checked on Windows with Node.js 20: `npm run check`, `npm test` (328 passed, 9 todo) and `npm run build`. New tests: `src/domain/activity.test.ts` (stopped, nothing changed, cancelled, unrecorded older batches, sources) and a relabelled-source digest test in `src/domain/plan.test.ts`.
+- **Rust not compiled on the first host** (not enough free disk for the native build); the files were only parse-checked with `rustfmt`. CI later compiled and ran them (see the PR conversation). The new native tests (failed and cancelled batches with outcomes, nothing-changed batches, unapplied plans excluded, paging, a relabelled source refused, and migration 006 over a pre-006 database) run only in CI's `desktop-check`. Activity hasn't been checked in a browser or the Tauri app.
+
+PR #72 review follow-up (2026-10-10, Linux, Node.js 24.15.0):
+
+- Activity counts `historyRequired` after-write failures as changed without Undo, including the first operation and partial batches. Missing legacy outcomes stay unknown rather than being labelled "Nothing changed". Reversing the recoverable entries does not label an unrecoverable write undone.
+- Older-page results, errors and loading-state updates are ignored after a folder change, reload or unmount. Paging failures appear beside the loaded batches with retry, and retry clears the old error.
+- Five new domain regressions pass; the complete frontend suite has 333 passed and 9 existing todo. Type checks and the production build passed.
+- A temporary Chromium harness exercised the actual Activity hook/view with controlled action adapters: six regressions passed for late page success/failure after a folder switch, a stale page finishing during a new page after reload, visible paging errors and retry, a first-operation `historyRequired` result, and unknown legacy outcomes. No browser exceptions occurred. These verify UI state, not native fault injection, the Tauri window or screen readers.
+
+Merge with `main` and second review follow-up (2026-10-10, Linux, Node.js 24):
+
+- Merged `main`. Activity keeps its per-operation list, and a line with history opens its file at the path it shows (#67). The browser-journey fake native core (#69) now requires a `source` in `prepare_plan` (refusing `unknown`), digests `FOLIO-PLAN-V2` with the source, and answers `list_activity` the way native does: only plans that ran, newest first, whole batches, `historyUnknown` for an unknown `before`.
+- The ADR is now 0014: `main` already has a 0012 and a 0013. It now also says the batch's kind, status and counts are derived in `activity.ts` from the native facts, and records three edge cases: a crash before outcomes are stored, cancellation only after the first operation, and an unreadable stored summary.
+- Golden fixtures now pin the Activity wire shape: `planSources`, and an `activity` case for a stopped batch and an older one recorded before sources and outcomes. Rust deserializes each one and serializes it back unchanged (so an optional field stays absent, never `null`), and TypeScript checks it has no nulls and derives the expected counts.
+- `ActionPlan.source` no longer defaults when it's missing, so a missing source is a clear error rather than `unknown`. Native logs unreadable stored summaries or outcomes and operations with no recorded kind instead of dropping them silently.
+- "Show older changes" asks for one batch more than a page, so it no longer appears when the last page is exactly full. The view type is now `ActivityEntry` (the wire type keeps `ActivityBatch`), it computes its changed and unrecorded counts once, and the identity `ATTEMPTS` map is gone.
+- New native tests: a write whose history couldn't be stored (injected with a temporary SQLite trigger) next to a delete that never ran, and a plan whose stored summary and outcomes are unreadable.
+- `npm run check`, `npm test` (427 passed, 9 todo), `npm run build` and `npm run check:bundle` passed. Playwright: 31 passed. The 4 `viewports` axe failures (`.olio-chat-greeting` outside a landmark) fail the same way on `main` and come from the Olio chat, not Activity.
+- Native: `cargo test --no-run` and `cargo check --tests` compiled everything, but the tests couldn't run on this host. It's a QEMU virtual CPU without AVX, and the test binary stops with SIGILL before any test starts, as `main`'s build does. The new native tests still need CI's `desktop-check`. The Tauri app wasn't opened.
+
 ## Pending
 
 Model-generated Ripple explanations and similarity/shared-fact discovery
