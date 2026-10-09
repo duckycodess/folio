@@ -1,3 +1,4 @@
+mod ai_boundary;
 mod config_guard;
 mod contract_fixtures;
 mod contracts;
@@ -32,11 +33,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use workspace::{DocumentListing, DocumentText, ScopedRoot, WorkspaceInfo, WorkspaceRegistry};
 
-type WorkspaceState = Arc<Mutex<Option<ScopedRoot>>>;
-
 /// The issue #2 native boundary owns workspace identities and plan authority.
-/// The issue #4 provider state remains separately managed below so AI requests
-/// cannot mint or apply an action plan.
 struct Folio {
     workspaces: Mutex<WorkspaceRegistry>,
     plans: Mutex<PlanRegistry>,
@@ -118,16 +115,6 @@ struct IndexStatus {
 struct SkippedDocument {
     relative_path: String,
     reason: String,
-}
-
-fn authorized(state: &WorkspaceState, workspace_id: &str) -> Result<ScopedRoot, String> {
-    state
-        .lock()
-        .map_err(|_| "Workspace state is unavailable.")?
-        .as_ref()
-        .filter(|root| root.id == workspace_id)
-        .cloned()
-        .ok_or_else(|| "Select an authorized folder first.".into())
 }
 
 fn native_error(error: CoreError) -> NativeProviderError {
@@ -230,7 +217,7 @@ fn unload_embedding(embedding_state: &EmbeddingState) -> Result<(), NativeProvid
 async fn choose_workspace(
     app: AppHandle,
     state: State<'_, Folio>,
-    provider_workspace: State<'_, WorkspaceState>,
+    index_state: State<'_, IndexState>,
 ) -> Result<Option<WorkspaceInfo>, FolioError> {
     let Some(folder) = app.dialog().file().blocking_pick_folder() else {
         return Ok(None);
@@ -242,11 +229,7 @@ async fn choose_workspace(
         let mut workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
         workspaces.authorize(&path)?
     };
-    let root = {
-        let workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
-        workspaces.resolve(&info.id)?
-    };
-    *provider_workspace.lock().map_err(|_| unavailable_state())? = Some(root);
+    *index_state.lock().map_err(|_| unavailable_state())? = None;
     Ok(Some(info))
 }
 
@@ -657,15 +640,10 @@ where
 fn build_snapshot(
     app: &AppHandle,
     embedding_state: &EmbeddingState,
-    workspace_id: &str,
-    root: &Path,
+    root: &ScopedRoot,
 ) -> Result<IndexSnapshot, NativeProviderError> {
-    let scoped_root = ScopedRoot {
-        id: workspace_id.to_string(),
-        path: root.to_path_buf(),
-    };
     let (documents, _contents, chunks, skipped_documents) =
-        load_corpus(&scoped_root).map_err(|error| NativeProviderError {
+        load_corpus(root).map_err(|error| NativeProviderError {
             code: folio_core::contracts::ProviderErrorCode::IoError,
             message: error,
             detail: None,
@@ -689,7 +667,7 @@ fn build_snapshot(
         embedding_space = Some(space);
     }
     Ok(IndexSnapshot {
-        workspace_id: workspace_id.into(),
+        workspace_id: root.id.clone(),
         documents,
         chunks,
         retriever,
@@ -701,20 +679,22 @@ fn build_snapshot(
 #[tauri::command]
 async fn rebuild_index(
     app: AppHandle,
-    state: State<'_, WorkspaceState>,
+    state: State<'_, Folio>,
     index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
     workspace_id: String,
 ) -> Result<IndexStatus, NativeProviderError> {
-    let root = authorized(state.inner(), &workspace_id).map_err(|message| NativeProviderError {
-        code: folio_core::contracts::ProviderErrorCode::IoError,
-        message,
-        detail: None,
+    let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id).map_err(|error| {
+        NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::IoError,
+            message: error.message,
+            detail: None,
+        }
     })?;
     let index_state = index_state.inner().clone();
     let embedding_state = embedding_state.inner().clone();
     run_blocking(move || {
-        let snapshot = build_snapshot(&app, &embedding_state, &workspace_id, &root.path)?;
+        let snapshot = build_snapshot(&app, &embedding_state, &root)?;
         let status = snapshot_status(&snapshot);
         *index_state.lock().map_err(|_| NativeProviderError {
             code: folio_core::contracts::ProviderErrorCode::IoError,
@@ -766,9 +746,8 @@ fn index_status(index_state: State<'_, IndexState>) -> Result<IndexStatus, Nativ
 fn ensure_snapshot(
     app: &AppHandle,
     embedding_state: &EmbeddingState,
-    state: &WorkspaceState,
+    root: &ScopedRoot,
     index_state: &IndexState,
-    workspace_id: &str,
 ) -> Result<IndexSnapshot, NativeProviderError> {
     if let Some(snapshot) = index_state
         .lock()
@@ -778,17 +757,12 @@ fn ensure_snapshot(
             detail: None,
         })?
         .as_ref()
-        .filter(|snapshot| snapshot.workspace_id == workspace_id)
+        .filter(|snapshot| snapshot.workspace_id == root.id)
         .cloned()
     {
         return Ok(snapshot);
     }
-    let root = authorized(state, workspace_id).map_err(|message| NativeProviderError {
-        code: folio_core::contracts::ProviderErrorCode::IoError,
-        message,
-        detail: None,
-    })?;
-    let snapshot = build_snapshot(app, embedding_state, workspace_id, &root.path)?;
+    let snapshot = build_snapshot(app, embedding_state, root)?;
     *index_state.lock().map_err(|_| NativeProviderError {
         code: folio_core::contracts::ProviderErrorCode::IoError,
         message: "The local index state is unavailable.".into(),
@@ -800,24 +774,24 @@ fn ensure_snapshot(
 #[tauri::command]
 async fn semantic_search(
     app: AppHandle,
-    state: State<'_, WorkspaceState>,
+    state: State<'_, Folio>,
     index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
     workspace_id: String,
     query: String,
     limit: Option<usize>,
 ) -> Result<Vec<SearchResult>, NativeProviderError> {
-    let workspace_state = state.inner().clone();
+    let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id).map_err(|error| {
+        NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::IoError,
+            message: error.message,
+            detail: None,
+        }
+    })?;
     let index_state = index_state.inner().clone();
     let embedding_state = embedding_state.inner().clone();
     run_blocking(move || {
-        let snapshot = ensure_snapshot(
-            &app,
-            &embedding_state,
-            &workspace_state,
-            &index_state,
-            &workspace_id,
-        )?;
+        let snapshot = ensure_snapshot(&app, &embedding_state, &root, &index_state)?;
         let limit = limit.unwrap_or(10).clamp(1, 50);
         if snapshot.embedding_space.is_none() {
             return Ok(snapshot.retriever.keyword(
@@ -967,20 +941,20 @@ fn cancel_generation(
 #[tauri::command]
 async fn summarize_document(
     app: AppHandle,
-    state: State<'_, WorkspaceState>,
+    state: State<'_, Folio>,
     generation_state: State<'_, GenerationState>,
     workspace_id: String,
     document_id: String,
 ) -> Result<GroundedAnswer, NativeProviderError> {
-    let workspace_state = state.inner().clone();
+    let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id).map_err(|error| {
+        NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::IoError,
+            message: error.message,
+            detail: None,
+        }
+    })?;
     let generation_state = generation_state.inner().clone();
     run_blocking(move || {
-        let root =
-            authorized(&workspace_state, &workspace_id).map_err(|message| NativeProviderError {
-                code: folio_core::contracts::ProviderErrorCode::IoError,
-                message,
-                detail: None,
-            })?;
         let document_text = workspace::read_text(&root.path, &document_id).map_err(|error| {
             NativeProviderError {
                 code: folio_core::contracts::ProviderErrorCode::IoError,
@@ -1028,7 +1002,7 @@ async fn summarize_document(
 #[tauri::command]
 async fn answer_question(
     app: AppHandle,
-    workspace_state: State<'_, WorkspaceState>,
+    state: State<'_, Folio>,
     index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
     generation_state: State<'_, GenerationState>,
@@ -1036,18 +1010,18 @@ async fn answer_question(
     question: String,
     document_id: Option<String>,
 ) -> Result<GroundedAnswer, NativeProviderError> {
-    let workspace_state = workspace_state.inner().clone();
+    let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id).map_err(|error| {
+        NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::IoError,
+            message: error.message,
+            detail: None,
+        }
+    })?;
     let index_state = index_state.inner().clone();
     let embedding_state = embedding_state.inner().clone();
     let generation_state = generation_state.inner().clone();
     run_blocking(move || {
-        let snapshot = ensure_snapshot(
-            &app,
-            &embedding_state,
-            &workspace_state,
-            &index_state,
-            &workspace_id,
-        )?;
+        let snapshot = ensure_snapshot(&app, &embedding_state, &root, &index_state)?;
         let results = search_snapshot(
             &app,
             &embedding_state,
@@ -1136,20 +1110,20 @@ fn search_snapshot(
 #[tauri::command]
 async fn interpret_request(
     app: AppHandle,
-    state: State<'_, WorkspaceState>,
+    state: State<'_, Folio>,
     generation_state: State<'_, GenerationState>,
     workspace_id: String,
     text: String,
 ) -> Result<InterpretationResult, NativeProviderError> {
-    let workspace_state = state.inner().clone();
+    let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id).map_err(|error| {
+        NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::IoError,
+            message: error.message,
+            detail: None,
+        }
+    })?;
     let generation_state = generation_state.inner().clone();
     run_blocking(move || {
-        let root =
-            authorized(&workspace_state, &workspace_id).map_err(|message| NativeProviderError {
-                code: folio_core::contracts::ProviderErrorCode::IoError,
-                message,
-                detail: None,
-            })?;
         let (documents, contents, chunks, _skipped_documents) =
             load_corpus(&root).map_err(|message| NativeProviderError {
                 code: folio_core::contracts::ProviderErrorCode::IoError,
@@ -1225,7 +1199,6 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Folio::new())
-        .manage(Arc::new(Mutex::new(None::<ScopedRoot>)))
         .manage(Arc::new(Mutex::new(None::<IndexSnapshot>)))
         .manage(Arc::new(Mutex::new(None::<EmbeddingSlot>)))
         .manage(Arc::new(Mutex::new(GenerationStateInner::default())))
