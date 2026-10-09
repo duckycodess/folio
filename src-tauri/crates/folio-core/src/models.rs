@@ -393,10 +393,14 @@ impl ModelStore {
         })
     }
 
+    /// A runtime is installed only when its install record exists and names an
+    /// executable present in the runtime directory. A half-extracted tree has
+    /// no record, because the record is written last in the staging copy.
     pub fn runtime_status(&self, id: &str) -> CoreResult<RuntimeStatus> {
         let runtime = self.runtime(id)?;
         let root = self.runtime_root(id)?;
-        let executable_path = find_runtime_executable(&root);
+        let executable_path =
+            read_install_record(&root).and_then(|record| recorded_executable(&root, &record).ok());
         Ok(RuntimeStatus {
             id: id.into(),
             version: runtime.version.clone(),
@@ -405,6 +409,35 @@ impl ModelStore {
         })
     }
 
+    /// The runtime executable, verified against the SHA-256 recorded when it
+    /// was extracted from the hash-pinned archive. Call before every launch.
+    pub fn verified_runtime_executable(&self, id: &str) -> CoreResult<PathBuf> {
+        self.runtime(id)?;
+        let root = self.runtime_root(id)?;
+        let record = read_install_record(&root).ok_or_else(|| {
+            provider(
+                ProviderErrorCode::RuntimeMissing,
+                "Install the pinned llama.cpp runtime for this platform first.",
+            )
+        })?;
+        let executable = recorded_executable(&root, &record)?;
+        let entry = record
+            .files
+            .iter()
+            .find(|file| file.path == record.executable)
+            .ok_or_else(|| {
+                provider(
+                    ProviderErrorCode::ModelCorrupt,
+                    "The runtime install record does not cover its executable.",
+                )
+            })?;
+        verify_file_cached(&executable, entry)?;
+        Ok(executable)
+    }
+
+    /// Download the pinned archive and extract it into a staging directory,
+    /// write the install record last, then swap the staged tree into place.
+    /// A failure at any point leaves the previous runtime untouched.
     pub fn install_runtime<F>(
         &self,
         id: &str,
@@ -416,42 +449,67 @@ impl ModelStore {
     {
         let descriptor = self.runtime(id)?.clone();
         let root = self.runtime_root(id)?;
-        fs::create_dir_all(&root)?;
+        let parent = root
+            .parent()
+            .ok_or_else(|| CoreError::Message("The runtime directory has no parent.".into()))?
+            .to_path_buf();
+        fs::create_dir_all(&parent)?;
+        let unique = uuid::Uuid::new_v4().simple().to_string();
+        let staging = parent.join(format!(".staging-{id}-{unique}"));
+        fs::create_dir(&staging)?;
+        let tree = staging.join("tree");
         let client = download_client()?;
-        for file in descriptor.files {
-            let url = file.download_url.clone().ok_or_else(|| {
-                CoreError::Message(format!("Manifest has no download URL for {}.", file.path))
-            })?;
-            let archive = safe_join(&root, &file.path)?;
-            let partial = partial_path(&archive);
-            if is_symlink_or_inside_symlink(&root, &archive)?
-                || is_symlink_or_inside_symlink(&root, &partial)?
-            {
-                return Err(provider(
-                    ProviderErrorCode::ModelCorrupt,
-                    "Refusing to write through a runtime archive symlink.",
-                ));
+        let mut stage = || -> CoreResult<()> {
+            fs::create_dir(&tree)?;
+            let mut archives = Vec::new();
+            for file in &descriptor.files {
+                let url = file.download_url.clone().ok_or_else(|| {
+                    CoreError::Message(format!("Manifest has no download URL for {}.", file.path))
+                })?;
+                let archive = safe_join(&staging, &file.path)?;
+                let partial = partial_path(&archive);
+                download_verified(
+                    &client,
+                    &url,
+                    &partial,
+                    file,
+                    cancel,
+                    "Runtime installation cancelled.",
+                    |received| {
+                        on_progress(DownloadProgress {
+                            item_id: id.into(),
+                            file: file.path.clone(),
+                            received_bytes: received,
+                            total_bytes: file.bytes,
+                        })
+                    },
+                )?;
+                fs::rename(&partial, &archive)?;
+                extract_runtime_archive(&archive, &tree)?;
+                archives.push(file.sha256.clone());
             }
-            download_verified(
-                &client,
-                &url,
-                &partial,
-                &file,
-                cancel,
-                "Runtime installation cancelled.",
-                |received| {
-                    on_progress(DownloadProgress {
-                        item_id: id.into(),
-                        file: file.path.clone(),
-                        received_bytes: received,
-                        total_bytes: file.bytes,
-                    })
-                },
-            )?;
-            fs::rename(partial, &archive)?;
-            extract_runtime_archive(&archive, &root)?;
-            fs::remove_file(archive)?;
+            write_install_record(id, &tree, archives)
+        };
+        if let Err(error) = stage() {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
         }
+        let previous = parent.join(format!(".previous-{id}-{unique}"));
+        if root.exists() {
+            if let Err(error) = fs::rename(&root, &previous) {
+                let _ = fs::remove_dir_all(&staging);
+                return Err(error.into());
+            }
+        }
+        if let Err(error) = fs::rename(&tree, &root) {
+            if previous.exists() {
+                let _ = fs::rename(&previous, &root);
+            }
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error.into());
+        }
+        let _ = fs::remove_dir_all(&previous);
+        let _ = fs::remove_dir_all(&staging);
         self.runtime_status(id)
     }
 
@@ -716,6 +774,110 @@ fn invalidate_verification_cache(path: &Path) {
     }
 }
 
+/// Written last into a staged runtime tree: the archive hashes it came from,
+/// the executable, and the SHA-256 of every extracted regular file.
+const RUNTIME_INSTALL_RECORD: &str = "folio-runtime-install.json";
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeInstallRecord {
+    schema_version: u32,
+    runtime_id: String,
+    archive_sha256: Vec<String>,
+    executable: String,
+    files: Vec<ModelFile>,
+}
+
+fn write_install_record(id: &str, tree: &Path, archive_sha256: Vec<String>) -> CoreResult<()> {
+    let executable = find_runtime_executable(tree).ok_or_else(|| {
+        CoreError::Archive("The runtime archive has no llama-server executable.".into())
+    })?;
+    let mut files = Vec::new();
+    collect_regular_files(tree, tree, &mut files)?;
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    let record = RuntimeInstallRecord {
+        schema_version: 1,
+        runtime_id: id.into(),
+        archive_sha256,
+        executable: relative_slash_path(tree, &executable)?,
+        files,
+    };
+    let path = tree.join(RUNTIME_INSTALL_RECORD);
+    let mut output = File::create(&path)?;
+    output.write_all(&serde_json::to_vec_pretty(&record)?)?;
+    output.sync_all()?;
+    Ok(())
+}
+
+fn read_install_record(root: &Path) -> Option<RuntimeInstallRecord> {
+    let path = root.join(RUNTIME_INSTALL_RECORD);
+    if fs::symlink_metadata(&path).ok()?.file_type().is_symlink() {
+        return None;
+    }
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
+fn recorded_executable(root: &Path, record: &RuntimeInstallRecord) -> CoreResult<PathBuf> {
+    let executable = safe_join(root, &record.executable)?;
+    if is_symlink_or_inside_symlink(root, &executable)? || !is_executable_file(&executable) {
+        return Err(provider(
+            ProviderErrorCode::RuntimeMissing,
+            "The installed llama.cpp runtime has no usable executable.",
+        ));
+    }
+    Ok(executable)
+}
+
+fn collect_regular_files(
+    root: &Path,
+    directory: &Path,
+    files: &mut Vec<ModelFile>,
+) -> CoreResult<()> {
+    for entry in fs::read_dir(directory)? {
+        let path = entry?.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            collect_regular_files(root, &path, files)?;
+        } else if metadata.is_file() {
+            files.push(ModelFile {
+                path: relative_slash_path(root, &path)?,
+                sha256: file_sha256(&path)?,
+                bytes: metadata.len(),
+                download_url: None,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn relative_slash_path(root: &Path, path: &Path) -> CoreResult<String> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| CoreError::Message("Path escaped its store.".into()))?;
+    Ok(relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/"))
+}
+
+fn file_sha256(path: &Path) -> CoreResult<String> {
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
 fn find_runtime_executable(root: &Path) -> Option<PathBuf> {
     if !root.is_dir() || fs::symlink_metadata(root).ok()?.file_type().is_symlink() {
         return None;
@@ -758,11 +920,17 @@ fn is_executable_file(path: &Path) -> bool {
     }
 }
 
+/// Extract a hash-verified runtime archive. Regular files and directories are
+/// written first; symbolic links are created afterwards and only when their
+/// target is a bare sibling filename (the versioned shared-library links the
+/// pinned macOS and Linux archives ship). Hard links and other entry types
+/// are refused.
 fn extract_runtime_archive(archive: &Path, destination: &Path) -> CoreResult<()> {
     let name = archive
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or_default();
+    let mut links: Vec<(PathBuf, String)> = Vec::new();
     if name.ends_with(".zip") {
         let file = File::open(archive)?;
         let mut zip =
@@ -789,9 +957,10 @@ fn extract_runtime_archive(archive: &Path, destination: &Path) -> CoreResult<()>
                 .unix_mode()
                 .is_some_and(|mode| mode & 0o170000 == 0o120000)
             {
-                return Err(CoreError::Archive(
-                    "Runtime archive contains a symlink.".into(),
-                ));
+                let mut link_target = String::new();
+                entry.read_to_string(&mut link_target)?;
+                links.push((target, link_target));
+                continue;
             }
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
@@ -803,7 +972,7 @@ fn extract_runtime_archive(archive: &Path, destination: &Path) -> CoreResult<()>
                 fs::set_permissions(&target, fs::Permissions::from_mode(mode & 0o755))?;
             }
         }
-        return Ok(());
+        return create_sibling_links(links);
     }
     if !name.ends_with(".tar.gz") {
         return Err(CoreError::Archive(
@@ -823,9 +992,9 @@ fn extract_runtime_archive(archive: &Path, destination: &Path) -> CoreResult<()>
             .header()
             .mode()
             .map_err(|error| CoreError::Archive(error.to_string()))?;
-        if entry_type.is_symlink() || entry_type.is_hard_link() {
+        if entry_type.is_hard_link() {
             return Err(CoreError::Archive(
-                "Runtime archive contains a link.".into(),
+                "Runtime archive contains a hard link.".into(),
             ));
         }
         let relative = entry
@@ -837,6 +1006,16 @@ fn extract_runtime_archive(archive: &Path, destination: &Path) -> CoreResult<()>
             return Err(CoreError::Archive(
                 "Runtime archive would write through a symlink.".into(),
             ));
+        }
+        if entry_type.is_symlink() {
+            let link_target = entry
+                .link_name()
+                .map_err(|error| CoreError::Archive(error.to_string()))?
+                .ok_or_else(|| CoreError::Archive("Runtime archive link has no target.".into()))?
+                .to_string_lossy()
+                .into_owned();
+            links.push((target, link_target));
+            continue;
         }
         if entry_type.is_dir() {
             fs::create_dir_all(target)?;
@@ -854,8 +1033,70 @@ fn extract_runtime_archive(archive: &Path, destination: &Path) -> CoreResult<()>
         std::io::copy(&mut entry, &mut output)?;
         #[cfg(unix)]
         fs::set_permissions(&target, fs::Permissions::from_mode(mode & 0o755))?;
+        #[cfg(not(unix))]
+        let _ = mode;
+    }
+    create_sibling_links(links)
+}
+
+/// A link target that names a file in the link's own directory.
+fn is_sibling_name(target: &str) -> bool {
+    !target.is_empty()
+        && target != "."
+        && target != ".."
+        && !target
+            .chars()
+            .any(|character| matches!(character, '/' | '\\' | ':' | '\0'))
+}
+
+/// Create the archive's links after every regular file exists. A link may
+/// point at another link in the same directory (a version chain); each one
+/// must finally resolve to a regular file there.
+fn create_sibling_links(mut links: Vec<(PathBuf, String)>) -> CoreResult<()> {
+    if links.iter().any(|(_, target)| !is_sibling_name(target)) {
+        return Err(CoreError::Archive(
+            "Runtime archive link points outside its directory.".into(),
+        ));
+    }
+    while !links.is_empty() {
+        let pending = links.len();
+        let mut remaining = Vec::new();
+        for (link, target) in links {
+            if fs::symlink_metadata(&link).is_ok() {
+                return Err(CoreError::Archive(
+                    "Runtime archive link collides with another entry.".into(),
+                ));
+            }
+            let directory = link.parent().ok_or_else(|| {
+                CoreError::Archive("Runtime archive link has no directory.".into())
+            })?;
+            if fs::metadata(directory.join(&target)).is_ok_and(|metadata| metadata.is_file()) {
+                make_symlink(&target, &link)?;
+            } else {
+                remaining.push((link, target));
+            }
+        }
+        if remaining.len() == pending {
+            return Err(CoreError::Archive(
+                "Runtime archive link does not resolve to a file in its directory.".into(),
+            ));
+        }
+        links = remaining;
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn make_symlink(target: &str, link: &Path) -> CoreResult<()> {
+    std::os::unix::fs::symlink(target, link)?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn make_symlink(_target: &str, _link: &Path) -> CoreResult<()> {
+    Err(CoreError::Archive(
+        "Runtime archive links are not supported on this platform.".into(),
+    ))
 }
 
 pub fn sha256_bytes(bytes: &[u8]) -> String {
@@ -1057,6 +1298,130 @@ mod tests {
             0
         );
         assert_eq!(find_runtime_executable(&destination), Some(executable));
+    }
+
+    #[cfg(unix)]
+    fn runtime_tar(path: &Path, files: &[(&str, &[u8], u32)], links: &[(&str, &str)]) {
+        let archive = File::create(path).unwrap();
+        let encoder = GzEncoder::new(archive, Compression::default());
+        let mut builder = Builder::new(encoder);
+        // Links first, as in the pinned archives, so extraction must defer them.
+        for (link, target) in links {
+            let mut header = Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Symlink);
+            header.set_path(link).unwrap();
+            header.set_link_name(target).unwrap();
+            header.set_size(0);
+            header.set_mode(0o777);
+            header.set_cksum();
+            builder.append(&header, std::io::empty()).unwrap();
+        }
+        for (name, bytes, mode) in files {
+            let mut header = Header::new_gnu();
+            header.set_path(name).unwrap();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(*mode);
+            header.set_cksum();
+            builder.append(&header, *bytes).unwrap();
+        }
+        builder.into_inner().unwrap().finish().unwrap();
+    }
+
+    #[cfg(unix)]
+    fn runtime_store(root: &Path) -> ModelStore {
+        ModelStore::with_manifest(
+            root,
+            ModelManifest {
+                schema_version: 1,
+                models: Vec::new(),
+                runtimes: vec![RuntimeDescriptor {
+                    id: "test-runtime".into(),
+                    name: "Test runtime".into(),
+                    version: "test".into(),
+                    platform: "test".into(),
+                    files: Vec::new(),
+                }],
+            },
+        )
+        .unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_archives_with_versioned_library_links_install_and_verify() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("runtime.tar.gz");
+        runtime_tar(
+            &archive,
+            &[
+                ("llama-b1/llama-server", b"#!/bin/sh\n", 0o755),
+                ("llama-b1/libllama.0.6.0.dylib", b"library", 0o644),
+            ],
+            &[
+                ("llama-b1/libllama.dylib", "libllama.0.dylib"),
+                ("llama-b1/libllama.0.dylib", "libllama.0.6.0.dylib"),
+            ],
+        );
+        let store = runtime_store(temp.path());
+        let root = temp.path().join("runtime/llama.cpp/test-runtime");
+        fs::create_dir_all(&root).unwrap();
+        extract_runtime_archive(&archive, &root).unwrap();
+        assert_eq!(
+            fs::read_link(root.join("llama-b1/libllama.0.dylib")).unwrap(),
+            PathBuf::from("libllama.0.6.0.dylib")
+        );
+        assert_eq!(
+            fs::read(root.join("llama-b1/libllama.dylib")).unwrap(),
+            b"library"
+        );
+
+        // No install record yet: a half-extracted tree is not installed.
+        assert!(!store.runtime_status("test-runtime").unwrap().installed);
+        write_install_record("test-runtime", &root, vec!["archive-sha".into()]).unwrap();
+        let status = store.runtime_status("test-runtime").unwrap();
+        assert!(status.installed);
+        let executable = store.verified_runtime_executable("test-runtime").unwrap();
+        assert_eq!(executable, root.join("llama-b1/llama-server"));
+
+        // A changed executable is refused before launch.
+        fs::write(&executable, b"#!/bin/sh\necho changed\n").unwrap();
+        assert!(store.verified_runtime_executable("test-runtime").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_archive_links_outside_their_directory_are_refused() {
+        for target in ["../escape", "/etc/passwd", "sub/file", ".."] {
+            let temp = tempfile::tempdir().unwrap();
+            let archive = temp.path().join("runtime.tar.gz");
+            runtime_tar(
+                &archive,
+                &[("llama-b1/llama-server", b"#!/bin/sh\n", 0o755)],
+                &[("llama-b1/libllama.0.dylib", target)],
+            );
+            let destination = temp.path().join("runtime");
+            fs::create_dir_all(&destination).unwrap();
+            assert!(
+                extract_runtime_archive(&archive, &destination).is_err(),
+                "link target {target:?} was accepted"
+            );
+            assert!(fs::symlink_metadata(destination.join("llama-b1/libllama.0.dylib")).is_err());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_archive_links_to_missing_files_are_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("runtime.tar.gz");
+        runtime_tar(
+            &archive,
+            &[("llama-b1/llama-server", b"#!/bin/sh\n", 0o755)],
+            &[("llama-b1/libllama.0.dylib", "libllama.0.6.0.dylib")],
+        );
+        let destination = temp.path().join("runtime");
+        fs::create_dir_all(&destination).unwrap();
+        assert!(extract_runtime_archive(&archive, &destination).is_err());
     }
 
     #[cfg(unix)]

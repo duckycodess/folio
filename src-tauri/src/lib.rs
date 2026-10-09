@@ -1210,14 +1210,10 @@ fn generation_provider(
             detail: None,
         })?;
     let verified = store.verified_model_file(&model_id).map_err(native_error)?;
-    let runtime = store
-        .runtime_status(runtime_id_for_host())
+    // Verified against the install record before every launch.
+    let executable = store
+        .verified_runtime_executable(runtime_id_for_host())
         .map_err(native_error)?;
-    let executable = runtime.executable_path.ok_or_else(|| NativeProviderError {
-        code: folio_core::contracts::ProviderErrorCode::RuntimeMissing,
-        message: "Install the pinned llama.cpp runtime for this platform first.".into(),
-        detail: Some(runtime_id_for_host().into()),
-    })?;
     let mut guard = generation_state.lock().map_err(|_| NativeProviderError {
         code: folio_core::contracts::ProviderErrorCode::IoError,
         message: "The local generation state is unavailable.".into(),
