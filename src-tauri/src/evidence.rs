@@ -24,6 +24,7 @@ use folio_core::contracts::{
 };
 use folio_core::embeddings::QueryEmbedding;
 use folio_core::generation::MAX_PASSAGES;
+use folio_core::grounding;
 use folio_core::retrieval::{
     self, Bm25Scorer, Bm25Stats, EvidenceGate, MIN_KEYWORD_SCORE, MIN_SEMANTIC_SCORE,
 };
@@ -164,6 +165,20 @@ pub(crate) fn status(
             })
             .collect(),
     })
+}
+
+/// Whether a passage needs real evidence to be a candidate.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Gate {
+    Require,
+    /// The user chose the file; its passages are candidates whatever they score.
+    Bypass,
+}
+
+struct ScoredPassages {
+    passages: Vec<(SourcePassage, f32)>,
+    method: SearchMethod,
+    space_fingerprint: Option<String>,
 }
 
 #[derive(Clone)]
@@ -393,20 +408,44 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
         self.retrieve(query, scope.document_id(), limit, space.as_ref())
     }
 
-    /// The passages that may go into an answer prompt: at most `MAX_PASSAGES`,
-    /// all from documents that are still what the index holds.
+    /// The passages that may go into an answer prompt, within
+    /// `MAX_PASSAGES` and the evidence byte budget, all from documents that are
+    /// still what the index holds. For `Scope::Document` the user has chosen
+    /// the file, so the evidence gate does not apply: its best-ranked passages
+    /// are sent, or its opening passages when nothing ranks.
     pub(crate) fn prompt_evidence(
         &mut self,
         question: &str,
         scope: Scope<'_>,
     ) -> NativeResult<Vec<SourcePassage>> {
         let space = self.ensure_embedded()?;
-        let results = self.retrieve(question, scope.document_id(), MAX_PASSAGES, space.as_ref())?;
-        let passages = results
-            .into_iter()
-            .flat_map(|result| result.passages)
-            .take(MAX_PASSAGES)
-            .collect();
+        let passages = match scope {
+            Scope::Folder => {
+                let results =
+                    self.retrieve(question, None, MAX_PASSAGES, space.as_ref())?;
+                grounding::fit_evidence_budget(
+                    results
+                        .into_iter()
+                        .flat_map(|result| result.passages)
+                        .take(MAX_PASSAGES)
+                        .collect(),
+                )
+            }
+            Scope::Document(id) => {
+                let mut ranked = self
+                    .scored_passages(question, Some(id), space.as_ref(), Gate::Bypass)?
+                    .passages;
+                ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+                let opening = index::leading_chunks(self.conn, &self.root.id, id, MAX_PASSAGES)?
+                    .into_iter()
+                    .map(|chunk| core_passage(chunk.passage))
+                    .collect();
+                grounding::chosen_document_passages(
+                    ranked.into_iter().map(|(passage, _)| passage).collect(),
+                    opening,
+                )
+            }
+        };
         self.current_passages_only(passages)
     }
 
@@ -417,15 +456,39 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
         limit: usize,
         space: Option<&SpaceInUse>,
     ) -> NativeResult<Vec<SearchResult>> {
+        let scored = self.scored_passages(query, document_id, space, Gate::Require)?;
+        self.group(
+            scored.passages,
+            scored.method,
+            scored.space_fingerprint,
+            limit,
+        )
+    }
+
+    /// Candidate passages with their scores. Under `Gate::Require` a passage
+    /// needs real evidence (the evidence gate and the semantic or keyword
+    /// floor); under `Gate::Bypass` every scored passage is a candidate.
+    fn scored_passages(
+        &mut self,
+        query: &str,
+        document_id: Option<&str>,
+        space: Option<&SpaceInUse>,
+        gate_policy: Gate,
+    ) -> NativeResult<ScoredPassages> {
         let terms = retrieval::query_terms(query);
         let keyword = self.keyword_scores(&terms, document_id)?;
+        let required = gate_policy == Gate::Require;
         let Some(space) = space else {
-            let scored = keyword
+            let passages = keyword
                 .into_values()
-                .filter(|(_, score)| *score >= MIN_KEYWORD_SCORE)
+                .filter(|(_, score)| !required || *score >= MIN_KEYWORD_SCORE)
                 .map(|(chunk, score)| (core_passage(chunk.passage), score))
                 .collect();
-            return self.group(scored, SearchMethod::Keyword, None, limit);
+            return Ok(ScoredPassages {
+                passages,
+                method: SearchMethod::Keyword,
+                space_fingerprint: None,
+            });
         };
 
         let embedding = self.embedder.embed_query(query, self.cancel)?;
@@ -449,7 +512,7 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
         let gate = EvidenceGate::from_cosines(cosines.iter().map(|score| score.cosine).collect());
         let mut ranked = cosines
             .iter()
-            .filter(|score| gate.passed && score.cosine >= MIN_SEMANTIC_SCORE)
+            .filter(|score| !required || (gate.passed && score.cosine >= MIN_SEMANTIC_SCORE))
             .collect::<Vec<_>>();
         ranked.sort_by(|a, b| b.cosine.total_cmp(&a.cosine));
         ranked.truncate(SEMANTIC_CANDIDATES);
@@ -472,21 +535,20 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
         for chunk in index::stored_chunks(self.conn, &self.root.id, &missing)? {
             chunks.insert(chunk.chunk_id, chunk);
         }
-        let scored = chunks
+        let passages = chunks
             .into_values()
             .filter_map(|chunk| {
                 let cosine = cosine_of.get(&chunk.chunk_id).copied().unwrap_or(0.0);
                 let keyword = keyword_of.get(&chunk.chunk_id).copied().unwrap_or(0.0);
-                retrieval::admits(&gate, cosine, keyword)
+                (!required || retrieval::admits(&gate, cosine, keyword))
                     .then(|| (core_passage(chunk.passage), retrieval::fused(cosine, keyword)))
             })
             .collect();
-        self.group(
-            scored,
-            SearchMethod::Hybrid,
-            Some(space.fingerprint.clone()),
-            limit,
-        )
+        Ok(ScoredPassages {
+            passages,
+            method: SearchMethod::Hybrid,
+            space_fingerprint: Some(space.fingerprint.clone()),
+        })
     }
 
     /// Normalized BM25 for the FTS5 candidates, keyed by chunk. Statistics come
@@ -1144,6 +1206,74 @@ mod tests {
         let passages = passages.unwrap();
         assert!(!passages.is_empty());
         assert!(passages.iter().all(|passage| passage.document_id == tala));
+    }
+
+    #[test]
+    fn a_chosen_file_reaches_the_prompt_even_when_nothing_in_it_matches_the_question() {
+        let mut harness = Harness::fixtures();
+        let mut embedder = ConceptEmbedder::new("r1");
+        let budget = id_of(&harness.root, "personal/budget-notes.md");
+
+        // The gated folder search finds nothing for this question...
+        assert!(harness.search(&mut embedder, "quantum chromodynamics").is_empty());
+        // ...but the file the user chose is still sent, whatever they asked.
+        let (passages, _) = harness.request(&mut embedder, |index| {
+            index.prompt_evidence("what does this file say?", Scope::Document(&budget))
+        });
+        let passages = passages.unwrap();
+        assert!(!passages.is_empty());
+        assert!(passages.iter().all(|passage| passage.document_id == budget));
+        assert!(passages.iter().any(|passage| passage.text.contains("transport")));
+        // In reading order, so the model reads the file as written.
+        assert!(passages.windows(2).all(|pair| pair[0].start <= pair[1].start));
+    }
+
+    #[test]
+    fn a_chosen_file_is_sent_in_keyword_mode_too_and_never_from_a_stale_revision() {
+        let mut harness = Harness::fixtures();
+        let mut embedder = ConceptEmbedder::new("r1");
+        embedder.installed = false;
+        let plan = id_of(&harness.root, "projects/project-plan.md");
+        let (opening, _) = harness.request(&mut embedder, |index| {
+            index.prompt_evidence("zzz nothing matches", Scope::Document(&plan))
+        });
+        assert!(!opening.unwrap().is_empty(), "its opening passages are sent");
+
+        // The file changes without the scan noticing (same size and mtime).
+        let path = harness.folder.path().join("projects/project-plan.md");
+        let modified = fs::metadata(&path).unwrap().modified().unwrap();
+        let text = fs::read_to_string(&path).unwrap().replace("October 20", "October 99");
+        fs::write(&path, text).unwrap();
+        fs::File::options().write(true).open(&path).unwrap().set_modified(modified).unwrap();
+        let (during, _) = harness.request(&mut embedder, |index| {
+            index.prompt_evidence("zzz nothing matches", Scope::Document(&plan))
+        });
+        assert!(during.unwrap().is_empty(), "the old revision is never sent");
+    }
+
+    #[test]
+    fn a_folder_wide_prompt_never_exceeds_the_evidence_budget() {
+        let folder = tempfile::tempdir().unwrap();
+        let mut conn = crate::db::open_in_memory().unwrap();
+        let root = index::tests::authorize(&conn, folder.path());
+        for number in 0..12 {
+            // Each file is one 1,100-byte paragraph about the project.
+            let words = "project plan deadline ".repeat(50);
+            fs::write(folder.path().join(format!("plan-{number:02}.md")), format!("# Plan {number}\n\n{words}")).unwrap();
+        }
+        for number in 0..30 {
+            fs::write(folder.path().join(format!("budget-{number:02}.md")), "Budget money spending").unwrap();
+        }
+        index::tests::scan(&mut conn, &root);
+        let mut harness = Harness::from(folder, conn, root);
+        let mut embedder = ConceptEmbedder::new("r1");
+        let (passages, _) = harness.request(&mut embedder, |index| {
+            index.prompt_evidence("project plan deadline", Scope::Folder)
+        });
+        let passages = passages.unwrap();
+        let bytes = passages.iter().map(|passage| passage.text.len()).sum::<usize>();
+        assert!(!passages.is_empty() && passages.len() <= MAX_PASSAGES);
+        assert!(bytes <= grounding::MAX_ANSWER_EVIDENCE_BYTES, "{bytes} bytes");
     }
 
     #[test]
