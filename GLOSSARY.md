@@ -37,6 +37,9 @@ _Avoid_: Proof that changing one document affects the other.
 **Explicit Reference**: A passage in one document that names or links another document.
 _Avoid_: An inferred dependency.
 
+**Broken Link**: A link in another document that names a file a plan would remove.
+_Avoid_: Rewriting the linking document.
+
 **Shared Fact Candidate**: Passages in separate documents that may refer to the same fact, subject, or event.
 _Avoid_: A confirmed contradiction without comparison evidence.
 
@@ -55,7 +58,10 @@ _Avoid_: Execution, completed action.
 **Approval**: The user's authorization of a particular current action plan.
 _Avoid_: Authorization of future or changed plans.
 
-**Folio Ripple**: The impact review produced for a proposed edit, identifying related documents and supporting passages that may need attention.
+**Deletion**: Removing a TXT or Markdown file from its folder after an exact preview and approval, keeping its contents in history so Undo can restore it.
+_Avoid_: Permanent erasure, the system trash, deletion from a natural-language request.
+
+**Folio Ripple**: The impact review produced for a proposed edit or deletion, identifying related documents and supporting passages that may need attention.
 _Avoid_: Automatic propagation or a guarantee of comprehensive impact coverage.
 
 **History Entry**: A record of an applied file change, recoverable until Folio stops keeping the content needed to reverse it.
