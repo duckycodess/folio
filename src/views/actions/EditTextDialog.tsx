@@ -204,12 +204,19 @@ export function EditTextDialog({
         <PlanReview
           action={action}
           inModal
+          workspaceId={workspace.workspace?.id}
           beforeText={{ [base.documentId]: base.content }}
           approveLabel="Approve and save"
           backLabel="Back to editing"
           onPreviewAgain={() => void previewAgain()}
           onBack={action.reset}
           onDone={onClose}
+          onOpenPassage={(passage) => {
+            const source = workspace.documents.find(
+              (item) => item.id === passage.documentId,
+            );
+            if (source) void workspace.selectDocument(source);
+          }}
         />
       )}
     </ActionDialog>

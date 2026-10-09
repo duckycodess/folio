@@ -4,9 +4,14 @@ import {
   useId,
   useMemo,
   useRef,
+  useState,
   type RefObject,
 } from "react";
+import { explainImpact } from "../adapters/ai";
+import { useGenerationReady } from "../app/generationReady";
 import { hasUndoableChange } from "../app/planAction";
+import { useAiIndexState } from "../app/useAiIndex";
+import { rippleWarning } from "../domain/aiCoverage";
 import {
   impactGroups,
   impactProvenance,
@@ -24,10 +29,12 @@ import type {
   ApplyReport,
   DocumentId,
   FileOperation,
+  GroundedResult,
   ImpactCandidate,
   UndoPreflight,
+  SourcePassage,
 } from "../domain/contracts";
-import type { FolioError } from "../domain/errors";
+import { toFolioError, type FolioError } from "../domain/errors";
 import { diffLines, type DiffLine } from "../domain/textDiff";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
@@ -35,6 +42,7 @@ import { Modal } from "../ui/Modal";
 import { Notice } from "../ui/Notice";
 import { Progress } from "../ui/Progress";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
+import { CitedSentences } from "./CitedSentences";
 
 /*
  * The exact preview → approve → result → Undo pieces every file change shares:
@@ -193,14 +201,34 @@ const IMPACT_HEADINGS: Record<ImpactKind, string> = {
  * Folio Ripple: related passages that may need a look. They are review
  * candidates only; this list never says a file was or will be updated.
  */
-export function ImpactList({ impacts }: { impacts: ImpactCandidate[] }) {
+export function ImpactList({
+  impacts,
+  workspaceId,
+  planId,
+  generationReady,
+  onOpenPassage,
+}: {
+  impacts: ImpactCandidate[];
+  workspaceId?: string;
+  planId?: string;
+  generationReady: boolean;
+  onOpenPassage?: (passage: SourcePassage) => void;
+}) {
   const groups = impactGroups(impacts);
   const headingId = useId();
+  // Incomplete AI review warns; it never blocks approval and says nothing
+  // about links or copies, which Ripple always checks.
+  const warning = rippleWarning(useAiIndexState().coverage);
   return (
     <section className="impact-review" aria-labelledby={headingId}>
       <h3 id={headingId} className="subsection-title">
         Related passages to review
       </h3>
+      {warning && (
+        <p className="muted" role="note">
+          {warning}
+        </p>
+      )}
       {impacts.length === 0 ? (
         <p className="muted">
           Folio didn't find related files that mention what you changed. That
@@ -218,7 +246,14 @@ export function ImpactList({ impacts }: { impacts: ImpactCandidate[] }) {
               <h4 className="impact-group-title">{IMPACT_HEADINGS[kind]}</h4>
               <ul className="impact-list">
                 {groups[kind].map((impact) => (
-                  <ImpactItem key={impact.documentId} impact={impact} />
+                  <ImpactItem
+                    key={`${planId ?? "no-plan"}:${impact.documentId}`}
+                    impact={impact}
+                    workspaceId={workspaceId}
+                    planId={planId}
+                    generationReady={generationReady}
+                    onOpenPassage={onOpenPassage}
+                  />
                 ))}
               </ul>
             </div>
@@ -234,8 +269,52 @@ export function ImpactList({ impacts }: { impacts: ImpactCandidate[] }) {
   );
 }
 
-function ImpactItem({ impact }: { impact: ImpactCandidate }) {
+function ImpactItem({
+  impact,
+  workspaceId,
+  planId,
+  generationReady,
+  onOpenPassage,
+}: {
+  impact: ImpactCandidate;
+  workspaceId?: string;
+  planId?: string;
+  generationReady: boolean;
+  onOpenPassage?: (passage: SourcePassage) => void;
+}) {
   const provenance = impactProvenance(impact);
+  const [explanation, setExplanation] = useState<GroundedResult | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<FolioError | null>(null);
+  const requestVersion = useRef(0);
+  useEffect(() => {
+    requestVersion.current += 1;
+    setExplanation(null);
+    setError(null);
+    setBusy(false);
+    return () => {
+      requestVersion.current += 1;
+    };
+  }, [planId, impact.documentId]);
+
+  async function explain() {
+    if (!workspaceId || !planId || !generationReady) return;
+    const version = ++requestVersion.current;
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await explainImpact(
+        workspaceId,
+        planId,
+        impact.documentId,
+      );
+      if (version === requestVersion.current) setExplanation(result);
+    } catch (cause) {
+      if (version === requestVersion.current) setError(toFolioError(cause));
+    } finally {
+      if (version === requestVersion.current) setBusy(false);
+    }
+  }
   return (
     <li className="impact">
       <div className="impact-head">
@@ -256,6 +335,46 @@ function ImpactItem({ impact }: { impact: ImpactCandidate }) {
             </li>
           ))}
         </ul>
+      )}
+      {workspaceId && planId && (
+        <>
+          <Button
+            variant="ghost"
+            disabled={busy || !generationReady}
+            onClick={() => void explain()}
+          >
+            {busy ? "Explaining…" : "Explain with local AI"}
+          </Button>
+          {!generationReady && (
+            <p className="muted">
+              Set up and select an installed writing model and runtime in Model
+              Lab to explain this candidate.
+            </p>
+          )}
+          {error && (
+            <RecoveryNotice
+              error={error}
+              actions={{ retry: () => void explain() }}
+            />
+          )}
+          {explanation && explanation.kind === "insufficientEvidence" && (
+            <Notice tone="info">
+              There is not enough current evidence for an explanation.
+            </Notice>
+          )}
+          {explanation && explanation.kind !== "insufficientEvidence" && (
+            <div className="impact-explanation">
+              <p className="muted">
+                Generated preview, not saved. Made by {explanation.modelId}{" "}
+                (revision {explanation.revision.slice(0, 12)}).
+              </p>
+              <CitedSentences
+                result={explanation}
+                onOpen={onOpenPassage ?? (() => undefined)}
+              />
+            </div>
+          )}
+        </>
       )}
     </li>
   );
@@ -386,6 +505,8 @@ export function PlanReview({
   approveLabel,
   backLabel = "Back",
   inModal = false,
+  workspaceId,
+  onOpenPassage,
   onPreviewAgain,
   onBack,
   onDone,
@@ -396,8 +517,13 @@ export function PlanReview({
   approveLabel?: string;
   backLabel?: string;
   inModal?: boolean;
+  /** Authorized workspace for the display-only Ripple explanation command. */
+  workspaceId?: string;
+  /** Opens a cited passage in the surrounding reader when one is available. */
+  onOpenPassage?: (passage: SourcePassage) => void;
 }) {
   const { state } = action;
+  const generationReady = useGenerationReady();
   const heading = useRef<HTMLHeadingElement>(null);
   const previewAgain = onPreviewAgain ?? action.previewAgain;
   const reviewing = state.stage === "preview" || state.stage === "applying";
@@ -460,7 +586,13 @@ export function PlanReview({
           ),
         )}
         {(edits.length > 0 || plan.impacts.length > 0) && (
-          <ImpactList impacts={plan.impacts} />
+          <ImpactList
+            impacts={plan.impacts}
+            workspaceId={workspaceId}
+            planId={plan.id}
+            generationReady={generationReady}
+            onOpenPassage={onOpenPassage}
+          />
         )}
         {state.error && (
           <RecoveryNotice

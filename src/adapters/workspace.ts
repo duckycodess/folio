@@ -9,7 +9,6 @@ import {
   type EmbeddingSyncSummary,
   type EmbeddingSpace,
   type EmbeddingSpaceFingerprint,
-  type ExplicitReference,
   type FolioErrorCode,
   type IndexedDocument,
   type IndexProgress,
@@ -17,6 +16,7 @@ import {
   type Language,
   type MediaType,
   type PendingChunk,
+  type Relationship,
   type ScanSummary,
   type SearchResult,
   type VectorCandidate,
@@ -26,6 +26,7 @@ import {
 import { toFolioError } from "../domain/errors";
 import { hashText } from "../domain/hash";
 import { documentIdFor, mediaTypeForPath } from "../domain/identity";
+import { validateRelationship } from "../domain/relationships";
 
 const rawFixtures = import.meta.glob("../../fixtures/documents/**/*.{md,txt}", {
   query: "?raw",
@@ -262,10 +263,39 @@ export function listDuplicates(
   return call<DuplicateGroup[]>("list_duplicates", { workspaceId });
 }
 
-export function listRelationships(
+export interface RelationshipListing {
+  relationships: Relationship[];
+  /** Rows rejected at the UI boundary because their evidence was malformed. */
+  invalidCount: number;
+}
+
+export async function listRelationshipsWithDiagnostics(
   workspaceId: WorkspaceId,
-): Promise<ExplicitReference[]> {
-  return call<ExplicitReference[]>("list_relationships", { workspaceId });
+  spaceFingerprint?: EmbeddingSpaceFingerprint,
+): Promise<RelationshipListing> {
+  const rows = await call<Relationship[]>("list_relationships", {
+    workspaceId,
+    spaceFingerprint,
+  });
+  const relationships: Relationship[] = [];
+  let invalidCount = 0;
+  for (const row of rows) {
+    try {
+      validateRelationship(row);
+      relationships.push(row);
+    } catch {
+      invalidCount += 1;
+    }
+  }
+  return { relationships, invalidCount };
+}
+
+export async function listRelationships(
+  workspaceId: WorkspaceId,
+  spaceFingerprint?: EmbeddingSpaceFingerprint,
+): Promise<Relationship[]> {
+  return (await listRelationshipsWithDiagnostics(workspaceId, spaceFingerprint))
+    .relationships;
 }
 
 /** Returns the space fingerprint; vectors are compared only within one space. */
