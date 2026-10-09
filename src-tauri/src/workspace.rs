@@ -69,6 +69,22 @@ pub struct DocumentText {
     pub content_hash: String,
     pub size_bytes: u64,
     pub modified_at_ms: Option<u64>,
+    /// PDFs only: each page's UTF-8 byte range in `content`, in page order.
+    /// Omitted for TXT and Markdown.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub pages: Vec<PageRange>,
+    /// PDFs only: pages whose text could not be extracted, so the reader can say so.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unreadable_pages: Vec<u32>,
+}
+
+/// One PDF page's text in `DocumentText::content`, as UTF-8 byte offsets.
+#[derive(Serialize, Debug, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PageRange {
+    pub page: u32,
+    pub start: usize,
+    pub end: usize,
 }
 
 /// The authorized folders of this session. A command reaches the filesystem
@@ -250,13 +266,22 @@ pub fn read_text(root: &Path, relative: &str) -> Result<DocumentText, FolioError
         // Text-based PDFs are read/index-only. `content` is the extracted text
         // (pages joined by a blank line); the hash and size are of the file bytes.
         let bytes = read_bounded(&path, extract::MAX_PDF_BYTES)?;
-        let content = extract::document_text(MediaKind::Pdf, &bytes)
+        let extracted = extract::document_pages(MediaKind::Pdf, &bytes)
             .map_err(|failure| failure.with_detail("path", relative))?;
+        let pages = extracted
+            .pages
+            .iter()
+            .filter_map(|(page, range)| {
+                page.map(|page| PageRange { page, start: range.start, end: range.end })
+            })
+            .collect();
         return Ok(DocumentText {
             content_hash: content_hash(&bytes),
             size_bytes: bytes.len() as u64,
             modified_at_ms: metadata.modified().ok().and_then(epoch_ms),
-            content,
+            content: extracted.text,
+            pages,
+            unreadable_pages: extracted.skipped_pages,
         });
     }
     let file = fs::File::open(&path).map_err(read_failure)?;
@@ -283,6 +308,8 @@ pub fn read_text(root: &Path, relative: &str) -> Result<DocumentText, FolioError
         size_bytes: content.as_bytes().len() as u64,
         modified_at_ms: metadata.modified().ok().and_then(epoch_ms),
         content,
+        pages: Vec::new(),
+        unreadable_pages: Vec::new(),
     })
 }
 
@@ -615,6 +642,38 @@ mod tests {
             read_text(root.path(), "scan.pdf").unwrap_err().code,
             ErrorCode::DocumentNotText
         );
+    }
+
+    #[test]
+    fn returns_each_pdf_page_range_in_the_read_text() {
+        let root = tempfile::tempdir().unwrap();
+        let pdf = extract::testpdf::text_pdf(&[&["Unang pahina ng gabay."], &["Ikalawang pahina, pirmahan."]]);
+        fs::write(root.path().join("dalawa.pdf"), &pdf).unwrap();
+        let read = read_text(root.path(), "dalawa.pdf").unwrap();
+        assert_eq!(read.pages.iter().map(|range| range.page).collect::<Vec<_>>(), vec![1, 2]);
+        let (first, second) = (&read.pages[0], &read.pages[1]);
+        assert!(read.content[first.start..first.end].contains("Unang pahina ng gabay."));
+        assert!(read.content[second.start..second.end].contains("Ikalawang pahina, pirmahan."));
+        assert!(first.end <= second.start && second.end <= read.content.len());
+        assert!(read.unreadable_pages.is_empty());
+        // The hash still covers the file bytes, so cited passages stay valid.
+        assert_eq!(read.content_hash, content_hash(&pdf));
+        let json = serde_json::to_value(&read).unwrap();
+        assert_eq!(json["pages"][1]["page"], 2);
+        assert!(json.get("unreadablePages").is_none());
+        // When present, unreadable pages use the camelCase key the reader reads.
+        let partly = DocumentText { unreadable_pages: vec![2], ..read };
+        assert_eq!(serde_json::to_value(&partly).unwrap()["unreadablePages"], serde_json::json!([2]));
+    }
+
+    #[test]
+    fn text_documents_have_no_page_ranges() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("tala.md"), "# Tala\n\nWalang pahina.").unwrap();
+        let read = read_text(root.path(), "tala.md").unwrap();
+        assert!(read.pages.is_empty() && read.unreadable_pages.is_empty());
+        let json = serde_json::to_value(&read).unwrap();
+        assert!(json.get("pages").is_none() && json.get("unreadablePages").is_none());
     }
 
     #[test]

@@ -1651,6 +1651,8 @@ mod tests {
             content_hash: "sha256:observed".into(),
             size_bytes: 15,
             modified_at_ms: Some(42),
+            pages: Vec::new(),
+            unreadable_pages: Vec::new(),
         };
         let record = document_record(
             &root,
