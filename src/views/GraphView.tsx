@@ -1,9 +1,18 @@
 import { ArrowLeftRight, ArrowRight, Waypoints } from "lucide-react";
-import { useEffect, useId, useState, type KeyboardEvent } from "react";
+import {
+  useDeferredValue,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import { folderChoices } from "../app/fileActions";
 import type { RelationshipsState } from "../app/useRelationships";
 import type { WorkspaceState } from "../app/useWorkspace";
 import { describeConnection } from "../domain/connections";
+import { hasSearchWords } from "../domain/discovery";
 import type { DocumentRecord } from "../domain/contracts";
 import {
   folderSpread,
@@ -19,6 +28,7 @@ import { Panel } from "../ui/Panel";
 import {
   ConnectionEvidence,
   CoverageNote,
+  folderLocation,
   originalLocation,
 } from "./Connections";
 
@@ -57,10 +67,12 @@ function PairList({
   pairs,
   workspace,
   relations,
+  onOpen,
 }: {
   pairs: GraphPair[];
   workspace: WorkspaceState;
   relations: RelationshipsState;
+  onOpen: (document: DocumentRecord) => void;
 }) {
   const byId = new Map(workspace.documents.map((d) => [d.id, d]));
   return (
@@ -81,7 +93,7 @@ function PairList({
               <FileEnd
                 document={first}
                 workspace={workspace}
-                onOpen={() => workspace.selectDocument(first)}
+                onOpen={() => onOpen(first)}
               />
               {directed ? (
                 <ArrowRight size={16} aria-label="links to" />
@@ -91,7 +103,7 @@ function PairList({
               <FileEnd
                 document={second}
                 workspace={workspace}
-                onOpen={() => workspace.selectDocument(second)}
+                onOpen={() => onOpen(second)}
               />
             </div>
             <p className="connection-provenance">
@@ -144,7 +156,7 @@ function scopeTitle(start: GraphStart, byId: Map<string, DocumentRecord>) {
     case "folder":
       return `Connections in ${start.folder}`;
     case "topic":
-      return start.term.trim()
+      return hasSearchWords(start.term)
         ? `Connections about “${start.term.trim()}”`
         : "Connections about a topic";
   }
@@ -166,13 +178,17 @@ export function GraphView({
   const { request } = relations;
   useEffect(request, [request]);
   const ids = useId();
-  const documents = [...workspace.documents].sort((a, b) =>
-    a.relativePath.localeCompare(b.relativePath),
+  const documents = useMemo(
+    () =>
+      [...workspace.documents].sort((a, b) =>
+        a.relativePath.localeCompare(b.relativePath),
+      ),
+    [workspace.documents],
   );
   const folders = folderChoices(workspace.documents).filter(Boolean);
   const byId = new Map(documents.map((d) => [d.id, d]));
 
-  const [kind, setKind] = useState<StartKind>(() =>
+  const [chosenKind, setKind] = useState<StartKind>(() =>
     workspace.selected ? "file" : "all",
   );
   const [fileId, setFileId] = useState(
@@ -186,26 +202,49 @@ export function GraphView({
   }, [selectedId]);
   const [folder, setFolder] = useState(() => folders[0] ?? "");
   const [term, setTerm] = useState("");
+  // Typing stays responsive while the list catches up with the term.
+  const deferredTerm = useDeferredValue(term);
 
-  const start: GraphStart =
-    kind === "file"
-      ? {
-          kind,
-          documentId: byId.has(fileId) ? fileId : (documents[0]?.id ?? ""),
-        }
-      : kind === "folder"
-        ? {
-            kind,
-            folder: folders.includes(folder) ? folder : (folders[0] ?? ""),
-          }
-        : kind === "topic"
-          ? { kind, term }
-          : { kind };
-  const pairs = graphPairs(documents, relations.connectionsOf, start);
+  // A folder with no subfolders has nothing to choose, so show everything.
+  const kind = chosenKind === "folder" && !folders.length ? "all" : chosenKind;
+  const documentId = byId.has(fileId) ? fileId : (documents[0]?.id ?? "");
+  const folderName = folders.includes(folder) ? folder : (folders[0] ?? "");
+  const start: GraphStart = useMemo(
+    () =>
+      kind === "file"
+        ? { kind, documentId }
+        : kind === "folder"
+          ? { kind, folder: folderName }
+          : kind === "topic"
+            ? { kind, term: deferredTerm }
+            : { kind },
+    [kind, documentId, folderName, deferredTerm],
+  );
+  const { connectionsOf } = relations;
+  const pairs = useMemo(
+    () => graphPairs(documents, connectionsOf, start),
+    [documents, connectionsOf, start],
+  );
   const confirmed = pairs.filter((pair) => isConfirmed(pair.connection));
   const suggested = pairs.filter((pair) => !isConfirmed(pair.connection));
   const spread = folderSpread(pairs);
-  const root = workspace.workspace?.rootPath ?? "Sample files";
+
+  // Opening a file from the list in "A file" mode rebuilds the list, which
+  // removes the button that had focus. Move focus to the new title so the
+  // keyboard user stays in the list and hears where they are.
+  const listTitle = useRef<HTMLHeadingElement>(null);
+  const walking = useRef(false);
+  function openFile(document: DocumentRecord) {
+    walking.current = kind === "file" && document.id !== documentId;
+    void workspace.selectDocument(document);
+  }
+  useEffect(() => {
+    if (!walking.current) return;
+    walking.current = false;
+    const active = window.document.activeElement;
+    if (!active || active === window.document.body || !active.isConnected)
+      listTitle.current?.focus();
+  }, [documentId]);
 
   return (
     <div className="view">
@@ -287,7 +326,7 @@ export function GraphView({
               />
               <p id={`${ids}-topic-help`} className="field-help">
                 Keyword match on file names and the text of files Folio has
-                read.
+                read. A file matches if it has any of the words.
               </p>
             </div>
           )}
@@ -296,6 +335,7 @@ export function GraphView({
 
       <Panel
         title={scopeTitle(start, byId)}
+        titleRef={listTitle}
         actions={
           <>
             {workspace.source === "samples" && <Badge>Sample files</Badge>}
@@ -319,6 +359,7 @@ export function GraphView({
                   pairs={confirmed}
                   workspace={workspace}
                   relations={relations}
+                  onOpen={openFile}
                 />
               </section>
             )}
@@ -328,13 +369,14 @@ export function GraphView({
                   Suggested <Badge>{suggested.length}</Badge>
                 </h3>
                 <p className="muted">
-                  Found by comparing passages. Check the evidence before relying
-                  on them.
+                  Similar passages and possible shared facts. Check the evidence
+                  before relying on them.
                 </p>
                 <PairList
                   pairs={suggested}
                   workspace={workspace}
                   relations={relations}
+                  onOpen={openFile}
                 />
               </section>
             )}
@@ -343,7 +385,7 @@ export function GraphView({
           <EmptyState
             icon={<Waypoints size={24} />}
             title={
-              start.kind === "topic" && !start.term.trim()
+              start.kind === "topic" && !hasSearchWords(start.term)
                 ? "Type a topic to start"
                 : "No connections found"
             }
@@ -360,7 +402,7 @@ export function GraphView({
             {spread.map(({ folder: name, files }) => (
               <li key={name}>
                 <span className="related-path">
-                  {name ? `${root}/${name}` : root}
+                  {folderLocation(name, workspace)}
                 </span>
                 <Badge>
                   {files} {files === 1 ? "file" : "files"}

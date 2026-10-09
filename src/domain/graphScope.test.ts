@@ -133,6 +133,13 @@ describe("graphPairs", () => {
     ).toEqual([]);
   });
 
+  it("matches nothing for a topic with no letters or digits", () => {
+    for (const term of ["?", "#", "—", " ¿! "])
+      expect(graphPairs(ALL, connectionsOf, { kind: "topic", term })).toEqual(
+        [],
+      );
+  });
+
   it("is empty for a file that is no longer listed", () => {
     expect(
       graphPairs(ALL, connectionsOf, { kind: "file", documentId: "gone" }),

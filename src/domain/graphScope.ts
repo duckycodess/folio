@@ -1,6 +1,6 @@
 import type { Connection } from "./connections";
 import type { DocumentId, DocumentRecord } from "./contracts";
-import { keywordSearch } from "./discovery";
+import { hasSearchWords, keywordSearch } from "./discovery";
 
 /** Where a Graph view starts: everything, one file, one folder or a topic. */
 export type GraphStart =
@@ -43,7 +43,7 @@ export function startingFiles(
       );
     case "topic":
       return new Set(
-        start.term.trim()
+        hasSearchWords(start.term)
           ? keywordSearch(documents, start.term).map(
               (result) => result.document.id,
             )

@@ -20,6 +20,14 @@ function words(value: string): string[] {
 }
 
 /**
+ * Whether a query has any letters or digits to search for. Without them,
+ * `keywordSearch` has nothing to match and keeps every document.
+ */
+export function hasSearchWords(query: string): boolean {
+  return words(query).length > 0;
+}
+
+/**
  * Development fallback. This is keyword filtering, not semantic retrieval, and
  * `method` says so. Passages are produced only for documents whose text and
  * revision are both known, so evidence is never attached to an unknown
