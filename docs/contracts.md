@@ -282,6 +282,13 @@ example with placeholder values, not a measurement.
   An unavailable peak is `null` with `unavailableReason`.
   `peakProcessRamBytes` is the generation-process entry for generation tasks,
   the Folio-process entry for retrieval, or `null`.
+- **Outcome.** `outcomeKind` is `valid`, `invalidModelOutput`, `timedOut`,
+  `runtimeError` or `cancelled`, and `retryNeeded` is true exactly when it is
+  neither `valid` nor `cancelled`. A failed outcome has `correctness: false`, or
+  `null` for a summary, which is never graded here; the cause is `outcomeKind`,
+  so a timeout is never mistaken for a summary that is merely waiting for review.
+  A resolved `InvalidModelOutput` result is `invalidModelOutput`; a provider
+  `TimedOut` is `timedOut`; start and I/O failures are `runtimeError`.
 - **Runtime backend.** `runtimeDetail.backend` (llama.cpp rows) keeps the
   runtime id, the manifest platform, the `llama-server --list-devices` output as
   printed and `gpuOffload`. Folio passes no offload setting today, so

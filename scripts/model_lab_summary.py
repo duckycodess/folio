@@ -36,6 +36,8 @@ def catalog(record):
 
 
 def outcome(record):
+    if record["outcomeKind"] != "valid":
+        return f'FAILED: {record["outcomeKind"]} (retry needed)' if record["retryNeeded"] else record["outcomeKind"]
     if record["correctness"] is None:
         return "Not reviewed" if record["task"] == "summary" else "not graded"
     return "matches labels" if record["correctness"] else "does not match labels"
@@ -53,6 +55,13 @@ def main(path):
         )
         if run.get("error"):
             lines.append(f'Run error: {run["error"]}')
+    counts = {}
+    for r in data["records"]:
+        per_model = counts.setdefault(r["modelId"], {})
+        per_model[r["outcomeKind"]] = per_model.get(r["outcomeKind"], 0) + 1
+    lines += ["", "Outcomes per model (a failed case is not an ungraded one):", ""]
+    for model, kinds in counts.items():
+        lines.append(f"- `{model}`: " + ", ".join(f"{k} {n}" for k, n in sorted(kinds.items())))
     lines += [
         "",
         "Hosted-runner measurements: not an 8 GB device, not installed size, not desktop or GUI evidence. "
@@ -60,7 +69,7 @@ def main(path):
         "One cold/repeat pair per case is an initial observation, not a stable estimate. "
         "Peaks are process-lifetime peaks, not per-task memory.",
         "",
-        "| Task | Case | Model | Request | Start ms | Task ms | Outcome (labels) | Peak memory |",
+        "| Task | Case | Model | Catalog | Request | Start ms | Task ms | Outcome (labels) | GPU offload | Peak memory |",
         "| --- | --- | --- | --- | --- | ---: | ---: | --- | --- | --- |",
     ]
     for r in data["records"]:

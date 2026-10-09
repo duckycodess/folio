@@ -8,7 +8,7 @@
 use crate::contracts::{
     GroundedResult, InterpretationResult, OperationProposal, SearchResult, SourcePassage,
 };
-use crate::lab::record::Check;
+use crate::lab::record::{Check, OutcomeKind};
 use crate::lab::suite::SuiteCase;
 
 /// Retrieval is judged on the top five results.
@@ -16,6 +16,9 @@ pub const RETRIEVAL_LIMIT: usize = 5;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Evaluation {
+    /// How the case ended. A failure is `false` (or `None` for a summary), never
+    /// silently the same as "not graded".
+    pub outcome: OutcomeKind,
     /// `None` for a summary, or when nothing could be judged.
     pub correctness: Option<bool>,
     pub checks: Vec<Check>,
@@ -35,6 +38,7 @@ fn all_passed(checks: &[Check]) -> bool {
 
 fn wrong_case(task: &str, case: &SuiteCase) -> Evaluation {
     Evaluation {
+        outcome: OutcomeKind::Valid,
         correctness: None,
         checks: vec![check(
             "caseMatchesTask",
@@ -106,6 +110,7 @@ pub fn check_retrieval(case: &SuiteCase, results: &[SearchResult]) -> Evaluation
         ));
     }
     Evaluation {
+        outcome: OutcomeKind::Valid,
         correctness: Some(all_passed(
             &checks
                 .iter()
@@ -205,8 +210,19 @@ pub fn check_interpretation(case: &SuiteCase, result: &InterpretationResult) -> 
         }
     };
     Evaluation {
+        outcome: outcome_of(result),
         correctness: Some(all_passed(&checks)),
         checks,
+    }
+}
+
+/// A resolved result the model's output could not produce is an invalid output,
+/// not a wrong answer.
+fn outcome_of(result: &InterpretationResult) -> OutcomeKind {
+    if matches!(result, InterpretationResult::InvalidModelOutput { .. }) {
+        OutcomeKind::InvalidModelOutput
+    } else {
+        OutcomeKind::Valid
     }
 }
 
@@ -308,6 +324,7 @@ pub fn check_summary(
         checks.push(required_fact_check(fact, &summary.text));
     }
     Evaluation {
+        outcome: OutcomeKind::Valid,
         correctness: None,
         checks,
     }
@@ -375,6 +392,7 @@ pub fn check_edit(
         .cloned()
         .collect();
     Evaluation {
+        outcome: outcome_of(result),
         correctness: Some(all_passed(&judged)),
         checks,
     }
@@ -682,6 +700,25 @@ mod tests {
         assert_eq!(
             check_edit(&case, &wrong_file, true).correctness,
             Some(false)
+        );
+    }
+
+    #[test]
+    fn an_invalid_model_output_is_its_own_outcome_and_never_correct() {
+        let invalid = InterpretationResult::InvalidModelOutput {
+            raw_output_digest: "sha256:x".into(),
+        };
+        for evaluation in [
+            check_interpretation(&case("action-taglish"), &invalid),
+            check_edit(&case("ripple-deadline"), &invalid, true),
+        ] {
+            assert_eq!(evaluation.outcome, OutcomeKind::InvalidModelOutput);
+            assert_eq!(evaluation.correctness, Some(false));
+        }
+        let good = edit_proposal("projects/project-plan.md", "October 20", "October 23");
+        assert_eq!(
+            check_interpretation(&case("action-taglish"), &good).outcome,
+            OutcomeKind::Valid
         );
     }
 

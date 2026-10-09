@@ -28,8 +28,8 @@ use crate::lab::host::{hardware_summary, host_info, parse_backend_log, prompt_fi
 use crate::lab::memory::PeakReading;
 use crate::lab::record::{
     ApplyOutcome, BenchmarkRecord, BenchmarkTask, Check, Conditions, HostInfo, MemoryEntry,
-    MemoryProcess, ModelRef, Observation, PageCache, RequestPosition, RunStatus, RunSummary,
-    RuntimeDetail, SchemaVersion, ServerSettings, StartupWarmup, Timing,
+    MemoryProcess, ModelRef, Observation, OutcomeKind, PageCache, RequestPosition, RunStatus,
+    RunSummary, RuntimeDetail, SchemaVersion, ServerSettings, StartupWarmup, Timing,
 };
 use crate::lab::sink::LabSink;
 use crate::lab::suite::{Corpus, Suite, SuiteCase};
@@ -406,6 +406,8 @@ impl LabRunner<'_> {
             memory: measured.memory,
             model_file_bytes,
             objective_checks: measured.evaluation.checks,
+            outcome_kind: measured.evaluation.outcome,
+            retry_needed: measured.evaluation.outcome.retry_needed(),
             output_sha256: sha256_bytes(
                 &serde_json::to_vec(&measured.output).map_err(CoreError::from)?,
             ),
@@ -417,14 +419,29 @@ impl LabRunner<'_> {
         self.sink.record(&record)
     }
 
-    fn failure(error: &CoreError) -> (Evaluation, Value) {
-        let code = match error {
-            CoreError::Provider(failure) => Some(format!("{:?}", failure.code)),
-            _ => None,
+    /// A case that produced no answer. The cause is the outcome kind; the task
+    /// is graded `false` (a summary stays `null`) so a failure never reads as
+    /// "not graded yet".
+    fn failure(task: BenchmarkTask, error: &CoreError) -> (Evaluation, Value) {
+        let (code, outcome) = match error {
+            CoreError::Provider(failure) => (
+                Some(format!("{:?}", failure.code)),
+                match failure.code {
+                    ProviderErrorCode::TimedOut => OutcomeKind::TimedOut,
+                    ProviderErrorCode::InvalidModelOutput => OutcomeKind::InvalidModelOutput,
+                    _ => OutcomeKind::RuntimeError,
+                },
+            ),
+            _ => (None, OutcomeKind::RuntimeError),
         };
         (
             Evaluation {
-                correctness: None,
+                outcome,
+                correctness: if task == BenchmarkTask::Summary {
+                    None
+                } else {
+                    Some(false)
+                },
                 checks: vec![Check {
                     name: "completed".into(),
                     passed: Some(false),
@@ -520,7 +537,7 @@ impl LabRunner<'_> {
             let task_duration_ms = started.elapsed().as_millis() as u64;
             let (evaluation, output) = match attempt {
                 Err(error) if is_cancelled(&error) => return Ok(Flow::Cancelled),
-                Err(error) => Self::failure(&error),
+                Err(error) => Self::failure(BenchmarkTask::Retrieval, &error),
                 Ok((query, results)) => {
                     let gate = retriever.evidence_gate(&query)?;
                     let ranked: Vec<Value> = results
@@ -657,7 +674,7 @@ impl LabRunner<'_> {
             let requests_in_task = lab.take_requests();
             let (evaluation, output) = match attempt {
                 Err(error) if is_cancelled(&error) => return Ok(Flow::Cancelled),
-                Err(error) => Self::failure(&error),
+                Err(error) => Self::failure(task, &error),
                 Ok(done) => done,
             };
             let pid = handle.generator.server_pid();
@@ -717,14 +734,15 @@ impl LabRunner<'_> {
         error: &CoreError,
         started: Instant,
     ) -> CoreResult<Flow> {
-        let (evaluation, mut output) = Self::failure(error);
+        let (failed, mut output) = Self::failure(task, error);
         output["stage"] = json!("startup");
         let evaluation = Evaluation {
-            correctness: None,
+            outcome: failed.outcome,
+            correctness: failed.correctness,
             checks: vec![Check {
                 name: "serverStarted".into(),
                 passed: Some(false),
-                detail: evaluation.checks[0].detail.clone(),
+                detail: failed.checks[0].detail.clone(),
             }],
         };
         let reading = PeakReading {
@@ -947,6 +965,14 @@ mod tests {
             _cancel: &AtomicBool,
         ) -> CoreResult<Value> {
             self.requests.fetch_add(1, Ordering::SeqCst);
+            if self.id.starts_with("timeout-") {
+                return Err(CoreError::Provider(
+                    crate::error::NativeProviderErrorError::new(
+                        ProviderErrorCode::TimedOut,
+                        "scripted generation timeout",
+                    ),
+                ));
+            }
             if budget.cache_prompt == Some(false) {
                 self.saw_cache_prompt_off.store(true, Ordering::SeqCst);
             }
@@ -1332,6 +1358,48 @@ mod tests {
     }
 
     #[test]
+    fn a_timed_out_case_is_a_failure_with_a_cause_not_an_ungraded_summary() {
+        let harness = harness();
+        let mut sink = MemorySink::default();
+        let cancel = AtomicBool::new(false);
+        run_with(&harness, &["timeout-x"], &cancel, &mut sink)
+            .0
+            .unwrap();
+        let records: Vec<&BenchmarkRecord> = sink
+            .records
+            .iter()
+            .filter(|r| r.model_id == "timeout-x")
+            .collect();
+        assert_eq!(records.len(), 6);
+        for record in records {
+            assert_eq!(
+                record.outcome_kind,
+                OutcomeKind::TimedOut,
+                "{}",
+                record.case_id
+            );
+            assert!(record.retry_needed);
+            let expected = if record.task == BenchmarkTask::Summary {
+                None
+            } else {
+                Some(false)
+            };
+            assert_eq!(record.correctness, expected);
+            assert_eq!(record.objective_checks[0].name, "completed");
+            assert_eq!(record.objective_checks[0].passed, Some(false));
+        }
+        // A model that answers is valid, and a valid summary is still ungraded.
+        let mut healthy = MemorySink::default();
+        run_with(&harness, &["model-a"], &cancel, &mut healthy)
+            .0
+            .unwrap();
+        assert!(healthy
+            .records
+            .iter()
+            .all(|r| r.outcome_kind == OutcomeKind::Valid && !r.retry_needed));
+    }
+
+    #[test]
     fn a_model_that_cannot_start_is_recorded_for_each_case_and_the_run_continues() {
         let harness = harness();
         let mut sink = MemorySink::default();
@@ -1347,7 +1415,14 @@ mod tests {
             .collect();
         assert_eq!(broken.len(), 3, "one record per generation case");
         for record in &broken {
-            assert_eq!(record.correctness, None);
+            assert_eq!(record.outcome_kind, OutcomeKind::RuntimeError);
+            assert!(record.retry_needed);
+            let expected = if record.task == BenchmarkTask::Summary {
+                None
+            } else {
+                Some(false)
+            };
+            assert_eq!(record.correctness, expected, "{:?}", record.task);
             assert_eq!(record.timing.requests_in_task, 0);
             assert_eq!(record.objective_checks[0].name, "serverStarted");
             assert_eq!(record.objective_checks[0].passed, Some(false));

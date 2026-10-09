@@ -251,6 +251,14 @@ function isBenchmarkRecord(value: unknown): value is BenchmarkRecord {
         (entry.peakBytes !== null ||
           typeof entry.unavailableReason === "string"),
     ) &&
+    [
+      "valid",
+      "invalidModelOutput",
+      "timedOut",
+      "runtimeError",
+      "cancelled",
+    ].some((kind) => kind === value.outcomeKind) &&
+    typeof value.retryNeeded === "boolean" &&
     Array.isArray(value.objectiveChecks) &&
     Array.isArray(value.reviews) &&
     isRecord(value.apply) &&
@@ -327,6 +335,24 @@ describe("Model Lab record contract (issue #8)", () => {
     };
     expect(candidate.model.evaluationOnly).toBe(
       candidate.model.catalog === "evaluationCandidate",
+    );
+  });
+
+  it("tells a failed case from an ungraded one", () => {
+    const record = benchmarkRecord as unknown as BenchmarkRecord;
+    expect(record.outcomeKind).toBe("valid");
+    expect(record.retryNeeded).toBe(false);
+    expect(record.correctness).toBeNull(); // a valid summary awaits a person
+    const failed: BenchmarkRecord = {
+      ...record,
+      outcomeKind: "timedOut",
+      retryNeeded: true,
+    };
+    // Same `null` for a summary, but the cause and the retry flag differ.
+    expect(failed.correctness).toBeNull();
+    expect(failed.outcomeKind).not.toBe(record.outcomeKind);
+    expect(isBenchmarkRecord({ ...benchmarkRecord, outcomeKind: "hung" })).toBe(
+      false,
     );
   });
 

@@ -886,6 +886,17 @@ export interface BenchmarkRecord extends BenchmarkResult {
   /** Equals `modelDiskBytes`: the model's own files, never installed size. */
   modelFileBytes: number;
   objectiveChecks: BenchmarkCheck[];
+  /**
+   * How the case ended. `valid` means the model produced an answer the label
+   * checks (or, for a summary, a reviewer) can judge. Any other kind is a
+   * failure to produce one: `correctness` is then `false`, or `null` for a
+   * summary, and the cause is here, so a failure is never mistaken for
+   * "not graded yet".
+   */
+  outcomeKind:
+    "valid" | "invalidModelOutput" | "timedOut" | "runtimeError" | "cancelled";
+  /** True exactly when `outcomeKind` is not `valid` or `cancelled`. */
+  retryNeeded: boolean;
   /** The full raw outcome, kept so a reviewer can read what was produced. */
   output: unknown;
   outputSha256: string;

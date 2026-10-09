@@ -97,6 +97,8 @@
     },
     { "name": "uncitedSentenceCount", "passed": null, "detail": "not evaluated" }
   ],
+  "outcomeKind": "valid",
+  "retryNeeded": false,
   "output": { "text": "contract example output, not a model result" },
   "outputSha256": "4444444444444444444444444444444444444444444444444444444444444444",
   "reviews": [],

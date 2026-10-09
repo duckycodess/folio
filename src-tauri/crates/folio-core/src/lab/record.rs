@@ -102,6 +102,26 @@ pub enum RuntimeName {
     OnnxRuntime,
 }
 
+/// How a case ended. `valid` means the model produced an answer that the
+/// label checks (or, for a summary, a reviewer) can judge. Anything else is a
+/// failure to produce one, and it is never the same as "not graded yet".
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OutcomeKind {
+    Valid,
+    InvalidModelOutput,
+    TimedOut,
+    RuntimeError,
+    Cancelled,
+}
+
+impl OutcomeKind {
+    /// A retry may change the result unless the case was valid or the user cancelled.
+    pub fn retry_needed(self) -> bool {
+        !matches!(self, Self::Valid | Self::Cancelled)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ReviewStatus {
@@ -336,6 +356,9 @@ pub struct BenchmarkRecord {
     pub memory: Vec<MemoryEntry>,
     pub model_file_bytes: u64,
     pub objective_checks: Vec<Check>,
+    pub outcome_kind: OutcomeKind,
+    /// True exactly when `outcome_kind` is not `valid` or `cancelled`.
+    pub retry_needed: bool,
     pub output: Value,
     pub output_sha256: String,
     pub reviews: Vec<Review>,
@@ -371,6 +394,29 @@ impl BenchmarkRecord {
             return Err(invalid(
                 "a cold record starts at request 0 since process start",
             ));
+        }
+        if self.retry_needed != self.outcome_kind.retry_needed() {
+            return Err(invalid(
+                "retryNeeded must be true exactly when the outcome is not valid or cancelled",
+            ));
+        }
+        if !matches!(
+            self.outcome_kind,
+            OutcomeKind::Valid | OutcomeKind::Cancelled
+        ) {
+            // A failure to produce an answer is `false` where the labels grade the
+            // task and stays `null` for a summary, which is never graded here. The
+            // cause is `outcomeKind`, so a failure is never mistaken for "ungraded".
+            let expected = if self.task == BenchmarkTask::Summary {
+                None
+            } else {
+                Some(false)
+            };
+            if self.correctness != expected {
+                return Err(invalid(
+                    "a failed outcome has correctness false, or null for a summary",
+                ));
+            }
         }
         if self.task == BenchmarkTask::Summary && self.correctness.is_some() {
             return Err(invalid(
@@ -466,6 +512,51 @@ mod tests {
         assert_eq!(value["model"]["catalog"], "evaluationCandidate");
         assert_eq!(value["model"]["evaluationOnly"], true);
         assert!(serde_json::from_value::<BenchmarkRecord>(value).is_ok());
+    }
+
+    #[test]
+    fn a_failed_outcome_is_never_mistaken_for_an_ungraded_one() {
+        // A valid summary is ungraded until a person reviews it.
+        let summary = golden();
+        assert_eq!(summary.outcome_kind, OutcomeKind::Valid);
+        assert!(!summary.retry_needed);
+        assert_eq!(summary.correctness, None);
+
+        // A summary that timed out is also null, but outcomeKind says why and retry is needed.
+        let mut timed_out = golden();
+        timed_out.outcome_kind = OutcomeKind::TimedOut;
+        assert!(
+            timed_out.validate().is_err(),
+            "retryNeeded must follow the outcome"
+        );
+        timed_out.retry_needed = true;
+        timed_out.validate().unwrap();
+
+        // An interpretation that timed out is graded false, not null.
+        let mut interpretation = golden();
+        interpretation.task = BenchmarkTask::Interpretation;
+        interpretation.outcome_kind = OutcomeKind::RuntimeError;
+        interpretation.retry_needed = true;
+        assert!(
+            interpretation.validate().is_err(),
+            "null would look ungraded"
+        );
+        interpretation.correctness = Some(false);
+        interpretation.validate().unwrap();
+        interpretation.correctness = Some(true);
+        assert!(
+            interpretation.validate().is_err(),
+            "a failure cannot be correct"
+        );
+
+        // A cancelled case needs no retry.
+        let mut cancelled = golden();
+        cancelled.outcome_kind = OutcomeKind::Cancelled;
+        cancelled.validate().unwrap();
+
+        let value = serde_json::to_value(&timed_out).unwrap();
+        assert_eq!(value["outcomeKind"], "timedOut");
+        assert_eq!(value["retryNeeded"], true);
     }
 
     #[test]
