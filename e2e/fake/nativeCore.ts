@@ -4,6 +4,7 @@ import type {
   Approval,
   BatchResult,
   BatchStopReason,
+  CollectionSuggestions,
   ContentHash,
   DocumentId,
   DuplicateGroup,
@@ -15,6 +16,7 @@ import type {
   ImpactCandidate,
   IndexProgress,
   IndexedDocument,
+  KeptMember,
   MediaType,
   ModelDescriptor,
   ModelInstallState,
@@ -32,6 +34,7 @@ import type {
   UndoConflict,
   UndoPreflight,
   UndoReport,
+  VirtualCollection,
   WorkspaceInfo,
 } from "../../src/domain/contracts";
 import type {
@@ -284,6 +287,21 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
 
   const index = new Map<RelativePath, Indexed>();
   const plans = new Map<string, StoredPlan>();
+  /** Virtual collections: references only, as the native core stores them. */
+  interface StoredCollection {
+    id: string;
+    name: string;
+    createdAt: number;
+    updatedAt: number;
+    members: {
+      documentId: DocumentId;
+      relativePath: RelativePath;
+      /** The deletion that took the file out, until it is undone. */
+      removedBy?: string;
+    }[];
+  }
+  const collections = new Map<string, StoredCollection>();
+  let nextCollectionNumber = 1;
   const history: StoredHistory[] = [];
   const listeners = new Map<string, Map<number, (payload: unknown) => void>>();
   const callbacks = new Map<number, (payload: unknown) => void>();
@@ -848,6 +866,7 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
     }
     if (operation.kind === "delete") {
       files.delete(source);
+      followDeletion(source, id);
       return {
         id,
         planId,
@@ -864,6 +883,7 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
     const destination = operation.destinationRelativePath;
     files.delete(source);
     files.set(destination, { ...entry, modifiedAtMs: appliedAt });
+    followRelocation(source, destination);
     return {
       id,
       planId,
@@ -1172,8 +1192,10 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
           mediaType: mediaTypeForPath(appliedPath)!,
           modifiedAtMs: Date.now(),
         });
+        followRestore(entry.id);
       } else if (entry.beforeRelativePath === undefined) {
         files.delete(appliedPath);
+        followRemoval(appliedPath);
       } else if (entry.beforeRelativePath === appliedPath) {
         files.set(appliedPath, {
           ...fileAt(appliedPath),
@@ -1187,6 +1209,7 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
           ...moved,
           modifiedAtMs: Date.now(),
         });
+        followRelocation(appliedPath, entry.beforeRelativePath);
       }
       entry.undoneAt = Date.now();
       undone.push(entry.id);
@@ -1337,8 +1360,27 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
 
   async function organizationSuggestions(
     workspaceId: string,
+    collectionId?: string,
   ): Promise<OrganizationSuggestions> {
     assertWorkspace(workspaceId);
+    const suggestions = await folderSuggestions();
+    if (!collectionId) return suggestions;
+    const members = new Set(
+      collectionView(storedCollection(collectionId))
+        .members.filter((member) => !member.missing)
+        .map((member) => member.documentId),
+    );
+    return {
+      filenames: suggestions.filenames.filter((item) =>
+        members.has(item.documentId),
+      ),
+      duplicateGroups: suggestions.duplicateGroups.filter((group) =>
+        group.documents.some((document) => members.has(document.id)),
+      ),
+    };
+  }
+
+  async function folderSuggestions(): Promise<OrganizationSuggestions> {
     const taken = new Set(indexedPaths().map((path) => path.toLowerCase()));
     const filenames: OrganizationSuggestion[] = [];
     for (const path of indexedPaths()) {
@@ -1377,6 +1419,171 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
       });
     }
     return { duplicateGroups: await duplicateGroups(), filenames };
+  }
+
+  /* ------------------------------------------------- virtual collections */
+
+  function storedCollection(collectionId: string): StoredCollection {
+    const stored = collections.get(collectionId);
+    if (!stored)
+      fail("targetMissing", "That collection no longer exists.", {
+        collectionId,
+      });
+    return stored;
+  }
+
+  function collectionView(stored: StoredCollection): VirtualCollection {
+    return {
+      id: stored.id,
+      workspaceId: options.workspaceId,
+      name: stored.name,
+      createdAt: stored.createdAt,
+      updatedAt: stored.updatedAt,
+      members: stored.members
+        .filter((member) => member.removedBy === undefined)
+        .slice()
+        .sort((a, b) => a.relativePath.localeCompare(b.relativePath))
+        .map(({ documentId, relativePath }) => ({
+          documentId,
+          relativePath,
+          missing: !files.has(relativePath),
+        })),
+    };
+  }
+
+  function collectionName(raw: unknown): string {
+    const name = String(raw ?? "")
+      .split(/\s+/u)
+      .filter(Boolean)
+      .join(" ");
+    if (!name)
+      fail("operationUnsupported", "Give the collection a name.", {
+        reason: "nameEmpty",
+      });
+    if (Array.from(name).length > 80)
+      fail(
+        "operationUnsupported",
+        "Collection names are at most 80 characters.",
+        {
+          reason: "nameInvalid",
+        },
+      );
+    return name;
+  }
+
+  function pathOfMember(documentId: string): RelativePath {
+    const prefix = `${options.workspaceId}:`;
+    if (!documentId.startsWith(prefix))
+      fail(
+        "workspaceNotAuthorized",
+        "That document belongs to a different workspace.",
+      );
+    return documentId.slice(prefix.length);
+  }
+
+  function followRelocation(from: RelativePath, to: RelativePath): void {
+    for (const stored of collections.values()) {
+      stored.members = stored.members.filter(
+        (member) =>
+          member.relativePath !== to ||
+          !stored.members.some((other) => other.relativePath === from),
+      );
+      for (const member of stored.members)
+        if (member.relativePath === from) {
+          member.relativePath = to;
+          member.documentId = documentIdFor(to);
+        }
+    }
+  }
+
+  function followDeletion(path: RelativePath, historyId: string): void {
+    for (const stored of collections.values())
+      for (const member of stored.members)
+        if (member.relativePath === path && member.removedBy === undefined)
+          member.removedBy = historyId;
+  }
+
+  function followRestore(historyId: string): void {
+    for (const stored of collections.values())
+      for (const member of stored.members)
+        if (member.removedBy === historyId) delete member.removedBy;
+  }
+
+  function followRemoval(path: RelativePath): void {
+    for (const stored of collections.values())
+      stored.members = stored.members.filter(
+        (member) => member.relativePath !== path,
+      );
+  }
+
+  async function suggestCollections(
+    workspaceId: string,
+  ): Promise<CollectionSuggestions> {
+    assertWorkspace(workspaceId);
+    const groups = options.collectionGroups;
+    if (!groups)
+      return {
+        status: "embeddingModelMissing",
+        analyzedDocumentCount: 0,
+        truncated: false,
+        naming: "notNeeded",
+        groups: [],
+      };
+    const spaceFingerprint = "folio-space-v1/fake-embedding/fake/none/384/fake";
+    const suggested = [];
+    for (const [at, group] of groups.entries()) {
+      const members = [];
+      for (const path of group.paths.filter((item) => files.has(item))) {
+        const entry = fileAt(path);
+        const contentHash = await hashOf(entry);
+        const line =
+          entry.content.split("\n").find((text) => text.trim()) ?? "";
+        const start = utf8Offset(entry.content, entry.content.indexOf(line));
+        members.push({
+          documentId: documentIdFor(path),
+          relativePath: path,
+          title: titleOf(entry.content, nameOf(path)),
+          contentHash,
+          passage: {
+            documentId: documentIdFor(path),
+            documentContentHash: contentHash,
+            offsetUnit: "utf8Byte" as const,
+            start,
+            end: start + utf8Length(line),
+            text: line,
+          },
+          similarity: 0.9,
+        });
+      }
+      if (members.length < 2) continue;
+      suggested.push({
+        id: `suggested-fake-${at + 1}`,
+        members,
+        cohesion: 0.9,
+        provenance: "embedding" as const,
+        spaceFingerprint,
+        ...(group.name
+          ? {
+              name: {
+                text: group.name,
+                citations: [members[0]!.passage],
+                modelId: "fake-generation",
+                revision: "fake",
+              },
+            }
+          : {}),
+      });
+    }
+    return {
+      status: "grouped",
+      spaceFingerprint,
+      analyzedDocumentCount: files.size,
+      truncated: false,
+      naming: groups.every((group) => group.name)
+        ? "named"
+        : "generationModelMissing",
+      groups: suggested,
+    };
   }
 
   /* --------------------------------------------------------- the commands */
@@ -1574,7 +1781,104 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
     },
 
     async organization_suggestions(args) {
-      return organizationSuggestions(String(args.workspaceId));
+      return organizationSuggestions(
+        String(args.workspaceId),
+        args.collectionId === undefined || args.collectionId === null
+          ? undefined
+          : String(args.collectionId),
+      );
+    },
+
+    async suggest_collections(args) {
+      return suggestCollections(String(args.workspaceId));
+    },
+
+    async cancel_generation() {
+      return undefined;
+    },
+
+    async list_collections(args) {
+      assertWorkspace(String(args.workspaceId));
+      return Array.from(collections.values()).reverse().map(collectionView);
+    },
+
+    async keep_collection(args) {
+      assertWorkspace(String(args.workspaceId));
+      const name = collectionName(args.name);
+      const members = (args.members as KeptMember[]) ?? [];
+      const unique = members.filter(
+        (member, at) =>
+          members.findIndex(
+            (other) => other.documentId === member.documentId,
+          ) === at,
+      );
+      if (unique.length < 2)
+        fail("operationUnsupported", "A collection needs at least two files.", {
+          reason: "tooFewMembers",
+        });
+      const kept = [];
+      for (const member of unique) {
+        const path = pathOfMember(member.documentId);
+        if ((await hashOf(fileAt(path))) !== member.expectedContentHash)
+          fail(
+            "targetChanged",
+            "A file in this group changed since Folio analyzed it. Analyze again.",
+            { path },
+          );
+        kept.push({ documentId: member.documentId, relativePath: path });
+      }
+      const now = Date.now();
+      const stored: StoredCollection = {
+        id: `collection-${nextCollectionNumber++}`,
+        name,
+        createdAt: now,
+        updatedAt: now,
+        members: kept,
+      };
+      collections.set(stored.id, stored);
+      return collectionView(stored);
+    },
+
+    async rename_collection(args) {
+      assertWorkspace(String(args.workspaceId));
+      const stored = storedCollection(String(args.collectionId));
+      stored.name = collectionName(args.name);
+      stored.updatedAt = Date.now();
+      return collectionView(stored);
+    },
+
+    async remove_collection(args) {
+      assertWorkspace(String(args.workspaceId));
+      storedCollection(String(args.collectionId));
+      collections.delete(String(args.collectionId));
+      return undefined;
+    },
+
+    async add_collection_members(args) {
+      assertWorkspace(String(args.workspaceId));
+      const stored = storedCollection(String(args.collectionId));
+      for (const documentId of (args.documentIds as string[]) ?? []) {
+        const path = pathOfMember(documentId);
+        fileAt(path);
+        const existing = stored.members.find(
+          (member) => member.documentId === documentId,
+        );
+        if (existing) delete existing.removedBy;
+        else stored.members.push({ documentId, relativePath: path });
+      }
+      stored.updatedAt = Date.now();
+      return collectionView(stored);
+    },
+
+    async remove_collection_members(args) {
+      assertWorkspace(String(args.workspaceId));
+      const stored = storedCollection(String(args.collectionId));
+      const removed = new Set((args.documentIds as string[]) ?? []);
+      stored.members = stored.members.filter(
+        (member) => !removed.has(member.documentId),
+      );
+      stored.updatedAt = Date.now();
+      return collectionView(stored);
     },
 
     async prepare_plan(args): Promise<ActionPlan> {

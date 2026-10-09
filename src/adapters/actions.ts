@@ -136,11 +136,16 @@ export function preparePassageEdit(
   });
 }
 
-/** Duplicate groups (evidence only) and filename suggestions with their rename operations. */
+/**
+ * Duplicate groups (evidence only) and filename suggestions with their rename
+ * operations: for the whole folder, or only for one collection's members.
+ */
 export function organizationSuggestions(
   workspaceId: WorkspaceId,
+  collectionId?: string,
 ): Promise<OrganizationSuggestions> {
   return call<OrganizationSuggestions>("organization_suggestions", {
     workspaceId,
+    collectionId,
   });
 }

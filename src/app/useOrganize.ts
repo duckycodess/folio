@@ -39,8 +39,15 @@ export interface UndoState {
 
 export interface OrganizeController {
   state: OrganizeState;
-  /** Re-index the folder (with progress), then ask for suggestions. */
-  analyze: () => void;
+  /**
+   * Re-index the folder (with progress), then ask for suggestions: for the
+   * whole folder, or only for the members of the target collection. Resolves
+   * true once suggestions are on screen.
+   */
+  analyze: () => Promise<boolean>;
+  /** The collection being analyzed, or `null` for the whole folder. */
+  target: string | null;
+  setTarget: (collectionId: string | null) => void;
   /** Stops indexing; work already indexed is kept. */
   cancelAnalyze: () => void;
   toggle: (documentId: string) => void;
@@ -89,6 +96,7 @@ export function useOrganize(
   const [state, dispatch] = useReducer(organizeFlow, ORGANIZE_START);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [undo, setUndo] = useState<UndoState>(NO_UNDO);
+  const [target, setTarget] = useState<string | null>(null);
   const next = useRef(0);
   const folderId = workspace.workspace?.id;
 
@@ -97,6 +105,7 @@ export function useOrganize(
     dispatch({ type: "reset", request: ++next.current });
     setHistory([]);
     setUndo(NO_UNDO);
+    setTarget(null);
   }, [folderId]);
 
   function noFolder(request: number) {
@@ -110,10 +119,13 @@ export function useOrganize(
     });
   }
 
-  async function analyze() {
+  async function analyze(): Promise<boolean> {
     const request = ++next.current;
     dispatch({ type: "analyzeStarted", request });
-    if (!folderId) return noFolder(request);
+    if (!folderId) {
+      noFolder(request);
+      return false;
+    }
     const stop = await onIndexProgress((progress) => {
       if (progress.workspaceId === folderId)
         dispatch({ type: "progress", request, progress });
@@ -122,12 +134,17 @@ export function useOrganize(
       const scan = await scanWorkspace(folderId);
       if (scan.cancelled) {
         dispatch({ type: "analyzeCancelled", request });
-        return;
+        return false;
       }
-      const suggestions = await organizationSuggestions(folderId);
+      const suggestions = await organizationSuggestions(
+        folderId,
+        target ?? undefined,
+      );
       dispatch({ type: "analyzed", request, suggestions });
+      return next.current === request;
     } catch (cause) {
       dispatch({ type: "failed", request, error: toFolioError(cause) });
+      return false;
     } finally {
       stop?.();
     }
@@ -241,7 +258,13 @@ export function useOrganize(
 
   return {
     state,
-    analyze: () => void analyze(),
+    analyze,
+    target,
+    setTarget: (collectionId) => {
+      setTarget(collectionId);
+      // Suggestions for another target would be misleading: start over.
+      dispatch({ type: "reset", request: ++next.current });
+    },
     cancelAnalyze,
     toggle: (documentId) => dispatch({ type: "toggle", documentId }),
     previewChosen: () => {

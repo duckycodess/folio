@@ -2,6 +2,7 @@ import { ArrowRight, Copy, FolderOpen } from "lucide-react";
 import { useEffect, useRef, type ReactNode, type RefObject } from "react";
 import type { OrganizeStage } from "../app/organizeFlow";
 import { planRow, summarizeApply, summarizeUndo } from "../app/planReview";
+import type { CollectionsController } from "../app/useCollections";
 import type { OrganizeController } from "../app/useOrganize";
 import type { WorkspaceState } from "../app/useWorkspace";
 import type { IndexProgress } from "../domain/contracts";
@@ -12,6 +13,7 @@ import { Panel } from "../ui/Panel";
 import { Progress } from "../ui/Progress";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
 import { PlanTable, UndoDialog } from "./PlanReview";
+import { SuggestedCollections } from "./SuggestedCollections";
 
 const STEPS: { label: string; stages: OrganizeStage[] }[] = [
   { label: "Analyze", stages: ["idle", "analyzing"] },
@@ -66,16 +68,31 @@ function Steps({ stage }: { stage: OrganizeStage }) {
   );
 }
 
-/** Journey B: analyze a folder, then apply only the exact plan approved. */
+/**
+ * Journey B: analyze a folder or one collection, then apply only the exact
+ * plan approved. Analyzing the whole folder also suggests collections.
+ */
 export function OrganizeFlowPanel({
   workspace,
   organize,
+  collections,
 }: {
   workspace: WorkspaceState;
   organize: OrganizeController;
+  collections: CollectionsController;
 }) {
   const { state } = organize;
   const heading = useRef<HTMLHeadingElement>(null);
+  const target = collections.collections.find(
+    (collection) => collection.id === organize.target,
+  );
+
+  async function analyze() {
+    const wholeFolder = !organize.target;
+    if (wholeFolder) collections.clearSuggestions();
+    const analyzed = await organize.analyze();
+    if (analyzed && wholeFolder && collections.available) collections.suggest();
+  }
 
   // Each new step is announced by moving focus to its heading.
   useEffect(() => {
@@ -120,22 +137,57 @@ export function OrganizeFlowPanel({
             actions={{
               retry: state.operations.length
                 ? organize.previewAgain
-                : organize.analyze,
+                : () => void analyze(),
               previewAgain: organize.previewAgain,
             }}
             onDismiss={organize.dismissError}
           />
         )}
 
+        {(state.stage === "idle" || state.stage === "suggestions") &&
+          collections.collections.length > 0 && (
+            <div className="organize-target">
+              <label htmlFor="organize-target" className="field-label">
+                What to analyze
+              </label>
+              <select
+                id="organize-target"
+                className="text-input"
+                value={organize.target ?? ""}
+                onChange={(event) =>
+                  organize.setTarget(event.target.value || null)
+                }
+              >
+                <option value="">The whole folder</option>
+                {collections.collections.map((collection) => (
+                  <option key={collection.id} value={collection.id}>
+                    Collection: {collection.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
         {state.stage === "idle" && (
           <div className="flow-step">
-            <p>
-              Folio re-reads {workspaceName(workspace)}, then suggests clearer
-              file names and shows files with exactly the same contents. Nothing
-              changes until you approve an exact preview.
-            </p>
+            {target ? (
+              <p>
+                Folio re-reads {workspaceName(workspace)}, then suggests clearer
+                file names for the files in “{target.name}” and shows which of
+                them have identical copies. Nothing changes until you approve an
+                exact preview.
+              </p>
+            ) : (
+              <p>
+                Folio re-reads {workspaceName(workspace)}, then suggests clearer
+                file names and shows files with exactly the same contents. With
+                a local AI model, it also groups files about the same material
+                into collections you can keep. Nothing changes until you approve
+                an exact preview.
+              </p>
+            )}
             <div className="form-actions">
-              <Button variant="primary" onClick={organize.analyze}>
+              <Button variant="primary" onClick={() => void analyze()}>
                 Analyze
               </Button>
             </div>
@@ -231,10 +283,13 @@ export function OrganizeFlowPanel({
                       ? `Preview ${chosen} ${chosen === 1 ? "change" : "changes"}`
                       : "Choose suggestions to preview"}
                   </Button>
-                  <Button variant="ghost" onClick={organize.analyze}>
+                  <Button variant="ghost" onClick={() => void analyze()}>
                     Analyze again
                   </Button>
                 </div>
+              )}
+              {!organize.target && (
+                <SuggestedCollections collections={collections} />
               )}
             </div>
           )}

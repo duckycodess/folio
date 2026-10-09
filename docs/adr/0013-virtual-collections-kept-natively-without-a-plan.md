@@ -1,0 +1,11 @@
+# Keep virtual collections natively, without a plan, and follow Folio's own file changes
+
+Organize's analysis now suggests virtual collections: documents grouped by meaning, each with a name the local model writes (#78). ADR 0001 requires an exact preview and approval for physical changes. A collection changes no file, so keeping one is a plain native command, not an action plan: there is no digest, approval or Undo, and it doesn't appear in Activity, which stays the record of file changes. Renaming a collection, removing it, and adding or removing a member work the same way. Collections are stored in the native index database next to history, so the webview never writes them itself.
+
+A collection refers to documents by document identity, which contains the relative path. When Folio applies or undoes a rename, move or deletion, the same native step updates the references. A deletion takes the file out of its collections, and undoing that deletion puts it back. A file renamed, moved or deleted outside Folio becomes a missing member that the user can remove. Folio never re-finds it by content hash: an edited file would not match, and byte-identical copies would make the match ambiguous. A document can belong to several kept collections. The groups from one analysis don't overlap.
+
+Grouping compares document vectors from one embedding space only, and records that space's fingerprint with the suggestion. For now it uses the vectors #4's in-memory snapshot already computes for search (TXT, Markdown and text-based PDFs), because nothing writes the persistent vector table yet (#27, #46). It switches to the persistent vectors when they exist. Groups need only the embedding model. A generated name needs the generation model, cites the passages it used, is written in the members' main language, and is labelled as generated. The user can edit it before keeping the collection. Without a generation model, a group has no name until the user types one. No name is made up from the titles and presented as AI.
+
+A kept collection can also be what Organize analyzes. Analyzing a collection limits exact duplicates and filename suggestions to its members and moves nothing into or out of it.
+
+Decided with Gab on 2026-10-10 for issue #78, which Gab took over from Dann. Dann reviews the embedding and generation parts.

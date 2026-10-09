@@ -702,6 +702,78 @@
   gap: var(--space-2);
   overflow-wrap: anywhere;
 }
+/* Virtual collections (#78): suggested in the Organize flow, kept below it. */
+.suggested-collections,
+.organize-target {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.organize-target {
+  max-width: 28rem;
+}
+.collection-suggestions,
+.collection-list,
+.collection-members,
+.home-collections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.collection-suggestion,
+.collection-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  min-width: 0;
+}
+.collection-suggestion-name,
+.collection-rename {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.collection-suggestion-name .text-input,
+.collection-rename .text-input {
+  width: 100%;
+  max-width: 28rem;
+}
+.collection-citations,
+.collection-passage {
+  overflow-wrap: anywhere;
+}
+.collection-item-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-3);
+}
+.collection-members {
+  gap: var(--space-2);
+}
+.collection-member,
+.home-collection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  overflow-wrap: anywhere;
+}
+.home-collections {
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+.home-collection-name {
+  font-weight: 600;
+}
 .plan-table-wrap {
   overflow-x: auto;
 }

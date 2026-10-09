@@ -46,8 +46,14 @@ _Avoid_: A confirmed contradiction without comparison evidence.
 **Relationship Graph**: A view of documents and their typed, evidenced connections.
 _Avoid_: A decorative graph without inspectable evidence.
 
-**Virtual Collection**: A named group of document references that preserves original file locations.
-_Avoid_: Folder, duplicate storage.
+**Virtual Collection**: A named group of document references in one workspace that preserves original file locations. A document can belong to several collections.
+_Avoid_: Folder, duplicate storage, a file change that needs approval.
+
+**Suggested Collection**: A group of documents about the same material, proposed by Organize's analysis from the documents' meaning, with supporting passages for each member. It becomes a virtual collection only when the user keeps it.
+_Avoid_: An exact duplicate group, a collection the user already kept.
+
+**Missing Member**: A collection's reference to a document that was renamed, moved or deleted outside Folio, so Folio can no longer find it.
+_Avoid_: Guessing which document it became.
 
 **Organization Suggestion**: A proposed grouping, filename, or destination awaiting review when it changes physical files.
 _Avoid_: An already completed move.

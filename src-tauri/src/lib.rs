@@ -1,4 +1,5 @@
 mod ai_boundary;
+mod collections;
 mod config_guard;
 mod contract_fixtures;
 mod contracts;
@@ -45,6 +46,8 @@ use index::{
     ChunkVector, DuplicateGroup, EmbeddingSpace, ExplicitReference, IndexProgress,
     IndexedDocument, PendingChunk, ScanOptions, ScanSummary, SearchResult, VectorCandidate,
 };
+use collections::{KeptMember, VirtualCollection};
+use folio_core::collections::{NamingOutcome, SuggestedCollection};
 use organize::OrganizationSuggestions;
 use plan::PlanRegistry;
 use identity::media_type_for_path;
@@ -495,18 +498,87 @@ async fn prepare_passage_edit(
     writer::passage_edit(&*state.index()?, &root, &document_id, &before, &after)
 }
 
+/// Exact duplicates and filename suggestions for the folder, or only for the
+/// members of one collection when `collection_id` is given.
 #[tauri::command]
 async fn organization_suggestions(
     state: State<'_, Folio>,
     workspace_id: String,
+    collection_id: Option<String>,
 ) -> Result<OrganizationSuggestions, FolioError> {
     let root = state.root(&workspace_id)?;
-    let (filenames, candidates) = {
+    let (filenames, candidates, members) = {
         let index = state.index()?;
-        (organize::filename_suggestions(&index, &root)?, index::duplicate_candidates(&index, &workspace_id)?)
+        let members = collection_id.as_deref().map(|id| collections::present_member_ids(&index, &root, id)).transpose()?;
+        (organize::filename_suggestions(&index, &root)?, index::duplicate_candidates(&index, &workspace_id)?, members)
     };
     // Duplicate candidates are confirmed byte for byte without holding the index.
-    blocking(move || OrganizationSuggestions { duplicate_groups: index::verify_duplicates(&root.path, candidates), filenames }).await
+    blocking(move || {
+        let suggestions = OrganizationSuggestions { duplicate_groups: index::verify_duplicates(&root.path, candidates), filenames };
+        organize::limit_to(suggestions, members.as_ref())
+    })
+    .await
+}
+
+/* ------------------------------------------- virtual collections (#78, ADR 0013) */
+
+#[tauri::command]
+async fn list_collections(state: State<'_, Folio>, workspace_id: String) -> Result<Vec<VirtualCollection>, FolioError> {
+    let root = state.root(&workspace_id)?;
+    collections::list(&*state.index()?, &root)
+}
+
+/// Keeps a suggested collection. No file changes, so there is no plan or approval;
+/// a member whose file changed since the analysis is refused.
+#[tauri::command]
+async fn keep_collection(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    name: String,
+    members: Vec<KeptMember>,
+) -> Result<VirtualCollection, FolioError> {
+    let root = state.root(&workspace_id)?;
+    collections::keep(&mut *state.index()?, &root, &name, &members, now_ms())
+}
+
+#[tauri::command]
+async fn rename_collection(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    collection_id: String,
+    name: String,
+) -> Result<VirtualCollection, FolioError> {
+    let root = state.root(&workspace_id)?;
+    collections::rename(&*state.index()?, &root, &collection_id, &name, now_ms())
+}
+
+/// Removes the collection; its files stay where they are.
+#[tauri::command]
+async fn remove_collection(state: State<'_, Folio>, workspace_id: String, collection_id: String) -> Result<(), FolioError> {
+    state.root(&workspace_id)?;
+    collections::remove(&*state.index()?, &workspace_id, &collection_id)
+}
+
+#[tauri::command]
+async fn add_collection_members(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    collection_id: String,
+    document_ids: Vec<String>,
+) -> Result<VirtualCollection, FolioError> {
+    let root = state.root(&workspace_id)?;
+    collections::add_members(&mut *state.index()?, &root, &collection_id, &document_ids, now_ms())
+}
+
+#[tauri::command]
+async fn remove_collection_members(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    collection_id: String,
+    document_ids: Vec<String>,
+) -> Result<VirtualCollection, FolioError> {
+    let root = state.root(&workspace_id)?;
+    collections::remove_members(&*state.index()?, &root, &collection_id, &document_ids, now_ms())
 }
 
 
@@ -994,12 +1066,9 @@ fn load_corpus(
     let mut text_documents = Vec::new();
     let mut skipped_documents = Vec::new();
     for row in metadata {
-        let extension = Path::new(&row.relative_path)
-            .extension()
-            .and_then(|value| value.to_str())
-            .unwrap_or_default()
-            .to_ascii_lowercase();
-        if !matches!(extension.as_str(), "txt" | "md") {
+        // A text-based PDF is read through its extracted text; offsets and the
+        // hash are the ones `read_document` reports, so citations open in the reader.
+        if media_type_for_path(&row.relative_path).is_none() {
             continue;
         }
         let document_text = match workspace::read_text(&root.path, &row.relative_path) {
@@ -1162,19 +1231,13 @@ where
         .map(Some)
 }
 
-/// The text documents the provider snapshot reads, as (path, size, mtime).
+/// The documents the provider snapshot reads (TXT, Markdown and text-based
+/// PDFs), as (path, size, mtime).
 fn corpus_fingerprint(root: &ScopedRoot) -> Result<Vec<(String, u64, Option<u64>)>, FolioError> {
     let mut fingerprint = workspace::list_documents(root)?
         .documents
         .into_iter()
-        .filter(|row| {
-            let extension = Path::new(&row.relative_path)
-                .extension()
-                .and_then(|value| value.to_str())
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            matches!(extension.as_str(), "txt" | "md")
-        })
+        .filter(|row| media_type_for_path(&row.relative_path).is_some())
         .map(|row| (row.relative_path, row.size_bytes, row.modified_at_ms))
         .collect::<Vec<_>>();
     fingerprint.sort();
@@ -1645,6 +1708,88 @@ async fn interpret_request(
     .await?)
 }
 
+/// Organize's suggested collections. Groups need only the embedding model;
+/// names need the generation model too, and are display text the user may edit.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CollectionSuggestions {
+    /// `grouped`, or `embeddingModelMissing` when nothing could be grouped.
+    status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    space_fingerprint: Option<String>,
+    analyzed_document_count: usize,
+    /// More documents than one analysis compares; the rest were not analyzed.
+    truncated: bool,
+    /// `named`, `cancelled`, `generationModelMissing`, `failed`, or `notNeeded` without groups.
+    naming: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    naming_error: Option<FolioError>,
+    groups: Vec<SuggestedCollection>,
+}
+
+#[tauri::command]
+async fn suggest_collections(
+    app: AppHandle,
+    state: State<'_, Folio>,
+    index_state: State<'_, IndexState>,
+    embedding_state: State<'_, EmbeddingState>,
+    generation_state: State<'_, GenerationState>,
+    workspace_id: String,
+) -> Result<CollectionSuggestions, FolioError> {
+    let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
+    let index_state = index_state.inner().clone();
+    let embedding_state = embedding_state.inner().clone();
+    let generation_state = generation_state.inner().clone();
+    Ok(run_blocking::<_, FolioError, _>(move || {
+        let snapshot = ensure_snapshot(&app, &embedding_state, &root, &index_state)?;
+        let Some(space) = snapshot.embedding_space.as_ref() else {
+            return Ok(CollectionSuggestions {
+                status: "embeddingModelMissing",
+                space_fingerprint: None,
+                analyzed_document_count: 0,
+                truncated: false,
+                naming: "notNeeded",
+                naming_error: None,
+                groups: Vec::new(),
+            });
+        };
+        let (chunks, vectors) = snapshot.retriever.vector_index.indexed(space).ok_or_else(|| NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::EmbeddingSpaceMismatch,
+            message: "The local index has no vectors for the selected embedding model.".into(),
+            detail: None,
+        })?;
+        let (mut groups, analyzed_document_count, truncated) =
+            folio_core::collections::group_documents(&snapshot.documents, chunks, vectors, space).map_err(native_error)?;
+        let (naming, naming_error) = if groups.is_empty() {
+            ("notNeeded", None)
+        } else {
+            match acquire_generation(&app, &generation_state) {
+                Err(failure) if failure.code == folio_core::contracts::ProviderErrorCode::ModelNotInstalled => ("generationModelMissing", None),
+                Err(failure) => ("failed", Some(FolioError::from(failure))),
+                Ok((provider, cancel)) => {
+                    let named = folio_core::collections::name_groups(provider.as_ref(), &mut groups, cancel.as_ref());
+                    finish_generation(&generation_state, &cancel)?;
+                    match named {
+                        Ok(NamingOutcome::Named) => ("named", None),
+                        Ok(NamingOutcome::Cancelled) => ("cancelled", None),
+                        Err(failure) => ("failed", Some(FolioError::from(native_error(failure)))),
+                    }
+                }
+            }
+        };
+        Ok(CollectionSuggestions {
+            status: "grouped",
+            space_fingerprint: Some(folio_core::retrieval::space_fingerprint(space)),
+            analyzed_document_count,
+            truncated,
+            naming,
+            naming_error,
+            groups,
+        })
+    })
+    .await?)
+}
+
 fn unload_generation_now(generation_state: &GenerationState) -> Result<(), NativeProviderError> {
     let mut guard = generation_state.lock().map_err(|_| NativeProviderError {
         code: folio_core::contracts::ProviderErrorCode::IoError,
@@ -1682,6 +1827,34 @@ mod tests {
         assert_eq!(skipped.len(), 1);
         assert_eq!(skipped[0].relative_path, "invalid.md");
         assert!(skipped[0].reason.contains("valid UTF-8"));
+    }
+
+    #[test]
+    fn corpus_loading_reads_text_pdfs_and_markdown_files() {
+        let root = tempfile::tempdir().unwrap();
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/documents");
+        fs::copy(fixtures.join("research/consent-form-guide.pdf"), root.path().join("guide.pdf")).unwrap();
+        fs::write(root.path().join("notes.markdown"), "# Notes\n\nConsent forms are due Friday.").unwrap();
+        fs::write(root.path().join("ignored.docx"), "not a Folio document").unwrap();
+        let scoped_root = ScopedRoot { id: "test-workspace".into(), path: root.path().to_path_buf() };
+
+        let (documents, contents, chunks, skipped) = load_corpus(&scoped_root).unwrap();
+        assert!(skipped.is_empty(), "{:?}", skipped.iter().map(|item| &item.reason).collect::<Vec<_>>());
+        let mut paths = documents.iter().map(|document| (document.relative_path.as_str(), document.media_type.as_str())).collect::<Vec<_>>();
+        paths.sort();
+        assert_eq!(paths, [("guide.pdf", "application/pdf"), ("notes.markdown", "text/markdown")]);
+        let pdf = documents.iter().find(|document| document.relative_path == "guide.pdf").unwrap();
+        let read = workspace::read_text(root.path(), "guide.pdf").unwrap();
+        // The same revision and text the reader shows, so a citation lands in the right place.
+        assert_eq!(pdf.content_hash.as_deref(), Some(read.content_hash.as_str()));
+        assert_eq!(contents[&pdf.id], read.content);
+        for chunk in chunks.iter().filter(|chunk| chunk.document_id == pdf.id) {
+            assert_eq!(&read.content[chunk.start..chunk.end], chunk.text);
+            assert_eq!(chunk.content_hash, read.content_hash);
+        }
+        assert!(chunks.iter().any(|chunk| chunk.document_id == pdf.id));
+        let fingerprint = corpus_fingerprint(&scoped_root).unwrap();
+        assert_eq!(fingerprint.iter().map(|(path, ..)| path.as_str()).collect::<Vec<_>>(), ["guide.pdf", "notes.markdown"]);
     }
 
     #[test]
@@ -1776,6 +1949,13 @@ pub fn run() {
             ripple_impacts,
             prepare_passage_edit,
             organization_suggestions,
+            list_collections,
+            keep_collection,
+            rename_collection,
+            remove_collection,
+            add_collection_members,
+            remove_collection_members,
+            suggest_collections,
             list_models,
             verify_model,
             install_model,
