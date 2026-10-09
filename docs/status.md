@@ -139,19 +139,21 @@ picks up the other's files.
 **Checked on Linux (WSL2) with Node.js 24.15.0, Chromium 156 (Playwright
 1.64.0), axe-core 4.14.0:**
 
-- `npm run format:check` and `npm run check` (which now type-checks `e2e/`
-  too): passed. `npm test`: 24 files, 190 passed and 9 todo, including the 14
-  new fake-core contract cases. The build passed as its two parts,
-  `tsc --noEmit` and `vite build`, the latter with `--configLoader runner` for
-  the host defect described below; `npm run build` itself was not run verbatim
-  here, and CI runs it unchanged.
+- `npm run format:check` and `npm run check` (which now type-checks `e2e/`)
+  passed. `npx vitest run --configLoader runner`: 24 files, 190 passed and 9
+  todo, including the 14 new fake-core contract cases. Verbatim `npm test`
+  failed here during Vite config loading because of the host defect below.
+  The build passed as its two parts, `tsc --noEmit` and
+  `vite build --configLoader runner`; verbatim `npm run build` also could not
+  load the config here. CI runs the unchanged scripts.
 - `npm run check:bundle`: `dist/` carries none of the fake's sentinel,
   installer name, globals or filename.
-- The browser suite: 35 tests passed in 44s, server startup included (the
-  budget is `globalTimeout: 110_000`, and CI gives the step two minutes). It was
-  run through `playwright test` with a scratch config that changed only the
-  server command, again for the host defect below; `npm run test:e2e` itself was
-  not run verbatim here. The suite serves the production build on its own port
+- The final browser run: `npx playwright test --config playwright.local.ts`
+  passed 35 tests in 46s elapsed (44.6s reported by Playwright), server startup
+  included. The temporary local config changed only the web server command to
+  use Vite's runner loader and was removed afterward. The budget is
+  `globalTimeout: 110_000`, and CI gives the step two minutes. Verbatim
+  `npm run test:e2e` failed here during Vite config loading, before tests ran. The suite serves the production build on its own port
   1421 with `reuseExistingServer: false`, so it can never report on a server
   someone else left running.
 
