@@ -1,6 +1,8 @@
 use std::ops::Range;
 use std::path::Path;
-use crate::error::{fail, ErrorCode, NativeResult};
+use crate::db::NativeResult;
+use crate::error::{error, ErrorCode};
+use crate::identity::media_type_for_path;
 
 pub const MAX_TEXT_BYTES: u64 = 2 * 1024 * 1024;
 pub const MAX_PDF_BYTES: u64 = 20 * 1024 * 1024;
@@ -17,10 +19,10 @@ pub enum MediaKind {
 
 impl MediaKind {
     pub fn from_path(path: &Path) -> Option<MediaKind> {
-        match path.extension()?.to_str()?.to_lowercase().as_str() {
-            "txt" => Some(MediaKind::Text),
-            "md" => Some(MediaKind::Markdown),
-            "pdf" => Some(MediaKind::Pdf),
+        match media_type_for_path(path.file_name()?.to_str()?)? {
+            "text/plain" => Some(MediaKind::Text),
+            "text/markdown" => Some(MediaKind::Markdown),
+            "application/pdf" => Some(MediaKind::Pdf),
             _ => None,
         }
     }
@@ -55,7 +57,7 @@ pub enum Extraction {
 pub struct Chunk {
     pub ordinal: usize,
     pub text: String,
-    /// UTF-16 code-unit offsets into `ExtractedText::text`.
+    /// UTF-8 byte offsets into `ExtractedText::text` (the frozen `utf8Byte` unit).
     pub start: usize,
     pub end: usize,
     pub page: Option<u32>,
@@ -79,13 +81,13 @@ pub fn extract(kind: MediaKind, bytes: &[u8]) -> NativeResult<Extraction> {
 pub fn document_text(kind: MediaKind, bytes: &[u8]) -> NativeResult<String> {
     match extract(kind, bytes)? {
         Extraction::Text(extracted) => Ok(extracted.text),
-        Extraction::Unsupported(reason) => Err(fail(ErrorCode::Unsupported, reason)),
+        Extraction::Unsupported(reason) => Err(error(ErrorCode::DocumentNotText, reason)),
     }
 }
 
+/// The decoded text exactly as stored (a byte-order mark is kept), so offsets match `read_document`.
 fn decode_text(bytes: &[u8]) -> NativeResult<String> {
-    let bytes = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
-    String::from_utf8(bytes.to_vec()).map_err(|_| fail(ErrorCode::Unsupported, "This document is not valid UTF-8 text."))
+    String::from_utf8(bytes.to_vec()).map_err(|_| error(ErrorCode::DocumentNotText, "This document is not valid UTF-8 text."))
 }
 
 fn extract_pdf(bytes: &[u8]) -> NativeResult<Extraction> {
@@ -104,8 +106,8 @@ fn extract_pdf(bytes: &[u8]) -> NativeResult<Extraction> {
     });
     let pages = match result {
         Ok(Ok(pages)) => pages,
-        Ok(Err(reason)) => return Err(fail(ErrorCode::Unsupported, format!("The PDF could not be read: {reason}"))),
-        Err(_) => return Err(fail(ErrorCode::Unsupported, "The PDF could not be read.")),
+        Ok(Err(reason)) => return Err(error(ErrorCode::DocumentNotText, "The PDF could not be read.").with_detail("cause", reason)),
+        Err(_) => return Err(error(ErrorCode::DocumentNotText, "The PDF could not be read.")),
     };
     if pages.iter().all(|(_, text)| text.trim().is_empty()) {
         return Ok(Extraction::Unsupported("No text layer was found. Scanned PDFs need OCR, which Folio does not support.".into()));
@@ -130,29 +132,6 @@ pub fn title_of(text: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Converts ascending byte offsets in one string to UTF-16 offsets without rescanning.
-pub struct Utf16Cursor<'a> {
-    text: &'a str,
-    byte: usize,
-    units: usize,
-}
-
-impl<'a> Utf16Cursor<'a> {
-    pub fn new(text: &'a str) -> Self {
-        Utf16Cursor { text, byte: 0, units: 0 }
-    }
-
-    pub fn at(&mut self, byte: usize) -> usize {
-        if byte < self.byte {
-            self.byte = 0;
-            self.units = 0;
-        }
-        self.units += self.text[self.byte..byte].encode_utf16().count();
-        self.byte = byte;
-        self.units
-    }
-}
-
 /// Paragraph chunks of at most ~MAX_CHUNK_CHARS that never cross a page or split a Markdown link.
 pub fn chunk(extracted: &ExtractedText) -> Vec<Chunk> {
     let text = extracted.text.as_str();
@@ -173,17 +152,10 @@ pub fn chunk(extracted: &ExtractedText) -> Vec<Chunk> {
         }
         if let Some(open) = current { ranges.push((*page, open)); }
     }
-    let mut cursor = Utf16Cursor::new(text);
     ranges
         .into_iter()
         .enumerate()
-        .map(|(ordinal, (page, range))| Chunk {
-            ordinal,
-            text: text[range.clone()].to_owned(),
-            start: cursor.at(range.start),
-            end: cursor.at(range.end),
-            page,
-        })
+        .map(|(ordinal, (page, range))| Chunk { ordinal, text: text[range.clone()].to_owned(), start: range.start, end: range.end, page })
         .collect()
 }
 
@@ -347,14 +319,14 @@ mod tests {
     }
 
     #[test]
-    fn chunk_offsets_are_utf16_and_slice_back_to_the_chunk() {
-        let text = "Community Learning Project — due October 20.\n\nAng huling araw ay 😀 October 20.";
+    fn chunk_offsets_are_utf8_bytes_on_character_boundaries() {
+        let text = "  Community Learning Project — due October 20.\n\nAng huling araw ay 😀 October 20.\n";
         let chunks = chunk(&plain(text));
         assert_eq!(chunks.len(), 1);
-        let utf16: Vec<u16> = text.encode_utf16().collect();
         let chunk = &chunks[0];
-        assert_eq!(String::from_utf16(&utf16[chunk.start..chunk.end]).unwrap(), chunk.text);
-        assert!(chunk.end < text.len(), "UTF-16 length differs from byte length for non-ASCII text");
+        assert!(text.is_char_boundary(chunk.start) && text.is_char_boundary(chunk.end));
+        assert_eq!(&text.as_bytes()[chunk.start..chunk.end], chunk.text.as_bytes());
+        assert_eq!(chunk.start, 2);
     }
 
     #[test]
@@ -395,6 +367,13 @@ mod tests {
     #[test]
     fn image_only_pdf_is_unsupported_not_failed() {
         assert!(matches!(extract(MediaKind::Pdf, &testpdf::image_only_pdf()).unwrap(), Extraction::Unsupported(reason) if reason.contains("OCR")));
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_kept_so_offsets_match_the_reader() {
+        let Extraction::Text(extracted) = extract(MediaKind::Markdown, "\u{feff}# Tala".as_bytes()).unwrap() else { panic!("expected text") };
+        let chunks = chunk(&extracted);
+        assert_eq!(&extracted.text[chunks[0].start..chunks[0].end], "\u{feff}# Tala");
     }
 
     #[test]

@@ -1,210 +1,557 @@
-export type DocumentId = string;
-export type Language = "en" | "fil" | "mixed" | "unknown";
-export type RelationshipType =
-  "similarity" | "explicitReference" | "sharedFactCandidate";
+/**
+ * Folio cross-track boundary types.
+ *
+ * Every track (UI, workspace/indexing, providers, actions) uses these names and
+ * shapes. Native Rust serializes the same fields in camelCase. The companion
+ * reference is `docs/contracts.md`; change it and this file together, and
+ * announce the change before merging.
+ *
+ * This file contains types only. Deterministic logic lives beside it in
+ * `errors.ts`, `identity.ts`, `offsets.ts`, `relationships.ts`, `plan.ts` and
+ * `approval.ts` so that both languages can be checked against the same golden
+ * fixtures in `fixtures/contracts/`.
+ */
 
-export interface DocumentRecord {
-  id: DocumentId;
-  relativePath: string;
-  name: string;
-  title: string;
-  language: Language;
-  sizeBytes: number;
-  content?: string;
-  contentHash?: string;
+/* ------------------------------------------------------------------ errors */
+
+/**
+ * Every failure crossing the boundary carries one of these codes. Native
+ * commands return the code; user-facing prose is carried separately and is
+ * never the thing a caller branches on.
+ */
+export type FolioErrorCode =
+  // Workspace authorization and path containment.
+  | "workspaceNotAuthorized"
+  | "workspaceUnavailable"
+  | "pathNotRelative"
+  | "pathEscapesWorkspace"
+  | "pathUnsupportedEncoding"
+  | "documentUnavailable"
+  | "documentTooLarge"
+  | "documentNotText"
+  | "unsupportedMediaType"
+  // Plans, approval and durable outcomes.
+  | "planUnknown"
+  | "planEmpty"
+  | "planExpired"
+  | "planStateInvalid"
+  | "planDigestMismatch"
+  | "approvalRequired"
+  | "approvalStale"
+  | "duplicateOperationTarget"
+  | "targetMissing"
+  | "targetChanged"
+  | "destinationExists"
+  | "operationUnsupported"
+  | "historyRequired"
+  | "historyUnknown"
+  | "undoConflict"
+  | "writerNotImplemented"
+  // Providers.
+  | "modelNotInstalled"
+  | "modelLoadFailed"
+  | "providerBusy"
+  | "cancelled"
+  | "contextOverflow"
+  // Retrieval and evidence.
+  | "embeddingSpaceMismatch"
+  | "evidenceInvalid"
+  // Anything the caller cannot act on specifically.
+  | "internal";
+
+/**
+ * Context for a failure, as a flat map of strings. Numbers and absent values are
+ * stringified where they are reported, so this and the native
+ * `BTreeMap<String, String>` carry exactly the same thing. Keys are documented
+ * per code in docs/contracts.md.
+ */
+export type FolioErrorDetails = Record<string, string>;
+
+/** The wire form of a failure. Native `Result::Err` serializes exactly this. */
+export interface FolioErrorPayload {
+  code: FolioErrorCode;
+  /** English prose for the user. Never parsed by callers. */
+  message: string;
+  details?: FolioErrorDetails;
 }
 
 /**
- * `start`/`end` are UTF-16 code-unit offsets (JavaScript string indices) into the
- * document's extracted text, so `content.slice(start, end) === text`. For PDFs the
- * extracted text is the pages joined by a blank line; `page` is 1-based.
+ * Every code, in one runtime list, so the native enum and this union can be
+ * checked against the same fixture. `MissingErrorCode` is `never` only while
+ * the list is complete, so adding a code without listing it fails `tsc`.
  */
+export const FOLIO_ERROR_CODES = [
+  "workspaceNotAuthorized",
+  "workspaceUnavailable",
+  "pathNotRelative",
+  "pathEscapesWorkspace",
+  "pathUnsupportedEncoding",
+  "documentUnavailable",
+  "documentTooLarge",
+  "documentNotText",
+  "unsupportedMediaType",
+  "planUnknown",
+  "planEmpty",
+  "planExpired",
+  "planStateInvalid",
+  "planDigestMismatch",
+  "approvalRequired",
+  "approvalStale",
+  "duplicateOperationTarget",
+  "targetMissing",
+  "targetChanged",
+  "destinationExists",
+  "operationUnsupported",
+  "historyRequired",
+  "historyUnknown",
+  "undoConflict",
+  "writerNotImplemented",
+  "modelNotInstalled",
+  "modelLoadFailed",
+  "providerBusy",
+  "cancelled",
+  "contextOverflow",
+  "embeddingSpaceMismatch",
+  "evidenceInvalid",
+  "internal",
+] as const satisfies readonly FolioErrorCode[];
+
+export type MissingErrorCode = Exclude<
+  FolioErrorCode,
+  (typeof FOLIO_ERROR_CODES)[number]
+>;
+
+const _allErrorCodesListed: MissingErrorCode extends never ? true : false =
+  true;
+void _allErrorCodesListed;
+
+/** Codes a provider adapter is allowed to reject with. */
+export const PROVIDER_ERROR_CODES = [
+  "modelNotInstalled",
+  "modelLoadFailed",
+  "providerBusy",
+  "cancelled",
+  "contextOverflow",
+] as const satisfies readonly FolioErrorCode[];
+
+/* ---------------------------------------------------------------- identity */
+
+/**
+ * A workspace identity is stable for the same canonical root folder across
+ * restarts, so a restored preview can be bound back to the folder it came from.
+ * The native core derives it from the canonical root path; it never contains
+ * `:`, which keeps document identities unambiguous.
+ */
+export type WorkspaceId = string;
+
+/**
+ * `${WorkspaceId}:${RelativePath}`. Reversible, never lossy, and stable for the
+ * same file in the same authorized folder. It is not derived from file
+ * contents, so an edit does not change a document's identity.
+ */
+export type DocumentId = string;
+
+/**
+ * A `/`-separated, NFC-normalized path below an authorized root. It never
+ * starts with `/`, never contains `\`, `.`, `..`, control characters or empty
+ * segments, and is rejected rather than lossily converted when the operating
+ * system path is not valid Unicode.
+ */
+export type RelativePath = string;
+
+/** Reserved workspace identity for the in-repo development fixture corpus. */
+export const FIXTURE_WORKSPACE_ID: WorkspaceId = "fixtures";
+
+export interface WorkspaceInfo {
+  id: WorkspaceId;
+  /** Canonical absolute path of the authorized folder, for display. */
+  rootPath: string;
+  /** Epoch milliseconds when the user authorized this folder. */
+  authorizedAt: number;
+}
+
+/* ------------------------------------------------------------ content hash */
+
+export type HashAlgorithm = "sha256";
+
+/** `sha256:<64 lowercase hex>` over the exact bytes of a file or payload. */
+export type ContentHash = string;
+
+export const HASH_ALGORITHM: HashAlgorithm = "sha256";
+
+/* ------------------------------------------------------------------- media */
+
+/** Formats Folio identifies. Content editing is limited to the two text types. */
+export type MediaType = "text/plain" | "text/markdown" | "application/pdf";
+
+/** Media types a write operation may produce. PDFs are read/index-only. */
+export const EDITABLE_MEDIA_TYPES = [
+  "text/plain",
+  "text/markdown",
+] as const satisfies readonly MediaType[];
+
+export type EditableMediaType = (typeof EDITABLE_MEDIA_TYPES)[number];
+
+export type Language = "en" | "fil" | "mixed" | "unknown";
+
+/* --------------------------------------------------------------- documents */
+
+export interface DocumentRecord {
+  id: DocumentId;
+  workspaceId: WorkspaceId;
+  relativePath: RelativePath;
+  /** Final path segment, including the extension. */
+  name: string;
+  title: string;
+  language: Language;
+  mediaType: MediaType;
+  /**
+   * Exact byte length of the file on disk — never a character count and never a
+   * UTF-16 length. For in-memory fixture documents it is the UTF-8 byte length
+   * of `content`.
+   */
+  sizeBytes: number;
+  /** Filesystem modification time in epoch milliseconds, when known. */
+  modifiedAtMs?: number;
+  /**
+   * Hash of the exact file bytes. Absent until the document has been read;
+   * listing a folder does not read file contents.
+   */
+  contentHash?: ContentHash;
+  /** Decoded UTF-8 text, present only once the document has been read. */
+  content?: string;
+}
+
+/* -------------------------------------------------------- source passages */
+
+/**
+ * The only offset unit on the boundary. Offsets are UTF-8 byte offsets into the
+ * decoded document text, so Rust and TypeScript agree on Filipino, Taglish and
+ * any other non-ASCII content. A union of one keeps a future change explicit.
+ */
+export type OffsetUnit = "utf8Byte";
+
+export const SOURCE_OFFSET_UNIT: OffsetUnit = "utf8Byte";
+
 export interface SourcePassage {
   documentId: DocumentId;
+  /** The document revision the offsets refer to. Stale evidence is detectable. */
+  documentContentHash: ContentHash;
+  offsetUnit: OffsetUnit;
+  /** Inclusive UTF-8 byte offset, on a character boundary. */
   start: number;
+  /** Exclusive UTF-8 byte offset, on a character boundary. */
   end: number;
+  /** The excerpt itself, exactly the bytes between `start` and `end`. */
   text: string;
+  /** 1-based page number for paged media such as PDF. Absent for TXT/Markdown. */
   page?: number;
 }
 
-export interface Relationship {
-  sourceId: DocumentId;
-  targetId: DocumentId;
-  type: RelationshipType;
-  evidence: SourcePassage[];
-  provenance: "documentLink" | "model" | "embedding";
-  confidence?: number;
-  sourceContentHash?: string;
-  targetContentHash?: string;
-}
+/* ------------------------------------------------------------- retrieval */
+
+export type RetrievalMethod = "keyword" | "semantic" | "hybrid";
 
 export interface SearchResult {
   document: DocumentRecord;
   passages: SourcePassage[];
   score: number;
-  method: "keyword" | "semantic" | "hybrid";
+  method: RetrievalMethod;
+  /** Present for `semantic`/`hybrid`; identifies the compared vector space. */
+  spaceFingerprint?: EmbeddingSpaceFingerprint;
 }
 
-export interface GroundedAnswer {
-  text: string;
-  sources: SourcePassage[];
-  coverage: DocumentId[];
-  modelId: string;
+/* --------------------------------------------------------- relationships */
+
+export type RelationshipType =
+  "similarity" | "explicitReference" | "sharedFactCandidate";
+
+export type RelationshipProvenance = "documentLink" | "embedding" | "model";
+
+interface RelationshipBase {
+  sourceId: DocumentId;
+  targetId: DocumentId;
+  /** Revision of the source document the evidence was taken from. */
+  sourceContentHash: ContentHash;
+  /** Revision of the target document the evidence was taken from. */
+  targetContentHash: ContentHash;
 }
+
+/**
+ * A relationship always carries evidence typed for its kind. Evidence is
+ * document text; it never authorizes a file operation.
+ */
+export type Relationship =
+  | (RelationshipBase & {
+      type: "explicitReference";
+      provenance: "documentLink";
+      /** The link as written, and the path it resolved to inside the workspace. */
+      link: { rawTarget: string; resolvedRelativePath: RelativePath };
+      /** At least one passage, located in the source document. */
+      evidence: SourcePassage[];
+    })
+  | (RelationshipBase & {
+      type: "similarity";
+      provenance: "embedding";
+      /** Vectors from different spaces are never compared. */
+      spaceFingerprint: EmbeddingSpaceFingerprint;
+      /** Similarity in [0, 1]. Not a claim that an edit must propagate. */
+      score: number;
+      /** The compared passages: at least one in each document. */
+      sourceEvidence: SourcePassage[];
+      targetEvidence: SourcePassage[];
+    })
+  | (RelationshipBase & {
+      type: "sharedFactCandidate";
+      provenance: "embedding" | "model";
+      /** Passages that may state the same fact: at least one in each document. */
+      sourceEvidence: SourcePassage[];
+      targetEvidence: SourcePassage[];
+      /** Optional confidence in [0, 1]. A candidate is never a confirmed contradiction. */
+      confidence?: number;
+    });
+
+/* ------------------------------------------------------------- embeddings */
 
 export interface EmbeddingSpace {
   modelId: string;
   revision: string;
   quantization: string;
   dimensions: number;
+  /** Identifies query/passage prefixes, truncation and normalization. */
   preprocessingFingerprint: string;
 }
 
+/** Canonical single-string form of an `EmbeddingSpace`; see `identity.ts`. */
+export type EmbeddingSpaceFingerprint = string;
+
+/* -------------------------------------------------------------- providers */
+
+/**
+ * Adapters reject with a `FolioError` carrying a `PROVIDER_ERROR_CODES` code.
+ * Aborting `signal` rejects with `cancelled`. Only one generative request runs
+ * at a time; a second concurrent request rejects with `providerBusy`.
+ */
 export interface EmbeddingProvider {
   space: EmbeddingSpace;
+  fingerprint: EmbeddingSpaceFingerprint;
   embed(texts: string[], signal?: AbortSignal): Promise<number[][]>;
   unload(): Promise<void>;
 }
 
+export interface GenerationRequest {
+  instruction: string;
+  /** Bounded retrieved evidence. The model never receives the whole corpus. */
+  sources: SourcePassage[];
+  outputLanguage: Language;
+  maxOutputTokens: number;
+  signal?: AbortSignal;
+}
+
+export interface GroundedAnswer {
+  text: string;
+  sources: SourcePassage[];
+  /** Documents the answer claims to cover — retrieved excerpts, not the corpus. */
+  coverage: DocumentId[];
+  modelId: string;
+  revision: string;
+}
+
+/** A model run either answers from evidence or reports that it has none. */
+export type GenerationOutcome =
+  | { kind: "answer"; answer: GroundedAnswer }
+  | {
+      kind: "insufficientEvidence";
+      inspected: DocumentId[];
+      message: string;
+    };
+
 export interface GenerationProvider {
   modelId: string;
   revision: string;
-  generate(request: {
-    instruction: string;
-    sources: SourcePassage[];
-    outputLanguage: Language;
-    maxOutputTokens: number;
-    signal?: AbortSignal;
-  }): Promise<GroundedAnswer>;
+  quantization: string;
+  runtime: string;
+  generate(request: GenerationRequest): Promise<GenerationOutcome>;
   unload(): Promise<void>;
 }
 
+/* -------------------------------------------------------------- operations */
+
+export type FileOperationKind = "create" | "edit" | "rename" | "move";
+
+/**
+ * `expectedDestination: "absent"` is the explicit destination-absence check: a
+ * rename or move is refused when something already occupies the destination,
+ * rather than overwriting it.
+ */
 export type FileOperation =
+  | {
+      kind: "create";
+      destinationRelativePath: RelativePath;
+      mediaType: EditableMediaType;
+      content: string;
+      expectedDestination: "absent";
+    }
   | {
       kind: "edit";
       documentId: DocumentId;
-      expectedContentHash: string;
-      before: string;
+      relativePath: RelativePath;
+      /** The revision the preview was built from. */
+      expectedContentHash: ContentHash;
+      /** Full replacement text. The current file is pinned by the hash above. */
       after: string;
     }
   | {
       kind: "rename" | "move";
       documentId: DocumentId;
-      expectedContentHash: string;
-      destinationRelativePath: string;
-    }
-  | { kind: "create"; destinationRelativePath: string; content: string };
+      relativePath: RelativePath;
+      expectedContentHash: ContentHash;
+      destinationRelativePath: RelativePath;
+      expectedDestination: "absent";
+    };
 
+/** A Folio Ripple review candidate. It is never written to. */
 export interface ImpactCandidate {
   documentId: DocumentId;
+  relativePath: RelativePath;
   reason: string;
   evidence: SourcePassage[];
   strength: "evidence" | "similarityOnly";
 }
 
 export interface ActionPlan {
+  /** Issued by the native core. The UI cannot mint a plan identity. */
   id: string;
-  workspaceId: string;
-  operations: FileOperation[];
-  impacts: ImpactCandidate[];
+  workspaceId: WorkspaceId;
+  /** Epoch milliseconds. */
   createdAt: number;
+  /** Epoch milliseconds. Approval and application both re-check this. */
   expiresAt: number;
+  /** At least one operation; order is the application order. */
+  operations: FileOperation[];
+  /** Review candidates shown with the preview. Excluded from the digest. */
+  impacts: ImpactCandidate[];
+  /** `sha256` over the canonical plan bytes; see `plan.ts`. */
+  digest: ContentHash;
 }
 
-export interface WorkspaceInfo {
-  id: string;
-  rootPath: string;
-}
-
-/** A folder previously authorized through the native picker. */
-export interface KnownWorkspace extends WorkspaceInfo {
-  authorizedAt: string;
-  lastOpenedAt: string | null;
-  /** False when the folder is gone or Folio lost permission to read it. */
-  available: boolean;
-}
-
-export type NativeErrorCode =
-  | "PATH_ESCAPE"
-  | "NOT_AUTHORIZED"
-  | "NOT_FOUND"
-  | "UNSUPPORTED"
-  | "TOO_LARGE"
-  | "INVALID_INPUT"
-  | "BUSY"
-  | "EMBEDDING_SPACE_MISMATCH"
-  | "IO"
-  | "DATABASE";
-
-/** Every native command rejects with this shape. */
-export interface NativeError {
-  code: NativeErrorCode;
-  message: string;
-}
-
-export type MediaType = "text/plain" | "text/markdown" | "application/pdf";
+/* --------------------------------------------------- approval and outcomes */
 
 /**
- * `indexed`: current content is searchable. `unsupported`: readable but not indexable
- * (e.g. a scanned PDF without a text layer). `failed`: never indexed successfully.
- * `stale`: the file changed but could not be re-read; search shows the previous version.
+ * Approval binds to one plan identity *and* its digest. A plan whose operations
+ * changed produces a different digest, so the old approval no longer applies.
  */
-export type IndexStatus = "indexed" | "unsupported" | "failed" | "stale";
-
-/** A document as recorded by the native index. `id` is stable across Folio renames/moves. */
-export interface IndexedDocument extends DocumentRecord {
-  contentHash: string;
-  mediaType: MediaType;
-  status: IndexStatus;
-  statusMessage?: string;
-  modifiedAt: string;
-  indexedAt: string | null;
+export interface Approval {
+  planId: string;
+  planDigest: ContentHash;
+  approvedAt: number;
 }
 
-export interface IndexProgress {
-  workspaceId: string;
-  phase: "discovering" | "indexing" | "linking" | "done" | "cancelled";
-  processed: number;
-  total: number;
-  currentPath?: string;
+/**
+ * Durable per-operation outcome.
+ * - `succeeded`: the file changed and a history entry records how to undo it.
+ * - `failed`: this operation stopped the batch; earlier successes are kept.
+ * - `cancelled`: not started because the user cancelled after saving began.
+ * - `notStarted`: not started because an earlier operation failed.
+ */
+export const OPERATION_STATUSES = [
+  "succeeded",
+  "failed",
+  "cancelled",
+  "notStarted",
+] as const;
+
+export type OperationStatus = (typeof OPERATION_STATUSES)[number];
+
+export interface OperationOutcome {
+  /** Index into `ActionPlan.operations`. */
+  operationIndex: number;
+  status: OperationStatus;
+  /** Epoch milliseconds; present for `succeeded` and `failed`. */
+  completedAt?: number;
+  /** Present exactly when `status` is `succeeded`. */
+  historyEntryId?: string;
+  /** Present exactly when `status` is `failed`. */
+  error?: FolioErrorPayload;
 }
 
-/** Counts describe one scan; `unchanged` documents were not re-extracted. */
-export interface ScanSummary {
-  workspaceId: string;
-  total: number;
-  added: number;
-  updated: number;
-  unchanged: number;
-  removed: number;
-  unsupported: number;
-  failed: number;
-  stale: number;
-  skipped: number;
-  cancelled: boolean;
-  durationMs: number;
+export const BATCH_STOP_REASONS = ["completed", "failed", "cancelled"] as const;
+
+export type BatchStopReason = (typeof BATCH_STOP_REASONS)[number];
+
+/** What actually happened to an approved plan. One outcome per operation. */
+export interface BatchResult {
+  planId: string;
+  planDigest: ContentHash;
+  startedAt: number;
+  finishedAt: number;
+  outcomes: OperationOutcome[];
+  stopReason: BatchStopReason;
 }
 
-/** Documents whose bytes were re-read and found identical; not a similarity judgement. */
-export interface DuplicateGroup {
-  contentHash: string;
-  sizeBytes: number;
-  documents: IndexedDocument[];
+export interface HistoryEntry {
+  id: string;
+  planId: string;
+  operationIndex: number;
+  appliedAt: number;
+  documentId?: DocumentId;
+  /** Absent for `create`. */
+  beforeRelativePath?: RelativePath;
+  /** Absent when the operation removed a path. */
+  afterRelativePath?: RelativePath;
+  /** Absent for `create`. */
+  beforeContentHash?: ContentHash;
+  /** The state Undo expects to find before reversing this entry. */
+  afterContentHash: ContentHash;
+  /** False when the previous content could not be retained; Undo is then refused. */
+  recoverable: boolean;
+  undoneAt?: number;
 }
 
-/** A chunk without a vector in the given embedding space. */
-export interface PendingChunk {
-  chunkId: number;
-  documentId: DocumentId;
-  text: string;
+export type UndoConflictReason =
+  "externallyModified" | "missing" | "destinationOccupied" | "notRecoverable";
+
+export interface UndoConflict {
+  historyEntryId: string;
+  documentId?: DocumentId;
+  relativePath: RelativePath;
+  expectedContentHash?: ContentHash;
+  /** Null when the file is gone. */
+  observedContentHash: ContentHash | null;
+  reason: UndoConflictReason;
 }
 
-/** Exact cosine match within a single embedding space. */
-export interface VectorCandidate {
-  chunkId: number;
-  score: number;
-  passage: SourcePassage;
+/**
+ * Undo is whole-batch: if any entry conflicts, no file changes and the blocking
+ * file is named. Newer external edits are preserved.
+ */
+export interface UndoPreflight {
+  planId: string;
+  entryIds: string[];
+  conflicts: UndoConflict[];
+  undoable: boolean;
 }
+
+/* ----------------------------------------------------------------- restart */
+
+/**
+ * After a restart Folio restores explicitly selected folders and unfinished
+ * previews, revalidates folder access, and drops every approval. A restored
+ * preview always requires fresh approval, and mutations never resume
+ * automatically.
+ */
+export interface RestoredPreview {
+  plan: ActionPlan;
+  workspaceAvailable: boolean;
+  requiresFreshApproval: true;
+}
+
+export interface RestoredSession {
+  workspaces: WorkspaceInfo[];
+  previews: RestoredPreview[];
+}
+
+/* --------------------------------------------------------------- model lab */
 
 export interface BenchmarkResult {
   caseId: string;
@@ -217,7 +564,89 @@ export interface BenchmarkResult {
   contextTokens: number;
   cold: boolean;
   taskDurationMs: number;
+  /** Null when the task was not graded. Never a self-graded aggregate. */
   correctness: boolean | null;
+  /** Peak RAM of the measured process, not the whole device. Null when unavailable. */
   peakProcessRamBytes: number | null;
   modelDiskBytes: number;
+}
+
+/* -------------------------------------------------------- persistent index */
+
+/**
+ * `indexed`: current content is searchable. `unsupported`: readable but not
+ * indexable (e.g. a scanned PDF without a text layer). `failed`: never indexed
+ * successfully. `stale`: the file changed but could not be re-read; search
+ * shows the previous version, whose hash is `contentHash`.
+ */
+export type IndexStatus = "indexed" | "unsupported" | "failed" | "stale";
+
+/** A document as recorded by the native index. */
+export interface IndexedDocument extends DocumentRecord {
+  contentHash: ContentHash;
+  status: IndexStatus;
+  statusMessage?: string;
+  indexedAtMs?: number;
+}
+
+/** A folder chosen in an earlier session; restoring it revalidates access. */
+export interface KnownWorkspace {
+  id: WorkspaceId;
+  rootPath: string;
+  authorizedAt: number;
+  lastOpenedAt: number | null;
+  /** False when the folder is gone or no longer readable. */
+  available: boolean;
+}
+
+export interface IndexProgress {
+  workspaceId: WorkspaceId;
+  phase: "discovering" | "indexing" | "linking" | "done" | "cancelled";
+  processed: number;
+  total: number;
+  currentPath?: RelativePath;
+}
+
+/** Counts describe one scan; `unchanged` documents were not re-extracted. */
+export interface ScanSummary {
+  workspaceId: WorkspaceId;
+  total: number;
+  added: number;
+  updated: number;
+  unchanged: number;
+  removed: number;
+  unsupported: number;
+  failed: number;
+  stale: number;
+  /** Entries that could not be read or identified. */
+  skipped: number;
+  cancelled: boolean;
+  durationMs: number;
+}
+
+/** Documents whose bytes were re-read and found identical; not a similarity judgement. */
+export interface DuplicateGroup {
+  contentHash: ContentHash;
+  sizeBytes: number;
+  documents: IndexedDocument[];
+}
+
+export type ExplicitReference = Extract<
+  Relationship,
+  { type: "explicitReference" }
+>;
+
+/** A chunk without a vector in the given embedding space. */
+export interface PendingChunk {
+  chunkId: number;
+  documentId: DocumentId;
+  text: string;
+}
+
+/** Exact cosine match within a single embedding space. */
+export interface VectorCandidate {
+  chunkId: number;
+  score: number;
+  spaceFingerprint: EmbeddingSpaceFingerprint;
+  passage: SourcePassage;
 }

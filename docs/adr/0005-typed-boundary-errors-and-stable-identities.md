@@ -1,0 +1,26 @@
+# Carry typed failures and stable identities across the boundary
+
+The starter returned native failures as English sentences and identified a
+document by its relative path, lossily converted from the operating system
+string. The UI could then only match on prose, two platforms could disagree
+about the identity of the same Filipino filename, and a file whose name is not
+valid Unicode would be presented under an invented name.
+
+Native commands now return `{ code, message, details? }` with a frozen code
+list, and the UI branches on `code` while showing `message`. A workspace
+identity is derived from its canonical root path so it survives a restart, and a
+document identity is `${workspaceId}:${relativePath}` over an NFC-normalized,
+`/`-separated path. Ambiguous paths are refused instead of repaired, and a
+filename Folio cannot represent is reported as skipped rather than renamed.
+
+Source offsets are UTF-8 byte offsets, stated in each passage as
+`offsetUnit: "utf8Byte"` and bound to the document revision they were located
+in. This costs a conversion at the JavaScript edge and buys agreement between
+Rust and TypeScript on Filipino, Taglish and any other non-ASCII text, plus the
+ability to detect evidence taken from an earlier revision.
+
+`fixtures/contracts/contract-cases.json` is produced by
+`fixtures/contracts/generate-contract-cases.py`, a third implementation written
+from this document rather than from either production one, and it is read by
+both test suites. The two languages are therefore pinned to one encoding rather
+than to each other's mistakes.

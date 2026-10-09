@@ -1,5 +1,5 @@
--- Index lifecycle state. Additive to 001; offsets in chunks are UTF-16 code units
--- into the document's extracted text (see src/domain/contracts.ts).
+-- Index lifecycle state. Additive to 001; chunk offsets are UTF-8 byte offsets
+-- into the document's extracted text (the frozen `utf8Byte` unit, docs/contracts.md).
 ALTER TABLE workspaces ADD COLUMN last_opened_at TEXT;
 CREATE UNIQUE INDEX workspaces_root_idx ON workspaces(root_path);
 

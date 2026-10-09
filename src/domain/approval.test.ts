@@ -2,87 +2,190 @@ import { describe, expect, it } from "vitest";
 import {
   approvePlan,
   assertCanApply,
-  markApplied,
   replacePlan,
+  restoreAfterRestart,
+  restoredPlanState,
+  settlePlan,
   type PlanState,
 } from "./approval";
-import type { ActionPlan } from "./contracts";
+import { isFolioError } from "./errors";
+import {
+  editOperation,
+  makePlan,
+  observedPaths,
+  WORKSPACE,
+} from "./test-support";
+import type { ActionPlan, FolioErrorCode } from "./contracts";
 
-const plan: ActionPlan = {
-  id: "plan-1",
-  workspaceId: "workspace-1",
-  operations: [
-    {
-      kind: "edit",
-      documentId: "project-plan",
-      expectedContentHash: "original-hash",
-      before: "October 20",
-      after: "October 23",
-    },
-  ],
-  impacts: [],
-  createdAt: 100,
-  expiresAt: 200,
-};
-const preview: PlanState = { status: "preview", plan };
+const BEFORE = "Deadline: October 20\n";
+const AFTER = "Deadline: October 23\n";
+const TARGET = "projects/project-plan.md";
+
+function codeOf(run: () => unknown): FolioErrorCode | string {
+  try {
+    run();
+  } catch (cause) {
+    return isFolioError(cause) ? cause.code : `not-a-folio-error: ${cause}`;
+  }
+  return "no-error";
+}
+
+async function previewState(): Promise<{
+  state: PlanState;
+  plan: ActionPlan;
+  current: Awaited<ReturnType<typeof observedPaths>>;
+}> {
+  const plan = await makePlan({
+    id: "plan-1",
+    operations: [await editOperation(TARGET, BEFORE, AFTER)],
+  });
+  return {
+    plan,
+    state: { status: "preview", plan },
+    current: await observedPaths({ [TARGET]: BEFORE }),
+  };
+}
 
 describe("approval boundaries", () => {
-  it("refuses writes without approval", () =>
-    expect(() =>
-      assertCanApply(preview, { "project-plan": "original-hash" }, 150),
-    ).toThrow("APPROVAL_REQUIRED"));
-  it("rejects approval after preview expires", () =>
-    expect(() => approvePlan(preview, 200)).toThrow("PLAN_EXPIRED"));
-  it("rejects external edits after approval", () =>
-    expect(() =>
-      assertCanApply(
-        approvePlan(preview, 150),
-        { "project-plan": "external-edit" },
-        160,
-      ),
-    ).toThrow("TARGET_CHANGED"));
-  it("checks expiry again at execution", () =>
-    expect(() =>
-      assertCanApply(
-        approvePlan(preview, 150),
-        { "project-plan": "original-hash" },
-        201,
-      ),
-    ).toThrow("PLAN_EXPIRED"));
-  it("requires fresh approval when the plan changes", () => {
-    const updated = replacePlan(approvePlan(preview, 150), {
-      ...plan,
+  it("refuses to apply a preview that was never approved", async () => {
+    const { state, current } = await previewState();
+    expect(codeOf(() => assertCanApply(state, current, 1_500))).toBe(
+      "approvalRequired",
+    );
+  });
+
+  it("refuses to approve an expired preview", async () => {
+    const { state } = await previewState();
+    expect(codeOf(() => approvePlan(state, 2_000))).toBe("planExpired");
+  });
+
+  it("refuses to apply an approved plan whose target changed since", async () => {
+    const { state } = await previewState();
+    const approved = approvePlan(state, 1_200);
+    const changed = await observedPaths({ [TARGET]: "Binago ng ibang app\n" });
+    expect(codeOf(() => assertCanApply(approved, changed, 1_300))).toBe(
+      "targetChanged",
+    );
+  });
+
+  it("re-checks expiry at application time, not only at approval", async () => {
+    const { state, current } = await previewState();
+    const approved = approvePlan(state, 1_200);
+    expect(codeOf(() => assertCanApply(approved, current, 1_300))).toBe(
+      "no-error",
+    );
+    expect(codeOf(() => assertCanApply(approved, current, 2_001))).toBe(
+      "planExpired",
+    );
+  });
+
+  it("requires fresh approval when the plan changes", async () => {
+    const { state } = await previewState();
+    const approved = approvePlan(state, 1_200);
+    const next = await makePlan({
       id: "plan-2",
       operations: [
-        {
-          ...plan.operations[0],
-          kind: "edit",
-          documentId: "project-plan",
-          expectedContentHash: "original-hash",
-          before: "October 20",
-          after: "October 30",
-        },
+        await editOperation(TARGET, BEFORE, "Deadline: October 30\n"),
       ],
     });
-    expect(updated.status).toBe("preview");
-    expect(() =>
-      assertCanApply(updated, { "project-plan": "original-hash" }, 160),
-    ).toThrow("APPROVAL_REQUIRED");
-  });
-  it("records completion only with a history entry and cannot apply twice", () => {
-    const approved = approvePlan(preview, 150);
-    expect(() =>
-      markApplied(approved, { "project-plan": "original-hash" }, 160, ""),
-    ).toThrow("HISTORY_REQUIRED");
-    const applied = markApplied(
-      approved,
-      { "project-plan": "original-hash" },
-      160,
-      "history-1",
+    const replaced = replacePlan(approved, next);
+    expect(replaced.status).toBe("preview");
+    const current = await observedPaths({ [TARGET]: BEFORE });
+    expect(codeOf(() => assertCanApply(replaced, current, 1_300))).toBe(
+      "approvalRequired",
     );
-    expect(applied.status).toBe("applied");
-    expect(() =>
-      assertCanApply(applied, { "project-plan": "original-hash" }, 170),
-    ).toThrow("APPROVAL_REQUIRED");
+  });
+
+  it("refuses a changed plan that reuses the approved identity", async () => {
+    const { state, plan } = await previewState();
+    const approved = approvePlan(state, 1_200);
+    const sameIdDifferentWork = await makePlan({
+      id: plan.id,
+      operations: [
+        await editOperation(TARGET, BEFORE, "Deadline: October 30\n"),
+      ],
+    });
+    // Reusing the identity is refused outright, and an approval carried over to
+    // different operations is refused by its digest.
+    expect(codeOf(() => replacePlan(approved, sameIdDifferentWork))).toBe(
+      "planStateInvalid",
+    );
+    const forged: PlanState = {
+      status: "approved",
+      plan: sameIdDifferentWork,
+      approval:
+        approved.status === "approved"
+          ? approved.approval
+          : { planId: "", planDigest: "", approvedAt: 0 },
+    };
+    const current = await observedPaths({ [TARGET]: BEFORE });
+    expect(codeOf(() => assertCanApply(forged, current, 1_300))).toBe(
+      "approvalStale",
+    );
+  });
+
+  it("refuses an approval token the user never gave for this plan", async () => {
+    const { state, plan } = await previewState();
+    const fabricated: PlanState = {
+      status: "approved",
+      plan,
+      approval: {
+        planId: plan.id,
+        planDigest: "sha256:" + "0".repeat(64),
+        approvedAt: 1_200,
+      },
+    };
+    const current = await observedPaths({ [TARGET]: BEFORE });
+    expect(codeOf(() => assertCanApply(fabricated, current, 1_300))).toBe(
+      "approvalStale",
+    );
+  });
+
+  it("records a durable outcome and refuses to apply the same plan twice", async () => {
+    const { state, current } = await previewState();
+    const approved = approvePlan(state, 1_200);
+    const settled = settlePlan(approved, {
+      attempts: [
+        {
+          status: "succeeded",
+          historyEntryId: "history-1",
+          completedAt: 1_301,
+        },
+      ],
+      startedAt: 1_300,
+      finishedAt: 1_302,
+    });
+    expect(settled.status).toBe("settled");
+    if (settled.status === "settled") {
+      expect(settled.result.stopReason).toBe("completed");
+      expect(settled.result.outcomes[0].historyEntryId).toBe("history-1");
+    }
+    expect(codeOf(() => assertCanApply(settled, current, 1_400))).toBe(
+      "approvalRequired",
+    );
+  });
+});
+
+describe("restart", () => {
+  it("restores an unfinished preview without its approval", async () => {
+    const { state } = await previewState();
+    const approved = approvePlan(state, 1_200);
+    const restored = restoreAfterRestart(approved.plan, true);
+    expect(restored.requiresFreshApproval).toBe(true);
+    const next = restoredPlanState(restored);
+    expect(next.status).toBe("preview");
+    const current = await observedPaths({ [TARGET]: BEFORE });
+    expect(codeOf(() => assertCanApply(next, current, 1_300))).toBe(
+      "approvalRequired",
+    );
+  });
+
+  it("refuses to continue when the authorized folder is gone", async () => {
+    const { plan } = await previewState();
+    const restored = restoreAfterRestart(plan, false);
+    expect(codeOf(() => restoredPlanState(restored))).toBe(
+      "workspaceUnavailable",
+    );
+    expect(restored.plan.workspaceId).toBe(WORKSPACE);
   });
 });
