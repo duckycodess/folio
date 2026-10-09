@@ -466,6 +466,12 @@ export interface GroundedResult extends GroundedAnswer {
   uncitedSentenceCount: number;
   /** Relationship summaries only: what the native core actually supplied. */
   basis?: SummaryBasis;
+  /**
+   * Answers about a chosen file only: nothing in the file matched the
+   * question, so the answer came from its closest or opening passages.
+   * Absent, never `false`, otherwise.
+   */
+  chosenFileUnmatched?: true;
 }
 
 /**

@@ -87,9 +87,9 @@ struct Folio {
     /// provider lock across the whole run.
     embedding_sync: Arc<Mutex<()>>,
     cancel_embedding_sync: Arc<AtomicBool>,
-    /// Stops the index refresh of the AI request in flight (set by
-    /// `cancel_generation`, cleared when the next request starts).
-    cancel_ai_request: Arc<AtomicBool>,
+    /// One Stop token per AI request in flight; `cancel_generation` sets them
+    /// all, and a request that starts later gets a fresh one.
+    cancel_ai_request: AiRequestCancels,
     /// One local AI refresh (embedding sync, then relationship discovery) at a time.
     ai_refresh: Arc<Mutex<()>>,
 }
@@ -107,7 +107,7 @@ impl Folio {
             cancel_apply: Arc::new(AtomicBool::new(false)),
             embedding_sync: Arc::new(Mutex::new(())),
             cancel_embedding_sync: Arc::new(AtomicBool::new(false)),
-            cancel_ai_request: Arc::new(AtomicBool::new(false)),
+            cancel_ai_request: AiRequestCancels::default(),
             ai_refresh: Arc::new(Mutex::new(())),
         })
     }
@@ -926,8 +926,45 @@ impl evidence::Embedder for NativePassageEmbedder {
     }
 }
 
+/// The Stop tokens of the AI requests in flight. Each request owns its token,
+/// so a Stop reaches the requests running when it is pressed and no request
+/// starting later can clear it, or be stopped by it.
+#[derive(Default)]
+struct AiRequestCancels {
+    live: Mutex<Vec<std::sync::Weak<AtomicBool>>>,
+}
+
+impl AiRequestCancels {
+    fn live(&self) -> std::sync::MutexGuard<'_, Vec<std::sync::Weak<AtomicBool>>> {
+        // The list holds only weak tokens; a panic elsewhere left nothing broken.
+        let mut live = self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        live.retain(|token| token.strong_count() > 0);
+        live
+    }
+
+    /// A fresh token for a request starting now.
+    fn register(&self) -> Arc<AtomicBool> {
+        let token = Arc::new(AtomicBool::new(false));
+        self.live().push(Arc::downgrade(&token));
+        token
+    }
+
+    /// Stops every request in flight.
+    fn cancel_all(&self) {
+        for token in self.live().iter().filter_map(std::sync::Weak::upgrade) {
+            token.store(true, Ordering::Release);
+        }
+    }
+
+    #[cfg(test)]
+    fn live_count(&self) -> usize {
+        self.live().len()
+    }
+}
+
 /// Everything one AI request needs to read the persistent index. Cheap to
-/// build on the async side, then moved into the blocking task.
+/// build on the async side, then moved into the blocking task. Its Stop token
+/// is registered here, when the command starts.
 struct AiRequest {
     app: AppHandle,
     root: ScopedRoot,
@@ -953,7 +990,7 @@ impl AiRequest {
             index_path: state.index_path.clone(),
             scanning: state.scanning.clone(),
             embedding_sync: state.embedding_sync.clone(),
-            cancel: state.cancel_ai_request.clone(),
+            cancel: state.cancel_ai_request.register(),
             embedding_state: embedding_state.clone(),
             lab_state: lab_state.clone(),
         })
@@ -966,7 +1003,6 @@ impl AiRequest {
         self,
         work: impl FnOnce(&mut evidence::LocalIndex<'_, NativePassageEmbedder>) -> Result<R, FolioError>,
     ) -> Result<R, FolioError> {
-        self.cancel.store(false, Ordering::Release);
         let mut conn = db::open(&self.index_path)?;
         let mut embedder = NativePassageEmbedder {
             app: self.app.clone(),
@@ -1019,6 +1055,22 @@ async fn sync_embeddings(
     .await?)
 }
 
+/// `providerBusy` detail `reason` when another fill (an AI request's, "Prepare
+/// now"'s or another sync's) holds the embedding lock.
+const EMBEDDING_SYNC_RUNNING: &str = "embeddingSyncRunning";
+
+fn lock_embedding_sync(sync_lock: &Mutex<()>) -> Result<std::sync::MutexGuard<'_, ()>, FolioError> {
+    match sync_lock.try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(std::sync::TryLockError::WouldBlock) => Err(error(
+            ErrorCode::ProviderBusy,
+            "Another embedding sync is already running.",
+        )
+        .with_detail("reason", EMBEDDING_SYNC_RUNNING)),
+        Err(std::sync::TryLockError::Poisoned(_)) => Err(unavailable_state()),
+    }
+}
+
 /// #27's persistent fill: load the selected provider's space, register the
 /// stored-chunk space it produces, then embed pending chunks. Shared by the
 /// `sync_embeddings` command and the combined local AI refresh.
@@ -1032,16 +1084,7 @@ fn run_embedding_sync(
     workspace_id: String,
 ) -> Result<embedding_sync::EmbeddingSyncSummary, FolioError> {
     refuse_during_lab(&lab_state)?;
-    let _sync_guard = match sync_lock.try_lock() {
-        Ok(guard) => guard,
-        Err(std::sync::TryLockError::WouldBlock) => {
-            return Err(error(
-                ErrorCode::ProviderBusy,
-                "Another embedding sync is already running.",
-            ))
-        }
-        Err(std::sync::TryLockError::Poisoned(_)) => return Err(unavailable_state()),
-    };
+    let _sync_guard = lock_embedding_sync(sync_lock)?;
     cancel.store(false, Ordering::Release);
 
     let provider_space = with_embedding_provider_guarded(
@@ -1119,6 +1162,34 @@ struct LocalAiRefresh {
     coverage: ai_discovery::RelationshipCoverage,
 }
 
+/// What the embedding phase of `refresh_local_ai_index` did.
+enum EmbeddingPhase {
+    Ran(embedding_sync::EmbeddingSyncSummary),
+    /// No selected, installed search model: browsing and links keep working,
+    /// and coverage says there is no active space.
+    NoModel,
+    /// An AI request or "Prepare now" is filling the same index right now.
+    /// Discovery runs on what is embedded and coverage honestly shows the rest
+    /// as not yet embedded; a later refresh picks it up.
+    Skipped,
+}
+
+fn embedding_phase(
+    result: Result<embedding_sync::EmbeddingSyncSummary, FolioError>,
+) -> Result<EmbeddingPhase, FolioError> {
+    match result {
+        Ok(summary) => Ok(EmbeddingPhase::Ran(summary)),
+        Err(failure) if failure.code == ErrorCode::ModelNotInstalled => Ok(EmbeddingPhase::NoModel),
+        Err(failure)
+            if failure.code == ErrorCode::ProviderBusy
+                && failure.detail("reason") == Some(EMBEDDING_SYNC_RUNNING) =>
+        {
+            Ok(EmbeddingPhase::Skipped)
+        }
+        Err(failure) => Err(failure),
+    }
+}
+
 /// Refreshes Folio's local AI index for a folder: #27's embedding sync, then
 /// progressive relationship discovery in the resulting active space. One
 /// refresh at a time and one Stop (`cancel_local_ai_refresh`) for both phases.
@@ -1161,7 +1232,7 @@ async fn refresh_local_ai_index(
         };
 
         emit("embedding", 0, 0);
-        let embedding = match run_embedding_sync(
+        let embedding = match embedding_phase(run_embedding_sync(
             app.clone(),
             index_path.clone(),
             &sync_lock,
@@ -1169,12 +1240,9 @@ async fn refresh_local_ai_index(
             embedding_state,
             lab_state,
             workspace_id.clone(),
-        ) {
-            Ok(summary) => Some(summary),
-            // No selected, installed search model: browsing and links keep
-            // working, and coverage says there is no active space.
-            Err(failure) if failure.code == ErrorCode::ModelNotInstalled => None,
-            Err(failure) => return Err(failure),
+        ))? {
+            EmbeddingPhase::Ran(summary) => Some(summary),
+            EmbeddingPhase::NoModel | EmbeddingPhase::Skipped => None,
         };
         let mut conn = db::open(&index_path)?;
         let stopped_early = embedding.as_ref().is_some_and(|summary| summary.cancelled);
@@ -2325,8 +2393,8 @@ fn cancel_generation(
     state: State<'_, Folio>,
     generation_state: State<'_, GenerationState>,
 ) -> Result<(), FolioError> {
-    // The request may still be reading or embedding, before it holds the slot.
-    state.cancel_ai_request.store(true, Ordering::Release);
+    // The requests may still be reading or embedding, before they hold the slot.
+    state.cancel_ai_request.cancel_all();
     Ok(cancel_generation_now(generation_state.inner())?)
 }
 
@@ -2383,7 +2451,7 @@ async fn answer_question(
     let generation_state = generation_state.inner().clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
         let cancel = request.cancel.clone();
-        let passages = request.run(|index| {
+        let evidence::PromptEvidence { passages, matched } = request.run(|index| {
             index.prompt_evidence(
                 &question,
                 match document_id.as_deref() {
@@ -2411,10 +2479,19 @@ async fn answer_question(
             passages,
             grounding::detect_language(&question),
             lease.claim.cancel.as_ref(),
-        );
-        Ok(result?)
+        )?;
+        Ok(mark_unmatched(result, matched))
     })
     .await?)
+}
+
+/// An answer about a chosen file in which nothing matched the question says
+/// so, so it is not read as a sourced match: its passages were sent because
+/// the user chose the file.
+fn mark_unmatched(mut result: GroundedResult, matched: bool) -> GroundedResult {
+    result.chosen_file_unmatched =
+        !matched && result.kind != folio_core::contracts::GroundedAnswerKind::InsufficientEvidence;
+    result
 }
 
 /// Interprets a request. The model sees the request only; the folder's index is
@@ -2741,6 +2818,81 @@ mod tests {
         let wire = serde_json::to_value(&refresh).unwrap();
         let keys: Vec<&str> = wire.as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(keys, ["coverage", "workspaceId"], "absent, never null: {wire}");
+    }
+
+    #[test]
+    fn a_graph_refresh_skips_embedding_while_an_ask_fills_the_index_and_still_discovers() {
+        let sync_lock = Mutex::new(());
+        let held = sync_lock.lock().unwrap();
+        let busy = lock_embedding_sync(&sync_lock).map(|_| ()).unwrap_err();
+        assert_eq!(busy.code, ErrorCode::ProviderBusy);
+        assert_eq!(busy.detail("reason"), Some(EMBEDDING_SYNC_RUNNING));
+        drop(held);
+
+        // The fill elsewhere is not a failure: no summary, discovery goes on.
+        let busy_sync = error(ErrorCode::ProviderBusy, "Another embedding sync is already running.")
+            .with_detail("reason", EMBEDDING_SYNC_RUNNING);
+        assert!(matches!(
+            embedding_phase(Err(busy_sync)),
+            Ok(EmbeddingPhase::Skipped)
+        ));
+        assert!(matches!(
+            embedding_phase(Err(error(ErrorCode::ModelNotInstalled, "none"))),
+            Ok(EmbeddingPhase::NoModel)
+        ));
+        // A Model Lab run is still a real refusal.
+        let lab = error(ErrorCode::ProviderBusy, "lab").with_detail("reason", "modelLabRunning");
+        assert_eq!(embedding_phase(Err(lab)).err().unwrap().code, ErrorCode::ProviderBusy);
+        assert!(lock_embedding_sync(&sync_lock).is_ok());
+    }
+
+    #[test]
+    fn a_stop_before_a_request_starts_leaves_it_running() {
+        let requests = AiRequestCancels::default();
+        requests.cancel_all();
+        let request = requests.register();
+        assert!(!request.load(Ordering::Acquire), "the earlier Stop was for earlier work");
+    }
+
+    #[test]
+    fn a_stop_reaches_every_request_in_flight_and_only_those() {
+        let requests = AiRequestCancels::default();
+        let summary = requests.register();
+        let prepare = requests.register();
+        let finished = requests.register();
+        drop(finished);
+        requests.cancel_all();
+        assert!(summary.load(Ordering::Acquire) && prepare.load(Ordering::Acquire));
+        assert_eq!(requests.live_count(), 2, "finished requests are forgotten");
+
+        let next = requests.register();
+        assert!(!next.load(Ordering::Acquire));
+        assert!(summary.load(Ordering::Acquire), "no reset of another request's Stop");
+    }
+
+    #[test]
+    fn only_an_answer_about_a_chosen_file_nothing_matched_is_marked() {
+        let answer = |kind| folio_core::contracts::GroundedResult {
+            text: "t".into(),
+            sources: vec![],
+            coverage: vec![],
+            model_id: "m".into(),
+            revision: "r".into(),
+            kind,
+            sentences: vec![],
+            coverage_ranges: vec![],
+            uncited_sentence_count: 0,
+            basis: None,
+            chosen_file_unmatched: false,
+        };
+        use folio_core::contracts::GroundedAnswerKind::{Answer, InsufficientEvidence};
+        assert!(mark_unmatched(answer(Answer), false).chosen_file_unmatched);
+        assert!(!mark_unmatched(answer(Answer), true).chosen_file_unmatched);
+        assert!(!mark_unmatched(answer(InsufficientEvidence), false).chosen_file_unmatched);
+        let wire = serde_json::to_value(mark_unmatched(answer(Answer), true)).unwrap();
+        assert!(wire.get("chosenFileUnmatched").is_none(), "absent, never false: {wire}");
+        let wire = serde_json::to_value(mark_unmatched(answer(Answer), false)).unwrap();
+        assert_eq!(wire["chosenFileUnmatched"], true);
     }
 
     #[test]

@@ -181,6 +181,19 @@ struct ScoredPassages {
     passages: Vec<(SourcePassage, f32)>,
     method: SearchMethod,
     space_fingerprint: Option<String>,
+    /// Whether any passage in scope passed the evidence gate and semantic
+    /// floor or the keyword floor, i.e. would be a candidate under
+    /// `Gate::Require`, whatever the policy.
+    matched: bool,
+}
+
+/// The passages an answer prompt may use.
+pub(crate) struct PromptEvidence {
+    pub(crate) passages: Vec<SourcePassage>,
+    /// False only for a chosen file in which nothing passed the evidence gate
+    /// or the keyword floor: its passages are then its closest or opening
+    /// ones, sent because the user chose the file, not because they matched.
+    pub(crate) matched: bool,
 }
 
 #[derive(Clone)]
@@ -362,8 +375,16 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
     fn fill_vectors(&mut self, provider: ProviderEmbeddingSpace) -> NativeResult<SpaceInUse> {
         let stored = embedding_sync::stored_index_space(&provider)?;
         let fingerprint = index::register_space(self.conn, &stored)?;
-        let _syncing = lock_unless_cancelled(self.embedding_sync, self.cancel)?;
         let workspace_id = self.root.id.clone();
+        let (embedded, total) = index::embedding_coverage(self.conn, &workspace_id, &fingerprint)?;
+        // With every chunk embedded there is nothing to serialize, so a
+        // request never queues behind a Graph refresh's or another request's
+        // fill just to find that out.
+        if embedded >= total {
+            return Ok(SpaceInUse { fingerprint });
+        }
+        let _syncing = lock_unless_cancelled(self.embedding_sync, self.cancel)?;
+        // Whoever held the lock may have filled some or all of it meanwhile.
         let (embedded, total) = index::embedding_coverage(self.conn, &workspace_id, &fingerprint)?;
         if embedded < total {
             (self.progress)(PreparingProgress {
@@ -428,11 +449,11 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
         &mut self,
         question: &str,
         scope: Scope<'_>,
-    ) -> NativeResult<Vec<SourcePassage>> {
+    ) -> NativeResult<PromptEvidence> {
         let mut space = self.ensure_embedded()?;
         let mut retried = false;
         loop {
-            let passages = self.passages_for(question, scope, space.as_ref())?;
+            let (passages, matched) = self.passages_for(question, scope, space.as_ref())?;
             let (current, dropped) = self.current_passages_only(passages)?;
             // A document edited behind the scan's back was just read again, so
             // look once more: its fresh chunks may answer.
@@ -442,7 +463,10 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
                 space = self.ensure_embedded()?;
                 continue;
             }
-            return Ok(current);
+            return Ok(PromptEvidence {
+                passages: current,
+                matched,
+            });
         }
     }
 
@@ -451,32 +475,35 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
         question: &str,
         scope: Scope<'_>,
         space: Option<&SpaceInUse>,
-    ) -> NativeResult<Vec<SourcePassage>> {
+    ) -> NativeResult<(Vec<SourcePassage>, bool)> {
         Ok(match scope {
+            // Folder passages all passed the gate; none at all is
+            // insufficient evidence, not an unmatched answer.
             Scope::Folder => {
                 let results =
                     self.retrieve(question, None, MAX_PASSAGES, space)?;
-                grounding::fit_evidence_budget(
+                let passages = grounding::fit_evidence_budget(
                     results
                         .into_iter()
                         .flat_map(|result| result.passages)
                         .take(MAX_PASSAGES)
                         .collect(),
-                )
+                );
+                (passages, true)
             }
             Scope::Document(id) => {
-                let mut ranked = self
-                    .scored_passages(question, Some(id), space, Gate::Bypass)?
-                    .passages;
+                let scored = self.scored_passages(question, Some(id), space, Gate::Bypass)?;
+                let mut ranked = scored.passages;
                 ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
                 let opening = index::leading_chunks(self.conn, &self.root.id, id, MAX_PASSAGES)?
                     .into_iter()
                     .map(|chunk| core_passage(chunk.passage))
                     .collect();
-                grounding::chosen_document_passages(
+                let passages = grounding::chosen_document_passages(
                     ranked.into_iter().map(|(passage, _)| passage).collect(),
                     opening,
-                )
+                );
+                (passages, scored.matched)
             }
         })
     }
@@ -511,6 +538,7 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
         let keyword = self.keyword_scores(&terms, document_id)?;
         let required = gate_policy == Gate::Require;
         let Some(space) = space else {
+            let matched = keyword.values().any(|(_, score)| *score >= MIN_KEYWORD_SCORE);
             let passages = keyword
                 .into_values()
                 .filter(|(_, score)| !required || *score >= MIN_KEYWORD_SCORE)
@@ -520,6 +548,7 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
                 passages,
                 method: SearchMethod::Keyword,
                 space_fingerprint: None,
+                matched,
             });
         };
 
@@ -567,12 +596,17 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
         for chunk in index::stored_chunks(self.conn, &self.root.id, &missing)? {
             chunks.insert(chunk.chunk_id, chunk);
         }
+        let scores_of = |chunk_id: i64| {
+            let cosine = cosine_of.get(&chunk_id).copied().unwrap_or(0.0);
+            let keyword = keyword_of.get(&chunk_id).copied().unwrap_or(0.0);
+            (cosine, keyword, retrieval::admits(&gate, cosine, keyword))
+        };
+        let matched = chunks.keys().any(|chunk_id| scores_of(*chunk_id).2);
         let passages = chunks
             .into_values()
             .filter_map(|chunk| {
-                let cosine = cosine_of.get(&chunk.chunk_id).copied().unwrap_or(0.0);
-                let keyword = keyword_of.get(&chunk.chunk_id).copied().unwrap_or(0.0);
-                (!required || retrieval::admits(&gate, cosine, keyword))
+                let (cosine, keyword, admitted) = scores_of(chunk.chunk_id);
+                (!required || admitted)
                     .then(|| (core_passage(chunk.passage), retrieval::fused(cosine, keyword)))
             })
             .collect();
@@ -580,6 +614,7 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
             passages,
             method: SearchMethod::Hybrid,
             space_fingerprint: Some(space.fingerprint.clone()),
+            matched,
         })
     }
 
@@ -1170,7 +1205,7 @@ mod tests {
         let mut embedder = ConceptEmbedder::new("r1");
         let plan = id_of(&harness.root, "projects/project-plan.md");
         let (before, _) = harness.request(&mut embedder, |index| {
-            index.prompt_evidence("project submission deadline", Scope::Folder)
+            index.prompt_evidence("project submission deadline", Scope::Folder).map(|evidence| evidence.passages)
         });
         assert!(before.unwrap().iter().any(|passage| passage.document_id == plan));
 
@@ -1182,7 +1217,7 @@ mod tests {
         fs::File::options().write(true).open(&path).unwrap().set_modified(modified).unwrap();
 
         let (during, _) = harness.request(&mut embedder, |index| {
-            index.prompt_evidence("project submission deadline", Scope::Folder)
+            index.prompt_evidence("project submission deadline", Scope::Folder).map(|evidence| evidence.passages)
         });
         let during = during.unwrap();
         // The stale passage is dropped, the file is read again, and the request
@@ -1224,7 +1259,7 @@ mod tests {
         let mut harness = Harness::fixtures();
         let mut embedder = ConceptEmbedder::new("r1");
         let (passages, _) = harness.request(&mut embedder, |index| {
-            index.prompt_evidence("huling araw ng pagpasa ng proyekto", Scope::Folder)
+            index.prompt_evidence("huling araw ng pagpasa ng proyekto", Scope::Folder).map(|evidence| evidence.passages)
         });
         let passages = passages.unwrap();
         assert!(!passages.is_empty() && passages.len() <= MAX_PASSAGES);
@@ -1245,7 +1280,8 @@ mod tests {
         let (passages, _) = harness.request(&mut embedder, |index| {
             index.prompt_evidence("project submission deadline", Scope::Document(&tala))
         });
-        let passages = passages.unwrap();
+        let PromptEvidence { passages, matched } = passages.unwrap();
+        assert!(matched, "the file answers the question");
         assert!(!passages.is_empty());
         assert!(passages.iter().all(|passage| passage.document_id == tala));
     }
@@ -1262,7 +1298,9 @@ mod tests {
         let (passages, _) = harness.request(&mut embedder, |index| {
             index.prompt_evidence("what does this file say?", Scope::Document(&budget))
         });
-        let passages = passages.unwrap();
+        let PromptEvidence { passages, matched } = passages.unwrap();
+        // Sent, but marked, so the answer is not taken for a sourced match.
+        assert!(!matched, "nothing in the file matched the question");
         assert!(!passages.is_empty());
         assert!(passages.iter().all(|passage| passage.document_id == budget));
         assert!(passages.iter().any(|passage| passage.text.contains("transport")));
@@ -1279,7 +1317,13 @@ mod tests {
         let (opening, _) = harness.request(&mut embedder, |index| {
             index.prompt_evidence("zzz nothing matches", Scope::Document(&plan))
         });
-        assert!(!opening.unwrap().is_empty(), "its opening passages are sent");
+        let opening = opening.unwrap();
+        assert!(!opening.passages.is_empty(), "its opening passages are sent");
+        assert!(!opening.matched, "and marked as not matching");
+        let (keyword, _) = harness.request(&mut embedder, |index| {
+            index.prompt_evidence("submission deadline", Scope::Document(&plan))
+        });
+        assert!(keyword.unwrap().matched, "a keyword hit is a match");
 
         // The file changes without the scan noticing (same size and mtime).
         let path = harness.folder.path().join("projects/project-plan.md");
@@ -1290,7 +1334,7 @@ mod tests {
         let (during, _) = harness.request(&mut embedder, |index| {
             index.prompt_evidence("zzz nothing matches", Scope::Document(&plan))
         });
-        let during = during.unwrap();
+        let during = during.unwrap().passages;
         assert!(!during.is_empty(), "the file was read again and looked at once more");
         assert!(
             during.iter().all(|passage| !passage.text.contains("October 20")),
@@ -1316,7 +1360,7 @@ mod tests {
         let mut harness = Harness::from(folder, conn, root);
         let mut embedder = ConceptEmbedder::new("r1");
         let (passages, _) = harness.request(&mut embedder, |index| {
-            index.prompt_evidence("project plan deadline", Scope::Folder)
+            index.prompt_evidence("project plan deadline", Scope::Folder).map(|evidence| evidence.passages)
         });
         let passages = passages.unwrap();
         let bytes = passages.iter().map(|passage| passage.text.len()).sum::<usize>();
@@ -1379,6 +1423,48 @@ mod tests {
         drop(held);
         drop(folder);
         assert_eq!(failure.code, ErrorCode::Cancelled);
+    }
+
+    #[test]
+    fn a_request_with_nothing_left_to_embed_never_waits_for_a_sync_another_task_holds() {
+        let (folder, mut conn, root) = fixture_workspace();
+        let (scanning, syncing) = (Mutex::new(()), Mutex::new(()));
+        let cancel = AtomicBool::new(false);
+        let mut sink = |_: PreparingProgress| {};
+        let mut first = ConceptEmbedder::new("r1");
+        LocalIndex::new(&mut conn, &root, &scanning, &syncing, &mut first, &cancel, &mut sink)
+            .prepare()
+            .unwrap();
+
+        // A Graph refresh holds the sync lock for its whole run. Only a cancel
+        // ends a wait for that lock, so a request that waited would fail.
+        let held = syncing.lock().unwrap();
+        let mut second = ConceptEmbedder::new("r1");
+        let covered = {
+            let mut index =
+                LocalIndex::new(&mut conn, &root, &scanning, &syncing, &mut second, &cancel, &mut sink);
+            index.refresh_files().unwrap();
+            cancel.store(true, Ordering::Release);
+            index.prepare()
+        };
+        assert!(covered.is_ok(), "nothing pending, so no wait: {covered:?}");
+        assert_eq!(second.passages_embedded, 0);
+
+        // With chunks pending it still waits its turn behind the holder.
+        cancel.store(false, Ordering::Release);
+        fs::write(folder.path().join("new-budget.md"), "Budget money for the trip").unwrap();
+        let mut third = ConceptEmbedder::new("r1");
+        let pending = {
+            let mut index =
+                LocalIndex::new(&mut conn, &root, &scanning, &syncing, &mut third, &cancel, &mut sink);
+            index.refresh_files().unwrap();
+            cancel.store(true, Ordering::Release);
+            index.prepare()
+        };
+        drop(held);
+        drop(folder);
+        assert_eq!(pending.unwrap_err().code, ErrorCode::Cancelled);
+        assert_eq!(third.passages_embedded, 0);
     }
 
     #[test]

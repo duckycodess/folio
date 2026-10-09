@@ -100,9 +100,16 @@ embedding sync, then progressive discovery, reporting `folio://ai-refresh-progre
 `EmbeddingSyncSummary`, `discovery` this run's counts, and `ended` why it
 stopped (`complete`, `budgetExhausted`, `cancelled`, `spaceChanged`); each is
 absent, never `null`, when that phase didn't run. `cancel_local_ai_refresh`
-stops both phases and keeps completed work.
+stops both phases and keeps completed work. When an AI request or "Prepare
+now" is already embedding the folder, the refresh doesn't fail: it skips its
+embedding phase (`embedding` absent), runs discovery on what is embedded, and
+`coverage` shows the rest as not yet embedded.
 `GroundedResult.basis` (`{ connections, files, incomplete }`, relationship
 summaries only) is the native count of what the model was given.
+`GroundedResult.chosenFileUnmatched` (`true`, answers about a chosen file only;
+absent otherwise) means nothing in that file passed the evidence gate or the
+keyword floor for the question: the file's closest or opening passages were
+sent because the user chose it, so the answer is not a sourced match.
 
 A Ripple `ImpactCandidate` may carry the `relationshipType` and `provenance` of
 the relationship that connected it to the edited document. Both are optional

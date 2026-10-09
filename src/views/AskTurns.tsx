@@ -199,6 +199,12 @@ export function TurnBody({
             <Badge>Generated answer</Badge>
             <Badge>Not reviewed</Badge>
           </div>
+          {outcome.result.chosenFileUnmatched && (
+            <Notice tone="info">
+              Nothing in this file clearly matched your question; this answer is
+              from its opening or closest passages.
+            </Notice>
+          )}
           <CitedSentences
             result={outcome.result}
             byId={byId}

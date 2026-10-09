@@ -684,6 +684,7 @@ fn build_answer(
         coverage_ranges,
         uncited_sentence_count,
         basis: None,
+        chosen_file_unmatched: false,
     }
 }
 
@@ -703,6 +704,7 @@ fn insufficient_answer(
         coverage_ranges,
         uncited_sentence_count: 0,
         basis: None,
+        chosen_file_unmatched: false,
     }
 }
 

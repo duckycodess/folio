@@ -129,6 +129,12 @@ pub struct GroundedResult {
     /// What a relationship summary was built from; absent for other results.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub basis: Option<SummaryBasis>,
+    /// Answers about a file the user chose only: nothing in that file passed
+    /// the evidence gate or the keyword floor for the question, so the answer
+    /// came from its closest or opening passages. Absent, never `false`,
+    /// otherwise.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chosen_file_unmatched: bool,
 }
 
 /// The connections and files a relationship summary was actually given, as
@@ -409,6 +415,7 @@ mod contract_tests {
                 }],
                 uncited_sentence_count: 0,
                 basis: None,
+                chosen_file_unmatched: false,
             })
             .unwrap(),
         );
