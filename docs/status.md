@@ -39,6 +39,11 @@
   - Filters are kept when leaving Home and coming back.
   - The empty Collections placeholder gives way once pins or recent files exist, so the file list stays on the first screen.
   - The heading stays "Your workspace", per #43.
+- Activity tab ([issue #34](https://github.com/duckycodess/folio/issues/34)): the main navigation is Home, Organize, Graph, Ask & Act and Activity, with Model Lab in the sidebar's settings area. Activity lists what Folio actually changed, from the native history only, one entry per approved plan, newest first. Each entry shows what changed (moved, renamed, edited, created, deleted, or "changed" for a mix), the time, its status (applied, partly undone, undone), and each file's before and after paths.
+  - Undo first previews exactly which files go back.
+  - It names the blocking file and changes nothing when the preview refuses it, and it's absent when the earlier version wasn't kept.
+  - Success is shown only from the native Undo report; a partial Undo uses the partial-Undo wording.
+  - Failed attempts and the action's source aren't recorded by the native history yet (#35), and the page says so.
 - Keyword filtering (explicitly labelled), actual Markdown-link discovery in fixture text, source content views, and a list of those explicit links with their evidence (Graph view).
 - Graph concept map, read-only ([issue #45](https://github.com/duckycodess/folio/issues/45), first of three PRs): Graph opens on a Map, with a Map / List switch; both show the connections for the chosen starting point (all files, a file, a folder or a topic, from #40), and the list keeps Confirmed and Suggested apart. Map and list come from the same pairs (`src/domain/graphScope.ts`). Every file is a node, connected or not. Links are solid with arrowheads, identical copies a double line; dashed lines labelled "AI" are drawn only for embedding or model provenance, which nothing produces yet, so the legend says AI connections will appear when a model produces them. A legend checkbox hides each kind. The layout is deterministic d3-force run synchronously (no animation). Pan, zoom (+ / − / 0, Ctrl or ⌘ + wheel, trackpad or touch pinch; a plain wheel scrolls the page), and dragging a file (it stays pinned and its neighbours settle) work. Keyboard: one Tab stop, arrows follow connections within 60°, preferring the file straight ahead (lowest distance / cos(angle)), Page Up/Down and Home/End go through every file by path, Enter opens the file in the reader, Escape closes it. Selecting a file lists its connections with evidence under the map. Above 400 files the map shows the selected (or most connected) file's neighbourhood with a note. Rename, move, edit and delete from the map, and Shift+F10, are not built yet.
 - Tauri folder picker and scoped native listing/TXT/Markdown reading commands.
@@ -206,6 +211,35 @@ After Gab's review:
 - the unused `pageAt` is removed.
 
 Not verified: a real PDF read by the desktop app, a real PDF with a page that fails extraction, screen readers, and the Tauri webview.
+
+### Activity (2026-10-10, issue #34)
+
+Checked on macOS with Node.js 26.10.0:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 169 passed, 9 todo. The new cases cover:
+  - telling moves, renames, edits, creates and deletes apart;
+  - one entry per plan, newest first, with operations in order;
+  - "Changed N files" for a mix;
+  - applied, partly undone and undone status;
+  - no Undo for unrecoverable changes;
+  - the navigation's destinations, with Model Lab in settings.
+- Headless Chrome, browser preview:
+  - with sample files, Activity says the samples are never changed;
+  - with the native history and Undo commands mocked, entries read "Moved 3 files" and "Renamed 1 file" with their paths, and an unrecoverable change has no Undo and says why;
+  - a refused Undo names the newer edit, offers no confirm button, and returns focus on Escape;
+  - a confirmed Undo shows "Undone. 3 files are back as they were." and marks the entry undone;
+  - a partial Undo shows the partial-Undo message and "Partly undone";
+  - no horizontal scroll at 700px.
+
+After Gab's review:
+
+- the Undo dialog counts from the native preview ("Undo 5 changes") and says how many files it can't list ("and 2 more files from this change, not listed here"), so a plan larger than the history limit is never under-counted;
+- an Undo from Activity also refreshes Related and Graph;
+- a folder change clears the previous folder's Undo state;
+- the page says when only the most recent changes are shown.
+
+Not verified: the real native history and Undo, failed or cancelled batches (not recorded until #35), screen readers, and the Tauri webview.
 
 ### Home filters, pins and recent files (2026-10-10, issue #33)
 

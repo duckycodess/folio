@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isSearchShortcut,
   PRIMARY_NAV,
+  SECONDARY_NAV,
   searchShortcutLabel,
 } from "./navigation";
 
@@ -68,6 +69,17 @@ describe("search shortcut", () => {
 });
 
 describe("navigation", () => {
+  it("lists the main destinations, with Model Lab kept in settings", () => {
+    expect(PRIMARY_NAV.map((item) => item.label)).toEqual([
+      "Home",
+      "Organize",
+      "Graph",
+      "Ask & Act",
+      "Activity",
+    ]);
+    expect(SECONDARY_NAV.map((item) => item.label)).toEqual(["Model Lab"]);
+  });
+
   it("keeps Organize as its own destination beside the assistant", () => {
     const labels = PRIMARY_NAV.map((item) => item.label);
     expect(labels).toContain("Organize");
