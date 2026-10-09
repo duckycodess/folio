@@ -11,10 +11,12 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use tar::Archive;
 use zip::ZipArchive;
 
 const MANIFEST_JSON: &str = include_str!("../../../resources/model-manifest.json");
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -236,6 +238,7 @@ impl ModelStore {
         fs::create_dir_all(&root)?;
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::limited(5))
+            .timeout(DOWNLOAD_TIMEOUT)
             .build()?;
         for file in descriptor.files {
             if cancel.load(Ordering::Relaxed) {
@@ -420,6 +423,7 @@ impl ModelStore {
         fs::create_dir_all(&root)?;
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::limited(5))
+            .timeout(DOWNLOAD_TIMEOUT)
             .build()?;
         for file in descriptor.files {
             let url = file.download_url.clone().ok_or_else(|| {
