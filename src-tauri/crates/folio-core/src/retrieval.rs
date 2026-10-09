@@ -897,7 +897,8 @@ mod tests {
                 if chunk.document_id == "other.md" {
                     vec![1.0, 0.0]
                 } else {
-                    vec![0.8, 0.6]
+                    // Above the calibrated top-cosine floor, so the scoped gate opens.
+                    vec![0.9, 0.435_889_9]
                 }
             })
             .collect::<Vec<_>>();
