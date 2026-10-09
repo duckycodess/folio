@@ -94,8 +94,6 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 
 ### Activity (2026-10-10, issue #34)
 
-### Search evidence (2026-10-10, issue #19)
-
 Checked on macOS with Node.js 26.10.0:
 
 - `npm run format:check`, `npm run check` and `npm run build`: passed.
@@ -123,6 +121,11 @@ After Gab's review:
 
 Not verified: the real native history and Undo, failed or cancelled batches (not recorded until #35), screen readers, and the Tauri webview.
 
+### Search evidence (2026-10-10, issue #19)
+
+Checked on macOS with Node.js 26.10.0:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
 - `npm test`: 170 passed, 9 todo. The new cases:
   - index text matches come before name-only matches, without repeats, and a result for a file no longer listed is dropped;
   - match labels never call keyword matching semantic;
