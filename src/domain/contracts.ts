@@ -328,6 +328,46 @@ export interface AiRelationshipRefresh {
   cancelled: boolean;
 }
 
+/**
+ * How much of the folder Folio has compared for AI connections in the active
+ * search model's index. `complete` means every pair of currently embedded
+ * files was compared; it says nothing about how many connections exist.
+ */
+export type AiCoverageState =
+  "noActiveSpace" | "embeddingIncomplete" | "partial" | "complete";
+
+export interface AiRelationshipCoverage {
+  state: AiCoverageState;
+  spaceFingerprint?: EmbeddingSpaceFingerprint;
+  /** Indexed files with a vector for every passage in the active space. */
+  eligibleDocuments: number;
+  indexedDocuments: number;
+  pairsConsidered: number;
+  pairsRemaining: number;
+  /** Files whose stored candidate connections were truncated. */
+  overflowDocuments: number;
+}
+
+export type AiRefreshPhase = "embedding" | "admitting" | "relationships";
+
+export interface AiRefreshProgress {
+  workspaceId: WorkspaceId;
+  phase: AiRefreshPhase;
+  tiles: number;
+  pairsCompleted: number;
+}
+
+/** Why a discovery run stopped; completed work is kept in every case. */
+export type AiRefreshEnd =
+  "complete" | "budgetExhausted" | "cancelled" | "spaceChanged";
+
+export interface LocalAiRefresh {
+  workspaceId: WorkspaceId;
+  /** Absent when no search model is ready. */
+  ended?: AiRefreshEnd;
+  coverage: AiRelationshipCoverage;
+}
+
 /* ------------------------------------------------------------- embeddings */
 
 export interface EmbeddingSpace {

@@ -19,6 +19,9 @@ import { folderChoices } from "../app/fileActions";
 import { isGenerationReady } from "../app/models";
 import type { RelationshipsState } from "../app/useRelationships";
 import { useModels } from "../app/useModels";
+import { useAiIndexState } from "../app/useAiIndex";
+import { mayClaimNoConnections } from "../domain/aiCoverage";
+import { AiCoverageNotice } from "../ui/AiCoverageNotice";
 import type { WorkspaceState } from "../app/useWorkspace";
 import { describeConnection } from "../domain/connections";
 import { hasSearchWords } from "../domain/discovery";
@@ -198,6 +201,7 @@ export function GraphView({
 }) {
   const { request } = relations;
   const models = useModels();
+  const aiIndex = useAiIndexState();
   const generationReady =
     models.load === "ready" &&
     isGenerationReady(models.groups, models.setup, models.runtime);
@@ -491,11 +495,14 @@ export function GraphView({
             title={
               start.kind === "topic" && !hasSearchWords(start.term)
                 ? "Type a topic to start"
-                : "No connections found"
+                : mayClaimNoConnections(aiIndex.coverage) || !aiIndex.coverage
+                  ? "No connections found"
+                  : "No connections found so far"
             }
           >
             Folio connects files through links written inside them and identical
             copies.
+            <AiCoverageNotice />
           </EmptyState>
         )}
       </Panel>

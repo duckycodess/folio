@@ -8,6 +8,7 @@ import { Badge } from "../ui/Badge";
 import { EmptyState } from "../ui/EmptyState";
 import { FileTypeIcon } from "../ui/FileTypeIcon";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
+import { AiCoverageNotice } from "../ui/AiCoverageNotice";
 
 const EXCERPT_LENGTH = 160;
 
@@ -131,7 +132,12 @@ export function CoverageNote({ relations }: { relations: RelationshipsState }) {
         </>
       );
     default:
-      return invalid;
+      return (
+        <>
+          {invalid}
+          <AiCoverageNotice />
+        </>
+      );
   }
 }
 

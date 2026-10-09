@@ -11,6 +11,8 @@ import { explainImpact } from "../adapters/ai";
 import { isGenerationReady } from "../app/models";
 import { hasUndoableChange } from "../app/planAction";
 import { useModels } from "../app/useModels";
+import { useAiIndexState } from "../app/useAiIndex";
+import { rippleWarning } from "../domain/aiCoverage";
 import {
   impactGroups,
   impactProvenance,
@@ -215,11 +217,19 @@ export function ImpactList({
 }) {
   const groups = impactGroups(impacts);
   const headingId = useId();
+  // Incomplete AI review warns; it never blocks approval and says nothing
+  // about links or copies, which Ripple always checks.
+  const warning = rippleWarning(useAiIndexState().coverage);
   return (
     <section className="impact-review" aria-labelledby={headingId}>
       <h3 id={headingId} className="subsection-title">
         Related passages to review
       </h3>
+      {warning && (
+        <p className="muted" role="note">
+          {warning}
+        </p>
+      )}
       {impacts.length === 0 ? (
         <p className="muted">
           Folio didn't find related files that mention what you changed. That

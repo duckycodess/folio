@@ -1,6 +1,10 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import type {
+  AiRefreshProgress,
+  AiRelationshipCoverage,
   AiRelationshipRefresh,
+  LocalAiRefresh,
   DocumentId,
   EmbeddingSpaceFingerprint,
   GroundedResult,
@@ -75,6 +79,32 @@ export function refreshAiConnections(
 
 export function cancelAiConnections(): Promise<void> {
   return call("cancel_ai_connections");
+}
+
+/** Embedding sync, then progressive relationship discovery, with one Stop. */
+export function refreshLocalAiIndex(
+  workspaceId: string,
+): Promise<LocalAiRefresh> {
+  return call("refresh_local_ai_index", { workspaceId });
+}
+
+export function cancelLocalAiRefresh(): Promise<void> {
+  return call("cancel_local_ai_refresh");
+}
+
+/** What Folio has compared for AI connections. Reads only; starts nothing. */
+export function relationshipCoverage(
+  workspaceId: string,
+): Promise<AiRelationshipCoverage> {
+  return call("relationship_coverage", { workspaceId });
+}
+
+export function onAiRefreshProgress(
+  handler: (progress: AiRefreshProgress) => void,
+): Promise<() => void> {
+  return listen<AiRefreshProgress>("folio://ai-refresh-progress", (event) =>
+    handler(event.payload),
+  );
 }
 
 export function summarizeRelationships(
