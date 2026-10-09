@@ -1,13 +1,10 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { adoptRevision, asTyped, type EditBase } from "../../app/editDraft";
 import { fileActionAvailability } from "../../app/fileActions";
 import { usePlanAction } from "../../app/usePlanAction";
 import type { WorkspaceState } from "../../app/useWorkspace";
 import { readNativeDocument } from "../../adapters/workspace";
-import type {
-  ContentHash,
-  DocumentRecord,
-  FileOperation,
-} from "../../domain/contracts";
+import type { DocumentRecord, FileOperation } from "../../domain/contracts";
 import { toFolioError, type FolioError } from "../../domain/errors";
 import { restoreLineEndings } from "../../domain/textDiff";
 import { Button } from "../../ui/Button";
@@ -16,18 +13,6 @@ import { Progress } from "../../ui/Progress";
 import { RecoveryNotice } from "../../ui/RecoveryNotice";
 import { PlanReview } from "../PlanReview";
 import { ActionDialog } from "./ActionDialog";
-
-/** The revision the user is editing: the exact text and hash Folio read. */
-interface Base {
-  documentId: string;
-  content: string;
-  contentHash: ContentHash;
-}
-
-/** What a textarea shows for `text`: every line break as `\n`. */
-function asTyped(text: string): string {
-  return text.replace(/\r\n?/g, "\n");
-}
 
 /**
  * Edit a TXT or Markdown file's text. The preview is the exact diff of the
@@ -49,7 +34,7 @@ export function EditTextDialog({
   onFilesChanged?: () => void;
 }) {
   const action = usePlanAction(workspace, onFilesChanged);
-  const [base, setBase] = useState<Base | null>(null);
+  const [base, setBase] = useState<EditBase | null>(null);
   const [draft, setDraft] = useState("");
   const [reading, setReading] = useState(false);
   const [readError, setReadError] = useState<FolioError | null>(null);
@@ -61,7 +46,7 @@ export function EditTextDialog({
   const folderId = workspace.workspace?.id;
 
   /** Reads the current revision. Resolves to it, or `null` after a failure. */
-  async function read(): Promise<Base | null> {
+  async function read(): Promise<EditBase | null> {
     if (!folderId) return null;
     const current = ++request.current;
     setReading(true);
@@ -85,18 +70,12 @@ export function EditTextDialog({
   }
 
   /** Edit `fresh`, keeping a draft the user already started on this file. */
-  function adopt(fresh: Base) {
-    if (base?.documentId === fresh.documentId) {
-      if (base.contentHash === fresh.contentHash) return;
-      if (draft !== asTyped(base.content)) {
-        setBase(fresh);
-        setChangedUnder(true);
-        return;
-      }
-    }
-    setBase(fresh);
-    setDraft(asTyped(fresh.content));
-    setChangedUnder(false);
+  function adopt(fresh: EditBase) {
+    const next = adoptRevision({ base, draft }, fresh);
+    if (!next) return;
+    setBase(next.base);
+    setDraft(next.draft);
+    setChangedUnder(next.changedUnder);
   }
 
   // Opening reads the file afresh, so the edit pins its current revision.
