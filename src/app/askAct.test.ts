@@ -216,6 +216,31 @@ describe("namedFiles", () => {
     expect(exact).toEqual([]);
   });
 
+  it("keeps a generic one-word name after the index's results", () => {
+    const files = [doc("a/notes.md"), doc("b/notes.md"), doc("c/to-do.md")];
+    const found = namedFiles(files, "find notes about the budget");
+    expect(found.named).toEqual([]);
+    expect(found.partial.map((each) => each.document.relativePath)).toEqual([
+      "a/notes.md",
+      "b/notes.md",
+    ]);
+    // Two short words aren't distinctive either.
+    expect(namedFiles(files, "what do I need to do").named).toEqual([]);
+    // Written out in full, a one-word name is still named.
+    expect(
+      namedFiles(files, "summarize a/notes.md").named.length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("matches names regardless of accents, like the index", () => {
+    const files = [doc("reports/Niño_report.md")];
+    expect(
+      namedFiles(files, "find the nino report").named.map(
+        (each) => each.document.name,
+      ),
+    ).toEqual(["Niño_report.md"]);
+  });
+
   it("writes out a file name only as a whole name", () => {
     const files = [doc("a/notes.md"), doc("a/old-notes.md")];
     const { exact } = namedFiles(files, "summarize old-notes.md please");
