@@ -1165,7 +1165,10 @@ mod tests {
     }
 
     fn links(conn: &Connection, root: &ScopedRoot) -> Vec<(String, String)> {
-        index::list_relationships(conn, &root.id).unwrap().into_iter().map(|link| (link.source_id, link.target_id)).collect()
+        index::list_relationships(conn, &root.id, None).unwrap().into_iter().filter_map(|link| match link {
+            index::Relationship::ExplicitReference(link) => Some((link.source_id, link.target_id)),
+            _ => None,
+        }).collect()
     }
 
     #[test]

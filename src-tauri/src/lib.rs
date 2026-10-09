@@ -13,7 +13,7 @@ mod ripple;
 mod workspace;
 mod writer;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -24,6 +24,7 @@ use folio_core::contracts::{
     DocumentRecord, EmbeddingSpace as ProviderEmbeddingSpace, GroundedResult,
     InterpretationResult, Language, ModelDescriptor, ModelInstallState, ModelInstallStatus,
     ModelRole, NativeProviderError, SearchResult as ProviderSearchResult,
+    SourcePassage as CoreSourcePassage,
 };
 use folio_core::embeddings::{EmbeddingKind, EmbeddingProvider, OrtE5Provider};
 use folio_core::error::CoreError;
@@ -40,8 +41,9 @@ use tauri_plugin_dialog::DialogExt;
 use contracts::{ActionPlan, Approval, FileOperation, HistoryEntry, ImpactCandidate, UndoPreflight};
 use error::{error, ErrorCode, FolioError};
 use index::{
-    ChunkVector, DuplicateGroup, EmbeddingSpace, ExplicitReference, IndexProgress,
-    IndexedDocument, PendingChunk, ScanOptions, ScanSummary, SearchResult, VectorCandidate,
+    AiRelationshipRefresh, ChunkVector, DuplicateGroup, EmbeddingSpace, IndexProgress,
+    IndexedDocument, PendingChunk, Relationship, ScanOptions, ScanSummary, SearchResult,
+    VectorCandidate,
 };
 use organize::OrganizationSuggestions;
 use plan::PlanRegistry;
@@ -65,6 +67,8 @@ struct Folio {
     /// One scan at a time; a second request waits and then finds little to do.
     scanning: Arc<Mutex<()>>,
     cancel_indexing: Arc<AtomicBool>,
+    /// Stops a bounded relationship refresh before its persistence step.
+    cancel_relationships: Arc<AtomicBool>,
     /// Stops an apply before its next operation; the running one finishes.
     cancel_apply: Arc<AtomicBool>,
 }
@@ -78,6 +82,7 @@ impl Folio {
             index_path,
             scanning: Arc::new(Mutex::new(())),
             cancel_indexing: Arc::new(AtomicBool::new(false)),
+            cancel_relationships: Arc::new(AtomicBool::new(false)),
             cancel_apply: Arc::new(AtomicBool::new(false)),
         })
     }
@@ -99,6 +104,18 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_millis() as i64)
         .unwrap_or_default()
+}
+
+fn core_passage(passage: &contracts::SourcePassage) -> CoreSourcePassage {
+    CoreSourcePassage {
+        document_id: passage.document_id.clone(),
+        document_content_hash: passage.document_content_hash.clone(),
+        offset_unit: folio_core::contracts::OffsetUnit::Utf8Byte,
+        start: passage.start,
+        end: passage.end,
+        text: passage.text.clone(),
+        page: passage.page,
+    }
 }
 
 /// Runs blocking file work off the async workers.
@@ -266,9 +283,315 @@ async fn list_duplicates(
 async fn list_relationships(
     state: State<'_, Folio>,
     workspace_id: String,
-) -> Result<Vec<ExplicitReference>, FolioError> {
+    space_fingerprint: Option<String>,
+) -> Result<Vec<Relationship>, FolioError> {
     state.root(&workspace_id)?;
-    index::list_relationships(&*state.index()?, &workspace_id)
+    index::list_relationships(
+        &*state.index()?,
+        &workspace_id,
+        space_fingerprint.as_deref(),
+    )
+}
+
+/// Discovers AI relationships from vectors already persisted for one space.
+/// #27 owns populating that space; this command only supplies the bounded,
+/// independently testable refresh seam and never starts an embedding producer.
+#[tauri::command]
+async fn refresh_ai_connections(
+    state: State<'_, Folio>,
+    workspace_id: String,
+    space_fingerprint: String,
+) -> Result<AiRelationshipRefresh, FolioError> {
+    state.root(&workspace_id)?;
+    if space_fingerprint.trim().is_empty() {
+        return Err(error(
+            ErrorCode::EmbeddingSpaceMismatch,
+            "Choose a registered embedding space before refreshing connections.",
+        ));
+    }
+    let index_path = state.index_path.clone();
+    let scanning = state.scanning.clone();
+    let cancel = state.cancel_relationships.clone();
+    Ok(run_blocking::<_, FolioError, _>(move || {
+        let _scanning = scanning.lock().map_err(|_| unavailable_state())?;
+        cancel.store(false, Ordering::SeqCst);
+        let documents = {
+            let conn = db::open(&index_path)?;
+            index::relationship_documents(&conn, &workspace_id, &space_fingerprint)?
+        };
+        let documents_compared = documents.len();
+        let edges = folio_core::relationships::discover(
+            &documents,
+            &space_fingerprint,
+            Some(cancel.as_ref()),
+        )
+        .map_err(|failure| {
+            if failure.to_string().contains("cancelled") {
+                error(ErrorCode::Cancelled, "Relationship refresh was stopped.")
+            } else {
+                ai_boundary::core_failure(failure)
+            }
+        })?;
+        let mut conn = db::open(&index_path)?;
+        let relationships_created =
+            index::replace_ai_relationships(&mut conn, &workspace_id, &space_fingerprint, &edges, index::now_ms())?;
+        Ok(AiRelationshipRefresh {
+            workspace_id,
+            space_fingerprint,
+            documents_compared,
+            relationships_created,
+            cancelled: false,
+        })
+    })
+    .await?)
+}
+
+#[tauri::command]
+fn cancel_ai_connections(state: State<'_, Folio>) {
+    state.cancel_relationships.store(true, Ordering::SeqCst);
+}
+
+/// Summarizes only the relationship evidence selected by the native index.
+/// The model receives passages, never document paths or filesystem capabilities.
+#[tauri::command]
+async fn summarize_relationships(
+    app: AppHandle,
+    state: State<'_, Folio>,
+    generation_state: State<'_, GenerationState>,
+    workspace_id: String,
+    document_ids: Vec<String>,
+    focus_document_id: Option<String>,
+    space_fingerprint: Option<String>,
+) -> Result<GroundedResult, FolioError> {
+    state.root(&workspace_id)?;
+    if document_ids.is_empty() || document_ids.len() > 50 {
+        return Err(error(
+            ErrorCode::EvidenceInvalid,
+            "A relationship summary needs between 1 and 50 documents.",
+        ));
+    }
+    let scope = document_ids
+        .iter()
+        .map(|document_id| {
+            ai_boundary::parse_document_id(&workspace_id, document_id)?;
+            Ok::<_, FolioError>(document_id.clone())
+        })
+        .collect::<Result<HashSet<_>, _>>()?;
+    if let Some(focus) = focus_document_id.as_deref() {
+        ai_boundary::parse_document_id(&workspace_id, focus)?;
+        if !scope.contains(focus) {
+            return Err(error(
+                ErrorCode::EvidenceInvalid,
+                "The relationship-summary focus must be in the requested document scope.",
+            ));
+        }
+    }
+    let index_path = state.index_path.clone();
+    let scanning = state.scanning.clone();
+    let generation_state = generation_state.inner().clone();
+    Ok(run_blocking::<_, FolioError, _>(move || {
+        let relationships = {
+            let _scanning = scanning.lock().map_err(|_| unavailable_state())?;
+            let conn = db::open(&index_path)?;
+            index::list_relationships(
+                &conn,
+                &workspace_id,
+                space_fingerprint.as_deref(),
+            )?
+        };
+        let mut selected = Vec::<(u8, u8, f32, Vec<CoreSourcePassage>)>::new();
+        for relationship in relationships {
+            let (source_id, target_id, kind_rank, score, passages) = match relationship {
+                Relationship::ExplicitReference(reference) => (
+                    reference.source_id,
+                    reference.target_id,
+                    0,
+                    0.0,
+                    reference.evidence.iter().map(core_passage).collect(),
+                ),
+                Relationship::Similarity(similarity) => (
+                    similarity.source_id,
+                    similarity.target_id,
+                    2,
+                    similarity.score,
+                    similarity
+                        .source_evidence
+                        .iter()
+                        .chain(similarity.target_evidence.iter())
+                        .map(core_passage)
+                        .collect(),
+                ),
+                Relationship::SharedFactCandidate(shared) => (
+                    shared.source_id,
+                    shared.target_id,
+                    1,
+                    shared.confidence.unwrap_or(0.0),
+                    shared
+                        .source_evidence
+                        .iter()
+                        .chain(shared.target_evidence.iter())
+                        .map(core_passage)
+                        .collect(),
+                ),
+            };
+            if !scope.contains(&source_id) || !scope.contains(&target_id) {
+                continue;
+            }
+            let focus_rank = focus_document_id.as_deref().map_or(1, |focus| {
+                if source_id == focus || target_id == focus { 0 } else { 1 }
+            });
+            selected.push((focus_rank, kind_rank, score, passages));
+        }
+        selected.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then(left.1.cmp(&right.1))
+                .then_with(|| right.2.total_cmp(&left.2))
+        });
+        let mut seen = HashSet::new();
+        let mut passages = Vec::new();
+        for (_, _, _, relationship_passages) in selected {
+            for passage in relationship_passages {
+                let key = (
+                    passage.document_id.clone(),
+                    passage.start,
+                    passage.end,
+                );
+                if seen.insert(key) {
+                    passages.push(passage);
+                    if passages.len() >= folio_core::generation::MAX_PASSAGES {
+                        break;
+                    }
+                }
+            }
+            if passages.len() >= folio_core::generation::MAX_PASSAGES {
+                break;
+            }
+        }
+        let language_text = passages
+            .iter()
+            .map(|passage| passage.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let language = grounding::detect_language(&language_text);
+        let instruction = "Explain how the supplied documents connect. Mention only relationships supported by the supplied evidence, and cite every sentence.";
+        if passages.is_empty() {
+            return Ok(grounding::answer_question(
+                None,
+                instruction,
+                passages,
+                language,
+                &AtomicBool::new(false),
+            )?);
+        }
+        let (provider, cancel) = acquire_generation(&app, &generation_state)?;
+        let result = grounding::relationship_summary(
+            provider.as_ref(),
+            passages,
+            language,
+            cancel.as_ref(),
+        );
+        finish_generation(&generation_state, &cancel)?;
+        Ok(result?)
+    })
+    .await?)
+}
+
+/// Explains one native Ripple candidate without changing its plan or any file.
+#[tauri::command]
+async fn explain_impact(
+    app: AppHandle,
+    state: State<'_, Folio>,
+    generation_state: State<'_, GenerationState>,
+    workspace_id: String,
+    plan_id: String,
+    document_id: String,
+) -> Result<GroundedResult, FolioError> {
+    let root = state.root(&workspace_id)?;
+    let candidate = {
+        let plans = state.plans.lock().map_err(|_| unavailable_state())?;
+        let plan = plan_in_workspace(&plans, &plan_id, &workspace_id)?;
+        if now_ms() >= plan.expires_at {
+            return Err(error(
+                ErrorCode::PlanExpired,
+                "This preview is no longer current. Review a fresh preview.",
+            )
+            .with_detail("planId", plan_id));
+        }
+        plan.impacts
+            .iter()
+            .find(|impact| impact.document_id == document_id)
+            .cloned()
+            .ok_or_else(|| {
+                error(
+                    ErrorCode::EvidenceInvalid,
+                    "That Ripple candidate is not part of this preview.",
+                )
+                .with_detail("documentId", document_id.clone())
+            })?
+    };
+    let relative_path = ai_boundary::parse_document_id(&workspace_id, &document_id)?;
+    let generation_state = generation_state.inner().clone();
+    Ok(run_blocking::<_, FolioError, _>(move || {
+        for passage in &candidate.evidence {
+            if passage.document_id != document_id {
+                return Err(error(
+                    ErrorCode::EvidenceInvalid,
+                    "Ripple evidence names a different document.",
+                )
+                .with_detail("reason", "wrongEvidenceDocument"));
+            }
+        }
+        let instruction = format!(
+            "Explain why this file is a Ripple review candidate. Use only the supplied evidence. The native review reason is: {}",
+            candidate.reason
+        );
+        if candidate.evidence.is_empty() {
+            return Ok(grounding::answer_question(
+                None,
+                &instruction,
+                Vec::new(),
+                Language::Unknown,
+                &AtomicBool::new(false),
+            )?);
+        }
+        let current = workspace::read_text(&root.path, &relative_path)?;
+        for passage in &candidate.evidence {
+            if passage.document_content_hash != current.content_hash
+                || passage.start >= passage.end
+                || passage.end > current.content.len()
+                || !current.content.is_char_boundary(passage.start)
+                || !current.content.is_char_boundary(passage.end)
+                || current.content.as_bytes().get(passage.start..passage.end)
+                    != Some(passage.text.as_bytes())
+            {
+                return Err(error(
+                    ErrorCode::EvidenceInvalid,
+                    "This Ripple evidence is stale. Review the file again before asking for an explanation.",
+                )
+                .with_detail("reason", "staleEvidence"));
+            }
+        }
+        let language = grounding::detect_language(
+            &candidate
+                .evidence
+                .iter()
+                .map(|passage| passage.text.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let (provider, cancel) = acquire_generation(&app, &generation_state)?;
+        let result = grounding::impact_explanation(
+            provider.as_ref(),
+            &instruction,
+            candidate.evidence.iter().map(core_passage).collect(),
+            language,
+            cancel.as_ref(),
+        );
+        finish_generation(&generation_state, &cancel)?;
+        Ok(result?)
+    })
+    .await?)
 }
 
 /// Returns the space fingerprint; vectors are only compared within one space.
@@ -1757,6 +2080,8 @@ pub fn run() {
             search_index,
             list_duplicates,
             list_relationships,
+            refresh_ai_connections,
+            cancel_ai_connections,
             register_embedding_space,
             pending_embedding_chunks,
             put_embeddings,
@@ -1784,6 +2109,8 @@ pub fn run() {
             index_status,
             semantic_search,
             summarize_document,
+            summarize_relationships,
+            explain_impact,
             answer_question,
             interpret_request,
             cancel_generation,

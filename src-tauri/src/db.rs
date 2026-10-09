@@ -11,6 +11,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/003_actions.sql"),
     include_str!("../migrations/004_retry_backoff.sql"),
     include_str!("../migrations/005_delete_history.sql"),
+    include_str!("../migrations/006_ai_relationships.sql"),
 ];
 
 impl From<rusqlite::Error> for FolioError {
