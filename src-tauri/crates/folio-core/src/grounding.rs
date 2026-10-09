@@ -167,7 +167,7 @@ fn build_summary_messages_with_offset(
         ChatMessage {
             role: "user".into(),
             content: format!(
-                "Summarize the supplied passages. Every factual sentence should cite one or more ids. Write every sentence in {}.\n{}",
+                "Summarize the supplied passages. Every sentence must cite one or more of the supplied ids; leave out anything you cannot support with an id, including links or navigation text. Write every sentence in {}.\n{}",
                 language_name(language),
                 source
             ),
@@ -501,7 +501,7 @@ fn build_reduce_messages(
         ChatMessage {
             role: "user".into(),
             content: format!(
-                "Combine these bounded notes into concise, source-grounded sentences. Write every sentence in {}.\n{}",
+                "Combine these bounded notes into concise, source-grounded sentences. Every sentence must keep the citation ids of the notes it comes from; leave out any sentence you cannot cite. Write every sentence in {}.\n{}",
                 language_name(language),
                 notes_text
             ),
