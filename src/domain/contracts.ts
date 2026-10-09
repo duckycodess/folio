@@ -67,6 +67,7 @@ export interface ModelFile {
   path: string;
   sha256: string;
   bytes: number;
+  downloadUrl?: string;
 }
 
 export interface ModelDescriptor {
@@ -93,6 +94,21 @@ export interface ModelInstallState {
   status: ModelInstallStatus;
   modelFileBytes?: number;
   error?: NativeProviderError;
+}
+
+export interface RuntimeStatus {
+  id: string;
+  version: string;
+  installed: boolean;
+  executablePath?: string;
+}
+
+export interface IndexStatus {
+  workspaceId?: string;
+  documentCount: number;
+  chunkCount: number;
+  method: "keyword" | "semantic";
+  embeddingSpaceId?: string;
 }
 
 export type GroundedAnswerKind =
@@ -210,6 +226,7 @@ export type InterpretationResult =
       status: "proposal";
       proposal: OperationProposal;
       requestLanguage: Language;
+      exactDuplicatePaths?: string[];
     }
   | {
       status: "needsFileSelection";
