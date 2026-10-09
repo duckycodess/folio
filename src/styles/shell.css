@@ -797,6 +797,129 @@
   vertical-align: top;
 }
 
+/* Home filters, pinned folders and recent files (#33) */
+.home-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+.filter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.filter .select {
+  max-width: 14rem;
+}
+.home-filters {
+  justify-content: center;
+}
+.filter-label {
+  font: var(--text-small);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+.select {
+  min-height: 36px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-input);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: var(--text-body);
+}
+.filter-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 36px;
+}
+.home-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+.strip-title {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  font: var(--text-label);
+  font-weight: 600;
+}
+.strip-note {
+  font: var(--text-small);
+  font-weight: 400;
+  color: var(--color-text-secondary);
+}
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  min-width: 0;
+}
+.chip-item {
+  display: inline-flex;
+  align-items: center;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 16rem;
+  min-height: 32px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: var(--text-small);
+  font-weight: 500;
+}
+.chip:hover {
+  background: var(--color-surface-muted);
+}
+.chip.is-active {
+  background: var(--color-selected);
+  border-color: var(--brand-gold);
+}
+.chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chip-item .chip {
+  border-radius: var(--radius-pill) 0 0 var(--radius-pill);
+}
+.chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  width: 32px;
+  border: 1px solid var(--color-border);
+  border-left: 0;
+  border-radius: 0 var(--radius-pill) var(--radius-pill) 0;
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+}
+.chip-remove:hover {
+  color: var(--color-text);
+  background: var(--color-surface-muted);
+}
+@media (max-height: 767px) {
+  .home-strip {
+    display: none;
+  }
+}
+.search-kept {
+  margin-bottom: var(--space-4);
+}
 /* Graph: where to start, and confirmed vs suggested connections. */
 .graph-start {
   display: flex;
