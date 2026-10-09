@@ -139,7 +139,18 @@ async fn choose_workspace(
     state: State<'_, Folio>,
     index_state: State<'_, IndexState>,
 ) -> Result<Option<WorkspaceInfo>, FolioError> {
-    let Some(folder) = app.dialog().file().blocking_pick_folder() else {
+    // `blocking_pick_folder` blocks its calling thread until the user
+    // answers the dialog. Run it on a dedicated thread (like every other
+    // blocking call in this file) so it doesn't tie up an async runtime
+    // worker thread — on a second pick, held onto an already-busy worker,
+    // that starved every other pending command and made the whole window
+    // look frozen until the dialog closed.
+    let picked = blocking({
+        let app = app.clone();
+        move || app.dialog().file().blocking_pick_folder()
+    })
+    .await?;
+    let Some(folder) = picked else {
         return Ok(None);
     };
     let path = folder
