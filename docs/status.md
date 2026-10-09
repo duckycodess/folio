@@ -234,8 +234,6 @@ PR #87 review follow-up (TJ, 2026-10-10):
 - Analyzing again keeps each returning group's edited name and unticked files, and a group already kept shows as kept. Replies for a folder that is no longer open are ignored. A failed list shows its error instead of "No collections yet". Members are stored under Folio's own document identity (NFC), so a decomposed id from the caller still follows renames. Focus goes to "Grouping stopped" after Stop, and to "Removed …" after removing a collection. Names with invisible formatting characters (bidi overrides, zero-width) are refused, generated or typed.
 - Checked on the QEMU host after merging `main` at `1b8b0e1`: `src-tauri` 257 passed, `folio-core` 182 passed, `npm test` 444 passed (9 todo), `npm run check`, `npm run build` and `npm run check:bundle` passed, Playwright 36 passed with the same 4 `viewports` failures on `.olio-chat-greeting`.
 
-Tested for the follow-up on the same QEMU host: `folio-core` 182 passed, `src-tauri` 257 passed (including the new membership, identity, invisible-character and Stop tests), `npm run check`, `npm test` (444 passed, 9 todo), `npm run build` and `npm run check:bundle`. Playwright: 35 passed; the 4 `viewports` failures are the same `.olio-chat-greeting` `region` rule as on `main`.
-
 Not tested: real embedding or generation models (so grouping and naming quality are unmeasured), the Windows and macOS desktop apps themselves, and native desktop interaction.
 
 ## Pending
