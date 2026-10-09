@@ -1593,6 +1593,13 @@ mod tests {
             "load_backend: loaded CPU backend from x\nload_tensors: offloaded 0/29 layers to GPU",
         );
         assert_eq!(cpu_only_verdict(Disabled, &cpu), Some(true));
+        // A build that can offload says "offloading 0 ... to GPU" first; that is
+        // the request, and the count still verifies it.
+        let announced = parse_backend_log(
+            "load_tensors: offloading 0 repeating layers to GPU\n\
+             load_tensors: offloaded 0/29 layers to GPU",
+        );
+        assert_eq!(cpu_only_verdict(Disabled, &announced), Some(true));
         // Not requested: nothing is verified.
         assert_eq!(cpu_only_verdict(RuntimeDefault, &cpu), None);
         // Partial Metal offload: contradicted.

@@ -266,6 +266,10 @@ pub fn parse_backend_log(log: &str) -> BackendObservation {
         }
         if let Some(found) = offloaded_layers(line) {
             offloaded = Some(found);
+        } else if lower.contains("offloading ") {
+            // "offloading 0 repeating layers to GPU" and "offloading output
+            // layer to GPU" come before the count in any build that can
+            // offload. They say what was requested, not that a GPU was used.
         } else if GPU_WORDS.iter().any(|word| lower.contains(word)) {
             gpu_backend_mentioned = true;
         }
@@ -417,6 +421,17 @@ mod tests {
         assert!(excerpt.contains("loaded CPU backend"));
         assert!(excerpt.contains("offloaded 0/29 layers to GPU"));
         assert!(!excerpt.contains("loading model"));
+
+        // A build that can offload announces the request before the count.
+        let requested_none = parse_backend_log(
+            "load_tensors: offloading 0 repeating layers to GPU\n\
+             load_tensors: offloaded 0/29 layers to GPU",
+        );
+        assert_eq!(requested_none.gpu_layers_offloaded, Some(0));
+        assert!(
+            !requested_none.gpu_backend_mentioned,
+            "the offloading line is not a GPU in use"
+        );
 
         let gpu = parse_backend_log("load_tensors: offloaded 29/29 layers to GPU");
         assert_eq!(
