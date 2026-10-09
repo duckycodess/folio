@@ -44,6 +44,14 @@ Checked on macOS with Node.js 26.10.0:
   - the active nav item has `aria-current="page"`;
   - Escape closes the rename preview and returns focus to its trigger.
 
+Follow-up after the #25 design review, checked the same way at 1280×850 and 700×600:
+
+- the dark tokens match `docs/design.md`;
+- Escape closes the document panel and returns focus to the row that opened it;
+- only one file row is in the Tab order, and arrow keys move between rows;
+- at 700×600 the Home title is visually hidden but still a heading for screen readers, and six file rows are on the first screen;
+- picking a folder before the sample files finish loading can no longer show the samples as that folder (code fix; there's no DOM test environment to cover it automatically).
+
 Not verified: Ctrl K on Windows (unit-tested only), screen readers, the Tauri webview, native folder picking, and the dark theme's visual review. Contrast follows the measured token pairs in `docs/design.md`; no automated contrast audit was run on rendered pages.
 
 ### Contract freeze and safety baseline (2026-10-09, issue #2)

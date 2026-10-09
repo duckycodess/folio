@@ -26,7 +26,11 @@ export function HomeView({ workspace, onNavigate }: HomeViewProps) {
 
       <WorkspaceSource workspace={workspace} />
 
-      <section className="section" aria-labelledby="collections-heading">
+      {/* Empty, so it gives way to the file list in short windows. */}
+      <section
+        className="section home-collections-empty"
+        aria-labelledby="collections-heading"
+      >
         <h2 id="collections-heading" className="section-title">
           Collections
         </h2>

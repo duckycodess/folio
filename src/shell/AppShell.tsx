@@ -54,9 +54,20 @@ export function AppShell() {
   const [view, setView] = useState<ViewId>("home");
   const searchInput = useRef<HTMLInputElement>(null);
   const platform = useMemo(currentPlatform, []);
+  const showsDocument = DOCUMENT_VIEWS.has(view) && workspace.selected;
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
+      // An open modal handles its own Escape.
+      if (
+        event.key === "Escape" &&
+        showsDocument &&
+        !event.defaultPrevented &&
+        !document.querySelector("dialog[open]")
+      ) {
+        closeDocument();
+        return;
+      }
       if (!isSearchShortcut(event, platform)) return;
       event.preventDefault();
       searchInput.current?.focus();
@@ -64,14 +75,24 @@ export function AppShell() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [platform]);
+  });
+
+  // Closing the reader returns focus to the list row that opened it.
+  function closeDocument() {
+    const id = workspace.selected?.id;
+    if (!id) return;
+    workspace.clearSelection();
+    requestAnimationFrame(() =>
+      document
+        .querySelector<HTMLElement>(`[data-document-id="${CSS.escape(id)}"]`)
+        ?.focus(),
+    );
+  }
 
   function onSearch(query: string) {
     workspace.setQuery(query);
     if (view !== "home" && view !== "files") setView("home");
   }
-
-  const showsDocument = DOCUMENT_VIEWS.has(view) && workspace.selected;
 
   return (
     <div className={`app${showsDocument ? " has-document" : ""}`}>
@@ -159,6 +180,7 @@ export function AppShell() {
           key={workspace.selected.id}
           document={workspace.selected}
           workspace={workspace}
+          onClose={closeDocument}
           onNavigate={setView}
         />
       )}

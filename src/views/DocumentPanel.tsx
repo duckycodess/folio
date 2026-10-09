@@ -21,12 +21,14 @@ type Tab = (typeof TABS)[number];
 interface DocumentPanelProps {
   document: DocumentRecord;
   workspace: WorkspaceState;
+  onClose: () => void;
   onNavigate: (view: ViewId) => void;
 }
 
 export function DocumentPanel({
   document,
   workspace,
+  onClose,
   onNavigate,
 }: DocumentPanelProps) {
   const [tab, setTab] = useState<Tab>("Details");
@@ -53,7 +55,7 @@ export function DocumentPanel({
           type="button"
           className="icon-button document-back"
           aria-label="Back to files"
-          onClick={workspace.clearSelection}
+          onClick={onClose}
         >
           <ArrowLeft size={18} aria-hidden="true" />
         </button>
@@ -74,7 +76,7 @@ export function DocumentPanel({
           type="button"
           className="icon-button document-close"
           aria-label="Close details"
-          onClick={workspace.clearSelection}
+          onClick={onClose}
         >
           <X size={18} aria-hidden="true" />
         </button>

@@ -184,7 +184,7 @@
 .page-tagline {
   font: var(--text-heading);
   font-weight: 400;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.04em;
   color: var(--color-text-secondary);
 }
 .section {
@@ -455,5 +455,25 @@
   }
   .list-row-meta {
     display: none;
+  }
+}
+
+/* Short windows, down to the 600px minimum height: keep at least five file
+   rows on the first screen. The Home title stays available to screen readers. */
+@media (max-height: 767px) {
+  .page-header:not(.page-header-compact) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+  .home-collections-empty {
+    display: none;
+  }
+  .view {
+    gap: var(--space-4);
   }
 }

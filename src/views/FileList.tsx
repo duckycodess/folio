@@ -38,6 +38,8 @@ export function FileList({
     rows[Math.max(0, Math.min(rows.length - 1, next))].focus();
   }
 
+  const hasSelection = documents.some((item) => item.id === selectedId);
+
   return (
     <div
       className="file-list"
@@ -45,7 +47,7 @@ export function FileList({
       aria-label={label}
       onKeyDown={onKeyDown}
     >
-      {documents.map((document) => (
+      {documents.map((document, index) => (
         <ListRow
           key={document.id}
           icon={<FileText size={20} />}
@@ -58,6 +60,8 @@ export function FileList({
             </>
           }
           selected={document.id === selectedId}
+          tabbable={hasSelection ? document.id === selectedId : index === 0}
+          dataId={document.id}
           onSelect={() => onSelect(document)}
         />
       ))}

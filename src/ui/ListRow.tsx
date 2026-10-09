@@ -6,6 +6,9 @@ interface ListRowProps {
   subtitle?: string;
   meta?: ReactNode;
   selected?: boolean;
+  /** Only one row in the listbox is in the Tab order (roving tabindex). */
+  tabbable?: boolean;
+  dataId?: string;
   onSelect: () => void;
 }
 
@@ -16,6 +19,8 @@ export function ListRow({
   subtitle,
   meta,
   selected = false,
+  tabbable = selected,
+  dataId,
   onSelect,
 }: ListRowProps) {
   return (
@@ -23,6 +28,8 @@ export function ListRow({
       type="button"
       role="option"
       aria-selected={selected}
+      tabIndex={tabbable ? 0 : -1}
+      data-document-id={dataId}
       className={`list-row${selected ? " is-selected" : ""}`}
       onClick={onSelect}
       title={subtitle ? `${title}\n${subtitle}` : title}

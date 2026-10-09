@@ -45,13 +45,15 @@ export function useWorkspace(): WorkspaceState {
   const [busy, setBusy] = useState(false);
   // Only the latest folder or file request may update state.
   const request = useRef(0);
+  // Once a folder is open, late-arriving sample files must not replace it,
+  // even when the folder is empty.
+  const folderOpened = useRef(false);
 
   useEffect(() => {
     let active = true;
     loadFixtureDocuments()
       .then((fixtures) => {
-        if (active)
-          setDocuments((current) => (current.length ? current : fixtures));
+        if (active && !folderOpened.current) setDocuments(fixtures);
       })
       .catch((cause) => {
         if (active) setError(toFolioError(cause).message);
@@ -113,6 +115,7 @@ export function useWorkspace(): WorkspaceState {
     try {
       const chosen = await chooseWorkspace();
       if (current !== request.current || !chosen) return;
+      folderOpened.current = true;
       setWorkspace(chosen.info);
       setDocuments(chosen.documents);
       setSelectedId("");
