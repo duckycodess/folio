@@ -42,7 +42,16 @@ const FIXTURE_PATHS: &[&str] = &[
 ];
 
 const E5_MODEL_ID: &str = "multilingual-e5-small-int8";
-const QWEN_MODEL_ID: &str = "qwen3-0.6b-q4-k-m";
+/// Default generation model; the R8 workflow selects the model under test
+/// with `FOLIO_R8_GENERATION_MODEL` (a manifest id with one pinned GGUF).
+const DEFAULT_GENERATION_MODEL_ID: &str = "qwen3-0.6b-q4-k-m";
+
+fn generation_model_id() -> String {
+    std::env::var("FOLIO_R8_GENERATION_MODEL")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| DEFAULT_GENERATION_MODEL_ID.into())
+}
 
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/documents")
@@ -129,10 +138,21 @@ fn required_env_hash(name: &str, expected: &str) {
 fn verified_inputs() -> VerifiedInputs {
     let manifest = manifest();
     let embedding = manifest_model(&manifest, E5_MODEL_ID);
-    let generation = manifest_model(&manifest, QWEN_MODEL_ID);
+    let generation = manifest_model(&manifest, &generation_model_id());
     let e5_model_file = manifest_file(&embedding, "onnx/model_quantized.onnx");
     let e5_tokenizer_file = manifest_file(&embedding, "tokenizer.json");
-    let qwen_model_file = manifest_file(&generation, "Qwen3-0.6B-Q4_K_M.gguf");
+    let gguf_paths = generation
+        .files
+        .iter()
+        .filter(|file| file.path.ends_with(".gguf"))
+        .map(|file| file.path.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        gguf_paths.len(),
+        1,
+        "the generation model must pin exactly one GGUF file"
+    );
+    let qwen_model_file = manifest_file(&generation, &gguf_paths[0]);
     let e5_model = PathBuf::from(std::env::var("FOLIO_E5_MODEL").expect("FOLIO_E5_MODEL"));
     let e5_tokenizer =
         PathBuf::from(std::env::var("FOLIO_E5_TOKENIZER").expect("FOLIO_E5_TOKENIZER"));

@@ -31,6 +31,10 @@ jobs:
       CARGO_BUILD_JOBS: 2
       CARGO_TERM_COLOR: never
       RUST_BACKTRACE: "1"
+      # Generation model under test: a manifest model id with one pinned GGUF.
+      # Changing it is a user decision (Q1 smallest passing pair); results are
+      # recorded per model and never substituted silently.
+      FOLIO_R8_GENERATION_MODEL: qwen3-0.6b-q4-k-m
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -100,6 +104,7 @@ jobs:
           set -euo pipefail
           python3 -I - src-tauri/resources/model-manifest.json "$GITHUB_OUTPUT" <<'PY'
           import json
+          import os
           import sys
 
           manifest_path, output_path = sys.argv[1:]
@@ -117,8 +122,12 @@ jobs:
               "tokenizer_sha": file_entry(
                   "models", "multilingual-e5-small-int8", "tokenizer.json"
               )["sha256"],
-              "qwen_sha": file_entry(
-                  "models", "qwen3-0.6b-q4-k-m", "Qwen3-0.6B-Q4_K_M.gguf"
+              "qwen_sha": next(
+                  file
+                  for item in manifest["models"]
+                  if item["id"] == os.environ["FOLIO_R8_GENERATION_MODEL"]
+                  for file in item["files"]
+                  if file["path"].endswith(".gguf")
               )["sha256"],
               "runtime_sha": file_entry(
                   "runtimes", "llama-b11524-ubuntu-x64", "llama-b11524-bin-ubuntu-x64.tar.gz"
@@ -451,6 +460,7 @@ jobs:
             --env "FOLIO_E5_TOKENIZER_SHA256=$FOLIO_E5_TOKENIZER_SHA256" \
             --env "FOLIO_QWEN_MODEL_SHA256=$FOLIO_QWEN_MODEL_SHA256" \
             --env "FOLIO_R8_OUTPUT_DIR=$offline_output" \
+            --env "FOLIO_R8_GENERATION_MODEL=$FOLIO_R8_GENERATION_MODEL" \
             --env "LD_LIBRARY_PATH=$FOLIO_ORT_LIBRARY_DIR:$RUNNER_TEMP/folio-r8/runtime" \
             "$offline_image" \
             "$FOLIO_R8_TEST_BINARY" --ignored --test-threads=1 --nocapture \

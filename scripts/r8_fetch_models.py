@@ -16,7 +16,6 @@ from typing import Any
 REQUESTS = (
     ("e5_model", "model", "multilingual-e5-small-int8", "onnx/model_quantized.onnx", "e5-model.onnx"),
     ("e5_tokenizer", "model", "multilingual-e5-small-int8", "tokenizer.json", "tokenizer.json"),
-    ("qwen_model", "model", "qwen3-0.6b-q4-k-m", "Qwen3-0.6B-Q4_K_M.gguf", "Qwen3-0.6B-Q4_K_M.gguf"),
     (
         "llama_runtime",
         "runtime",
@@ -25,6 +24,19 @@ REQUESTS = (
         "llama-b11524-bin-ubuntu-x64.tar.gz",
     ),
 )
+
+
+DEFAULT_GENERATION_MODEL = "qwen3-0.6b-q4-k-m"
+
+
+def generation_request(manifest: dict[str, Any]) -> tuple[str, str, str, str, str]:
+    """The pinned GGUF of the generation model chosen by FOLIO_R8_GENERATION_MODEL."""
+    model_id = os.environ.get("FOLIO_R8_GENERATION_MODEL") or DEFAULT_GENERATION_MODEL
+    item = descriptor(manifest, "model", model_id)
+    ggufs = [file["path"] for file in item["files"] if file["path"].endswith(".gguf")]
+    if len(ggufs) != 1:
+        raise ValueError(f"{model_id} must pin exactly one GGUF file")
+    return ("qwen_model", "model", model_id, ggufs[0], ggufs[0])
 
 
 def parse_args() -> argparse.Namespace:
@@ -121,7 +133,7 @@ def main() -> None:
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
     args.output_dir.mkdir(parents=True, exist_ok=True)
     artifacts: list[dict[str, Any]] = []
-    for name, kind, model_id, manifest_path, output_name in REQUESTS:
+    for name, kind, model_id, manifest_path, output_name in (*REQUESTS, generation_request(manifest)):
         item = descriptor(manifest, kind, model_id)
         expected = manifest_file(item, manifest_path)
         output_path = (args.output_dir / output_name).resolve()
