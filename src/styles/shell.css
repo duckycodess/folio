@@ -1434,7 +1434,8 @@
   gap: var(--space-2);
 }
 
-/* Ask & Act: scope, request, and Olio's replies. */
+/* Ask & Act: a chat. Replies run oldest to newest, and the input stays at
+   the bottom with the search scope and Prepare beneath the text. */
 .ask-header {
   display: flex;
   flex-direction: row;
@@ -1442,57 +1443,158 @@
   align-items: center;
   gap: var(--space-4);
 }
-.ask-scope {
+/* Ask & Act has no floating launcher, so the page doesn't keep its
+   clearance and the input sits at the bottom of the window. */
+.main:has(> .ask-view) {
+  padding-bottom: 0;
+}
+.ask-view {
+  gap: var(--space-4);
+  min-height: 100%;
+}
+.ask-log {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-2) var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-muted);
-}
-.ask-scope select {
-  width: auto;
-  max-width: 100%;
-}
-.ask-index {
-  flex: 1 1 16rem;
-  margin: 0;
-}
-.ask-skipped {
-  flex-basis: 100%;
-  font: var(--text-small);
-}
-.ask-actions {
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-.ask-turns {
-  display: flex;
+  flex: 1;
   flex-direction: column;
-  align-items: flex-start;
-  gap: var(--space-3);
+  justify-content: flex-end;
+  gap: var(--space-5);
+}
+.ask-log-empty {
+  align-self: center;
+  margin: auto 0;
+  text-align: center;
+}
+.ask-clear {
+  align-self: center;
 }
 .ask-turn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.ask-bubble {
+  align-self: flex-end;
+  max-width: min(85%, 40rem);
+  margin: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg) var(--radius-lg) var(--space-1)
+    var(--radius-lg);
+  background: #fff1bd;
+  color: #33362c;
+  overflow-wrap: anywhere;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .ask-bubble {
+    background: #52492b;
+    color: #fff4ca;
+  }
+}
+:root[data-theme="dark"] .ask-bubble {
+  background: #52492b;
+  color: #fff4ca;
+}
+.ask-bubble .badge {
+  background: rgb(255 255 255 / 0.5);
+  border-color: rgb(32 35 31 / 0.15);
+  color: inherit;
+}
+.ask-request {
+  font: var(--text-label);
+}
+.ask-reply {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
   align-self: stretch;
   padding: var(--space-4);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   background: var(--color-surface);
 }
-.ask-turn-head {
+.ask-composer {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) 0 var(--space-4);
+  background: var(--color-bg);
+}
+.ask-input {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-float);
+}
+.ask-input:focus-within {
+  border-color: var(--brand-gold);
+  box-shadow:
+    0 0 0 2px var(--brand-gold),
+    var(--shadow-float);
+}
+.ask-textarea {
+  width: 100%;
+  min-height: 3.5rem;
+  max-height: 40vh;
+  padding: var(--space-3) var(--space-4) var(--space-1);
+  border: 0;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  background: transparent;
+  color: var(--color-text);
+  font: inherit;
+  resize: vertical;
+}
+.ask-textarea:focus,
+.ask-textarea:focus-visible {
+  outline: none;
+}
+.ask-input-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+.ask-scope,
+.ask-send {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-2);
 }
-.ask-request {
-  font: var(--text-label);
-  overflow-wrap: anywhere;
+.ask-scope {
+  min-width: 0;
+}
+.ask-chip-select {
+  max-width: 16rem;
+  min-height: 32px;
+  padding: 0 var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+  font: var(--text-small);
+  text-overflow: ellipsis;
+}
+.ask-chip {
+  min-height: 32px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  font: var(--text-small);
+}
+.ask-status {
+  margin: 0;
+  padding: 0 var(--space-2);
+}
+.ask-skipped {
+  max-height: 10rem;
+  overflow-y: auto;
+  padding: 0 var(--space-2);
+  font: var(--text-small);
 }
 .ask-running,
 .ask-summary {
