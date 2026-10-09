@@ -23,6 +23,10 @@ The native writer is [issue #5](https://github.com/duckycodess/folio/issues/5). 
 
 No AI or save completion should be presented without the corresponding native/provider evidence. Model sizes, installed size, memory targets, and platform support remain subject to measurements.
 
+## Remote CI verification after conflict resolution
+
+GitHub Actions run [37939253553](https://github.com/duckycodess/folio/actions/runs/37939253553) passed at `7265b05` (2026-10-09): frontend formatting/type checks/tests/build plus the Linux core suite, and native `cargo test --manifest-path src-tauri/Cargo.toml` on Windows and macOS. This supersedes earlier compile/test uncertainty for that revision only. No local WSL tests were resumed. CI did not run gated real-model acceptance, desktop interaction, packaging, or 8-GB measurements, and does not resolve the static contract/identity integration findings. PR #15 remains draft.
+
 ## Verification
 
 ### Contract freeze and safety baseline (2026-10-09, issue #2)
