@@ -44,7 +44,7 @@ The independent journeys are:
 | B — Smart Organize       | Organize → Select Collection or Folder → Analyze → Preview Suggested Changes → Approve & Apply    |
 | C — Ask & Act            | AI Assistant → Enter Instruction → Find Target Files → Preview Actions & Impacts → Approve & Save |
 
-The main navigation is Home, Organize, Graph, Ask & Act and Activity, with Model Lab in settings ([ADR 0010](adr/0010-navigation-with-activity-and-a-home-file-browser.md)): Home finds, Organize groups and renames with approval, Graph explains, Ask & Act assists, and Activity keeps everything accountable. [Workflows](workflows.md) lists the named workflows beside the three journeys.
+The main navigation is Home, Organize, Graph, Ask & Act and Activity, with Model Lab in settings ([ADR 0011](adr/0011-navigation-with-activity-and-a-home-file-browser.md)): Home finds, Organize groups and renames with approval, Graph explains, Ask & Act assists, and Activity keeps everything accountable. [Workflows](workflows.md) lists the named workflows beside the three journeys.
 
 The shared pipeline is request → find files → understand content → discover related files → edit and analyze impact → approve, save and refresh the local index. The graph and assistant support SOS instead of replacing its independent entry points. See [workflows](workflows.md).
 

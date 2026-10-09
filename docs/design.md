@@ -164,7 +164,7 @@ The phone frame in the brandbook is a future direction. Phone packaging is outsi
 
 ## Navigation
 
-The brandbook sidebar shows Home · Files · Collections · Graph · Assistant. Folio keeps **Search**, **Organize** and **Summarize** reachable without the assistant. The navigation follows [ADR 0010](adr/0010-navigation-with-activity-and-a-home-file-browser.md):
+The brandbook sidebar shows Home · Files · Collections · Graph · Assistant. Folio keeps **Search**, **Organize** and **Summarize** reachable without the assistant. The navigation follows [ADR 0011](adr/0011-navigation-with-activity-and-a-home-file-browser.md):
 
 | Nav item             | Contains                                                                                     | SOS role                      |
 | -------------------- | -------------------------------------------------------------------------------------------- | ----------------------------- |

@@ -16,7 +16,7 @@ The updated product context (2026-10-09) adds workflows that sit beside these jo
 | ---------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | Deterministic search   | Home → Type a name or word → Filter by folder, file type or modified date → Open or preview a file    | Part of journey A. Works without a model; never routed through one (#33, #43).              |
 | AI deep search         | Ask & Act → Choose a scope → Describe the file → Review files, paths, excerpts and reasons → Open one | Needs a local model. Says when indexing is incomplete or a file type is unsupported (#36).  |
-| AI-assisted organizing | Ask & Act → Describe the organization → Review the exact plan → Approve → Changes appear in Activity  | Ends in the same preview and approval as journey B; Organize stays its own page (ADR 0010). |
+| AI-assisted organizing | Ask & Act → Describe the organization → Review the exact plan → Approve → Changes appear in Activity  | Ends in the same preview and approval as journey B; Organize stays its own page (ADR 0011). |
 | Relationship graph     | Graph → Start from a file, folder or topic → Explore connections and evidence → Open related files    | Confirmed links are shown apart from suggested ones (#40).                                  |
 | Activity and recovery  | Activity → Pick an entry → See what changed, when, and before/after paths → Undo when it's safe       | Lists only what Folio recorded as changed; previews and analyses never appear (#34).        |
 
