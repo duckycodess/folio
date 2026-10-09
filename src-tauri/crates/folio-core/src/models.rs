@@ -1,5 +1,5 @@
 use crate::contracts::{
-    ModelDescriptor, ModelFile, ModelInstallStatus, ModelInstallState, ModelRole,
+    ModelDescriptor, ModelFile, ModelInstallState, ModelInstallStatus, ModelRole,
     NativeProviderError, ProviderErrorCode,
 };
 use crate::error::{CoreError, CoreResult, NativeProviderErrorError};
@@ -68,7 +68,9 @@ impl ModelStore {
         manifest: ModelManifest,
     ) -> CoreResult<Self> {
         if manifest.schema_version != 1 {
-            return Err(CoreError::Message("Unsupported model manifest schema.".into()));
+            return Err(CoreError::Message(
+                "Unsupported model manifest schema.".into(),
+            ));
         }
         for descriptor in &manifest.models {
             validate_id(&descriptor.id)?;
@@ -161,6 +163,65 @@ impl ModelStore {
         self.model_state(id)
     }
 
+    pub fn verified_model_file(&self, id: &str) -> CoreResult<VerifiedModelFile> {
+        let descriptor = self.model(id)?.clone();
+        if descriptor.role != ModelRole::Generation {
+            return Err(CoreError::Message(format!(
+                "Model {id} is not a generation model."
+            )));
+        }
+        let state = self.model_state(id)?;
+        if state.status != ModelInstallStatus::Installed {
+            return Err(provider(
+                ProviderErrorCode::ModelNotInstalled,
+                "The generation model is not fully verified and installed.",
+            ));
+        }
+        let file = descriptor
+            .files
+            .iter()
+            .find(|file| file.path.ends_with(".gguf"))
+            .ok_or_else(|| CoreError::Message("Generation model has no GGUF file.".into()))?;
+        let root = self.model_root(id)?;
+        let path = safe_join(&root, &file.path)?;
+        if is_symlink_or_inside_symlink(&root, &path)? || !path.is_file() {
+            return Err(provider(
+                ProviderErrorCode::ModelCorrupt,
+                "The verified generation model path is unavailable.",
+            ));
+        }
+        Ok(VerifiedModelFile { descriptor, path })
+    }
+
+    pub fn verified_file_path(&self, id: &str, relative_path: &str) -> CoreResult<PathBuf> {
+        let descriptor = self.model(id)?.clone();
+        let state = self.model_state(id)?;
+        if state.status != ModelInstallStatus::Installed {
+            return Err(provider(
+                ProviderErrorCode::ModelNotInstalled,
+                "The model is not fully verified and installed.",
+            ));
+        }
+        if !descriptor
+            .files
+            .iter()
+            .any(|file| file.path == relative_path)
+        {
+            return Err(CoreError::Message(format!(
+                "Model {id} has no file named {relative_path}."
+            )));
+        }
+        let root = self.model_root(id)?;
+        let path = safe_join(&root, relative_path)?;
+        if is_symlink_or_inside_symlink(&root, &path)? || !path.is_file() {
+            return Err(provider(
+                ProviderErrorCode::ModelCorrupt,
+                "The verified model file path is unavailable.",
+            ));
+        }
+        Ok(path)
+    }
+
     pub fn install_model<F>(
         &self,
         id: &str,
@@ -178,7 +239,10 @@ impl ModelStore {
             .build()?;
         for file in descriptor.files {
             if cancel.load(Ordering::Relaxed) {
-                return Err(provider(ProviderErrorCode::Cancelled, "Model installation cancelled."));
+                return Err(provider(
+                    ProviderErrorCode::Cancelled,
+                    "Model installation cancelled.",
+                ));
             }
             let url = file.download_url.clone().ok_or_else(|| {
                 CoreError::Message(format!("Manifest has no download URL for {}.", file.path))
@@ -194,6 +258,12 @@ impl ModelStore {
                 fs::create_dir_all(parent)?;
             }
             let partial = partial_path(&destination);
+            if is_symlink_or_inside_symlink(&root, &partial)? {
+                return Err(provider(
+                    ProviderErrorCode::ModelCorrupt,
+                    "Refusing to write through a model partial-file symlink.",
+                ));
+            }
             let mut response = client.get(url).send()?.error_for_status()?;
             let mut output = OpenOptions::new()
                 .create(true)
@@ -232,7 +302,10 @@ impl ModelStore {
                 let _ = fs::remove_file(&partial);
                 return Err(provider(
                     ProviderErrorCode::ModelCorrupt,
-                    format!("Downloaded {} failed size or SHA-256 verification.", file.path),
+                    format!(
+                        "Downloaded {} failed size or SHA-256 verification.",
+                        file.path
+                    ),
                 ));
             }
             fs::rename(partial, destination)?;
@@ -259,10 +332,14 @@ impl ModelStore {
             .map_err(|_| CoreError::Message("The model directory is unavailable.".into()))?;
         let canonical_models = models_root.canonicalize()?;
         if canonical_root.parent() != Some(canonical_models.as_path()) {
-            return Err(CoreError::Message("Model removal escaped the model store.".into()));
+            return Err(CoreError::Message(
+                "Model removal escaped the model store.".into(),
+            ));
         }
         if fs::symlink_metadata(&root)?.file_type().is_symlink() {
-            return Err(CoreError::Message("Refusing to remove a model symlink.".into()));
+            return Err(CoreError::Message(
+                "Refusing to remove a model symlink.".into(),
+            ));
         }
         fs::remove_dir_all(root)?;
         Ok(())
@@ -271,7 +348,9 @@ impl ModelStore {
     pub fn select_model(&self, role: ModelRole, id: &str) -> CoreResult<()> {
         let descriptor = self.model(id)?;
         if descriptor.role != role {
-            return Err(CoreError::Message(format!("Model {id} has the wrong role.")));
+            return Err(CoreError::Message(format!(
+                "Model {id} has the wrong role."
+            )));
         }
         let state = self.model_state(id)?;
         if state.status != ModelInstallStatus::Installed {
@@ -348,6 +427,14 @@ impl ModelStore {
             })?;
             let archive = safe_join(&root, &file.path)?;
             let partial = partial_path(&archive);
+            if is_symlink_or_inside_symlink(&root, &archive)?
+                || is_symlink_or_inside_symlink(&root, &partial)?
+            {
+                return Err(provider(
+                    ProviderErrorCode::ModelCorrupt,
+                    "Refusing to write through a runtime archive symlink.",
+                ));
+            }
             let mut response = client.get(url).send()?.error_for_status()?;
             let mut output = File::create(&partial)?;
             let mut hasher = Sha256::new();
@@ -356,7 +443,10 @@ impl ModelStore {
             loop {
                 if cancel.load(Ordering::Relaxed) {
                     let _ = fs::remove_file(&partial);
-                    return Err(provider(ProviderErrorCode::Cancelled, "Runtime installation cancelled."));
+                    return Err(provider(
+                        ProviderErrorCode::Cancelled,
+                        "Runtime installation cancelled.",
+                    ));
                 }
                 let count = response.read(&mut buffer)?;
                 if count == 0 {
@@ -413,24 +503,34 @@ pub struct RuntimeStatus {
     pub executable_path: Option<PathBuf>,
 }
 
+#[derive(Clone, Debug)]
+pub struct VerifiedModelFile {
+    pub descriptor: ModelDescriptor,
+    pub path: PathBuf,
+}
+
 fn provider(code: ProviderErrorCode, message: impl Into<String>) -> CoreError {
     CoreError::Provider(NativeProviderErrorError::new(code, message))
 }
 
 fn validate_id(id: &str) -> CoreResult<()> {
     if id.is_empty()
-        || !id
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.'))
+        || !id.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
     {
-        return Err(CoreError::Message("Model and runtime IDs must be simple names.".into()));
+        return Err(CoreError::Message(
+            "Model and runtime IDs must be simple names.".into(),
+        ));
     }
     Ok(())
 }
 
 fn validate_sha256(value: &str) -> CoreResult<()> {
     if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(CoreError::Message("Manifest SHA-256 values must be 64 hex characters.".into()));
+        return Err(CoreError::Message(
+            "Manifest SHA-256 values must be 64 hex characters.".into(),
+        ));
     }
     Ok(())
 }
@@ -438,11 +538,18 @@ fn validate_sha256(value: &str) -> CoreResult<()> {
 fn validate_relative_path(value: &str) -> CoreResult<()> {
     let path = Path::new(value);
     if value.is_empty() || path.is_absolute() {
-        return Err(CoreError::Message("Manifest paths must be relative.".into()));
+        return Err(CoreError::Message(
+            "Manifest paths must be relative.".into(),
+        ));
     }
     for component in path.components() {
-        if matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_)) {
-            return Err(CoreError::Message("Manifest paths cannot escape their store.".into()));
+        if matches!(
+            component,
+            Component::ParentDir | Component::RootDir | Component::Prefix(_)
+        ) {
+            return Err(CoreError::Message(
+                "Manifest paths cannot escape their store.".into(),
+            ));
         }
     }
     Ok(())
@@ -504,7 +611,7 @@ fn verify_file(path: &Path, descriptor: &ModelFile) -> CoreResult<()> {
 }
 
 fn find_runtime_executable(root: &Path) -> Option<PathBuf> {
-    if !root.is_dir() {
+    if !root.is_dir() || fs::symlink_metadata(root).ok()?.file_type().is_symlink() {
         return None;
     }
     let entries = fs::read_dir(root).ok()?;
@@ -534,7 +641,8 @@ fn extract_runtime_archive(archive: &Path, destination: &Path) -> CoreResult<()>
         .unwrap_or_default();
     if name.ends_with(".zip") {
         let file = File::open(archive)?;
-        let mut zip = ZipArchive::new(file).map_err(|error| CoreError::Archive(error.to_string()))?;
+        let mut zip =
+            ZipArchive::new(file).map_err(|error| CoreError::Archive(error.to_string()))?;
         for index in 0..zip.len() {
             let mut entry = zip
                 .by_index(index)
@@ -544,12 +652,22 @@ fn extract_runtime_archive(archive: &Path, destination: &Path) -> CoreResult<()>
                 .ok_or_else(|| CoreError::Archive("Runtime archive path escaped.".into()))?
                 .to_path_buf();
             let target = safe_join(destination, &enclosed.to_string_lossy())?;
+            if is_symlink_or_inside_symlink(destination, &target)? {
+                return Err(CoreError::Archive(
+                    "Runtime archive would write through a symlink.".into(),
+                ));
+            }
             if entry.is_dir() {
                 fs::create_dir_all(target)?;
                 continue;
             }
-            if entry.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o120000) {
-                return Err(CoreError::Archive("Runtime archive contains a symlink.".into()));
+            if entry
+                .unix_mode()
+                .is_some_and(|mode| mode & 0o170000 == 0o120000)
+            {
+                return Err(CoreError::Archive(
+                    "Runtime archive contains a symlink.".into(),
+                ));
             }
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
@@ -560,7 +678,9 @@ fn extract_runtime_archive(archive: &Path, destination: &Path) -> CoreResult<()>
         return Ok(());
     }
     if !name.ends_with(".tar.gz") {
-        return Err(CoreError::Archive("Unsupported runtime archive format.".into()));
+        return Err(CoreError::Archive(
+            "Unsupported runtime archive format.".into(),
+        ));
     }
     let file = File::open(archive)?;
     let decoder = GzDecoder::new(file);
@@ -572,19 +692,28 @@ fn extract_runtime_archive(archive: &Path, destination: &Path) -> CoreResult<()>
         let mut entry = entry.map_err(|error| CoreError::Archive(error.to_string()))?;
         let entry_type = entry.header().entry_type();
         if entry_type.is_symlink() || entry_type.is_hard_link() {
-            return Err(CoreError::Archive("Runtime archive contains a link.".into()));
+            return Err(CoreError::Archive(
+                "Runtime archive contains a link.".into(),
+            ));
         }
         let relative = entry
             .path()
             .map_err(|error| CoreError::Archive(error.to_string()))?
             .to_path_buf();
         let target = safe_join(destination, &relative.to_string_lossy())?;
+        if is_symlink_or_inside_symlink(destination, &target)? {
+            return Err(CoreError::Archive(
+                "Runtime archive would write through a symlink.".into(),
+            ));
+        }
         if entry_type.is_dir() {
             fs::create_dir_all(target)?;
             continue;
         }
         if !entry_type.is_file() {
-            return Err(CoreError::Archive("Runtime archive contains an unsupported entry.".into()));
+            return Err(CoreError::Archive(
+                "Runtime archive contains an unsupported entry.".into(),
+            ));
         }
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent)?;
@@ -602,6 +731,7 @@ pub fn sha256_bytes(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::symlink;
 
     fn descriptor(bytes: &[u8]) -> ModelDescriptor {
@@ -655,6 +785,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn rejects_manifest_escape_and_symlink_writes() {
         assert!(validate_relative_path("../model.bin").is_err());
         assert!(validate_relative_path("/tmp/model.bin").is_err());
@@ -667,6 +798,20 @@ mod tests {
         symlink(&outside, &model_root).unwrap();
         assert!(store.verify_model("test-model").is_ok());
         assert!(store.remove_model("test-model").is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rejects_existing_partial_symlink_before_a_download() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("models/test-model");
+        let destination = root.join("nested/model.bin");
+        fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        let outside = temp.path().join("outside");
+        fs::write(&outside, b"outside").unwrap();
+        symlink(&outside, partial_path(&destination)).unwrap();
+
+        assert!(is_symlink_or_inside_symlink(&root, &partial_path(&destination)).unwrap());
     }
 
     #[test]
