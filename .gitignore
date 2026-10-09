@@ -1,5 +1,8 @@
 node_modules/
 dist/
+playwright-report/
+test-results/
+.playwright/
 target/
 src-tauri/target/
 .env
