@@ -6,7 +6,7 @@ The reference image defines three user journeys. Preserve their independent entr
 
 | Journey                  | Steps                                                                                             | Purpose                                                                              |
 | ------------------------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| A — Explore & Understand | Home → Files or Search → Select File → View Graph & Summary → Explore Related Files               | Locate documents, understand contents, discover connections and locations.           |
+| A — Explore & Understand | Home → Browse or Search Files → Select File → View Graph & Summary → Explore Related Files        | Locate documents, understand contents, discover connections and locations.           |
 | B — Smart Organize       | Organize → Select Collection or Folder → Analyze → Preview Suggested Changes → Approve & Apply    | Group virtually; suggest names and destinations; identify exact duplicates.          |
 | C — Ask & Act            | AI Assistant → Enter Instruction → Find Target Files → Preview Actions & Impacts → Approve & Save | Natural-language create/read/edit/rename/move, grounded questions, and Folio Ripple. |
 

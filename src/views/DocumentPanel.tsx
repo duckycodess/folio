@@ -10,6 +10,7 @@ import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { FileTypeIcon } from "../ui/FileTypeIcon";
 import { Progress } from "../ui/Progress";
+import { RowMenu, type RowMenuItem } from "../ui/RowMenu";
 import { RelatedList } from "./Connections";
 import { fileKind, formatBytes, formatModified, languageLabel } from "./format";
 
@@ -20,6 +21,10 @@ interface DocumentPanelProps {
   document: DocumentRecord;
   workspace: WorkspaceState;
   relations: RelationshipsState;
+  /** Opens on this tab, e.g. after "Show related" from a file row. */
+  initialTab?: Tab;
+  /** The file's actions (Rename, Move…), the same as its row's ⋯ menu. */
+  actions?: RowMenuItem[];
   onClose: () => void;
   onNavigate: (view: ViewId) => void;
 }
@@ -28,6 +33,8 @@ export function DocumentPanel({
   document,
   workspace,
   relations,
+  initialTab,
+  actions,
   onClose,
   onNavigate,
 }: DocumentPanelProps) {
@@ -35,7 +42,9 @@ export function DocumentPanel({
   const focus =
     relations.focus?.documentId === document.id ? relations.focus : null;
   const [tab, setTab] = useState<Tab>(
-    relations.returnedTo === document.id ? "Related" : "Details",
+    relations.returnedTo === document.id
+      ? "Related"
+      : (initialTab ?? "Details"),
   );
   const mark = useRef<HTMLElement>(null);
   const origin = relations.trail[relations.trail.length - 1];
@@ -113,6 +122,13 @@ export function DocumentPanel({
               ` · ${formatModified(document.modifiedAtMs)}`}
           </p>
         </div>
+        {actions && actions.length > 0 && (
+          <RowMenu
+            label={`Actions for ${document.name}`}
+            items={actions}
+            tabbable
+          />
+        )}
         <button
           type="button"
           className="icon-button document-close"
