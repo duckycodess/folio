@@ -73,6 +73,15 @@ impl VectorIndex {
     }
 
     pub fn search(&self, query: &QueryEmbedding, limit: usize) -> CoreResult<Vec<(Chunk, f32)>> {
+        self.search_scoped(query, None, limit)
+    }
+
+    pub fn search_scoped(
+        &self,
+        query: &QueryEmbedding,
+        document_id: Option<&str>,
+        limit: usize,
+    ) -> CoreResult<Vec<(Chunk, f32)>> {
         if query.vector.len() != query.space.dimensions {
             return Err(CoreError::Message(
                 "Query vector dimension does not match its embedding space.".into(),
@@ -96,6 +105,7 @@ impl VectorIndex {
             .iter()
             .cloned()
             .zip(indexed.vectors.iter())
+            .filter(|(chunk, _)| document_id.is_none_or(|id| chunk.document_id == id))
             .map(|(chunk, vector)| (chunk, cosine_similarity(&query.vector, vector)))
             .collect::<Vec<_>>();
         scored.sort_by(|a, b| b.1.total_cmp(&a.1));
@@ -167,15 +177,35 @@ impl HybridRetriever {
         semantic: Option<&QueryEmbedding>,
         limit: usize,
     ) -> CoreResult<Vec<SearchResult>> {
+        self.search_scoped(documents, chunks, query, semantic, None, limit)
+    }
+
+    pub fn search_scoped(
+        &self,
+        documents: &[DocumentRecord],
+        chunks: &[Chunk],
+        query: &str,
+        semantic: Option<&QueryEmbedding>,
+        document_id: Option<&str>,
+        limit: usize,
+    ) -> CoreResult<Vec<SearchResult>> {
         let Some(query_embedding) = semantic else {
-            return Ok(self.keyword(documents, chunks, query, limit));
+            return Ok(self
+                .keyword(documents, chunks, query, chunks.len())
+                .into_iter()
+                .filter(|result| document_id.is_none_or(|id| result.document.id == id))
+                .take(limit)
+                .collect());
         };
         let keyword = self
             .keyword(documents, chunks, query, chunks.len())
             .into_iter()
             .filter(|result| result.score >= MIN_KEYWORD_SCORE)
+            .filter(|result| document_id.is_none_or(|id| result.document.id == id))
             .collect::<Vec<_>>();
-        let semantic = self.vector_index.search(query_embedding, chunks.len())?;
+        let semantic =
+            self.vector_index
+                .search_scoped(query_embedding, document_id, chunks.len())?;
         let semantic = semantic
             .into_iter()
             .filter(|(_, score)| *score >= MIN_SEMANTIC_SCORE)
@@ -422,6 +452,47 @@ mod tests {
         };
         let error = index.search(&provider_b_query, 5).unwrap_err();
         assert!(error.to_string().contains("not indexed"));
+    }
+
+    #[test]
+    fn scoped_search_applies_document_filter_before_limit() {
+        let source = InterimTextChunker::new(vec![
+            document("other.md", "other evidence"),
+            document("target.md", "target evidence"),
+        ]);
+        let documents = source.documents();
+        let chunks = source.all_chunks().unwrap();
+        let mut retriever = HybridRetriever::default();
+        let space = space("scoped");
+        let vectors = chunks
+            .iter()
+            .map(|chunk| {
+                if chunk.document_id == "other.md" {
+                    vec![1.0, 0.0]
+                } else {
+                    vec![0.8, 0.6]
+                }
+            })
+            .collect::<Vec<_>>();
+        retriever
+            .vector_index
+            .replace(space.clone(), chunks.clone(), vectors)
+            .unwrap();
+        let results = retriever
+            .search_scoped(
+                &documents,
+                &chunks,
+                "unrelated query",
+                Some(&QueryEmbedding {
+                    space,
+                    vector: vec![1.0, 0.0],
+                }),
+                Some("target.md"),
+                1,
+            )
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].document.id, "target.md");
     }
 
     #[test]
