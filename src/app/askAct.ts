@@ -22,7 +22,13 @@ export type AskOutcome =
   /** A change Folio understood but can't preview from here yet. */
   | { type: "proposal"; proposal: OperationProposal }
   | { type: "unsupported"; reason: string }
-  | { type: "unreadable" };
+  | { type: "unreadable" }
+  /**
+   * The browser-preview mock only (#66): a fabricated reply, always shown
+   * labelled "Practice replies — not a model". Never produced by a real
+   * adapter, and never bundled into the desktop app's behavior.
+   */
+  | { type: "practice"; reply: string; streaming: boolean };
 
 export interface AskTurn {
   id: number;
