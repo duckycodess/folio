@@ -175,6 +175,14 @@ Merge with `main` and second review follow-up (2026-10-10, Linux, Node.js 24):
 - `npm run check`, `npm test` (427 passed, 9 todo), `npm run build` and `npm run check:bundle` passed. Playwright: 31 passed. The 4 `viewports` axe failures (`.olio-chat-greeting` outside a landmark) fail the same way on `main` and come from the Olio chat, not Activity.
 - Native: `cargo test --no-run` and `cargo check --tests` compiled everything, but the tests couldn't run on this host. It's a QEMU virtual CPU without AVX, and the test binary stops with SIGILL before any test starts, as `main`'s build does. The new native tests still need CI's `desktop-check`. The Tauri app wasn't opened.
 
+## Opening a file from the list (issue #85)
+
+A single click on a row already opened the file (`ListRow`'s own doc comment said so), and the row's **⋯ → Open** action calls the same `workspace.selectDocument`, so neither was actually broken in isolation — a Playwright sweep of the browser preview confirmed click, ⋯ → Open (including switching between files and reopening the same file after closing it), and overlay/narrow mode all open the file correctly. What was genuinely missing: `ListRow` had no `onDoubleClick` at all, so a fast double click relied on two ordinary click events landing cleanly rather than any explicit double-click handling, and a stray native double-click side effect (text selection) could show instead. Added an explicit `onDoubleClick` that calls the same `onSelect`, confirmed via Playwright it opens the file with no duplicated panel.
+
+The reported "open button not working" in the real desktop app could not be reproduced here: the browser preview's sample files never call the native `read_document` path at all (`selectDocument` short-circuits when `document.content` is already set), so a native-read-specific failure wouldn't show up in this harness. If it recurs, check `workspace.failure`/`RecoveryNotice` for a surfaced error first — the native read path does propagate failures there.
+
+`npm run check`, `npm test` (427 passed, 9 todo) and `npm run build` passed. The Tauri app wasn't opened against a real folder for this change.
+
 ## Pending
 
 Model-generated Ripple explanations and similarity/shared-fact discovery (issues #4 and #8), creating folders during moves, UI use of the native index and actions (the current UI still searches loaded content), live file watching, multi-folder workspaces, native packaging, and real Model Lab results (the harness exists; no real run has been recorded, see Model Lab below) remain pending. Issue #4 on `FOLIO-4` carries multilingual embedding, semantic search, local generation, grounded summaries/answers, model/runtime setup and proposal-only interpretation through its own interim in-memory chunking and vector index; it does not yet read #3's persistent index, and its proposals are not yet connected to #5's native plan/apply path.
