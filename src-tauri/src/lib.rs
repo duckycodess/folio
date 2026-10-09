@@ -336,16 +336,15 @@ async fn refresh_ai_connections(
         // Reset before waiting for Local Sync's mutex. A Stop pressed while
         // waiting must remain visible after the lock is acquired.
         cancel.store(false, Ordering::SeqCst);
+        let active_space = {
+            let conn = db::open(&index_path)?;
+            active_relationship_space(&app, &conn, space_fingerprint.as_deref())?
+        };
         let _scanning = scanning.lock().map_err(|_| unavailable_state())?;
         if cancel.load(Ordering::SeqCst) {
             return Err(error(ErrorCode::Cancelled, "Relationship refresh was stopped."));
         }
-        let mut conn = db::open(&index_path)?;
-        let Some(active_space) = active_relationship_space(
-            &app,
-            &conn,
-            space_fingerprint.as_deref(),
-        )? else {
+        let Some(active_space) = active_space else {
             return Ok(AiRelationshipRefresh {
                 workspace_id,
                 space_fingerprint: None,
@@ -354,6 +353,7 @@ async fn refresh_ai_connections(
                 cancelled: false,
             });
         };
+        let mut conn = db::open(&index_path)?;
         let documents = {
             index::relationship_documents(&conn, &workspace_id, &active_space)?
         };
@@ -427,14 +427,13 @@ async fn summarize_relationships(
     let scanning = state.scanning.clone();
     let generation_state = generation_state.inner().clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
+        let active_space = {
+            let conn = db::open(&index_path)?;
+            active_relationship_space(&app, &conn, space_fingerprint.as_deref())?
+        };
         let relationships = {
             let _scanning = scanning.lock().map_err(|_| unavailable_state())?;
             let conn = db::open(&index_path)?;
-            let active_space = active_relationship_space(
-                &app,
-                &conn,
-                space_fingerprint.as_deref(),
-            )?;
             index::list_relationships(
                 &conn,
                 &workspace_id,
