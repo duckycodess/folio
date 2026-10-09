@@ -11,6 +11,7 @@ use folio_core::contracts::{
     ModelDescriptor, ModelInstallStatus, ModelRole, NativeProviderError, ProviderErrorCode,
 };
 use folio_core::generation::GenerationProvider;
+use folio_core::lab::candidates::{candidate_store, is_candidate_id, license_note};
 use folio_core::lab::host::{host_info, onnxruntime_version};
 use folio_core::lab::native::{
     llama_runtime_detail, model_ref, open_embedding, StoreGeneratorFactory,
@@ -21,7 +22,8 @@ use folio_core::lab::runner::{
 use folio_core::lab::suite::{Corpus, Suite};
 use folio_core::lab::workspace::LabWorkspaces;
 use folio_core::lab::{
-    BenchmarkRecord, BenchmarkTask, ReviewStatus, RunSummary, RuntimeDetail, RuntimeName,
+    BenchmarkRecord, BenchmarkTask, ModelCatalog, ReviewStatus, RunSummary, RuntimeDetail,
+    RuntimeName,
 };
 use folio_core::models::ModelStore;
 use serde::{Deserialize, Serialize};
@@ -29,8 +31,9 @@ use serde_json::json;
 use tauri::{AppHandle, Emitter, State};
 
 use super::{
-    app_data_dir, finish_generation, model_store, native_error, run_blocking, runtime_id_for_host,
-    unload_embedding, EmbeddingState, Folio, GenerationState,
+    app_data_dir, begin_install, finish_generation, finish_install, model_store, native_error,
+    provider_install_state, run_blocking, runtime_id_for_host, unload_embedding, EmbeddingState,
+    Folio, GenerationState, InstallState, ProviderInstallState,
 };
 use crate::error::{error, ErrorCode, FolioError};
 use crate::lab_store::{self, RecordFilter, ReviewInput, SqliteLabSink};
@@ -56,7 +59,14 @@ pub(crate) struct LabModel {
     status: ModelInstallStatus,
     /// Installed and hash-verified, so the lab may run it.
     runnable: bool,
+    /// Only a product model can be the app's selection.
     selected: bool,
+    catalog: ModelCatalog,
+    /// An evaluation candidate is not supported, recommended or selectable.
+    evaluation_only: bool,
+    license: String,
+    /// A caveat on the license, e.g. conflicting publisher metadata.
+    license_note: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -92,27 +102,49 @@ fn invalid_selection(message: &str) -> FolioError {
     error(ErrorCode::Internal, message).with_detail("reportedCode", "labSelectionInvalid")
 }
 
-fn describe_models(store: &ModelStore) -> Result<Vec<LabModel>, FolioError> {
-    let selected_embedding = store.selected_model(ModelRole::Embedding)?;
-    let selected_generation = store.selected_model(ModelRole::Generation)?;
+fn describe_models(
+    product: &ModelStore,
+    candidates: &ModelStore,
+) -> Result<Vec<LabModel>, FolioError> {
+    let selected_embedding = product.selected_model(ModelRole::Embedding)?;
+    let selected_generation = product.selected_model(ModelRole::Generation)?;
     let mut models = Vec::new();
-    for descriptor in &store.manifest().models {
-        let status = store.model_state(&descriptor.id)?.status;
-        let selected = match descriptor.role {
-            ModelRole::Embedding => selected_embedding.as_deref() == Some(descriptor.id.as_str()),
-            ModelRole::Generation => selected_generation.as_deref() == Some(descriptor.id.as_str()),
-        };
-        models.push(LabModel {
-            id: descriptor.id.clone(),
-            role: descriptor.role.clone(),
-            repo: descriptor.repo.clone(),
-            revision: descriptor.revision.clone(),
-            quantization: descriptor.quantization.clone(),
-            model_file_bytes: descriptor.files.iter().map(|file| file.bytes).sum(),
-            runnable: status == ModelInstallStatus::Installed,
-            status,
-            selected,
-        });
+    for (store, catalog) in [
+        (product, ModelCatalog::Product),
+        (candidates, ModelCatalog::EvaluationCandidate),
+    ] {
+        let candidate = catalog == ModelCatalog::EvaluationCandidate;
+        for descriptor in &store.manifest().models {
+            let status = store.model_state(&descriptor.id)?.status;
+            let selected = !candidate
+                && match descriptor.role {
+                    ModelRole::Embedding => {
+                        selected_embedding.as_deref() == Some(descriptor.id.as_str())
+                    }
+                    ModelRole::Generation => {
+                        selected_generation.as_deref() == Some(descriptor.id.as_str())
+                    }
+                };
+            models.push(LabModel {
+                id: descriptor.id.clone(),
+                role: descriptor.role.clone(),
+                repo: descriptor.repo.clone(),
+                revision: descriptor.revision.clone(),
+                quantization: descriptor.quantization.clone(),
+                model_file_bytes: descriptor.files.iter().map(|file| file.bytes).sum(),
+                runnable: status == ModelInstallStatus::Installed,
+                status,
+                selected,
+                catalog,
+                evaluation_only: candidate,
+                license: descriptor.license.clone(),
+                license_note: if candidate {
+                    license_note(&descriptor.id)
+                } else {
+                    None
+                },
+            });
+        }
     }
     Ok(models)
 }
@@ -139,11 +171,22 @@ fn require_runnable(
     Ok(descriptor)
 }
 
+/// The store that holds a generation model: the candidate store for a
+/// candidate id, the product store otherwise. Ids never collide.
+fn store_for<'a>(product: &'a ModelStore, candidates: &'a ModelStore, id: &str) -> &'a ModelStore {
+    if candidates.model(id).is_ok() {
+        candidates
+    } else {
+        product
+    }
+}
+
 /// Only installed, hash-verified models of the right role, each once, in the
-/// order given. There is no substitution: a model that cannot run stops the
-/// request.
+/// order given. The embedding model is always a product model. There is no
+/// substitution: a model that cannot run stops the request.
 fn check_lab_selection(
-    store: &ModelStore,
+    product: &ModelStore,
+    candidates: &ModelStore,
     embedding_id: &str,
     generation_ids: &[String],
 ) -> Result<(), FolioError> {
@@ -156,11 +199,44 @@ fn check_lab_selection(
                 .with_detail("modelId", id.as_str()));
         }
     }
-    require_runnable(store, embedding_id, ModelRole::Embedding)?;
+    if candidates.model(embedding_id).is_ok() {
+        return Err(
+            invalid_selection("The embedding model must be a product model.")
+                .with_detail("modelId", embedding_id),
+        );
+    }
+    require_runnable(product, embedding_id, ModelRole::Embedding)?;
     for id in generation_ids {
-        require_runnable(store, id, ModelRole::Generation)?;
+        require_runnable(
+            store_for(product, candidates, id),
+            id,
+            ModelRole::Generation,
+        )?;
     }
     Ok(())
+}
+
+/// The isolated store for an evaluation candidate. A product id, or an id in
+/// neither catalog, is refused so the candidate commands can never reach a
+/// product model.
+fn candidate_store_for(data_dir: &std::path::Path, id: &str) -> Result<ModelStore, FolioError> {
+    if !is_candidate_id(id) {
+        return Err(
+            invalid_selection("That is not an evaluation candidate.").with_detail("modelId", id)
+        );
+    }
+    Ok(candidate_store(data_dir)?)
+}
+
+fn verify_candidate(
+    data_dir: &std::path::Path,
+    id: &str,
+) -> Result<folio_core::contracts::ModelInstallState, FolioError> {
+    Ok(candidate_store_for(data_dir, id)?.model_state(id)?)
+}
+
+fn remove_candidate(data_dir: &std::path::Path, id: &str) -> Result<(), FolioError> {
+    Ok(candidate_store_for(data_dir, id)?.remove_model(id)?)
 }
 
 /// Takes the generation slot for the whole run and returns its cancel flag.
@@ -270,7 +346,62 @@ fn execute_lab(
 
 #[tauri::command]
 pub(crate) async fn lab_models(app: AppHandle) -> Result<Vec<LabModel>, FolioError> {
-    run_blocking::<_, FolioError, _>(move || describe_models(&model_store(&app)?)).await
+    run_blocking::<_, FolioError, _>(move || {
+        let data_dir = app_data_dir(&app)?;
+        describe_models(&model_store(&app)?, &candidate_store(&data_dir)?)
+    })
+    .await
+}
+
+/// Downloads one evaluation candidate into its own folder, only when asked.
+/// Sizes and SHA-256 are verified like any model; nothing is selected.
+#[tauri::command]
+pub(crate) async fn install_lab_candidate(
+    app: AppHandle,
+    install_state: State<'_, InstallState>,
+    model_id: String,
+) -> Result<ProviderInstallState, FolioError> {
+    let cancel = begin_install(install_state.inner())?;
+    let worker_cancel = cancel.clone();
+    let install_state = install_state.inner().clone();
+    let progress_app = app.clone();
+    let result = run_blocking::<_, FolioError, _>(move || {
+        let store = candidate_store_for(&app_data_dir(&app)?, &model_id)?;
+        Ok(store.install_model(&model_id, &worker_cancel, |progress| {
+            let _ = progress_app.emit("folio://model-progress", progress);
+        })?)
+    })
+    .await;
+    finish_install(&install_state, &cancel)?;
+    Ok(provider_install_state(result?))
+}
+
+/// Removes one evaluation candidate. Product models and recorded results are
+/// never touched.
+#[tauri::command]
+pub(crate) async fn remove_lab_candidate(
+    app: AppHandle,
+    install_state: State<'_, InstallState>,
+    model_id: String,
+) -> Result<(), FolioError> {
+    let lock = begin_install(install_state.inner())?;
+    let install_state = install_state.inner().clone();
+    let result =
+        run_blocking::<_, FolioError, _>(move || remove_candidate(&app_data_dir(&app)?, &model_id))
+            .await;
+    finish_install(&install_state, &lock)?;
+    result
+}
+
+#[tauri::command]
+pub(crate) async fn verify_lab_candidate(
+    app: AppHandle,
+    model_id: String,
+) -> Result<ProviderInstallState, FolioError> {
+    let state =
+        run_blocking::<_, FolioError, _>(move || verify_candidate(&app_data_dir(&app)?, &model_id))
+            .await?;
+    Ok(provider_install_state(state))
 }
 
 /// Starts a run and returns its id at once; progress arrives as
@@ -281,6 +412,7 @@ pub(crate) async fn run_model_lab(
     state: State<'_, Folio>,
     generation_state: State<'_, GenerationState>,
     embedding_state: State<'_, EmbeddingState>,
+    install_state: State<'_, InstallState>,
     lab_state: State<'_, LabState>,
     request: RunLabRequest,
 ) -> Result<RunStarted, FolioError> {
@@ -294,15 +426,26 @@ pub(crate) async fn run_model_lab(
         store
             .verified_runtime_executable(runtime_id_for_host())
             .map_err(native_error)?;
-        let cancel = begin_lab_exclusive(&generation_state, &lab_state)?;
+        // The run holds the install lock too, so no model can be installed or
+        // removed under it and no candidate is replaced mid-measurement.
+        let install_lock = begin_install(&install_state)?;
+        let cancel = match begin_lab_exclusive(&generation_state, &lab_state) {
+            Ok(cancel) => cancel,
+            Err(failure) => {
+                let _ = finish_install(&install_state, &install_lock);
+                return Err(failure.into());
+            }
+        };
         if let Err(failure) = unload_embedding(&embedding_state) {
             let _ = finish_lab(&generation_state, &lab_state, &cancel);
+            let _ = finish_install(&install_state, &install_lock);
             return Err(failure.into());
         }
         let run_id = format!("lab-{}", system_clock_ms());
         let worker = {
             let (app, run_id, cancel) = (app.clone(), run_id.clone(), cancel.clone());
             let (generation_state, lab_state) = (generation_state.clone(), lab_state.clone());
+            let (install_state, install_lock) = (install_state.clone(), install_lock.clone());
             move || {
                 let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     execute_lab(&app, &index_path, &request, &run_id, &cancel)
@@ -311,17 +454,25 @@ pub(crate) async fn run_model_lab(
                     Ok(Ok(RunEnd::Completed)) => ("finished", None),
                     Ok(Ok(RunEnd::Cancelled)) => ("cancelled", None),
                     Ok(Err(failure)) => ("failed", Some(failure.message)),
-                    Err(_) => ("failed", Some("The Model Lab run stopped unexpectedly.".to_string())),
+                    Err(_) => (
+                        "failed",
+                        Some("The Model Lab run stopped unexpectedly.".to_string()),
+                    ),
                 };
                 let _ = app.emit(
                     LAB_PROGRESS_EVENT,
                     json!({ "runId": run_id, "step": step, "caseId": null, "modelId": null, "error": failure }),
                 );
                 let _ = finish_lab(&generation_state, &lab_state, &cancel);
+                let _ = finish_install(&install_state, &install_lock);
             }
         };
-        if let Err(cause) = std::thread::Builder::new().name("folio-model-lab".into()).spawn(worker) {
+        if let Err(cause) = std::thread::Builder::new()
+            .name("folio-model-lab".into())
+            .spawn(worker)
+        {
             let _ = finish_lab(&generation_state, &lab_state, &cancel);
+            let _ = finish_install(&install_state, &install_lock);
             return Err(error(ErrorCode::Internal, "Model Lab could not start.")
                 .with_detail("cause", cause.to_string()));
         }
@@ -391,34 +542,42 @@ pub(crate) async fn record_lab_review(
 mod tests {
     use super::*;
 
-    fn store() -> (tempfile::TempDir, ModelStore) {
+    fn stores() -> (tempfile::TempDir, ModelStore, ModelStore) {
         let dir = tempfile::tempdir().unwrap();
-        let store = ModelStore::new(dir.path()).unwrap();
-        (dir, store)
+        let product = ModelStore::new(dir.path()).unwrap();
+        let candidates = candidate_store(dir.path()).unwrap();
+        (dir, product, candidates)
     }
 
-    fn generation_ids(store: &ModelStore) -> Vec<String> {
+    fn ids(store: &ModelStore, role: ModelRole) -> Vec<String> {
         store
             .manifest()
             .models
             .iter()
-            .filter(|model| model.role == ModelRole::Generation)
+            .filter(|model| model.role == role)
             .map(|model| model.id.clone())
             .collect()
     }
 
     #[test]
-    fn the_model_list_reports_pinned_file_sizes_and_nothing_runnable_before_install() {
-        let (_dir, store) = store();
-        let models = describe_models(&store).unwrap();
-        assert_eq!(models.len(), store.manifest().models.len());
-        assert!(models
-            .iter()
-            .any(|model| model.role == ModelRole::Embedding));
+    fn the_model_list_flags_candidates_and_reports_pinned_sizes_not_installed_size() {
+        let (_dir, product, candidates) = stores();
+        let models = describe_models(&product, &candidates).unwrap();
+        assert_eq!(
+            models.len(),
+            product.manifest().models.len() + candidates.manifest().models.len()
+        );
         for model in &models {
             assert!(!model.runnable, "{} is not installed", model.id);
             assert_eq!(model.status, ModelInstallStatus::NotInstalled);
             assert!(!model.selected);
+            let in_candidates = candidates.model(&model.id).is_ok();
+            assert_eq!(model.evaluation_only, in_candidates, "{}", model.id);
+            assert_eq!(
+                model.catalog == ModelCatalog::EvaluationCandidate,
+                in_candidates
+            );
+            let store = if in_candidates { &candidates } else { &product };
             let pinned: u64 = store
                 .model(&model.id)
                 .unwrap()
@@ -428,55 +587,165 @@ mod tests {
                 .sum();
             assert_eq!(model.model_file_bytes, pinned);
         }
+        let sea = models
+            .iter()
+            .find(|model| model.id == "gemma-sea-lion-v4.5-e2b-q4-k-m")
+            .unwrap();
+        assert!(sea.license_note.as_deref().unwrap().contains("Unsettled"));
+        assert!(models
+            .iter()
+            .filter(|model| !model.evaluation_only)
+            .all(|model| model.license_note.is_none()));
+    }
+
+    #[test]
+    fn a_candidate_is_never_the_apps_selection_even_if_it_is_installed_in_the_lab() {
+        let (_dir, product, candidates) = stores();
+        for role in [ModelRole::Generation, ModelRole::Embedding] {
+            assert!(product
+                .select_model(role.clone(), "qwen3.5-0.8b-q4-k-m")
+                .is_err());
+        }
+        assert!(product.model("qwen3.5-0.8b-q4-k-m").is_err());
+        // The candidate store's own settings are never read as the product selection.
+        assert_eq!(product.selected_model(ModelRole::Generation).unwrap(), None);
+        assert_eq!(
+            candidates.selected_model(ModelRole::Generation).unwrap(),
+            None
+        );
+    }
+
+    fn first_embedding(product: &ModelStore) -> String {
+        ids(product, ModelRole::Embedding).remove(0)
     }
 
     #[test]
     fn a_selection_of_models_that_are_not_installed_is_refused_not_substituted() {
-        let (_dir, store) = store();
-        let generation = generation_ids(&store);
-        let embedding = store
-            .manifest()
-            .models
-            .iter()
-            .find(|model| model.role == ModelRole::Embedding)
-            .unwrap()
-            .id
-            .clone();
-        let failure = check_lab_selection(&store, &embedding, &generation[..1]).unwrap_err();
+        let (_dir, product, candidates) = stores();
+        let embedding = first_embedding(&product);
+        let generation = ids(&product, ModelRole::Generation);
+        let failure =
+            check_lab_selection(&product, &candidates, &embedding, &generation[..1]).unwrap_err();
         assert_eq!(failure.code, ErrorCode::ModelNotInstalled);
         assert_eq!(failure.detail("modelId"), Some(embedding.as_str()));
     }
 
     #[test]
+    fn an_uninstalled_candidate_stops_the_request_naming_it() {
+        let (_dir, product, candidates) = stores();
+        // A candidate is never an embedding model.
+        let wrong_role = check_lab_selection(
+            &product,
+            &candidates,
+            "qwen3.5-0.8b-q4-k-m",
+            &["qwen3-0.6b-q4-k-m".to_string()],
+        )
+        .unwrap_err();
+        assert_eq!(
+            wrong_role.detail("reportedCode"),
+            Some("labSelectionInvalid")
+        );
+        assert_eq!(wrong_role.detail("modelId"), Some("qwen3.5-0.8b-q4-k-m"));
+        let failure = require_runnable(&candidates, "qwen3.5-0.8b-q4-k-m", ModelRole::Generation)
+            .unwrap_err();
+        assert_eq!(failure.code, ErrorCode::ModelNotInstalled);
+        assert_eq!(failure.detail("modelId"), Some("qwen3.5-0.8b-q4-k-m"));
+    }
+
+    #[test]
     fn an_empty_duplicate_or_wrong_role_selection_is_refused() {
-        let (_dir, store) = store();
-        let generation = generation_ids(&store);
-        let embedding = store
-            .manifest()
-            .models
-            .iter()
-            .find(|model| model.role == ModelRole::Embedding)
-            .unwrap()
-            .id
-            .clone();
-        let empty = check_lab_selection(&store, &embedding, &[]).unwrap_err();
+        let (_dir, product, candidates) = stores();
+        let generation = ids(&product, ModelRole::Generation);
+        let embedding = first_embedding(&product);
+        let empty = check_lab_selection(&product, &candidates, &embedding, &[]).unwrap_err();
         assert_eq!(empty.detail("reportedCode"), Some("labSelectionInvalid"));
 
         let twice = vec![generation[0].clone(), generation[0].clone()];
-        let duplicate = check_lab_selection(&store, &embedding, &twice).unwrap_err();
+        let duplicate = check_lab_selection(&product, &candidates, &embedding, &twice).unwrap_err();
         assert_eq!(
             duplicate.detail("reportedCode"),
             Some("labSelectionInvalid")
         );
 
         let wrong_role =
-            check_lab_selection(&store, &generation[0], &generation[1..2]).unwrap_err();
+            check_lab_selection(&product, &candidates, &generation[0], &generation[1..2])
+                .unwrap_err();
         assert_eq!(
             wrong_role.detail("reportedCode"),
             Some("labSelectionInvalid")
         );
 
-        assert!(check_lab_selection(&store, &embedding, &["no-such-model".to_string()]).is_err());
+        assert!(check_lab_selection(
+            &product,
+            &candidates,
+            &embedding,
+            &["no-such-model".to_string()]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn the_candidate_commands_never_reach_a_product_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let product = dir.path().join("models").join("qwen3-0.6b-q4-k-m");
+        std::fs::create_dir_all(&product).unwrap();
+        std::fs::write(product.join("model.gguf"), b"product weights").unwrap();
+
+        for id in [
+            "qwen3-0.6b-q4-k-m",
+            "multilingual-e5-small-int8",
+            "no-such-model",
+        ] {
+            let removal = remove_candidate(dir.path(), id).unwrap_err();
+            assert_eq!(
+                removal.detail("reportedCode"),
+                Some("labSelectionInvalid"),
+                "{id}"
+            );
+            assert!(verify_candidate(dir.path(), id).is_err(), "{id}");
+        }
+        assert!(product.join("model.gguf").is_file());
+    }
+
+    #[test]
+    fn removing_a_candidate_deletes_only_its_own_folder_and_leaves_results_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let product = dir.path().join("models").join("qwen3-0.6b-q4-k-m");
+        std::fs::create_dir_all(&product).unwrap();
+        std::fs::write(product.join("model.gguf"), b"product weights").unwrap();
+        let candidate = dir
+            .path()
+            .join("model-lab")
+            .join("candidates")
+            .join("models")
+            .join("qwen3.5-0.8b-q4-k-m");
+        std::fs::create_dir_all(&candidate).unwrap();
+        std::fs::write(candidate.join("model.gguf"), b"candidate weights").unwrap();
+
+        // A recorded result lives in the index database, not in the model folder.
+        let mut connection = crate::db::open(&dir.path().join("folio.sqlite")).unwrap();
+        connection
+            .execute(
+                "INSERT INTO benchmark_results (id, case_id, task_type, model_id, conditions_json, measurements_json, created_at) VALUES ('r', 'c', 'summary', 'qwen3.5-0.8b-q4-k-m', '{}', '{}', '1')",
+                [],
+            )
+            .unwrap();
+
+        remove_candidate(dir.path(), "qwen3.5-0.8b-q4-k-m").unwrap();
+        assert!(!candidate.exists());
+        assert!(product.join("model.gguf").is_file());
+        let kept: i64 = connection
+            .query_row("SELECT count(*) FROM benchmark_results", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(kept, 1);
+        assert_eq!(
+            verify_candidate(dir.path(), "qwen3.5-0.8b-q4-k-m")
+                .unwrap()
+                .status,
+            ModelInstallStatus::NotInstalled
+        );
     }
 
     #[test]
