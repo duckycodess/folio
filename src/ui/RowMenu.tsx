@@ -2,6 +2,8 @@ import { MoreHorizontal } from "lucide-react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 
 export interface RowMenuItem {
+  /** Stable name for code that picks items; the label is for people. */
+  id: string;
   label: string;
   onSelect: () => void;
 }
@@ -103,7 +105,7 @@ export function RowMenu({
         >
           {items.map((item) => (
             <button
-              key={item.label}
+              key={item.id}
               type="button"
               role="menuitem"
               tabIndex={-1}

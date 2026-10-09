@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { simulatedFailure } from "../adapters/simulate";
 import type { Drafts } from "../app/drafts";
 import {
   fileName,
@@ -9,6 +10,7 @@ import {
 import type { OrganizeController } from "../app/useOrganize";
 import type { WorkspaceState } from "../app/useWorkspace";
 import type { DocumentRecord } from "../domain/contracts";
+import type { FolioError } from "../domain/errors";
 import { Button } from "../ui/Button";
 import { Modal } from "../ui/Modal";
 import { Progress } from "../ui/Progress";
@@ -40,6 +42,7 @@ export function FileActionDialog({
   const { state } = action;
   const heading = useRef<HTMLHeadingElement>(null);
   const input = useRef<HTMLInputElement>(null);
+  const select = useRef<HTMLSelectElement>(null);
   const current = fileName(document.relativePath);
   // The field owns its text (it may be empty while typing); the draft keeps
   // it if the dialog closes before the rename is saved.
@@ -58,20 +61,35 @@ export function FileActionDialog({
         ? "The file is already in that folder."
         : null;
   const inPlan = state.stage === "preview" || state.stage === "applying";
+  // Sample files can't be changed, but practice mode (`?simulate=<code>`)
+  // still shows how a refused change looks.
+  const practice =
+    workspace.source !== "folder" ? simulatedFailure("changes") : undefined;
+  const [practiceError, setPracticeError] = useState<FolioError | null>(null);
+  const error = practiceError ?? state.error;
 
-  // Start with the name selected, without its extension, like a file manager.
-  useEffect(() => {
+  // Focus the field, with a name selected up to its extension like a file
+  // manager does.
+  function focusField() {
+    if (kind === "move") return select.current?.focus();
     const field = input.current;
     if (!field) return;
     field.focus();
     const dot = field.value.lastIndexOf(".");
     field.setSelectionRange(0, dot > 0 ? dot : field.value.length);
-  }, []);
+  }
 
-  // A new step is announced by moving focus to its heading.
+  useEffect(focusField, []);
+
+  // A new step is announced by moving focus to its heading. Back from the
+  // preview returns to the field, since the preview's buttons are gone.
+  const lastStage = useRef(state.stage);
   useEffect(() => {
+    const previous = lastStage.current;
+    lastStage.current = state.stage;
     if (state.stage === "preview" || state.stage === "result")
       heading.current?.focus();
+    else if (previous === "preview") focusField();
   }, [state.stage]);
 
   // A name typed for a file is done with once that rename is saved.
@@ -85,29 +103,34 @@ export function FileActionDialog({
 
   function preview() {
     if (problem) return;
+    if (practice) return setPracticeError(practice);
     action.previewRelocate(document, kind === "rename" ? { name } : { folder });
   }
 
   const title = `${kind === "rename" ? "Rename" : "Move"} ${document.name}`;
 
+  function close() {
+    action.done();
+    onClose();
+  }
+
   return (
     <Modal
       open
       title={title}
-      onClose={() => {
-        // An apply in progress keeps running; its result stays available.
-        if (state.stage !== "applying") action.done();
-        onClose();
-      }}
+      // The dialog stays open until an apply finishes, so its result (and
+      // Undo) is never left in the flow for the next file's dialog.
+      dismissible={state.stage !== "applying"}
+      onClose={close}
     >
-      {workspace.source !== "folder" ? (
+      {workspace.source !== "folder" && !practice ? (
         <p>
           {kind === "rename" ? "Renaming" : "Moving"} works on a folder you add
           {workspace.nativeAvailable ? "" : " in the desktop app"}. Sample files
           can't be changed, so nothing was changed.
         </p>
       ) : state.stage === "result" ? (
-        <ResultStep organize={action} heading={heading} />
+        <ResultStep organize={action} heading={heading} onDone={close} />
       ) : inPlan ? (
         <PreviewStep organize={action} heading={heading} cancelLabel="Back" />
       ) : (
@@ -142,10 +165,10 @@ export function FileActionDialog({
                 Move to folder
               </label>
               <select
+                ref={select}
                 id="file-action-folder"
                 className="text-input"
                 value={folder}
-                autoFocus
                 aria-describedby="file-action-help"
                 onChange={(event) => setFolder(event.target.value)}
               >
@@ -160,15 +183,20 @@ export function FileActionDialog({
           <p id="file-action-help" className="field-help">
             {problem ?? "You'll see the exact change before anything happens."}
           </p>
-          {state.error && (
+          {error && (
             <RecoveryNotice
-              error={state.error}
+              error={error}
               actions={{
                 retry: preview,
                 previewAgain: preview,
-                chooseAnotherName: () => input.current?.select(),
+                // In Move, another folder is the way to another name.
+                chooseAnotherName: focusField,
               }}
-              onDismiss={action.dismissError}
+              onDismiss={
+                practiceError
+                  ? () => setPracticeError(null)
+                  : action.dismissError
+              }
             />
           )}
           {state.stage === "preparing" ? (
