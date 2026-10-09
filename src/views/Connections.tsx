@@ -1,4 +1,5 @@
 import { Quote } from "lucide-react";
+import { useEffect } from "react";
 import type { RelationshipsState } from "../app/useRelationships";
 import type { WorkspaceState } from "../app/useWorkspace";
 import { describeConnection, type Connection } from "../domain/connections";
@@ -146,6 +147,8 @@ export function RelatedList({
   workspace: WorkspaceState;
   relations: RelationshipsState;
 }) {
+  const { request } = relations;
+  useEffect(request, [request]);
   const byId = new Map(workspace.documents.map((item) => [item.id, item]));
   const connections = relations
     .connectionsOf(document.id)

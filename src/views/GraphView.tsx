@@ -1,4 +1,5 @@
 import { ArrowLeftRight, ArrowRight, Waypoints } from "lucide-react";
+import { useEffect } from "react";
 import type { RelationshipsState } from "../app/useRelationships";
 import type { WorkspaceState } from "../app/useWorkspace";
 import { describeConnection, type Connection } from "../domain/connections";
@@ -72,6 +73,8 @@ export function GraphView({
   workspace: WorkspaceState;
   relations: RelationshipsState;
 }) {
+  const { request } = relations;
+  useEffect(request, [request]);
   const pairs = allPairs(workspace.documents, relations);
   const byId = new Map(workspace.documents.map((d) => [d.id, d]));
 

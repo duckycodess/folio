@@ -1,13 +1,20 @@
 import type {
   DocumentId,
   DocumentRecord,
-  DuplicateGroup,
   Relationship,
   RelationshipProvenance,
   SourcePassage,
 } from "./contracts";
 import { sliceByUtf8Offsets, utf8OffsetToUtf16Index } from "./offsets";
 import { relationshipEvidence } from "./relationships";
+
+/**
+ * Documents with identical contents. Only identities are needed here, so
+ * nothing about index status is implied for files that were never indexed.
+ */
+export interface DuplicateSet {
+  documents: Pick<DocumentRecord, "id">[];
+}
 
 export type ConnectionKind =
   "exactDuplicate" | "explicitReference" | "sharedFactCandidate" | "similarity";
@@ -74,7 +81,7 @@ function passageKey(passage: SourcePassage): string {
 export function connectionsFor(
   documentId: DocumentId,
   relationships: Relationship[],
-  duplicates: DuplicateGroup[] = [],
+  duplicates: DuplicateSet[] = [],
 ): Connection[] {
   const byKey = new Map<string, Connection>();
 
@@ -156,7 +163,7 @@ export function connectionsFor(
  * Exact duplicates among documents whose bytes Folio has hashed. Equal hashes
  * mean identical contents; nothing about similarity is inferred.
  */
-export function localDuplicates(documents: DocumentRecord[]): DuplicateGroup[] {
+export function localDuplicates(documents: DocumentRecord[]): DuplicateSet[] {
   const byHash = new Map<string, DocumentRecord[]>();
   for (const document of documents) {
     if (!document.contentHash) continue;
@@ -166,14 +173,8 @@ export function localDuplicates(documents: DocumentRecord[]): DuplicateGroup[] {
   }
   return [...byHash.entries()]
     .filter(([, group]) => group.length > 1)
-    .map(([contentHash, group]) => ({
-      contentHash,
-      sizeBytes: group[0].sizeBytes,
-      documents: group.map((document) => ({
-        ...document,
-        contentHash,
-        status: "indexed" as const,
-      })),
+    .map(([, group]) => ({
+      documents: group.map((document) => ({ id: document.id })),
     }));
 }
 

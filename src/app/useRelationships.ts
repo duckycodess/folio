@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import {
   listDuplicates,
   listIndexedDocuments,
@@ -9,15 +9,16 @@ import {
   localDuplicates,
   mergeRelationships,
   type Connection,
+  type DuplicateSet,
 } from "../domain/connections";
 import type {
   DocumentId,
   DocumentRecord,
-  DuplicateGroup,
   Relationship,
   SourcePassage,
 } from "../domain/contracts";
 import { toFolioError } from "../domain/errors";
+import { NO_NAVIGATION, relatedNavigation } from "./relatedNavigation";
 import type { WorkspaceState } from "./useWorkspace";
 
 /**
@@ -33,8 +34,15 @@ export interface RelationshipsState {
   error: string;
   /** Index and opened-file relationships, merged without repeats. */
   relationships: Relationship[];
-  duplicates: DuplicateGroup[];
+  duplicates: DuplicateSet[];
   connectionsOf: (documentId: DocumentId) => Connection[];
+  /**
+   * Views that show connections call this; the folder index (which re-reads
+   * candidate duplicates) is only read once something needs it.
+   */
+  request: () => void;
+  /** Re-read the index, for example after a scan or an applied change. */
+  refresh: () => void;
   /** The passage the reader should show, set by opening evidence. */
   focus: SourcePassage | null;
   openPassage: (passage: SourcePassage) => void;
@@ -46,26 +54,26 @@ export interface RelationshipsState {
   returnedTo: DocumentId | null;
 }
 
+interface IndexSnapshot {
+  key: string;
+  coverage: "indexed" | "notIndexed" | "failed";
+  relationships: Relationship[];
+  duplicates: DuplicateSet[];
+  error: string;
+}
+
 export function useRelationships(
   workspace: WorkspaceState,
 ): RelationshipsState {
   const folderId = workspace.workspace?.id;
-  const [indexed, setIndexed] = useState<{
-    folderId: string;
-    coverage: "indexed" | "notIndexed" | "failed";
-    relationships: Relationship[];
-    duplicates: DuplicateGroup[];
-    error: string;
-  } | null>(null);
-  const [focus, setFocus] = useState<SourcePassage | null>(null);
-  const [trail, setTrail] = useState<DocumentRecord[]>([]);
-  const [returnedTo, setReturnedTo] = useState<DocumentId | null>(null);
-  // Set while Folio itself changes the selection, so a selection made
-  // elsewhere (the file list, search) can start a fresh trail.
-  const expected = useRef<DocumentId | null>(null);
+  const [wanted, setWanted] = useState(false);
+  const [generation, setGeneration] = useState(0);
+  const [snapshot, setSnapshot] = useState<IndexSnapshot | null>(null);
+  const [navigation, dispatch] = useReducer(relatedNavigation, NO_NAVIGATION);
+  const key = `${folderId}#${generation}`;
 
   useEffect(() => {
-    if (!folderId) return;
+    if (!folderId || !wanted) return;
     let active = true;
     Promise.all([
       listIndexedDocuments(folderId),
@@ -74,8 +82,8 @@ export function useRelationships(
     ])
       .then(([documents, relationships, duplicates]) => {
         if (!active) return;
-        setIndexed({
-          folderId,
+        setSnapshot({
+          key,
           coverage: documents.length ? "indexed" : "notIndexed",
           relationships,
           duplicates,
@@ -84,8 +92,8 @@ export function useRelationships(
       })
       .catch((cause) => {
         if (!active) return;
-        setIndexed({
-          folderId,
+        setSnapshot({
+          key,
           coverage: "failed",
           relationships: [],
           duplicates: [],
@@ -95,40 +103,32 @@ export function useRelationships(
     return () => {
       active = false;
     };
-  }, [folderId]);
+  }, [folderId, wanted, key]);
 
-  const current = indexed?.folderId === folderId ? indexed : null;
+  const current = snapshot?.key === key ? snapshot : null;
   const relationships = useMemo(
     () =>
       mergeRelationships(current?.relationships ?? [], workspace.relationships),
     [current, workspace.relationships],
   );
-  // The index re-reads bytes for the whole folder; hashes of files Folio has
-  // already read (the samples, opened files) cover the rest.
+  // An indexed folder's duplicate groups were confirmed by re-reading bytes.
+  // Otherwise the hashes of files Folio has read (samples, opened files) are
+  // all there is.
   const duplicates = useMemo(
-    () => [
-      ...(current?.duplicates ?? []),
-      ...localDuplicates(workspace.documents),
-    ],
+    () =>
+      current?.coverage === "indexed"
+        ? current.duplicates
+        : localDuplicates(workspace.documents),
     [current, workspace.documents],
   );
 
   const selectedId = workspace.selected?.id;
   useEffect(() => {
-    if (selectedId === expected.current) {
-      expected.current = null;
-      return;
-    }
-    expected.current = null;
-    setTrail([]);
-    setReturnedTo(null);
-    setFocus(null);
+    dispatch({ type: "selectionChanged", id: selectedId });
   }, [selectedId]);
 
-  function select(document: DocumentRecord) {
-    if (document.id !== selectedId) expected.current = document.id;
-    void workspace.selectDocument(document);
-  }
+  const request = useCallback(() => setWanted(true), []);
+  const refresh = useCallback(() => setGeneration((value) => value + 1), []);
 
   const coverage: RelationshipCoverage =
     workspace.source === "samples"
@@ -137,6 +137,10 @@ export function useRelationships(
         ? "none"
         : (current?.coverage ?? "loading");
 
+  function find(id: DocumentId) {
+    return workspace.documents.find((item) => item.id === id);
+  }
+
   return {
     coverage,
     error: current?.error ?? "",
@@ -144,34 +148,26 @@ export function useRelationships(
     duplicates,
     connectionsOf: (documentId) =>
       connectionsFor(documentId, relationships, duplicates),
-    focus,
+    request,
+    refresh,
+    focus: navigation.focus,
     openPassage: (passage) => {
-      const document = workspace.documents.find(
-        (item) => item.id === passage.documentId,
-      );
+      const document = find(passage.documentId);
       if (!document) return;
-      const origin = workspace.selected;
-      if (origin && origin.id !== document.id)
-        setTrail((items) => [...items, origin]);
-      setFocus(passage);
-      setReturnedTo(null);
-      select(document);
+      dispatch({ type: "openPassage", passage, current: workspace.selected });
+      void workspace.selectDocument(document);
     },
-    trail,
+    trail: navigation.trail,
     openRelated: (from, to) => {
-      setTrail((items) => [...items, from]);
-      setFocus(null);
-      setReturnedTo(null);
-      select(to);
+      dispatch({ type: "openRelated", from, to });
+      void workspace.selectDocument(to);
     },
     back: () => {
-      const origin = trail[trail.length - 1];
+      const origin = navigation.trail[navigation.trail.length - 1];
       if (!origin) return;
-      setTrail((items) => items.slice(0, -1));
-      setFocus(null);
-      setReturnedTo(origin.id);
-      select(origin);
+      dispatch({ type: "back" });
+      void workspace.selectDocument(origin);
     },
-    returnedTo,
+    returnedTo: navigation.returnedTo,
   };
 }
