@@ -447,8 +447,19 @@
     overflow: visible;
     padding-block: 0;
   }
-  .app.has-document .main > .view {
+  /* The list gives way to the reader, but the view's <h1> stays for screen
+     readers so the page keeps its main heading. */
+  .app.has-document .main > .view > :not(.page-header) {
     display: none;
+  }
+  .app.has-document .main > .view > .page-header {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
   .app.has-document .main > .notice {
     margin: var(--space-3) 0 0;
