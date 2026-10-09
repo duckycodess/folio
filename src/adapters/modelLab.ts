@@ -7,6 +7,7 @@ import type {
   LabModel,
   LabProgress,
   LabRunRequest,
+  ModelInstallState,
 } from "../domain/contracts";
 import { folioError, toFolioError } from "../domain/errors";
 
@@ -39,6 +40,26 @@ async function call<T>(
 /** Manifest models with their install state. Selection stays with `select_model`. */
 export function labModels(): Promise<LabModel[]> {
   return call("lab_models");
+}
+
+/**
+ * Evaluation candidates install into their own folder and only when asked.
+ * They are never selectable models; a product model id is refused.
+ */
+export function installLabCandidate(
+  modelId: string,
+): Promise<ModelInstallState> {
+  return call("install_lab_candidate", { modelId });
+}
+
+export function removeLabCandidate(modelId: string): Promise<void> {
+  return call("remove_lab_candidate", { modelId });
+}
+
+export function verifyLabCandidate(
+  modelId: string,
+): Promise<ModelInstallState> {
+  return call("verify_lab_candidate", { modelId });
 }
 
 /** Starts a run and returns its id; results arrive through `onLabProgress`. */

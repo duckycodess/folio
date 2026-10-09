@@ -884,7 +884,17 @@ export interface LabModel {
   modelFileBytes: number;
   status: ModelInstallStatus;
   runnable: boolean;
+  /** Only a product model can be the app's selection. */
   selected: boolean;
+  catalog: "product" | "evaluationCandidate";
+  /**
+   * True for an evaluation candidate: not supported, not recommended and not
+   * selectable. Present it as "evaluation-only", never as a choice.
+   */
+  evaluationOnly: boolean;
+  license: string;
+  /** A caveat on the license, such as conflicting publisher metadata. */
+  licenseNote: string | null;
 }
 
 export interface LabRunRequest {
