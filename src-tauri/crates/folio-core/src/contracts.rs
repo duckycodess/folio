@@ -134,6 +134,8 @@ pub enum GroundedAnswerKind {
     FileSummary,
     PartialSummary,
     Answer,
+    RelationshipSummary,
+    ImpactExplanation,
     InsufficientEvidence,
 }
 

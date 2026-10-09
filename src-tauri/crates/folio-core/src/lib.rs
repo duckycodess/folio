@@ -15,4 +15,5 @@ pub mod generation;
 pub mod grounding;
 pub mod interpretation;
 pub mod models;
+pub mod relationships;
 pub mod retrieval;

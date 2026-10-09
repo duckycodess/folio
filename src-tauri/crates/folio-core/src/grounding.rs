@@ -379,6 +379,44 @@ pub fn answer_question(
     ))
 }
 
+/// Generate a relationship summary from native-selected evidence. The caller
+/// controls the scope and passages; this function has no filesystem or action
+/// capability and reuses the citation validation of `answer_question`.
+pub fn relationship_summary(
+    provider: &dyn GenerationProvider,
+    passages: Vec<SourcePassage>,
+    language: Language,
+    cancel: &AtomicBool,
+) -> CoreResult<GroundedResult> {
+    let mut result = answer_question(
+        Some(provider),
+        "Explain how the supplied documents connect. Mention only relationships supported by the supplied evidence, and cite every sentence.",
+        passages,
+        language,
+        cancel,
+    )?;
+    if result.kind != GroundedAnswerKind::InsufficientEvidence {
+        result.kind = GroundedAnswerKind::RelationshipSummary;
+    }
+    Ok(result)
+}
+
+/// Explain one Ripple candidate from its native fixed reason and evidence.
+/// Generated text is display-only and cannot alter the candidate or its plan.
+pub fn impact_explanation(
+    provider: &dyn GenerationProvider,
+    instruction: &str,
+    passages: Vec<SourcePassage>,
+    language: Language,
+    cancel: &AtomicBool,
+) -> CoreResult<GroundedResult> {
+    let mut result = answer_question(Some(provider), instruction, passages, language, cancel)?;
+    if result.kind != GroundedAnswerKind::InsufficientEvidence {
+        result.kind = GroundedAnswerKind::ImpactExplanation;
+    }
+    Ok(result)
+}
+
 fn build_answer(
     model_id: &str,
     revision: &str,
