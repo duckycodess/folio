@@ -151,6 +151,8 @@ pub enum ProviderErrorCode {
     EmbeddingSpaceMismatch,
     NoEvidence,
     IoError,
+    /// A generation request exceeded its total time budget.
+    TimedOut,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

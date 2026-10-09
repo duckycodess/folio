@@ -108,6 +108,9 @@ pub(crate) fn provider_failure(failure: NativeProviderError) -> FolioError {
         ProviderErrorCode::InvalidModelOutput => error(ErrorCode::Internal, message)
             .with_detail("reportedCode", "invalidModelOutput")
             .with_detail("outputDigest", digest_text(detail.as_deref().unwrap_or(""))),
+        ProviderErrorCode::TimedOut => {
+            error(ErrorCode::Internal, message).with_detail("reportedCode", "generationTimeout")
+        }
         ProviderErrorCode::NoEvidence => {
             error(ErrorCode::Internal, message).with_detail("reportedCode", "noEvidence")
         }
@@ -275,6 +278,7 @@ mod tests {
             (ProviderErrorCode::InvalidModelOutput, ErrorCode::Internal),
             (ProviderErrorCode::NoEvidence, ErrorCode::Internal),
             (ProviderErrorCode::IoError, ErrorCode::Internal),
+            (ProviderErrorCode::TimedOut, ErrorCode::Internal),
         ];
         for (code, expected) in cases {
             assert_eq!(

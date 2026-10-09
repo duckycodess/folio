@@ -18,7 +18,12 @@ pub const N_CTX: usize = 4096;
 pub const MAX_OUTPUT_TOKENS: usize = 512;
 pub const MAX_PASSAGES: usize = 8;
 pub const MAX_PASSAGE_CHARS: usize = 12_000;
+/// Total time budget for one generation request, enforced across the whole
+/// streamed response (the HTTP client's timeout applies per read only).
 pub const GENERATION_TIMEOUT: Duration = Duration::from_secs(120);
+/// Longest caller-supplied text (a question or an instruction) put into a
+/// prompt. Longer input is refused as a context limit before generation.
+pub const MAX_REQUEST_CHARS: usize = 2_000;
 pub const IDLE_UNLOAD: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Clone, Debug, Serialize)]
@@ -295,6 +300,7 @@ impl GenerationProvider for LlamaServerProvider {
             },
             "chat_template_kwargs": { "enable_thinking": false }
         });
+        let started = Instant::now();
         let mut response = self
             .client
             .post(format!("{base_url}/v1/chat/completions"))
@@ -320,10 +326,7 @@ impl GenerationProvider for LlamaServerProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().unwrap_or_default();
-            return Err(provider(
-                ProviderErrorCode::InvalidModelOutput,
-                format!("llama.cpp returned {status}: {body}"),
-            ));
+            return Err(runtime_status_error(status.as_u16(), &body));
         }
         let mut reader = BufReader::new(&mut response);
         let mut generated = String::new();
@@ -333,6 +336,14 @@ impl GenerationProvider for LlamaServerProvider {
                 return Err(provider(
                     ProviderErrorCode::Cancelled,
                     "Generation cancelled.",
+                ));
+            }
+            if started.elapsed() > GENERATION_TIMEOUT {
+                drop(reader);
+                let _ = self.unload();
+                return Err(provider(
+                    ProviderErrorCode::TimedOut,
+                    "Local generation exceeded its time limit.",
                 ));
             }
             line.clear();
@@ -450,6 +461,38 @@ pub fn loopback_client(timeout: Duration) -> CoreResult<Client> {
         .map_err(|error| CoreError::Message(format!("HTTP client setup failed: {error}")))
 }
 
+/// Map a non-success llama.cpp response. An over-context request is a
+/// context limit; other bodies are kept out of the message (the boundary
+/// reports only a digest of the detail).
+fn runtime_status_error(status: u16, body: &str) -> CoreError {
+    let lowered = body.to_ascii_lowercase();
+    if (400..500).contains(&status) && lowered.contains("context") {
+        return provider(
+            ProviderErrorCode::ContextLimit,
+            "The request is longer than the local model's context window.",
+        );
+    }
+    CoreError::Provider(
+        NativeProviderErrorError::new(
+            ProviderErrorCode::InvalidModelOutput,
+            format!("The local runtime returned HTTP {status}."),
+        )
+        .with_detail(body.chars().take(500).collect::<String>()),
+    )
+}
+
+/// Refuse caller text longer than `MAX_REQUEST_CHARS` before it reaches a
+/// prompt.
+pub fn check_request_length(text: &str) -> CoreResult<()> {
+    if text.chars().count() > MAX_REQUEST_CHARS {
+        return Err(provider(
+            ProviderErrorCode::ContextLimit,
+            format!("Requests are limited to {MAX_REQUEST_CHARS} characters."),
+        ));
+    }
+    Ok(())
+}
+
 pub fn loopback_url(port: u16) -> CoreResult<String> {
     if port == 0 {
         return Err(CoreError::Message("A loopback port is required.".into()));
@@ -488,6 +531,28 @@ fn provider(code: ProviderErrorCode, message: impl Into<String>) -> CoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn over_context_responses_and_long_requests_are_context_limits() {
+        let over = runtime_status_error(
+            400,
+            "{\"error\":{\"message\":\"the request exceeds the available context size\"}}",
+        );
+        assert!(matches!(
+            over,
+            CoreError::Provider(ref failure) if failure.code == ProviderErrorCode::ContextLimit
+        ));
+        let other = runtime_status_error(500, "secret prompt text");
+        match other {
+            CoreError::Provider(failure) => {
+                assert_eq!(failure.code, ProviderErrorCode::InvalidModelOutput);
+                assert!(!failure.message.contains("secret prompt text"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert!(check_request_length(&"a".repeat(MAX_REQUEST_CHARS)).is_ok());
+        assert!(check_request_length(&"ñ".repeat(MAX_REQUEST_CHARS + 1)).is_err());
+    }
 
     #[test]
     fn only_loopback_host_is_accepted() {

@@ -137,6 +137,7 @@ pub fn interpret_request_traced(
     chunks: &[Chunk],
     cancel: &AtomicBool,
 ) -> CoreResult<InterpretationTrace> {
+    crate::generation::check_request_length(request)?;
     let messages = build_interpretation_messages(request);
     let prompt_sha256 = hex::encode(Sha256::digest(
         serde_json::to_vec(&messages).expect("chat messages are serializable"),

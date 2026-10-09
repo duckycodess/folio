@@ -336,6 +336,7 @@ pub fn answer_question(
     language: Language,
     cancel: &AtomicBool,
 ) -> CoreResult<GroundedResult> {
+    crate::generation::check_request_length(question)?;
     let Some(provider) = provider else {
         return Ok(insufficient_answer("none", "none", Vec::new()));
     };
