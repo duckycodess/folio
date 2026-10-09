@@ -794,7 +794,11 @@ export interface BenchmarkRecord extends BenchmarkResult {
       platform: string;
       deviceListing: string | null;
       unavailableReason?: string;
+      /** What Folio asked for; the observed fields say what the server reported. */
       gpuOffload: "runtimeDefault" | "disabled";
+      observedLogExcerpt?: string;
+      gpuLayersOffloaded?: number;
+      layersTotal?: number;
     };
   };
   /** `installedRamBytes` is installed capacity, never usage. */

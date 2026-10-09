@@ -24,7 +24,7 @@ use crate::interpretation::interpret_request_traced;
 use crate::lab::checks::{
     check_edit, check_interpretation, check_retrieval, check_summary, Evaluation, RETRIEVAL_LIMIT,
 };
-use crate::lab::host::{hardware_summary, host_info, prompt_fingerprint};
+use crate::lab::host::{hardware_summary, host_info, parse_backend_log, prompt_fingerprint};
 use crate::lab::memory::PeakReading;
 use crate::lab::record::{
     ApplyOutcome, BenchmarkRecord, BenchmarkTask, Check, Conditions, HostInfo, MemoryEntry,
@@ -51,6 +51,10 @@ pub trait LabGenerator: GenerationProvider {
     fn restart(&self, cancel: &AtomicBool) -> CoreResult<Option<u32>>;
     /// The running server's process id, if one is running.
     fn server_pid(&self) -> Option<u32>;
+    /// The server's own output for the current process, if the lab captured it.
+    fn server_log(&self) -> Option<String> {
+        None
+    }
 }
 
 impl LabGenerator for LlamaServerProvider {
@@ -63,6 +67,23 @@ impl LabGenerator for LlamaServerProvider {
     fn server_pid(&self) -> Option<u32> {
         LlamaServerProvider::server_pid(self)
     }
+
+    fn server_log(&self) -> Option<String> {
+        self.lab_log()
+    }
+}
+
+/// The runtime detail for a record, with the backend facts the server itself
+/// printed when the lab captured its output.
+fn observed_runtime(base: &RuntimeDetail, log: Option<&str>) -> RuntimeDetail {
+    let mut runtime = base.clone();
+    if let (Some(backend), Some(log)) = (runtime.backend.as_mut(), log) {
+        let seen = parse_backend_log(log);
+        backend.observed_log_excerpt = seen.excerpt;
+        backend.gpu_layers_offloaded = seen.gpu_layers_offloaded;
+        backend.layers_total = seen.layers_total;
+    }
+    runtime
 }
 
 /// Reads process peaks. Real runs use the operating system; tests script it.
@@ -612,7 +633,12 @@ impl LabRunner<'_> {
         let restart_started = Instant::now();
         match handle.generator.restart(self.cancel) {
             Err(error) if is_cancelled(&error) => return Ok(Flow::Cancelled),
-            other => other?,
+            // A model that cannot start is a measurement: it is recorded for
+            // this case and the run moves on to the next case and model.
+            Err(error) => {
+                return self.startup_failure(case, task, handle, &error, restart_started);
+            }
+            Ok(_) => {}
         };
         let process_start_ms = restart_started.elapsed().as_millis() as u64;
 
@@ -654,7 +680,10 @@ impl LabRunner<'_> {
                 case_id: case.id().to_string(),
                 task,
                 model: handle.model.clone(),
-                runtime: handle.runtime.clone(),
+                runtime: observed_runtime(
+                    &handle.runtime,
+                    handle.generator.server_log().as_deref(),
+                ),
                 prompt_sha256: prompt_fingerprint(),
                 conditions: self.base_conditions(),
                 server_settings: Some(ServerSettings {
@@ -675,6 +704,61 @@ impl LabRunner<'_> {
             self.emit(measured)?;
             requests_before += requests_in_task;
         }
+        Ok(Flow::Continue)
+    }
+
+    /// Records that the server did not start for a case. No request was made,
+    /// so nothing is graded and no correctness is claimed.
+    fn startup_failure(
+        &mut self,
+        case: &SuiteCase,
+        task: BenchmarkTask,
+        handle: &GeneratorHandle,
+        error: &CoreError,
+        started: Instant,
+    ) -> CoreResult<Flow> {
+        let (evaluation, mut output) = Self::failure(error);
+        output["stage"] = json!("startup");
+        let evaluation = Evaluation {
+            correctness: None,
+            checks: vec![Check {
+                name: "serverStarted".into(),
+                passed: Some(false),
+                detail: evaluation.checks[0].detail.clone(),
+            }],
+        };
+        let reading = PeakReading {
+            peak_bytes: None,
+            method: "none".into(),
+            unavailable_reason: Some("the server did not start, so no process was measured".into()),
+        };
+        let measured = Measured {
+            case_id: case.id().to_string(),
+            task,
+            model: handle.model.clone(),
+            runtime: observed_runtime(&handle.runtime, handle.generator.server_log().as_deref()),
+            prompt_sha256: prompt_fingerprint(),
+            conditions: self.base_conditions(),
+            server_settings: Some(ServerSettings {
+                startup_warmup: StartupWarmup::DefaultOn,
+                cache_prompt: false,
+            }),
+            timing: Timing {
+                process_start_ms: Some(started.elapsed().as_millis() as u64),
+                requests_in_task: 0,
+                requests_since_process_start: 0,
+                request_position: RequestPosition::FirstRequestAfterServerRestart,
+            },
+            task_duration_ms: 0,
+            evaluation,
+            memory: vec![reading.into_entry(
+                MemoryProcess::LlamaServer,
+                None,
+                "no server process was running",
+            )],
+            output,
+        };
+        self.emit(measured)?;
         Ok(Flow::Continue)
     }
 
@@ -889,11 +973,23 @@ mod tests {
     impl LabGenerator for ScriptedGenerator {
         fn restart(&self, _cancel: &AtomicBool) -> CoreResult<Option<u32>> {
             self.restarts.fetch_add(1, Ordering::SeqCst);
+            if self.id.starts_with("broken-") {
+                return Err(CoreError::Provider(
+                    crate::error::NativeProviderErrorError::new(
+                        ProviderErrorCode::RuntimeStartFailed,
+                        "scripted start failure: unsupported architecture",
+                    ),
+                ));
+            }
             Ok(Some(4242))
         }
 
         fn server_pid(&self) -> Option<u32> {
             Some(4242)
+        }
+
+        fn server_log(&self) -> Option<String> {
+            Some("load_tensors: offloaded 0/29 layers to GPU".into())
         }
     }
 
@@ -1232,6 +1328,183 @@ mod tests {
                 !record.model.evaluation_only,
                 "the embedding model is a product model"
             );
+        }
+    }
+
+    #[test]
+    fn a_model_that_cannot_start_is_recorded_for_each_case_and_the_run_continues() {
+        let harness = harness();
+        let mut sink = MemorySink::default();
+        let cancel = AtomicBool::new(false);
+        let (result, order) = run_with(&harness, &["broken-x", "model-a"], &cancel, &mut sink);
+        assert_eq!(result.unwrap(), RunEnd::Completed);
+        assert_eq!(order, vec!["broken-x", "model-a"]);
+
+        let broken: Vec<&BenchmarkRecord> = sink
+            .records
+            .iter()
+            .filter(|r| r.model_id == "broken-x")
+            .collect();
+        assert_eq!(broken.len(), 3, "one record per generation case");
+        for record in &broken {
+            assert_eq!(record.correctness, None);
+            assert_eq!(record.timing.requests_in_task, 0);
+            assert_eq!(record.objective_checks[0].name, "serverStarted");
+            assert_eq!(record.objective_checks[0].passed, Some(false));
+            assert!(record.objective_checks[0]
+                .detail
+                .contains("unsupported architecture"));
+            assert_eq!(record.output["stage"], "startup");
+            assert!(record.memory[0].peak_bytes.is_none());
+            assert!(record.memory[0].unavailable_reason.is_some());
+            assert_eq!(record.peak_process_ram_bytes, None);
+        }
+        // The next model is measured normally, cold then repeat.
+        let measured = sink
+            .records
+            .iter()
+            .filter(|r| r.model_id == "model-a")
+            .count();
+        assert_eq!(measured, 6);
+        assert_eq!(harness.live.now.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn generation_records_carry_the_backend_the_server_reported() {
+        let base = RuntimeDetail {
+            name: RuntimeName::LlamaCpp,
+            version: "v".into(),
+            backend: Some(crate::lab::record::RuntimeBackend {
+                runtime_id: "r".into(),
+                platform: "p".into(),
+                device_listing: None,
+                unavailable_reason: Some("not listed".into()),
+                gpu_offload: crate::lab::record::GpuOffload::Disabled,
+                observed_log_excerpt: None,
+                gpu_layers_offloaded: None,
+                layers_total: None,
+            }),
+        };
+        let seen = observed_runtime(&base, Some("load_tensors: offloaded 4/29 layers to GPU"));
+        let backend = seen.backend.unwrap();
+        assert_eq!(
+            backend.gpu_layers_offloaded,
+            Some(4),
+            "a contradiction is recorded, not hidden"
+        );
+        assert_eq!(backend.layers_total, Some(29));
+        assert_eq!(
+            backend.gpu_offload,
+            crate::lab::record::GpuOffload::Disabled
+        );
+
+        let unchanged = observed_runtime(&base, None);
+        assert_eq!(
+            unchanged, base,
+            "no log means nothing is claimed as observed"
+        );
+        let onnx = RuntimeDetail {
+            backend: None,
+            ..base
+        };
+        assert_eq!(observed_runtime(&onnx, Some("offloaded 1/2")).backend, None);
+    }
+
+    #[test]
+    fn a_model_that_cannot_start_is_recorded_for_each_case_and_the_run_continues() {
+        let harness = harness();
+        let mut sink = MemorySink::default();
+        let cancel = AtomicBool::new(false);
+        let (result, order) = run_with(&harness, &["broken-x", "model-a"], &cancel, &mut sink);
+        assert_eq!(result.unwrap(), RunEnd::Completed);
+        assert_eq!(order, vec!["broken-x", "model-a"]);
+
+        let broken: Vec<&BenchmarkRecord> = sink
+            .records
+            .iter()
+            .filter(|r| r.model_id == "broken-x")
+            .collect();
+        assert_eq!(broken.len(), 3, "one record per generation case");
+        for record in &broken {
+            assert_eq!(record.correctness, None);
+            assert_eq!(record.timing.requests_in_task, 0);
+            assert_eq!(record.objective_checks[0].name, "serverStarted");
+            assert_eq!(record.objective_checks[0].passed, Some(false));
+            assert!(record.objective_checks[0]
+                .detail
+                .contains("unsupported architecture"));
+            assert_eq!(record.output["stage"], "startup");
+            assert!(record.memory[0].peak_bytes.is_none());
+            assert!(record.memory[0].unavailable_reason.is_some());
+            assert_eq!(record.peak_process_ram_bytes, None);
+        }
+        // The next model is measured normally, cold then repeat.
+        let measured = sink
+            .records
+            .iter()
+            .filter(|r| r.model_id == "model-a")
+            .count();
+        assert_eq!(measured, 6);
+        assert_eq!(harness.live.now.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn generation_records_carry_the_backend_the_server_reported() {
+        let base = RuntimeDetail {
+            name: RuntimeName::LlamaCpp,
+            version: "v".into(),
+            backend: Some(crate::lab::record::RuntimeBackend {
+                runtime_id: "r".into(),
+                platform: "p".into(),
+                device_listing: None,
+                unavailable_reason: Some("not listed".into()),
+                gpu_offload: crate::lab::record::GpuOffload::Disabled,
+                observed_log_excerpt: None,
+                gpu_layers_offloaded: None,
+                layers_total: None,
+            }),
+        };
+        let seen = observed_runtime(&base, Some("load_tensors: offloaded 4/29 layers to GPU"));
+        let backend = seen.backend.unwrap();
+        assert_eq!(
+            backend.gpu_layers_offloaded,
+            Some(4),
+            "a contradiction is recorded, not hidden"
+        );
+        assert_eq!(backend.layers_total, Some(29));
+        assert_eq!(
+            backend.gpu_offload,
+            crate::lab::record::GpuOffload::Disabled
+        );
+
+        let unchanged = observed_runtime(&base, None);
+        assert_eq!(
+            unchanged, base,
+            "no log means nothing is claimed as observed"
+        );
+        let onnx = RuntimeDetail {
+            backend: None,
+            ..base
+        };
+        assert_eq!(observed_runtime(&onnx, Some("offloaded 1/2")).backend, None);
+    }
+
+    #[test]
+    fn every_generation_record_of_a_run_has_the_observed_offload() {
+        let harness = harness();
+        let mut sink = MemorySink::default();
+        let cancel = AtomicBool::new(false);
+        run_with(&harness, &["model-a"], &cancel, &mut sink)
+            .0
+            .unwrap();
+        // The scripted factory's runtime has no backend, so nothing is attached;
+        // the unit test above covers the attachment itself.
+        for record in sink
+            .records
+            .iter()
+            .filter(|r| r.task != BenchmarkTask::Retrieval)
+        {
+            assert!(record.runtime_detail.backend.is_none());
         }
     }
 

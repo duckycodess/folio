@@ -226,6 +226,62 @@ pub fn llama_server_devices(executable: &Path) -> CoreResult<String> {
     combined_output(executable, "--list-devices").map(|text| bound_device_listing(&text))
 }
 
+/// What a llama-server's own startup output says about its backend.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BackendObservation {
+    /// Backend, device and offload lines, as printed.
+    pub excerpt: Option<String>,
+    pub gpu_layers_offloaded: Option<u32>,
+    pub layers_total: Option<u32>,
+}
+
+const BACKEND_KEYWORDS: &[&str] = &[
+    "backend", "offload", "device", "metal", "cuda", "vulkan", "opencl", "blas", "gpu",
+];
+const MAX_EXCERPT_LINES: usize = 30;
+const MAX_EXCERPT_CHARS: usize = 3000;
+
+fn offloaded_layers(line: &str) -> Option<(u32, u32)> {
+    let rest = &line[line.find("offloaded ")? + "offloaded ".len()..];
+    let (done, rest) = rest.split_once('/')?;
+    let total: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    Some((done.trim().parse().ok()?, total.parse().ok()?))
+}
+
+/// Reads the backend facts a server printed. It keeps what the server said and
+/// concludes nothing: a log with no offload line leaves the counts `None`.
+pub fn parse_backend_log(log: &str) -> BackendObservation {
+    let mut lines = Vec::new();
+    let mut offloaded = None;
+    for line in log.lines() {
+        let line = line.trim();
+        let lower = line.to_lowercase();
+        if line.is_empty() || !BACKEND_KEYWORDS.iter().any(|word| lower.contains(word)) {
+            continue;
+        }
+        if let Some(found) = offloaded_layers(line) {
+            offloaded = Some(found);
+        }
+        if lines.len() < MAX_EXCERPT_LINES {
+            lines.push(line.to_string());
+        }
+    }
+    let excerpt = (!lines.is_empty()).then(|| {
+        let joined = lines.join(" | ");
+        if joined.chars().count() > MAX_EXCERPT_CHARS {
+            let kept: String = joined.chars().take(MAX_EXCERPT_CHARS).collect();
+            format!("{kept} [truncated]")
+        } else {
+            joined
+        }
+    });
+    BackendObservation {
+        excerpt,
+        gpu_layers_offloaded: offloaded.map(|(done, _)| done),
+        layers_total: offloaded.map(|(_, total)| total),
+    }
+}
+
 /// ONNX Runtime as linked into this build, with the `ort` crate version.
 pub fn onnxruntime_version() -> String {
     format!("ort 2.0.0-rc.13; {}", ort::info())
@@ -330,6 +386,53 @@ mod tests {
         assert_eq!(
             bounded.chars().count(),
             MAX_DEVICE_LISTING + " [truncated]".len()
+        );
+    }
+
+    #[test]
+    fn a_server_log_is_read_for_backend_lines_and_the_offload_count() {
+        // Lines in the shape llama.cpp prints; not output from a real run.
+        let log = "build: 11524 (abc)\n\
+            load_backend: loaded CPU backend from C:\\x\\ggml-cpu.dll\n\
+            llama_model_load: loading model\n\
+            load_tensors: offloaded 0/29 layers to GPU\n\
+            main: server is listening";
+        let seen = parse_backend_log(log);
+        assert_eq!(seen.gpu_layers_offloaded, Some(0));
+        assert_eq!(seen.layers_total, Some(29));
+        let excerpt = seen.excerpt.unwrap();
+        assert!(excerpt.contains("loaded CPU backend"));
+        assert!(excerpt.contains("offloaded 0/29 layers to GPU"));
+        assert!(!excerpt.contains("loading model"));
+
+        let gpu = parse_backend_log("load_tensors: offloaded 29/29 layers to GPU");
+        assert_eq!(
+            gpu.gpu_layers_offloaded,
+            Some(29),
+            "a GPU is reported as observed"
+        );
+    }
+
+    #[test]
+    fn a_log_without_backend_lines_leaves_everything_unobserved() {
+        assert_eq!(parse_backend_log(""), BackendObservation::default());
+        let quiet = parse_backend_log("main: server is listening");
+        assert_eq!(quiet, BackendObservation::default());
+        let no_count = parse_backend_log("ggml_metal_init: found device: Apple M1");
+        assert!(no_count.excerpt.is_some());
+        assert_eq!(
+            no_count.gpu_layers_offloaded, None,
+            "a device line is not an offload count"
+        );
+    }
+
+    #[test]
+    fn the_excerpt_is_bounded() {
+        let log: String = (0..100).map(|i| format!("backend line {i}\n")).collect();
+        let seen = parse_backend_log(&log);
+        assert_eq!(
+            seen.excerpt.unwrap().matches("backend line").count(),
+            MAX_EXCERPT_LINES
         );
     }
 

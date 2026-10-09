@@ -181,7 +181,17 @@ pub struct RuntimeBackend {
     pub device_listing: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unavailable_reason: Option<String>,
+    /// What Folio asked of the runtime. `Disabled` is a request, and the
+    /// observed fields below say what the server reported.
     pub gpu_offload: GpuOffload,
+    /// Backend and device lines from the server's own startup output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed_log_excerpt: Option<String>,
+    /// Layers the server reported offloading to a GPU, if it said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu_layers_offloaded: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layers_total: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -478,8 +488,11 @@ mod tests {
             .backend
             .as_ref()
             .expect("golden has a backend");
-        assert_eq!(backend.gpu_offload, GpuOffload::RuntimeDefault);
+        assert_eq!(backend.gpu_offload, GpuOffload::Disabled);
         assert!(backend.device_listing.is_some());
+        assert!(backend.observed_log_excerpt.is_some());
+        assert_eq!(backend.gpu_layers_offloaded, Some(0));
+        assert_eq!(backend.layers_total, Some(29));
 
         let mut value: Value = serde_json::from_str(GOLDEN).unwrap();
         value["runtimeDetail"]["backend"]["gpuOffload"] = Value::from("cpu");
@@ -492,6 +505,16 @@ mod tests {
             .remove("backend");
         let without: BenchmarkRecord = serde_json::from_value(value).unwrap();
         assert!(without.runtime_detail.backend.is_none());
+
+        // A disabled request that the server contradicts is kept as data, not rejected.
+        let mut contradicted = golden();
+        contradicted
+            .runtime_detail
+            .backend
+            .as_mut()
+            .unwrap()
+            .gpu_layers_offloaded = Some(12);
+        contradicted.validate().unwrap();
     }
 
     #[test]

@@ -180,8 +180,20 @@ impl LabWorkspaces {
         if fs::symlink_metadata(&root).is_ok() {
             self.remove_root(&root)?;
         }
+        // Server logs are scratch files the lab made; a link is never followed.
+        let logs = run_dir.join("logs");
+        if fs::symlink_metadata(&logs).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink()) {
+            fs::remove_dir_all(&logs)?;
+        }
         let _ = fs::remove_dir(&run_dir);
         Ok(())
+    }
+
+    /// A scratch folder for this run's server logs, removed with the run.
+    pub fn logs_dir(&self, run_id: &str) -> CoreResult<PathBuf> {
+        let logs = self.run_dir(run_id)?.join("logs");
+        fs::create_dir_all(&logs)?;
+        Ok(logs)
     }
 
     fn remove_root(&self, root: &Path) -> CoreResult<()> {
@@ -328,6 +340,17 @@ mod tests {
         workspaces.remove_run("run-1").unwrap();
         assert!(!dir.path().join("model-lab/runs/run-1").exists());
         assert!(dir.path().join("model-lab/runs/run-2/workspace").is_dir());
+    }
+
+    #[test]
+    fn a_runs_logs_are_scratch_files_removed_with_the_run() {
+        let (dir, workspaces) = workspaces();
+        workspaces.create("run-1", &corpus()).unwrap();
+        let logs = workspaces.logs_dir("run-1").unwrap();
+        fs::write(logs.join("model.log"), "backend lines").unwrap();
+        assert!(workspaces.logs_dir("../x").is_err());
+        workspaces.remove_run("run-1").unwrap();
+        assert!(!dir.path().join("model-lab/runs/run-1").exists());
     }
 
     #[cfg(unix)]

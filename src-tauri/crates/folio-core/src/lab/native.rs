@@ -4,7 +4,7 @@
 use crate::contracts::{ModelDescriptor, ProviderErrorCode};
 use crate::embeddings::{OrtE5Provider, DEFAULT_BATCH_SIZE, DEFAULT_MAX_TOKENS};
 use crate::error::{CoreError, CoreResult, NativeProviderErrorError};
-use crate::generation::LlamaServerProvider;
+use crate::generation::{LabServerOptions, LlamaServerProvider};
 use crate::lab::candidates::{self, candidate_store, is_candidate_id};
 use crate::lab::host::{llama_server_devices, llama_server_version};
 use crate::lab::record::{
@@ -49,14 +49,16 @@ pub fn model_ref(descriptor: &ModelDescriptor) -> ModelRef {
     model_ref_in(descriptor, ModelCatalog::Product)
 }
 
-/// What a record says about the llama.cpp runtime: its exact version and the
-/// backend facts the runtime reports. Folio passes no GPU-offload setting, so
-/// `gpuOffload` is `runtimeDefault`; a device listing that shows no GPU is not
+/// What a record says about the llama.cpp runtime: its exact version, the
+/// device listing and the offload setting Folio asked for. `Disabled` is a
+/// request (`--n-gpu-layers 0`); the backend the server actually reported is
+/// attached per record from its own output, and a listing without a GPU is not
 /// taken to mean the CPU was used.
 pub fn llama_runtime_detail(
     store: &ModelStore,
     runtime_id: &str,
     executable: &std::path::Path,
+    gpu_offload: GpuOffload,
 ) -> CoreResult<RuntimeDetail> {
     let descriptor = store.runtime(runtime_id)?;
     let (device_listing, unavailable_reason) = match llama_server_devices(executable) {
@@ -71,7 +73,10 @@ pub fn llama_runtime_detail(
             platform: descriptor.platform.clone(),
             device_listing,
             unavailable_reason,
-            gpu_offload: GpuOffload::RuntimeDefault,
+            gpu_offload,
+            observed_log_excerpt: None,
+            gpu_layers_offloaded: None,
+            layers_total: None,
         }),
     })
 }
@@ -83,6 +88,10 @@ pub struct StoreGeneratorFactory {
     pub executable: PathBuf,
     pub runtime: RuntimeDetail,
     pub threads: usize,
+    /// Keep every layer on the CPU (`--n-gpu-layers 0`), the measurement target.
+    pub cpu_only: bool,
+    /// Where each server writes its output so the backend it chose can be read.
+    pub log_dir: Option<PathBuf>,
 }
 
 impl GeneratorFactory for StoreGeneratorFactory {
@@ -99,7 +108,14 @@ impl GeneratorFactory for StoreGeneratorFactory {
         let verified = store.verified_model_file(model_id)?;
         let model = model_ref_in(&verified.descriptor, catalog);
         let provider =
-            LlamaServerProvider::from_verified_model(&self.executable, verified, self.threads)?;
+            LlamaServerProvider::from_verified_model(&self.executable, verified, self.threads)?
+                .with_lab_options(LabServerOptions {
+                    gpu_layers: self.cpu_only.then_some(0),
+                    log_path: self
+                        .log_dir
+                        .as_ref()
+                        .map(|dir| dir.join(format!("{model_id}.log"))),
+                });
         Ok(GeneratorHandle {
             model,
             runtime: self.runtime.clone(),
@@ -213,6 +229,8 @@ mod tests {
                 backend: None,
             },
             threads: 1,
+            cpu_only: true,
+            log_dir: None,
         };
         match factory.open("qwen3.5-0.8b-q4-k-m") {
             Err(CoreError::Provider(failure)) => {
@@ -238,6 +256,8 @@ mod tests {
                 backend: None,
             },
             threads: 1,
+            cpu_only: true,
+            log_dir: None,
         };
         match factory.open(&generation.id) {
             Err(CoreError::Provider(failure)) => {

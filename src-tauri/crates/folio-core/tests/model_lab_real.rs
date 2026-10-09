@@ -7,6 +7,7 @@
 //! harness itself ran and recorded what it should.
 
 use folio_core::error::CoreResult;
+use folio_core::lab::candidates::{candidate_store, is_candidate_id};
 use folio_core::lab::host::{host_info, onnxruntime_version};
 use folio_core::lab::native::{
     llama_runtime_detail, model_ref, open_embedding, StoreGeneratorFactory,
@@ -16,7 +17,7 @@ use folio_core::lab::runner::{
 };
 use folio_core::lab::suite::{Corpus, Suite};
 use folio_core::lab::workspace::LabWorkspaces;
-use folio_core::lab::{JsonFileSink, RuntimeDetail, RuntimeName};
+use folio_core::lab::{GpuOffload, JsonFileSink, RuntimeDetail, RuntimeName};
 use folio_core::models::ModelStore;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -63,7 +64,13 @@ fn model_lab_real_run() -> CoreResult<()> {
     let executable = store.verified_runtime_executable(&runtime_id)?;
     store.install_model(&embedding_id, &cancel, progress_printer("model"))?;
     for id in &generation_ids {
-        store.install_model(id, &cancel, progress_printer("model"))?;
+        // An evaluation candidate installs into its own isolated store.
+        let target = if is_candidate_id(id) {
+            candidate_store(&data_dir)?
+        } else {
+            ModelStore::new(&data_dir)?
+        };
+        target.install_model(id, &cancel, progress_printer("model"))?;
     }
 
     let embedding_descriptor = store.model(&embedding_id)?.clone();
@@ -71,18 +78,21 @@ fn model_lab_real_run() -> CoreResult<()> {
     let threads = std::thread::available_parallelism()
         .map(|count| count.get().saturating_sub(1).max(1))
         .unwrap_or(1);
+    let run_id = format!("ci-{}", system_clock_ms());
+    let workspaces = LabWorkspaces::new(&data_dir);
     let factory = StoreGeneratorFactory {
         data_dir: data_dir.clone(),
         executable: executable.clone(),
-        runtime: llama_runtime_detail(&store, &runtime_id, &executable)?,
+        runtime: llama_runtime_detail(&store, &runtime_id, &executable, GpuOffload::Disabled)?,
         threads,
+        cpu_only: true,
+        log_dir: Some(workspaces.logs_dir(&run_id)?),
     };
-    let workspaces = LabWorkspaces::new(&data_dir);
     let suite = Suite::embedded()?;
     let corpus = Corpus::embedded();
     let mut sink = JsonFileSink::new(&output);
     let end = LabRunner {
-        run_id: format!("ci-{}", system_clock_ms()),
+        run_id: run_id.clone(),
         workspaces: &workspaces,
         suite: &suite,
         corpus: &corpus,

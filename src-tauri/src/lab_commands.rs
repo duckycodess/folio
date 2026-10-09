@@ -22,8 +22,8 @@ use folio_core::lab::runner::{
 use folio_core::lab::suite::{Corpus, Suite};
 use folio_core::lab::workspace::LabWorkspaces;
 use folio_core::lab::{
-    BenchmarkRecord, BenchmarkTask, ModelCatalog, ReviewStatus, RunSummary, RuntimeDetail,
-    RuntimeName,
+    BenchmarkRecord, BenchmarkTask, GpuOffload, ModelCatalog, ReviewStatus, RunSummary,
+    RuntimeDetail, RuntimeName,
 };
 use folio_core::models::ModelStore;
 use serde::{Deserialize, Serialize};
@@ -294,7 +294,12 @@ fn execute_lab(
     let executable = store
         .verified_runtime_executable(runtime_id_for_host())
         .map_err(native_error)?;
-    let llama_runtime = llama_runtime_detail(&store, runtime_id_for_host(), &executable)?;
+    let llama_runtime = llama_runtime_detail(
+        &store,
+        runtime_id_for_host(),
+        &executable,
+        GpuOffload::Disabled,
+    )?;
     let embedding_descriptor = store.model(&request.embedding_model_id)?.clone();
     let provider = open_embedding(&store, &embedding_descriptor)?;
     let threads = std::thread::available_parallelism()
@@ -313,6 +318,10 @@ fn execute_lab(
         executable,
         runtime: llama_runtime,
         threads,
+        // The measurement target is CPU inference; the server's own output
+        // is captured so the backend it chose is recorded, not assumed.
+        cpu_only: true,
+        log_dir: Some(workspaces.logs_dir(run_id)?),
     };
     let emit = |progress: &LabProgress| {
         let _ = app.emit(LAB_PROGRESS_EVENT, progress);

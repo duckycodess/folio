@@ -333,8 +333,11 @@ describe("Model Lab record contract (issue #8)", () => {
   it("keeps the runtime backend as observed and never assumes CPU", () => {
     const record = benchmarkRecord as unknown as BenchmarkRecord;
     const backend = record.runtimeDetail.backend;
-    expect(backend?.gpuOffload).toBe("runtimeDefault");
+    expect(backend?.gpuOffload).toBe("disabled");
     expect(backend?.deviceListing).toEqual(expect.any(String));
+    expect(backend?.observedLogExcerpt).toEqual(expect.any(String));
+    expect(backend?.gpuLayersOffloaded).toBe(0);
+    expect(backend?.layersTotal).toBe(29);
     expect(JSON.stringify(backend)).not.toMatch(/cpu-only|cpuOnly/i);
   });
 
