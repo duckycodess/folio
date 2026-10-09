@@ -21,8 +21,9 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use folio_core::relationships::{
-    finish_pair, process_tile, referenced_positions, PairAccumulator, PairSide, RelationshipChunk,
-    MAX_RUN_COMPARISONS, MAX_TILE_COMPARISONS, TILES_PER_JOB_PER_TURN, TILE_COLS, TILE_ROWS,
+    finish_pair, process_tile, referenced_positions, tile_cost, PairAccumulator, PairSide,
+    RelationshipChunk, MAX_RUN_COMPARISONS, MAX_TILE_COMPARISONS, TILES_PER_JOB_PER_TURN,
+    TILE_COLS, TILE_ROWS,
 };
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;
@@ -42,7 +43,7 @@ const ELIGIBLE_DOCUMENT: &str = "d.workspace_id = ?1 AND d.status = 'indexed' AN
 pub struct DiscoveryLimits {
     pub tile_rows: usize,
     pub tile_cols: usize,
-    pub max_run_comparisons: usize,
+    pub max_run_work: usize,
     pub tiles_per_job_per_turn: usize,
 }
 
@@ -51,7 +52,7 @@ impl Default for DiscoveryLimits {
         Self {
             tile_rows: TILE_ROWS,
             tile_cols: TILE_COLS,
-            max_run_comparisons: MAX_RUN_COMPARISONS,
+            max_run_work: MAX_RUN_COMPARISONS,
             tiles_per_job_per_turn: TILES_PER_JOB_PER_TURN,
         }
     }
@@ -66,7 +67,10 @@ impl DiscoveryLimits {
         Self {
             tile_rows,
             tile_cols,
-            max_run_comparisons: self.max_run_comparisons.max(tile_rows * tile_cols).max(1),
+            max_run_work: self
+                .max_run_work
+                .max(tile_cost(tile_rows, tile_cols))
+                .max(1),
             tiles_per_job_per_turn: self.tiles_per_job_per_turn.max(1),
         }
     }
@@ -91,6 +95,8 @@ pub struct DiscoveryProgress {
     pub admitted: usize,
     pub tiles: usize,
     pub comparisons: usize,
+    /// Comparisons plus clause-feature work: what the run budget counts.
+    pub work: usize,
     pub pairs_completed: usize,
     pub edges_stored: usize,
 }
@@ -271,6 +277,7 @@ struct PairState {
 enum Step {
     Tile {
         comparisons: usize,
+        work: usize,
         pair_done: bool,
         edges: usize,
     },
@@ -304,17 +311,17 @@ pub fn run_discovery(
             break RunEnd::Complete;
         };
         for _ in 0..limits.tiles_per_job_per_turn {
-            let remaining = limits
-                .max_run_comparisons
-                .saturating_sub(summary.comparisons);
+            let remaining = limits.max_run_work.saturating_sub(summary.work);
             match step(conn, context, &limits, &job, remaining, summary.tiles == 0)? {
                 Step::Tile {
                     comparisons,
+                    work,
                     pair_done,
                     edges,
                 } => {
                     summary.tiles += 1;
                     summary.comparisons += comparisons;
+                    summary.work += work;
                     summary.edges_stored += edges;
                     summary.pairs_completed += usize::from(pair_done);
                     progress(&summary);
@@ -442,8 +449,13 @@ fn step(
         )
     };
     let cost = rows * columns;
-    debug_assert!(cost <= MAX_TILE_COMPARISONS);
-    if !first_tile && cost > remaining {
+    let work = if cost == 0 {
+        0
+    } else {
+        tile_cost(rows, columns)
+    };
+    debug_assert!(work <= MAX_TILE_COMPARISONS);
+    if !first_tile && work > remaining {
         return Ok(Step::OutOfBudget);
     }
     if context.cancel.load(Ordering::SeqCst) {
@@ -565,6 +577,7 @@ fn step(
     tx.commit()?;
     Ok(Step::Tile {
         comparisons: cost,
+        work,
         pair_done,
         edges: edges_stored,
     })

@@ -236,7 +236,7 @@ fn small_tiles() -> DiscoveryLimits {
     DiscoveryLimits {
         tile_rows: 2,
         tile_cols: 2,
-        max_run_comparisons: 4,
+        max_run_work: 4,
         tiles_per_job_per_turn: 1,
     }
 }
@@ -398,7 +398,7 @@ fn stopping_mid_pair_and_resuming_equals_an_uninterrupted_run() {
     let mut interrupted = build();
     let cancel = AtomicBool::new(false);
     let one_tile_per_turn = DiscoveryLimits {
-        max_run_comparisons: 10_000,
+        max_run_work: 10_000,
         ..small_tiles()
     };
     let summary =
@@ -437,7 +437,7 @@ fn a_pair_larger_than_a_run_completes_over_several_runs_each_advancing_a_tile() 
     let limits = DiscoveryLimits {
         tile_rows: 2,
         tile_cols: 2,
-        max_run_comparisons: 1,
+        max_run_work: 1,
         tiles_per_job_per_turn: 4,
     };
     let runs = fixture.run_to_complete(limits);
@@ -926,4 +926,43 @@ mod integration_with_embedding_sync {
             (RunEnd::SpaceChanged, 0)
         );
     }
+}
+
+#[test]
+fn shared_fact_candidates_are_stored_only_for_a_corroborated_fact() {
+    let mut fixture = Fixture::new();
+    let vector = [1.0f32, 0.0];
+    let one = |text: &str| vec![(text.to_owned(), vector)];
+    fixture.put(
+        "a-plan",
+        &one("# Community Learning Project\n\nThe project submission deadline is October 20."),
+        true,
+    );
+    fixture.put(
+        "b-tala",
+        &one("Ang huling araw ng pagpasa ng Community Learning Project ay October 20."),
+        true,
+    );
+    fixture.put("c-math", &one("The mathematics practice session is October 20; this is a different event from the Community Learning Project deadline."), true);
+    fixture.run_to_complete(DiscoveryLimits::default());
+    let shared: BTreeSet<(String, String)> = fixture
+        .rows(&fixture.space)
+        .into_iter()
+        .filter(|row| row.2 == "sharedFactCandidate")
+        .map(|row| (row.0, row.1))
+        .collect();
+    assert_eq!(
+        shared,
+        BTreeSet::from([("a-plan".to_owned(), "b-tala".to_owned())]),
+        "the unrelated event on the same date is not a shared fact"
+    );
+    let similar = fixture
+        .rows(&fixture.space)
+        .into_iter()
+        .filter(|row| row.2 == "similarity")
+        .count();
+    assert_eq!(
+        similar, 3,
+        "identical vectors still make all three documents similar"
+    );
 }

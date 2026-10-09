@@ -10,6 +10,7 @@
 
 use crate::contracts::{OffsetUnit, SourcePassage};
 use crate::error::{CoreError, CoreResult};
+use crate::facts::{chunk_facts, matching_facts, FEATURE_COST};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,7 +29,9 @@ pub const MAX_STORED_CANDIDATES_PER_ENDPOINT: usize = 32;
 /// its partner's, so a single huge pair still advances in bounded steps.
 pub const TILE_ROWS: usize = 32;
 pub const TILE_COLS: usize = 64;
-pub const MAX_TILE_COMPARISONS: usize = TILE_ROWS * TILE_COLS;
+/// Work units one tile may cost: its vector comparisons plus the clause
+/// features computed for its chunks (`tile_cost`).
+pub const MAX_TILE_COMPARISONS: usize = 4096;
 /// Vector comparisons in one discovery run. Never below one tile, so every
 /// run makes progress.
 pub const MAX_RUN_COMPARISONS: usize = 250_000;
@@ -36,6 +39,14 @@ pub const MAX_RUN_COMPARISONS: usize = 250_000;
 pub const TILES_PER_JOB_PER_TURN: usize = 2;
 
 const _: () = assert!(MAX_RUN_COMPARISONS >= MAX_TILE_COMPARISONS);
+const _: () =
+    assert!(TILE_ROWS * TILE_COLS + (TILE_ROWS + TILE_COLS) * FEATURE_COST <= MAX_TILE_COMPARISONS);
+
+/// The work of one tile: every vector comparison, plus clause-feature
+/// extraction for each chunk it touches.
+pub fn tile_cost(rows: usize, columns: usize) -> usize {
+    rows * columns + (rows + columns) * FEATURE_COST
+}
 
 #[derive(Clone, Debug)]
 pub struct RelationshipChunk {
@@ -178,13 +189,17 @@ pub fn process_tile(
     right_start: usize,
     cancel: Option<&AtomicBool>,
 ) -> CoreResult<usize> {
-    if left.len() * right.len() > MAX_TILE_COMPARISONS {
+    if tile_cost(left.len(), right.len()) > MAX_TILE_COMPARISONS {
         return Err(CoreError::Message(format!(
             "A relationship tile is limited to {MAX_TILE_COMPARISONS} comparisons."
         )));
     }
     let left_norms = norms(left)?;
     let right_norms = norms(right)?;
+    // Clause features are computed once per chunk in the tile, lazily: most
+    // chunk pairs never reach the shared-fact cosine gate.
+    let mut left_facts = vec![None; left.len()];
+    let mut right_facts = vec![None; right.len()];
     for (row, left_chunk) in left.iter().enumerate() {
         check_cancel(cancel)?;
         for (column, right_chunk) in right.iter().enumerate() {
@@ -211,19 +226,17 @@ pub fn process_tile(
             };
             accumulator.observe(pair);
             if cosine >= MIN_SHARED_FACT_COSINE {
-                if let Some((left_anchor, right_anchor)) =
-                    shared_anchor(&left_chunk.text, &right_chunk.text)
-                {
-                    let (left_from, left_to) =
-                        sentence_bounds(&left_chunk.text, left_anchor.start, left_anchor.end);
-                    let (right_from, right_to) =
-                        sentence_bounds(&right_chunk.text, right_anchor.start, right_anchor.end);
+                let left_facts =
+                    left_facts[row].get_or_insert_with(|| chunk_facts(&left_chunk.text));
+                let right_facts =
+                    right_facts[column].get_or_insert_with(|| chunk_facts(&right_chunk.text));
+                if let Some((left_fact, right_fact)) = matching_facts(left_facts, right_facts) {
                     accumulator.observe_shared(SharedFactRef {
                         pair,
-                        left_start: left_from as u32,
-                        left_end: left_to as u32,
-                        right_start: right_from as u32,
-                        right_end: right_to as u32,
+                        left_start: left_fact.start as u32,
+                        left_end: left_fact.end as u32,
+                        right_start: right_fact.start as u32,
+                        right_end: right_fact.end as u32,
                     });
                 }
             }
@@ -417,109 +430,6 @@ fn canonical_pair<'a>(
     }
 }
 
-#[derive(Clone, Debug)]
-struct Anchor {
-    key: String,
-    start: usize,
-    end: usize,
-}
-
-fn shared_anchor(left: &str, right: &str) -> Option<(Anchor, Anchor)> {
-    let left_anchors = anchors(left);
-    let right_anchors = anchors(right);
-    left_anchors.iter().find_map(|left_anchor| {
-        right_anchors
-            .iter()
-            .find(|right_anchor| right_anchor.key == left_anchor.key)
-            .map(|right_anchor| (left_anchor.clone(), right_anchor.clone()))
-    })
-}
-
-fn anchors(text: &str) -> Vec<Anchor> {
-    let tokens = token_spans(text);
-    let mut found = Vec::new();
-    for (index, (start, end, token)) in tokens.iter().enumerate() {
-        if let Some(month) = month_index(token) {
-            if let Some((_, next_end, day)) = tokens.get(index + 1) {
-                if is_day(day) {
-                    found.push(Anchor {
-                        key: format!("date:{month}:{day}"),
-                        start: *start,
-                        end: *next_end,
-                    });
-                }
-            }
-        }
-        let digits = token.trim_matches(|character: char| !character.is_ascii_digit());
-        if digits.len() >= 2 && digits.chars().all(|character| character.is_ascii_digit()) {
-            found.push(Anchor {
-                key: format!("number:{digits}"),
-                start: *start,
-                end: *end,
-            });
-        }
-    }
-    found
-}
-
-fn token_spans(text: &str) -> Vec<(usize, usize, String)> {
-    text.split_whitespace()
-        .scan(0_usize, |cursor, token| {
-            let start = text[*cursor..].find(token)? + *cursor;
-            *cursor = start + token.len();
-            Some((start, start + token.len(), token.to_owned()))
-        })
-        .collect()
-}
-
-fn clean_token(token: &str) -> String {
-    token
-        .trim_matches(|character: char| !character.is_alphanumeric())
-        .to_lowercase()
-}
-
-fn month_index(token: &str) -> Option<usize> {
-    let token = clean_token(token);
-    [
-        ["january", "jan", "enero", ""],
-        ["february", "feb", "pebrero", ""],
-        ["march", "mar", "marso", ""],
-        ["april", "apr", "abril", ""],
-        ["may", "mayo", "", ""],
-        ["june", "jun", "hunyo", ""],
-        ["july", "jul", "hulyo", ""],
-        ["august", "aug", "agosto", ""],
-        ["september", "sep", "setyembre", ""],
-        ["october", "oct", "oktubre", "octubre"],
-        ["november", "nov", "nobyembre", ""],
-        ["december", "dec", "disyembre", ""],
-    ]
-    .iter()
-    .position(|names| names.iter().any(|name| *name == token))
-}
-
-fn is_day(token: &str) -> bool {
-    let token = token.trim_matches(|character: char| !character.is_ascii_digit());
-    (1..=2).contains(&token.len()) && token.chars().all(|character| character.is_ascii_digit())
-}
-
-fn sentence_bounds(text: &str, start: usize, end: usize) -> (usize, usize) {
-    let before = text[..start]
-        .char_indices()
-        .rev()
-        .find(|(_, character)| matches!(character, '.' | '!' | '?' | '\n'))
-        .map_or(0, |(index, character)| index + character.len_utf8());
-    let after = text[end..]
-        .char_indices()
-        .find(|(_, character)| matches!(character, '.' | '!' | '?' | '\n'))
-        .map_or(text.len(), |(index, character)| {
-            end + index + character.len_utf8()
-        });
-    let leading = text[before..after].len() - text[before..after].trim_start().len();
-    let trailing = text[before..after].len() - text[before..after].trim_end().len();
-    (before + leading, after - trailing)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,13 +530,13 @@ mod tests {
     }
 
     #[test]
-    fn shared_fact_requires_a_shared_date_and_narrows_to_utf8_sentence() {
+    fn a_shared_fact_candidate_cites_the_anchor_clause_in_each_document() {
         let a = side(
             "a",
             vec![chunk(
                 "a",
                 "sha256:a",
-                "Paalala: deadline Oktubre 20. Iba pa.",
+                "Paalala: ang Community Learning Project deadline ay Oktubre 20. Iba pa.",
                 vec![1.0, 0.0],
             )],
         );
@@ -635,7 +545,7 @@ mod tests {
             vec![chunk(
                 "b",
                 "sha256:b",
-                "The deadline is October 20. Next.",
+                "The Community Learning Project deadline is October 20. Next.",
                 vec![1.0, 0.0],
             )],
         );
@@ -647,7 +557,40 @@ mod tests {
             .unwrap();
         assert_eq!(shared.confidence, None);
         assert!(shared.source_evidence[0].text.contains("Oktubre 20"));
+        assert!(
+            !shared.source_evidence[0].text.contains("Iba pa"),
+            "only the anchor clause"
+        );
         assert!(shared.target_evidence[0].text.contains("October 20"));
+        assert!(!shared.target_evidence[0].text.contains("Next"));
+        assert_eq!(shared.discovery_cosine, 1.0);
+    }
+
+    #[test]
+    fn the_same_date_for_an_unrelated_event_is_not_a_shared_fact_however_close_the_vectors() {
+        let a = side(
+            "a",
+            vec![chunk(
+                "a",
+                "sha256:a",
+                "The Community Learning Project deadline is October 20.",
+                vec![1.0, 0.0],
+            )],
+        );
+        let b = side(
+            "b",
+            vec![chunk(
+                "b",
+                "sha256:b",
+                "The Mathematics Practice Session is October 20; this is a different event.",
+                vec![1.0, 0.0],
+            )],
+        );
+        let (accumulator, _) = run_pair(&a, &b, 8, 8, false);
+        assert!(accumulator.shared.is_none());
+        assert!(finish(&a, &b, &accumulator)
+            .iter()
+            .all(|edge| edge.kind != AiRelationshipKind::SharedFactCandidate));
     }
 
     #[test]
@@ -686,7 +629,7 @@ mod tests {
                     chunk(
                         id,
                         &format!("sha256:{id}"),
-                        &format!("Chunk {index} of {id} mentions October {}.", 10 + index % 3),
+                        &format!("The Community Learning Project deadline is October {}. Paragraph {index} of {id}.", 10 + index % 3),
                         vec![angle.cos(), angle.sin()],
                     )
                 })
