@@ -1,6 +1,7 @@
 import {
+  Compass,
   FlaskConical,
-  Folder,
+  History,
   Folders,
   House,
   Monitor,
@@ -10,7 +11,7 @@ import {
   Waypoints,
   type LucideIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   applyTheme,
   loadTheme,
@@ -20,20 +21,35 @@ import {
   type ThemePreference,
 } from "../app/theme";
 import { useRelationships } from "../app/useRelationships";
+import { useActivity } from "../app/useActivity";
+import { useHome } from "../app/useHome";
+import {
+  loadOnboardingCompleted,
+  saveOnboardingCompleted,
+} from "../app/onboardingStorage";
+import { shouldStartOnboarding } from "../domain/onboarding";
+import { OnboardingView } from "../views/OnboardingView";
+import { hasFilters, passesFilters } from "../domain/homeFilters";
 import { useWorkspace, type WorkspaceSourceKind } from "../app/useWorkspace";
 import { simulatedCode } from "../adapters/simulate";
 import { useDrafts } from "../app/drafts";
 import { useOrganize } from "../app/useOrganize";
 import { RECOVERY } from "../app/recovery";
+import type { DocumentRecord } from "../domain/contracts";
 import { AnnouncerProvider } from "../ui/Announcer";
+import type { RowMenuItem } from "../ui/RowMenu";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
 import { Notice } from "../ui/Notice";
-import { SearchField } from "../ui/SearchField";
+import { prefillAskScope } from "../app/useAskAct";
 import { AssistantView } from "../views/AssistantView";
 import { DocumentPanel } from "../views/DocumentPanel";
-import { FilesView } from "../views/FilesView";
+import {
+  FileActionDialog,
+  type FileActionKind,
+} from "../views/FileActionDialog";
 import { GraphView } from "../views/GraphView";
 import { HomeView } from "../views/HomeView";
+import { ActivityView } from "../views/ActivityView";
 import { ModelLabView } from "../views/ModelLabView";
 import { OrganizeView } from "../views/OrganizeView";
 import {
@@ -49,10 +65,10 @@ import { readerDocument } from "./reader";
 
 const ICONS: Record<ViewId, LucideIcon> = {
   home: House,
-  files: Folder,
   organize: Folders,
   graph: Waypoints,
   assistant: Sparkles,
+  activity: History,
   modelLab: FlaskConical,
 };
 
@@ -70,10 +86,10 @@ const SOURCE_LABELS: Record<WorkspaceSourceKind, string> = {
 
 const TITLES: Record<ViewId, string> = {
   home: "Overview",
-  files: "Files",
   organize: "Organize",
   graph: "Graph",
   assistant: "Ask & Act",
+  activity: "Activity",
   modelLab: "Model Lab",
 };
 
@@ -89,18 +105,143 @@ export function AppShell() {
   const workspace = useWorkspace();
   const drafts = useDrafts();
   const relations = useRelationships(workspace);
+  // Read whenever the folder changes, so Activity is current when opened.
+  // An Undo from Activity changes files too: re-read the index's links.
+  const activity = useActivity(workspace, relations.refresh);
+  // After Folio changes files: re-read the index's links and the history.
+  const filesChanged = () => {
+    relations.refresh();
+    activity.reload();
+  };
+  const home = useHome(workspace);
+  // First run in the desktop app; reopened from the sidebar's settings.
+  const [welcome, setWelcome] = useState(() =>
+    shouldStartOnboarding(workspace.nativeAvailable, loadOnboardingCompleted()),
+  );
+  function finishWelcome(next?: ViewId) {
+    saveOnboardingCompleted();
+    setWelcome(false);
+    if (next) setView(next);
+  }
   // Above the views, so an apply in progress survives switching views.
-  const organize = useOrganize(workspace, relations.refresh);
+  const organize = useOrganize(workspace, filesChanged);
+  // Home's Rename and Move have their own plan, so they never show up in
+  // Organize (and the reverse).
+  const fileAction = useOrganize(workspace, filesChanged);
+  const [actionDialog, setActionDialog] = useState<{
+    kind: FileActionKind;
+    document: DocumentRecord;
+  } | null>(null);
+  // "Show related" opens the document on its Related tab, and Ask & Act
+  // can open one on its Summary tab.
+  const [panelTab, setPanelTab] = useState<{
+    documentId: string;
+    tab: "Related" | "Summary";
+    /** Reopens the panel on that tab even if the file is already open. */
+    request: number;
+  } | null>(null);
+  // Set by ⌘K / Ctrl K on another page; Home focuses search once it shows.
+  const focusSearch = useRef(false);
   const [view, setView] = useState<ViewId>("home");
+  // Home's scroll position, restored when coming back from another page.
+  const mainRef = useRef<HTMLElement>(null);
+  const homeScroll = useRef(0);
+  useLayoutEffect(() => {
+    if (view === "home" && mainRef.current)
+      mainRef.current.scrollTop = homeScroll.current;
+  }, [view]);
   const searchInput = useRef<HTMLInputElement>(null);
   const platform = useMemo(currentPlatform, []);
   const [theme, setTheme] = useState<ThemePreference>(loadTheme);
-  const reading = readerDocument(view, workspace.selected, workspace.results);
+  // Home's filters narrow its list, so the reader follows them there too.
+  const listed = useMemo(() => {
+    if (view !== "home" || !hasFilters(home.filters)) return workspace.results;
+    const now = Date.now();
+    return workspace.results.filter((result) =>
+      passesFilters(result.document, home.filters, now),
+    );
+  }, [view, home.filters, workspace.results]);
+  const reading = readerDocument(view, workspace.selected, listed);
   const showsDocument = reading !== undefined;
 
+  // "Show related" is for that one opening: once another file (or none) is
+  // shown, opening the file again starts on its usual tab.
+  const readingId = reading?.id;
+  useEffect(() => {
+    setPanelTab((current) =>
+      current && current.documentId !== readingId ? null : current,
+    );
+  }, [readingId]);
+
   // The listener is added once and reads the latest render through this ref.
-  const latest = useRef({ showsDocument, closeDocument });
-  latest.current = { showsDocument, closeDocument };
+  const latest = useRef({ showsDocument, closeDocument, openHome });
+  latest.current = { showsDocument, closeDocument, openHome };
+
+  function openHome() {
+    if (view === "home") focusHomeSearch();
+    else setView("home");
+  }
+
+  function focusHomeSearch() {
+    focusSearch.current = false;
+    searchInput.current?.focus();
+    searchInput.current?.select();
+  }
+
+  useEffect(() => {
+    if (view === "home" && focusSearch.current) focusHomeSearch();
+  }, [view]);
+
+  function fileActions(document: DocumentRecord): RowMenuItem[] {
+    return [
+      {
+        id: "open",
+        label: "Open",
+        onSelect: () => void workspace.selectDocument(document),
+      },
+      {
+        id: "rename",
+        label: "Rename…",
+        onSelect: () => setActionDialog({ kind: "rename", document }),
+      },
+      {
+        id: "move",
+        label: "Move to folder…",
+        onSelect: () => setActionDialog({ kind: "move", document }),
+      },
+      {
+        id: "related",
+        label: "Show related",
+        onSelect: () => {
+          setPanelTab((current) => ({
+            documentId: document.id,
+            tab: "Related",
+            request: (current?.request ?? 0) + 1,
+          }));
+          void workspace.selectDocument(document);
+        },
+      },
+    ];
+  }
+
+  function closeActionDialog() {
+    const id = actionDialog?.document.id;
+    setActionDialog(null);
+    // Back to the row's ⋯ menu, or the list if the file was renamed away.
+    requestAnimationFrame(() => {
+      const row = id
+        ? document.querySelector<HTMLElement>(
+            `[data-row-id="${CSS.escape(id)}"] .row-menu-button`,
+          )
+        : null;
+      (
+        row ??
+        document.querySelector<HTMLElement>(
+          ".file-list .list-row[tabindex='0']",
+        )
+      )?.focus();
+    });
+  }
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -117,8 +258,9 @@ export function AppShell() {
       }
       if (!isSearchShortcut(event, platform)) return;
       event.preventDefault();
-      searchInput.current?.focus();
-      searchInput.current?.select();
+      // Search lives on Home (#43): go there, then focus it.
+      focusSearch.current = true;
+      latest.current.openHome();
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -138,6 +280,7 @@ export function AppShell() {
   function closeDocument() {
     const id = workspace.selected?.id;
     if (!id) return;
+    setPanelTab(null);
     workspace.clearSelection();
     requestAnimationFrame(() =>
       document
@@ -151,8 +294,18 @@ export function AppShell() {
     // In narrow windows the reader covers the list; show the results instead.
     if (window.matchMedia("(max-width: 860px)").matches)
       workspace.clearSelection();
-    if (view !== "home" && view !== "files") setView("home");
   }
+
+  if (welcome)
+    return (
+      <AnnouncerProvider>
+        <OnboardingView
+          workspace={workspace}
+          relations={relations}
+          onFinish={finishWelcome}
+        />
+      </AnnouncerProvider>
+    );
 
   return (
     <AnnouncerProvider>
@@ -181,6 +334,20 @@ export function AppShell() {
                 onSelect={setView}
               />
             </nav>
+            {workspace.nativeAvailable && (
+              <button
+                type="button"
+                className="nav-item"
+                aria-label="Setup guide"
+                title="Setup guide"
+                onClick={() => setWelcome(true)}
+              >
+                <Compass size={20} aria-hidden="true" />
+                <span className="nav-label" aria-hidden="true">
+                  Setup guide
+                </span>
+              </button>
+            )}
             <button
               type="button"
               className="nav-item theme-switch"
@@ -213,17 +380,18 @@ export function AppShell() {
               <span aria-hidden="true">/</span>
               <span aria-current="page">{TITLES[view]}</span>
             </nav>
-            <SearchField
-              ref={searchInput}
-              label="Search files"
-              value={workspace.query}
-              onChange={onSearch}
-              placeholder="Search files, ideas, or projects"
-              shortcut={searchShortcutLabel(platform)}
-            />
           </header>
 
-          <main id="main" className="main" tabIndex={-1}>
+          <main
+            id="main"
+            ref={mainRef}
+            className="main"
+            tabIndex={-1}
+            onScroll={(event) => {
+              if (view === "home")
+                homeScroll.current = event.currentTarget.scrollTop;
+            }}
+          >
             {simulatedCode && (
               <Notice tone="info">
                 Practice mode: this preview simulates “
@@ -284,21 +452,51 @@ export function AppShell() {
                 never surface in another. */}
             <AnnouncerProvider key={view}>
               {view === "home" && (
-                <HomeView workspace={workspace} onNavigate={setView} />
-              )}
-              {view === "files" && <FilesView workspace={workspace} />}
-              {view === "organize" && (
-                <OrganizeView
+                <HomeView
                   workspace={workspace}
-                  drafts={drafts}
-                  organize={organize}
+                  onNavigate={setView}
+                  searchRef={searchInput}
+                  searchShortcut={searchShortcutLabel(platform)}
+                  onSearch={onSearch}
+                  fileActions={fileActions}
+                  onOpenPassage={relations.openPassage}
+                  home={home}
+                  onAskOlio={() => {
+                    const query = workspace.query.trim();
+                    if (query) drafts.setInstruction(query);
+                    prefillAskScope(
+                      workspace.workspace?.id,
+                      home.filters.folder ?? "",
+                    );
+                    setView("assistant");
+                  }}
                 />
+              )}
+              {view === "organize" && (
+                <OrganizeView workspace={workspace} organize={organize} />
               )}
               {view === "graph" && (
                 <GraphView workspace={workspace} relations={relations} />
               )}
               {view === "assistant" && (
-                <AssistantView drafts={drafts} onNavigate={setView} />
+                <AssistantView
+                  workspace={workspace}
+                  relations={relations}
+                  drafts={drafts}
+                  onNavigate={setView}
+                  onOpenFile={(document, tab) => {
+                    if (tab)
+                      setPanelTab((current) => ({
+                        documentId: document.id,
+                        tab,
+                        request: (current?.request ?? 0) + 1,
+                      }));
+                    void workspace.selectDocument(document);
+                  }}
+                />
+              )}
+              {view === "activity" && (
+                <ActivityView workspace={workspace} activity={activity} />
               )}
               {view === "modelLab" && <ModelLabView />}
             </AnnouncerProvider>
@@ -307,12 +505,30 @@ export function AppShell() {
 
         {reading && (
           <DocumentPanel
-            key={reading.id}
+            key={
+              panelTab?.documentId === reading.id
+                ? `${reading.id}#${panelTab.request}`
+                : reading.id
+            }
             document={reading}
             workspace={workspace}
             relations={relations}
+            initialTab={
+              panelTab?.documentId === reading.id ? panelTab.tab : undefined
+            }
+            actions={fileActions(reading).filter((item) => item.id !== "open")}
             onClose={closeDocument}
             onNavigate={setView}
+          />
+        )}
+        {actionDialog && (
+          <FileActionDialog
+            kind={actionDialog.kind}
+            document={actionDialog.document}
+            workspace={workspace}
+            drafts={drafts}
+            action={fileAction}
+            onClose={closeActionDialog}
           />
         )}
       </div>

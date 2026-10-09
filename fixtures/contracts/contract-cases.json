@@ -252,6 +252,27 @@
       "canonical": "FOLIO-PLAN-V1\n19:plan-batch-filipino\n64:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c\n13:1760000000000\n13:1760000300000\n1:3\n4:edit\n89:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:projects/project-plan.md\n24:projects/project-plan.md\n71:sha256:320be3167ed3f71f16f45dc2546d09944cb0049fc25482369e165e56f152531a\n21:Deadline: October 23\n\n6:rename\n81:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:notes/paalala.md\n16:notes/paalala.md\n71:sha256:a3af21e57291727b87bf893dceef62cbef14824f70813f3476cdf9f148b49fd3\n24:notes/paalala-oktubre.md\n6:create\n24:courses/pagsasanay-ñ.md\n13:text/markdown\n51:Paalala: ang huling araw ay ika-23 ng Oktubre 📅\n\n",
       "canonicalByteLength": 697,
       "digest": "sha256:ceaa26ffa44b497d10a217d48ef069d2d3ff2f6ff8df17585b84e3b5c05be5c1"
+    },
+    {
+      "plan": {
+        "id": "plan-delete-pagsasanay",
+        "workspaceId": "628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c",
+        "createdAt": 1760000000000,
+        "expiresAt": 1760000300000,
+        "operations": [
+          {
+            "kind": "delete",
+            "documentId": "628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:courses/pagsasanay-ñ.md",
+            "relativePath": "courses/pagsasanay-ñ.md",
+            "expectedContentHash": "sha256:60856855d91f70c2a5d62cf6d3dc76dd18cd8d0c3cbaa70c050f1b2ae79cfafb"
+          }
+        ],
+        "impacts": [],
+        "digest": "sha256:8cfff6de4d7afaa0549f2c38b2aac58a183e5edd291c388251334dc1f6285679"
+      },
+      "canonical": "FOLIO-PLAN-V1\n22:plan-delete-pagsasanay\n64:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c\n13:1760000000000\n13:1760000300000\n1:1\n6:delete\n89:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:courses/pagsasanay-ñ.md\n24:courses/pagsasanay-ñ.md\n71:sha256:60856855d91f70c2a5d62cf6d3dc76dd18cd8d0c3cbaa70c050f1b2ae79cfafb\n",
+      "canonicalByteLength": 351,
+      "digest": "sha256:8cfff6de4d7afaa0549f2c38b2aac58a183e5edd291c388251334dc1f6285679"
     }
   ],
   "hashes": [

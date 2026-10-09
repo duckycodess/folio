@@ -1,24 +1,17 @@
 import { ArrowRight, Copy, FolderOpen } from "lucide-react";
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useRef, type ReactNode, type RefObject } from "react";
 import type { OrganizeStage } from "../app/organizeFlow";
-import {
-  planRow,
-  summarizeApply,
-  summarizeUndo,
-  undoBlockers,
-  type PlanRow,
-} from "../app/planReview";
+import { planRow, summarizeApply, summarizeUndo } from "../app/planReview";
 import type { OrganizeController } from "../app/useOrganize";
 import type { WorkspaceState } from "../app/useWorkspace";
 import type { IndexProgress } from "../domain/contracts";
-import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
-import { Modal } from "../ui/Modal";
 import { Notice } from "../ui/Notice";
 import { Panel } from "../ui/Panel";
 import { Progress } from "../ui/Progress";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
+import { PlanTable, UndoDialog } from "./PlanReview";
 
 const STEPS: { label: string; stages: OrganizeStage[] }[] = [
   { label: "Analyze", stages: ["idle", "analyzing"] },
@@ -72,55 +65,6 @@ function Steps({ stage }: { stage: OrganizeStage }) {
     </ol>
   );
 }
-
-function PlanTable({
-  rows,
-  caption,
-}: {
-  rows: (PlanRow & { status?: string; reason?: string })[];
-  caption: string;
-}) {
-  const withStatus = rows.some((row) => row.status);
-  return (
-    <div className="plan-table-wrap">
-      <table className="plan-table">
-        <caption className="visually-hidden">{caption}</caption>
-        <thead>
-          <tr>
-            <th scope="col">Change</th>
-            <th scope="col">From</th>
-            <th scope="col">To</th>
-            {withStatus && <th scope="col">Outcome</th>}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, index) => (
-            <tr key={`${row.from}-${row.to}-${index}`}>
-              <td>{row.action}</td>
-              <td className="plan-path">{row.from ?? "New file"}</td>
-              <td className="plan-path">{row.to}</td>
-              {withStatus && (
-                <td>
-                  {OUTCOME_LABELS[row.status ?? "notStarted"]}
-                  {row.reason && (
-                    <span className="plan-reason">{row.reason}</span>
-                  )}
-                </td>
-              )}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-const OUTCOME_LABELS: Record<string, string> = {
-  succeeded: "Saved",
-  failed: "Not saved",
-  cancelled: "Stopped",
-  notStarted: "Not started",
-};
 
 /** Journey B: analyze a folder, then apply only the exact plan approved. */
 export function OrganizeFlowPanel({
@@ -299,51 +243,13 @@ export function OrganizeFlowPanel({
           <Progress label="Preparing the exact preview" />
         )}
 
-        {(state.stage === "preview" || state.stage === "applying") &&
-          state.plan && (
-            <div className="flow-step">
-              <h3 ref={heading} tabIndex={-1} className="subsection-title">
-                Exact preview: nothing has changed yet
-              </h3>
-              <PlanTable
-                rows={state.plan.operations.map(planRow)}
-                caption="Changes Folio will make after you approve"
-              />
-              {state.plan.impacts.length > 0 && (
-                <Notice tone="info">
-                  {state.plan.impacts.length} related{" "}
-                  {state.plan.impacts.length === 1 ? "passage" : "passages"} may
-                  need a look afterwards. They won't be changed.
-                </Notice>
-              )}
-              {state.error && (
-                <RecoveryNotice
-                  error={state.error}
-                  actions={{ previewAgain: organize.previewAgain }}
-                  onDismiss={organize.dismissError}
-                />
-              )}
-              {state.stage === "applying" ? (
-                <Progress label="Applying the approved changes" />
-              ) : (
-                <div className="form-actions">
-                  <Button
-                    variant="primary"
-                    disabled={state.error !== null}
-                    onClick={organize.approveAndApply}
-                  >
-                    Approve and apply{" "}
-                    {state.plan.operations.length === 1
-                      ? "this change"
-                      : `${state.plan.operations.length} changes`}
-                  </Button>
-                  <Button variant="ghost" onClick={organize.backToSuggestions}>
-                    {suggestions ? "Back to suggestions" : "Cancel"}
-                  </Button>
-                </div>
-              )}
-            </div>
-          )}
+        {(state.stage === "preview" || state.stage === "applying") && (
+          <PreviewStep
+            organize={organize}
+            heading={heading}
+            cancelLabel={suggestions ? "Back to suggestions" : "Cancel"}
+          />
+        )}
 
         {state.stage === "result" && state.plan && state.report && (
           <ResultStep organize={organize} heading={heading} />
@@ -353,17 +259,82 @@ export function OrganizeFlowPanel({
   );
 }
 
-function ResultStep({
+/** The exact native plan, and Approve. Shared by Organize and Home's file actions. */
+export function PreviewStep({
   organize,
   heading,
+  cancelLabel,
+  details,
 }: {
   organize: OrganizeController;
   heading: RefObject<HTMLHeadingElement | null>;
+  cancelLabel: string;
+  /** More of the exact preview, such as a text diff and Ripple passages. */
+  details?: ReactNode;
+}) {
+  const { state } = organize;
+  if (!state.plan) return null;
+  return (
+    <div className="flow-step">
+      <h3 ref={heading} tabIndex={-1} className="subsection-title">
+        Exact preview: nothing has changed yet
+      </h3>
+      <PlanTable
+        rows={state.plan.operations.map(planRow)}
+        caption="Changes Folio will make after you approve"
+      />
+      {details}
+      {state.plan.impacts.length > 0 && (
+        <Notice tone="info">
+          {state.plan.impacts.length} related{" "}
+          {state.plan.impacts.length === 1 ? "passage" : "passages"} may need a
+          look afterwards. They won't be changed.
+        </Notice>
+      )}
+      {state.error && (
+        <RecoveryNotice
+          error={state.error}
+          actions={{ previewAgain: organize.previewAgain }}
+          onDismiss={organize.dismissError}
+        />
+      )}
+      {state.stage === "applying" ? (
+        <Progress label="Applying the approved changes" />
+      ) : (
+        <div className="form-actions">
+          <Button
+            variant="primary"
+            disabled={state.error !== null}
+            onClick={organize.approveAndApply}
+          >
+            Approve and apply{" "}
+            {state.plan.operations.length === 1
+              ? "this change"
+              : `${state.plan.operations.length} changes`}
+          </Button>
+          <Button variant="ghost" onClick={organize.backToSuggestions}>
+            {cancelLabel}
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** What happened, with history and Undo. Shared with Home's file actions. */
+export function ResultStep({
+  organize,
+  heading,
+  onDone = organize.done,
+}: {
+  organize: OrganizeController;
+  heading: RefObject<HTMLHeadingElement | null>;
+  /** Defaults to starting the flow again; a dialog closes instead. */
+  onDone?: () => void;
 }) {
   const { state, undo, history } = organize;
   const summary = summarizeApply(state.plan!, state.report!);
   const undoResult = undo.report && summarizeUndo(undo.report);
-  const blockers = undo.preview ? undoBlockers(undo.preview) : [];
 
   return (
     <div className="flow-step">
@@ -407,49 +378,17 @@ function ResultStep({
             Preview Undo
           </Button>
         )}
-        <Button variant="ghost" onClick={organize.done}>
+        <Button variant="ghost" onClick={onDone}>
           Done
         </Button>
       </div>
 
-      <Modal
-        open={undo.preview !== null}
-        title="Undo these changes?"
+      <UndoDialog
+        preflight={undo.preview}
+        busy={undo.busy}
+        onConfirm={organize.confirmUndo}
         onClose={organize.closeUndo}
-        footer={
-          <>
-            <Button variant="ghost" onClick={organize.closeUndo}>
-              Keep the changes
-            </Button>
-            <Button
-              variant="primary"
-              disabled={!undo.preview?.undoable || undo.busy}
-              onClick={organize.confirmUndo}
-            >
-              Undo {undo.preview?.entryIds.length ?? 0}{" "}
-              {undo.preview?.entryIds.length === 1 ? "change" : "changes"}
-            </Button>
-          </>
-        }
-      >
-        {blockers.length ? (
-          <>
-            <p>Folio can't undo safely, so nothing will be changed:</p>
-            <ul>
-              {blockers.map((line) => (
-                <li key={line}>{line}</li>
-              ))}
-            </ul>
-          </>
-        ) : (
-          <p>
-            Folio will put{" "}
-            {undo.preview?.entryIds.length === 1 ? "this file" : "these files"}{" "}
-            back the way they were before you approved.
-          </p>
-        )}
-        {undo.preview && <Badge>Nothing changes until you confirm</Badge>}
-      </Modal>
+      />
     </div>
   );
 }

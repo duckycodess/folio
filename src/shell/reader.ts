@@ -3,15 +3,15 @@ import type { ViewId } from "./navigation";
 
 /**
  * Views whose main content is a document list, so the reader sits beside it
- * (or, in narrow windows, takes its place). Organize is not one: its rename
- * form must stay visible next to the chosen file.
+ * (or, in narrow windows, takes its place). Organize is not one: it works on
+ * its own plan rather than on the chosen file.
  */
-const DOCUMENT_VIEWS = new Set<ViewId>(["home", "files", "graph"]);
+const DOCUMENT_VIEWS = new Set<ViewId>(["home", "graph", "assistant"]);
 
 /**
  * The chosen file, if the current search results include it. A search that
- * leaves the file out hides it everywhere (the reader, Organize's rename form)
- * until the search changes, so nothing acts on a file that isn't on screen.
+ * leaves the file out hides it everywhere (the reader and its
+ * file actions) until the search changes, so nothing acts on a file that isn't on screen.
  */
 export function listedSelection(
   selected: DocumentRecord | undefined,
@@ -27,7 +27,7 @@ export function listedSelection(
  * The document the reader should show, if any. A file is never shown beside
  * a list that doesn't include it: when a search excludes the open file, the
  * reader closes until the search changes. Graph lists links, not search
- * results, so any file opened from it is shown.
+ * results, and Ask & Act shows its own, so any file opened from them is shown.
  */
 export function readerDocument(
   view: ViewId,
@@ -35,6 +35,6 @@ export function readerDocument(
   results: SearchResult[],
 ): DocumentRecord | undefined {
   if (!selected || !DOCUMENT_VIEWS.has(view)) return undefined;
-  if (view === "graph") return selected;
+  if (view === "graph" || view === "assistant") return selected;
   return listedSelection(selected, results);
 }
