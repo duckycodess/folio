@@ -47,11 +47,17 @@ def canonical_plan(plan) -> bytes:
             out += field(op["relativePath"])
             out += field(op["expectedContentHash"])
             out += field(op["after"])
-        else:
+        elif op["kind"] in ("rename", "move"):
             out += field(op["documentId"])
             out += field(op["relativePath"])
             out += field(op["expectedContentHash"])
             out += field(op["destinationRelativePath"])
+        elif op["kind"] == "delete":
+            out += field(op["documentId"])
+            out += field(op["relativePath"])
+            out += field(op["expectedContentHash"])
+        else:
+            raise ValueError("unknown operation kind: " + op["kind"])
     return out
 
 def space_fingerprint(space) -> str:
@@ -213,8 +219,23 @@ plan_b = {
         },
     ],
 }
+# A deletion has no destination: its kind, identity, path and expected hash.
+plan_c = {
+    "id": "plan-delete-pagsasanay",
+    "workspaceId": WS,
+    "createdAt": 1760000000000,
+    "expiresAt": 1760000300000,
+    "operations": [
+        {
+            "kind": "delete",
+            "documentId": WS + ":" + NFC_PATH,
+            "relativePath": NFC_PATH,
+            "expectedContentHash": content_hash(plan_b_note),
+        }
+    ],
+}
 plans = []
-for plan in (plan_a, plan_b):
+for plan in (plan_a, plan_b, plan_c):
     canonical = canonical_plan(plan)
     digest = "sha256:" + sha256_hex(canonical)
     plan_with_digest = dict(plan)
