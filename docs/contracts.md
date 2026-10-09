@@ -77,10 +77,14 @@ A relationship is a discriminated union carrying evidence typed for its kind:
 - `explicitReference` — `documentLink` provenance, the raw and resolved link,
   and at least one passage in the source document.
 - `similarity` — `embedding` provenance, the `spaceFingerprint` it was computed
-  in, a score in [0, 1], and passages in both documents. It is never a claim
-  that an edit must propagate.
+  in, a score in [0, 1], and passages in both documents. The score is an
+  uncalibrated raw cosine clamped to the contract interval; the draft's
+  discovery thresholds are development defaults, not product-quality claims.
+  It is never a claim that an edit must propagate.
 - `sharedFactCandidate` — passages in both documents and an optional confidence.
-  It is never a confirmed contradiction.
+  The draft may produce these from an embedding match plus a shared normalized
+  date or numeric anchor. That anchor gate is a deterministic filter, not a
+  contradiction detector. It is never a confirmed contradiction.
 
 A Ripple `ImpactCandidate` may carry the `relationshipType` and `provenance` of
 the relationship that connected it to the edited document. Both are optional
@@ -101,6 +105,17 @@ Folio changes none of them.
 Vectors are compared only within one embedding space, identified by
 `folio-space-v1/<modelId>/<revision>/<quantization>/<dimensions>/<preprocessing>`
 with `%` and `/` escaped.
+
+Issue #46 stores AI relationship rows with `spaceFingerprint` and, for
+`similarity`, `score`; link rows have neither. The native discovery refresh
+reads only vectors from the requested persistent `space_id`, and hides or
+replaces rows from another space. The refresh seam consumes the persistent
+embedding APIs; the producer that fills `pending_embedding_chunks` remains
+issue #27 work and is intentionally not duplicated here.
+
+The new `relationshipSummary` and `impactExplanation` result kinds reuse the
+grounded result shape. They are generated display text only; they contain no
+operation or approval fields.
 
 ## Providers
 

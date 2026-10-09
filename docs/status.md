@@ -1,12 +1,66 @@
 # Implementation status
 
+## Draft issue #46 implementation (2026-10-10)
+
+This branch contains a draft, independently testable relationship-discovery
+seam. Native discovery reads complete vectors already persisted in one
+registered embedding space, bounds indexed chunks, pair comparisons and the
+transient candidate-edge list, and persists similarity/shared-fact candidates
+with their embedding-space fingerprint, score and located evidence. A
+separate cancellation-aware native refresh command and grounded relationship
+summary/impact-explanation commands use the existing secure provider boundary.
+The UI never treats a relationship row as a model answer, and the provider is
+not called without native evidence.
+
+The embedding producer is intentionally not included. The #27 producer still
+needs to populate the existing persistent `pending_embedding_chunks` /
+`put_embeddings` API and select the active space; this branch neither replaces
+that producer nor changes `put_embeddings` acceptance semantics. Until that
+wiring lands, AI relationships are available only to an explicit native
+refresh seam populated with existing vectors, not as an end-to-end product
+workflow. The persistent tests populate vectors through those real APIs; they
+are plumbing tests, not evidence of model quality.
+
+The following are draft engineering assumptions for issue #46, not settled
+product decisions: D2 uses the caller's registered space and its existing
+preprocessing fingerprint; D3 adds migration `006_ai_relationships.sql` after
+the actual registry's `005_delete_history.sql`; D4 stores raw cosine clamped
+to the contract range with provisional thresholds; D5 uses a stricter cosine
+plus a normalized date/numeric anchor as a shared-fact candidate heuristic,
+not contradiction detection; D6 accepts a native document-id scope capped at
+50; D7 adds display-only grounded-result kinds; D8 rechecks native plan
+candidate evidence before an impact explanation; and D9 exposes explicit
+refresh/cancel rather than a watcher. D10 glossary/ADR recording is not
+approved. If another open change also claims migration 006, this branch must
+be rebased and renumbered rather than skipping a registry version.
+
+Verification on this Linux/WSL host is recorded below. Windows/macOS native
+packaging, real-model E5 quality, threshold calibration, factual review of
+generated text, and the #27 producer integration remain unverified.
+
+Verification for this draft:
+
+- `npm run format:check`, `npm run check`, `npm test` and `npm run build` passed
+  on the exact worktree. Vitest reported 38 files passed, 1 skipped, 323
+  passed tests and 9 todo tests. `git diff --check` also passed.
+- The exact worktree command `cargo test --manifest-path src-tauri/Cargo.toml`
+  was blocked before compilation: the host Cargo 1.75.0 rejects this checkout's
+  lockfile version 4 and asks for `-Znext-lockfile-bump`.
+- For compatibility coverage only, a task-local Rust/Cargo 1.99.0 toolchain
+  with temporary `RUSTUP_HOME`/`CARGO_HOME` ran
+  `cargo test --manifest-path /tmp/folio46-cargo-2quudM/Cargo.toml --workspace`
+  after the copied source was synchronized from this worktree. The copied
+  workspace reported Folio 185 passed/2 ignored, folio-core 83 passed/2
+  ignored, loopback 1 passed, real acceptance 0 passed/7 ignored, and zero
+  doc-test failures. This is not a native test run on the exact checkout.
+
 ## Implemented starter pieces
 
 - Golden Daylight app shell ([issue #16](https://github.com/duckycodess/folio/issues/16)): design tokens with light and proposed dark themes, locally bundled Inter and Lucide icons, sidebar navigation (Home, Files, Organize, Graph, Ask & Act, Model Lab), a global search field with a platform-aware ⌘K / Ctrl K shortcut, a document panel with Summary, Details and Related tabs, and shared button, badge, panel, list row, empty state, notice, modal and progress components. The starter `App.tsx` presentation and `src/styles.css` are retired. Summaries, Ask & Act, collections, renames and Model Lab show honest "not available yet" states; nothing is presented as AI output or a saved change.
 - Olio mascot artwork: twelve cleaned poses bundled in `src/assets/olio/`. Home's header pose follows the file list (default, confused for no results, peeking for an empty folder). The Files empty states, Organize's empty Collections and Model Lab's "no model" state also show a pose. The wordmark is still interim text.
 - A sidebar theme switch (System, Light, Dark), remembered on the device, and coloured file-type tiles in file lists and the document panel. Checked in headless Chromium: the switch cycles, the choice survives a reload, and System removes the override. The sample files are all Markdown, so the PDF and text tiles have not been seen rendered.
 - File table and reader ([issue #17](https://github.com/duckycodess/folio/issues/17)): name, location, type, modified and size columns that drop to fit the space; the reader beside the table (or in place of it below 860px) shows the file's text as read-only, with its full path. The reader never shows a file the current list excludes. In the desktop app, Folio starts with an "Add folder" state (sample files on request); an added folder with no readable files offers "Choose another folder". The browser preview lists sample files and says so.
-- Relationships with evidence ([issue #21](https://github.com/duckycodess/folio/issues/21)): the document panel's Related tab and the Graph view list every connected file. Each entry has its type (link and direction, or exact duplicate), how Folio knows it, the file's original folder, and evidence excerpts that open the source with the passage highlighted. Files opened from Related keep a "Back to" link to the origin. With a folder open, links and duplicates come from the native index (`list_relationships`, `list_duplicates`) merged with links in opened files. If the folder hasn't been indexed, the UI says so; no UI runs the index scan yet. Exact duplicates are also found from content hashes Folio already has. Graph also draws the same connections as a concept map (below). Similarity and shared-fact connections have labels and tests, but no producer yet.
+- Relationships with evidence ([issue #21](https://github.com/duckycodess/folio/issues/21)): the document panel's Related tab and the Graph view list every connected file. Each entry has its type (link and direction, or exact duplicate), how Folio knows it, the file's original folder, and evidence excerpts that open the source with the passage highlighted. Files opened from Related keep a "Back to" link to the origin. With a folder open, links and duplicates come from the native index (`list_relationships`, `list_duplicates`) merged with links in opened files. If the folder hasn't been indexed, the UI says so; no UI runs the index scan yet. Exact duplicates are also found from content hashes Folio already has. Graph also draws the same connections as a concept map (below). Issue #46 adds draft similarity/shared-fact contracts and a bounded persistent discovery seam; the #27 embedding producer and end-to-end UI refresh wiring are still pending.
 - Shared error and recovery states ([issue #18](https://github.com/duckycodess/folio/issues/18)): every error code maps to one plain-language message and next step ([error-states.md](error-states.md)), shown through one recovery notice in every workflow. Drafts (the Ask & Act request, rename names per file) survive errors and view changes. Success after opening a folder is shown only once the native core reports it. Each view announces into its own live region. Modals keep Tab inside them. A browser-only practice mode (`?simulate=<code>`) triggers each state in its own flow.
 - Summary tab ([#20](https://github.com/duckycodess/folio/issues/20)), using #15's `summarize_document`.
   - Each file's Summary tab offers **Summarize this file**. Nothing is generated until it's pressed.
@@ -48,7 +102,7 @@
   - The browser preview says setup works in the desktop app.
   - The results section groups runs by task, with no overall score. Process RAM is labelled as the model process's, and missing measurements say "Not measured" or "Not graded". There are no recorded results yet (#8).
   - The installed size on disk isn't measured, and the page says so.
-- Graph entry points ([#40](https://github.com/duckycodess/folio/issues/40)): Graph starts from all files, one file, a folder (including connections that leave it) or a keyword topic. With a file open, it starts from that file, and opening a file from the list makes it the new start, with keyboard focus moved to the list's new title. A topic with no letters or digits matches nothing. Confirmed connections (links, identical copies) are listed apart from suggested ones (similarity, possible shared facts), which only appear when the index has them. A "Where these files are" panel counts the connected files per folder. That count isn't a written summary: the relationship summary needs a local model and isn't built. Arrow keys, Home and End move between the files in the list.
+- Graph entry points ([#40](https://github.com/duckycodess/folio/issues/40)): Graph starts from all files, one file, a folder (including connections that leave it) or a keyword topic. With a file open, it starts from that file, and opening a file from the list makes it the new start, with keyboard focus moved to the list's new title. A topic with no letters or digits matches nothing. Confirmed connections (links, identical copies) are listed apart from suggested ones (similarity, possible shared facts), which only appear when the index has them. A "Where these files are" panel counts the connected files per folder. Issue #46 adds a secure relationship-summary command and draft UI action, but it remains unavailable without native evidence/model setup and has not been quality-validated. Arrow keys, Home and End move between the files in the list.
 - Home as the file browser ([#42](https://github.com/duckycodess/folio/issues/42), [#43](https://github.com/duckycodess/folio/issues/43), ADR 0010). The Files tab is gone. Home lists every file, sorted by path, with a count. Each row has a keyboard-accessible ⋯ menu (Open, Rename…, Move to folder…, Show related), and the document panel has the same menu. Rename and Move use the exact preview, Approve and Undo flow from #22, in a dialog. The search field is only on Home, centred, and ⌘K / Ctrl K from any page opens Home and focuses it. Rows take an optional `renderDetail` slot for #19's search evidence. With the sample files, Rename and Move explain that a folder is needed. In practice mode (`?simulate=<code>`), they show the simulated refusal instead.
 - Organize flow ([issue #22](https://github.com/duckycodess/folio/issues/22)), desktop only. Analyze re-indexes the open folder, with live progress and Stop, then lists exact duplicates (by content, never moved or deleted) and filename suggestions to tick. The exact preview shows every from → to path from the native plan. Approve echoes that plan's digest and applies it. The result is worded from the per-file outcomes, so a batch that stopped partway never says nothing changed. It shows what was recorded in history and offers a Preview Undo. A refused apply keeps the preview, with Preview again. The Rename form uses the same native plan with a folder open. With the sample files, Organize explains that a folder is needed. Virtual collections are still not available.
 - Shared plan review and Edit text ([issue #45](https://github.com/duckycodess/folio/issues/45), second PR), desktop only and **not yet reachable from any screen**. One reducer and hook (`planAction.ts`, `usePlanAction.ts`) carry a single native plan through exact preview → approve → apply → result → Undo preview → Undo, ignoring late replies. Shared components (`src/views/PlanReview.tsx`): the plan table and Undo dialog (Organize now uses them, unchanged), a line diff with before/after line numbers and +/− markers with spoken labels, the full new text when a diff is too large to compute, a Ripple list with a "Needs review" badge, paths, passages and how Folio knows (links and identical copies are never labelled AI), and the apply result. Edit text (TXT/Markdown) reads the file's current text and hash, keeps the file's CRLF line endings, and asks the native core for the plan without impacts so it computes Ripple. Rename and Move are Home's `FileActionDialog` (#42). Sample files, the browser preview and PDFs say why changes aren't available (`fileActionAvailability`), and a new name must keep a `.md`, `.markdown` or `.txt` ending. The Graph node actions that open Edit text, Rename and Move are the next PR.
@@ -100,7 +154,7 @@
 - FTS5 keyword search across unopened documents, returning document id, path and excerpt as `utf8Byte` passages bound to the indexed revision (`documentContentHash`), with page numbers for PDFs. Labelled `keyword`.
 - Follows the [frozen contract](contracts.md): `workspaceId:relativePath` document ids, `sha256:` hashes, `explicitReference` relationships with the raw and resolved link, `folio-space-v1/...` space fingerprints, and `{ code, message, details }` failures. `read_document` now also returns the extracted text of text-based PDFs.
 - Exact-duplicate groups are confirmed by comparing the files byte for byte in blocks, so files of any size are verified; the comparison runs without holding the index.
-- Embedding store for the provider track: registered spaces keyed by model/revision/quantization/dimensions/preprocessing, per-space pending-chunk listing, vector storage with dimension checks, and exact cosine search within one space only. A vector is stored only while its chunk still holds the text it was computed from (`contentHash`), because chunk ids can be reused after a rescan. No embedding model is connected.
+- Embedding store for the provider track: registered spaces keyed by model/revision/quantization/dimensions/preprocessing, per-space pending-chunk listing, vector storage with dimension checks, and exact cosine search within one space only. A vector is stored only while its chunk still holds the text it was computed from (`contentHash`), because chunk ids can be reused after a rescan. Issue #46 reads this persistent store through a bounded discovery seam; no embedding producer is connected yet.
 
 ## Native writer, Ripple, history and Undo (issue #5)
 
@@ -126,7 +180,15 @@
 
 ## Pending
 
-Model-generated Ripple explanations and similarity/shared-fact discovery (issues #4 and #8), creating folders during moves, UI use of the native index and actions (the current UI still searches loaded content), live file watching, multi-folder workspaces, native packaging, and real Model Lab results remain pending. Issue #4 on `FOLIO-4` carries multilingual embedding, semantic search, local generation, grounded summaries/answers, model/runtime setup and proposal-only interpretation through its own interim in-memory chunking and vector index; it does not yet read #3's persistent index, and its proposals are not yet connected to #5's native plan/apply path.
+#27's embedding producer wiring and end-to-end refresh remain pending, as do
+creating folders during moves, UI use of the native index and actions (the
+current UI still searches loaded content), live file watching, multi-folder
+workspaces, native packaging, and real Model Lab results. Issue #4 on
+`FOLIO-4` carries multilingual embedding, semantic search, local generation,
+grounded summaries/answers, model/runtime setup and proposal-only
+interpretation through its own interim in-memory chunking and vector index; it
+does not yet read #3's persistent index, and its proposals are not yet
+connected to #5's native plan/apply path.
 
 Two `llama-server` hardening items from the #15 review remain open:
 
