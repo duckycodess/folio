@@ -308,6 +308,13 @@ Checked on macOS with Node.js 26.10.0, on #36's branch:
 
 Not verified: real interpretation output (#15 lists the Taglish deadline case as pending), conflict-aware Undo against the real writer, and screen readers.
 
+After Gab's review of #64 (2026-10-10, Windows, Node.js 20; in a follow-up PR, since #64 had already merged):
+
+- Fixed: after "Use <file>", a proposal for any other existing file is refused before a preview, with "Olio proposed a change to another file than the one you chose". A create is still allowed, since it changes no existing file. `targetsChosenFile` has tests in `src/app/askAct.test.ts`, and a retry keeps the chosen file.
+- Fixed: when an edit's file has to be read again for the diff, its revision must match the one the edit applies to, or the preview is refused as `targetChanged`.
+- Fixed (#24): a running model download is kept outside Model Lab, so leaving the page and coming back still shows its progress and Cancel. If a download started on an earlier visit ends while Model Lab is open, the model list is read again.
+- Rebased onto `main` after #65 (onboarding now shares the same download store): `npm run check`, `npm test` (326 passed, 9 todo) and `npm run build` passed. The download fix was checked by type check and code reading only, not in a browser.
+
 ### Ask & Act workspace (2026-10-10, issue #36)
 
 Checked on macOS with Node.js 26.10.0, on #20's branch (#48 with #15 merged in):

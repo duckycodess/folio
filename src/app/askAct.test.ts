@@ -8,6 +8,7 @@ import {
   matchReason,
   methodLabel,
   summaryTarget,
+  targetsChosenFile,
   updateTurn,
   type AskTurn,
 } from "./askAct";
@@ -127,5 +128,53 @@ describe("proposals", () => {
         destinationRelativePath: "b.md",
       }),
     ).toBe("Rename a.md to b.md");
+  });
+});
+
+describe("the file the user chose", () => {
+  const edit = {
+    kind: "edit" as const,
+    documentId: "workspace:projects/plan.md",
+    relativePath: "projects/plan.md",
+    observedContentHash: "h",
+    find: "October 20",
+    replace: "October 23",
+    targetEvidence: {
+      documentId: "workspace:projects/plan.md",
+      documentContentHash: "h",
+      offsetUnit: "utf8Byte" as const,
+      start: 0,
+      end: 10,
+      text: "October 20",
+    },
+  };
+
+  it("accepts a change to the chosen file", () => {
+    expect(targetsChosenFile(edit, "workspace:projects/plan.md")).toBe(true);
+  });
+
+  it("refuses a change to any other file, even a close match", () => {
+    expect(targetsChosenFile(edit, "workspace:projects/plan-copy.md")).toBe(
+      false,
+    );
+    expect(
+      targetsChosenFile(
+        { ...edit, kind: "rename", destinationRelativePath: "b.md" },
+        "workspace:notes/plan.md",
+      ),
+    ).toBe(false);
+  });
+
+  it("lets a new file through, since it changes no existing one", () => {
+    expect(
+      targetsChosenFile(
+        {
+          kind: "create",
+          destinationRelativePath: "notes/new.md",
+          content: "",
+        },
+        "workspace:projects/plan.md",
+      ),
+    ).toBe(true);
   });
 });
