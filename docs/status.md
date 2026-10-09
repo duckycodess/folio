@@ -445,6 +445,12 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 
 ## Verification
 
+### Consistent page typography, widths and buttons (2026-10-10)
+
+Every page title now uses the brandkit's Manrope 800 at 34px. Before, Home had 32px/700 and every other page a "compact" 24px/600 title, so the views didn't match. Taglines are DM Sans without the wide tracking, and panel and section headings are 700. Notices share the 1080px content width, so their right edge lines up with the panels. Primary buttons are 36px like the rest (they were 40px). `.form-actions` gained the missing gap, so two buttons in a Model Lab card no longer touch. Pages leave room at the bottom for the floating Olio, which used to cover Model Lab's last Download button. Radios and checkboxes use the app accent instead of browser blue.
+
+Tested locally on macOS in Chromium only: `npm run check`, `npm test`, `npm run build`, and `npx playwright test` (36 passed; the 4 `viewports.spec.ts` failures already on `main` are unchanged). Screenshots of Home, Organize, Graph, Ask & Act, Activity and Model Lab checked at 1400px. Not checked in the Tauri window or in dark mode.
+
 ### Floating chat reads top to bottom (2026-10-10)
 
 The floating Olio chat listed the newest turn first. It now reads like a messenger: turns go oldest to newest down the panel, and a short conversation sits just above the composer. Opening the chat or sending a request scrolls to the newest turn, and a growing reply is followed only while you're at the bottom, so scrolling up to read older turns isn't interrupted. The full-page Ask & Act keeps newest-first, because its composer is at the top. `e2e/specs/olio-chat-order.spec.ts` sends three requests and checks their order and that the view ends at the newest. It fails on the old order.

@@ -12,6 +12,8 @@ body,
 
 body {
   margin: 0;
+  /* Checkboxes and radios: charcoal on light, gold on dark, not browser blue. */
+  accent-color: var(--color-focus);
   font: var(--text-body);
   color: var(--color-text);
   background: var(--color-bg);

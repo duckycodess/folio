@@ -206,12 +206,15 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-6) var(--page-gutter) var(--space-8);
+  /* The bottom clears the floating Olio launcher (150px + its 16px inset),
+     so the last button on a page is never hidden behind it. */
+  padding: var(--space-6) var(--page-gutter) var(--launcher-clearance);
 }
 .main:focus {
   outline: none;
 }
 .main > .notice {
+  max-width: var(--content-max-width);
   margin-bottom: var(--space-4);
 }
 
@@ -219,16 +222,17 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-6);
-  max-width: 1080px;
+  max-width: var(--content-max-width);
 }
 .page-header {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
 }
+/* Brandkit: every page title is Manrope 800 at 34px, tracked in. */
 .page-title {
   font: var(--text-display);
-  letter-spacing: -0.02em;
+  letter-spacing: -0.032em;
 }
 /* Home header: at most ~96px tall (docs/design.md). */
 .page-header-home {
@@ -249,16 +253,17 @@
     display: none;
   }
 }
-.page-header-compact .page-title {
-  font: var(--text-title);
-  font-size: 1.5rem;
-  line-height: 2rem;
-}
 .page-tagline {
-  font: var(--text-heading);
-  font-weight: 400;
-  letter-spacing: 0.04em;
+  font: 400 0.9375rem/1.6 var(--font-sans);
   color: var(--color-text-secondary);
+}
+/* Short windows and narrow ones: the brandkit's 28px title, so content
+   still starts on the first screen. */
+@media (max-height: 767px), (max-width: 700px) {
+  .page-title {
+    font-size: 1.75rem;
+    line-height: 2.25rem;
+  }
 }
 .section {
   display: flex;
@@ -560,7 +565,10 @@
 }
 .form-actions {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
+  gap: var(--space-2);
 }
 .rename-preview {
   display: flex;
@@ -834,7 +842,8 @@
 }
 .model-name {
   margin: 0 var(--space-2) 0 0;
-  font: var(--text-label);
+  font: var(--text-heading);
+  font-size: 0.9375rem;
   overflow-wrap: anywhere;
 }
 .model-facts {
