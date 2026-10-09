@@ -1,3 +1,4 @@
+mod active_space;
 mod ai_boundary;
 mod config_guard;
 mod contract_fixtures;
@@ -1225,36 +1226,30 @@ fn model_store(app: &AppHandle) -> Result<ModelStore, NativeProviderError> {
     ModelStore::new(app_data_dir(app)?).map_err(native_error)
 }
 
-/// Selects the one persistent relationship space Folio is allowed to expose.
-/// The selected model must still be installed. The persistent preprocessing
-/// metadata is intentionally unresolved in this draft: #27's shared
-/// `stored_chunk_space` seam must supply it before this function can expose AI
-/// rows. Until then it returns `None`, deliberately leaving link rows only.
-/// An optional webview fingerprint is an assertion, never a selector.
+/// Selects the one persistent relationship space Folio is allowed to expose:
+/// #27's stored-chunk space for the selected, installed embedding model,
+/// derived from its descriptor (`active_space`) and required to be registered.
+/// The model store is read here, before any index or scan lock, and the
+/// embedding mutex is never taken. An optional webview fingerprint is an
+/// assertion, never a selector.
 fn active_relationship_space(
     app: &AppHandle,
     conn: &Connection,
     requested_space: Option<&str>,
 ) -> Result<Option<String>, FolioError> {
     let store = model_store(app)?;
-    let Some(model_id) = store.selected_model(ModelRole::Embedding)? else {
-        return Ok(None);
+    let selected = match store.selected_model(ModelRole::Embedding)? {
+        Some(model_id) => {
+            let descriptor = store.model(&model_id)?.clone();
+            let installed = matches!(
+                store.model_state(&model_id)?.status,
+                ModelInstallStatus::Installed
+            );
+            installed.then_some(descriptor)
+        }
+        None => None,
     };
-    let descriptor = store.model(&model_id)?.clone();
-    if !matches!(descriptor.role, ModelRole::Embedding)
-        || !matches!(store.model_state(&model_id)?.status, ModelInstallStatus::Installed)
-    {
-        return Ok(None);
-    }
-    let selected = index::SelectedEmbeddingModel {
-        model_id: descriptor.id,
-        revision: descriptor.revision,
-    };
-    // The interim provider's space includes title/path context and is not the
-    // persistent stored-chunk space. Do not derive an active persistent space
-    // from it. #27 must supply the shared `stored_chunk_space` metadata here;
-    // until that integration seam lands, links are the only safe rows.
-    let active = index::resolve_active_space(conn, Some(&selected), None)?;
+    let active = active_space::resolve_installed_descriptor(conn, selected.as_ref())?;
     if let (Some(active), Some(requested)) = (active.as_deref(), requested_space) {
         if active != requested {
             return Err(error(
@@ -1771,40 +1766,24 @@ where
             if let Some(slot) = guard.take() {
                 slot.provider.unload().map_err(native_error)?;
             }
-            let model_file = descriptor
-                .files
-                .iter()
-                .find(|file| file.path.ends_with(".onnx"))
-                .ok_or_else(|| NativeProviderError {
-                    code: folio_core::contracts::ProviderErrorCode::ModelCorrupt,
-                    message: "The selected embedding model has no ONNX file.".into(),
-                    detail: Some(model_id.clone()),
-                })?;
-            let tokenizer_file = descriptor
-                .files
-                .iter()
-                .find(|file| file.path.ends_with("tokenizer.json"))
-                .ok_or_else(|| NativeProviderError {
-                    code: folio_core::contracts::ProviderErrorCode::ModelCorrupt,
-                    message: "The selected embedding model has no tokenizer file.".into(),
-                    detail: Some(model_id.clone()),
-                })?;
+            let e5 = folio_core::embeddings::e5_inputs_from_descriptor(&descriptor)
+                .map_err(native_error)?;
             let model_path = store
-                .verified_file_path(&model_id, &model_file.path)
+                .verified_file_path(&model_id, &e5.model_file)
                 .map_err(native_error)?;
             let tokenizer_path = store
-                .verified_file_path(&model_id, &tokenizer_file.path)
+                .verified_file_path(&model_id, &e5.tokenizer_file)
                 .map_err(native_error)?;
             let provider = OrtE5Provider::from_files(
                 model_path,
                 tokenizer_path,
-                descriptor.id.clone(),
-                descriptor.revision.clone(),
-                descriptor.quantization.clone(),
-                384,
-                &model_file.sha256,
-                &tokenizer_file.sha256,
-                folio_core::embeddings::DEFAULT_MAX_TOKENS,
+                e5.inputs.model_id.clone(),
+                e5.inputs.revision.clone(),
+                e5.inputs.quantization.clone(),
+                e5.inputs.dimensions,
+                &e5.inputs.model_sha256,
+                &e5.inputs.tokenizer_sha256,
+                e5.inputs.max_tokens,
                 folio_core::embeddings::DEFAULT_BATCH_SIZE,
                 2,
             )
