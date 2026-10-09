@@ -175,6 +175,14 @@ Merge with `main` and second review follow-up (2026-10-10, Linux, Node.js 24):
 - `npm run check`, `npm test` (427 passed, 9 todo), `npm run build` and `npm run check:bundle` passed. Playwright: 31 passed. The 4 `viewports` axe failures (`.olio-chat-greeting` outside a landmark) fail the same way on `main` and come from the Olio chat, not Activity.
 - Native: `cargo test --no-run` and `cargo check --tests` compiled everything, but the tests couldn't run on this host. It's a QEMU virtual CPU without AVX, and the test binary stops with SIGILL before any test starts, as `main`'s build does. The new native tests still need CI's `desktop-check`. The Tauri app wasn't opened.
 
+## Opening a file from the list (issue #85)
+
+A single click on a row already opened the file (`ListRow`'s own doc comment said so), and the row's **⋯ → Open** action calls the same `workspace.selectDocument`, so neither was actually broken in isolation — a Playwright sweep of the browser preview confirmed click, ⋯ → Open (including switching between files and reopening the same file after closing it), and overlay/narrow mode all open the file correctly. What was genuinely missing: `ListRow` had no `onDoubleClick` at all, so a fast double click relied on two ordinary click events landing cleanly rather than any explicit double-click handling, and a stray native double-click side effect (text selection) could show instead. Added an explicit `onDoubleClick` that calls the same `onSelect`, confirmed via Playwright it opens the file with no duplicated panel.
+
+The reported "open button not working" in the real desktop app could not be reproduced here: the browser preview's sample files never call the native `read_document` path at all (`selectDocument` short-circuits when `document.content` is already set), so a native-read-specific failure wouldn't show up in this harness. If it recurs, check `workspace.failure`/`RecoveryNotice` for a surfaced error first — the native read path does propagate failures there.
+
+`npm run check`, `npm test` (427 passed, 9 todo) and `npm run build` passed. The Tauri app wasn't opened against a real folder for this change.
+
 ## A chosen file was ignored when asking a question (issue #88)
 
 Investigating #88 found the disambiguation half of the report was already correct, not broken: `chooseFile` (`src/app/askAct.ts`) already fires for `summarize` (an ambiguous target) and for a `change`/edit request (the native `needsFileSelection` status) — a plain conversational question deliberately never asks "which file", because `answer_question` answers from retrieval across the whole folder, which is the right behavior for open-ended questions.
@@ -261,6 +269,12 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 8-GB measurement is claimed here.
 
 ## Verification
+
+### Sidebar local AI status (2026-10-10, issue #89)
+
+The sidebar's status pill was hard-coded to "Local AI not set up". It now reads the model store through `useModels()`, using the same `localAiStatus()` as the floating chat and Model Lab, so the three always agree. It says "Local AI ready" (green dot) only when the selected writing model is installed, and "Checking local AI…" while that model is still being verified rather than "not set up". It also says "Local AI status unavailable" (red dot) when the check fails, and "Local AI needs the desktop app" in the browser preview. Clicking it still opens Model Lab. The shell reads the model store once and passes the label to the floating chat, so the installed models are verified once instead of once per consumer. Selecting or removing a model in Model Lab now refreshes the other readers too.
+
+Tested: `npm run check`, `npm test` (428 passed, including a new case for "checking" while the selected model is verified) and `npm run build`. The desktop app launched on macOS with the models installed, but the pill's text in the window was not captured, so the "ready" state in the real app is not verified by this entry.
 
 ### Embedding store fill (2026-10-10, issue #27)
 
