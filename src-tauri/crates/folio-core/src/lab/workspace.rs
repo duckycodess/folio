@@ -78,6 +78,9 @@ impl LabWorkspaces {
             self.remove_root(&root)?;
         }
         fs::create_dir_all(&root)?;
+        // The marker goes first, so a copy that fails part way can still be
+        // replaced by the next attempt.
+        fs::write(root.join(MARKER_FILE), MARKER_TEXT)?;
         for document in &corpus.documents {
             if !safe_relative(&document.relative_path) {
                 return Err(refuse(format!(
@@ -91,7 +94,6 @@ impl LabWorkspaces {
             }
             fs::write(&target, document.content.as_bytes())?;
         }
-        fs::write(root.join(MARKER_FILE), MARKER_TEXT)?;
         Ok(LabWorkspace { root })
     }
 
