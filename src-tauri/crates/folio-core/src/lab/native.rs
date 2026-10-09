@@ -111,6 +111,10 @@ impl GeneratorFactory for StoreGeneratorFactory {
             LlamaServerProvider::from_verified_model(&self.executable, verified, self.threads)?
                 .with_lab_options(LabServerOptions {
                     gpu_layers: self.cpu_only.then_some(0),
+                    device: self.cpu_only.then(|| "none".to_string()),
+                    // Only `restart` may start a process, so a request can never
+                    // run on a server the lab did not restart and measure.
+                    no_implicit_start: true,
                     log_path: self
                         .log_dir
                         .as_ref()

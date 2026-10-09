@@ -90,6 +90,14 @@ pub struct LabServerOptions {
     /// `Some(0)` keeps every layer on the CPU (`--n-gpu-layers 0`). `None`
     /// leaves the runtime to decide.
     pub gpu_layers: Option<u32>,
+    /// `Some("none")` offloads to no device (`--device none`). `None` leaves the
+    /// runtime to decide.
+    pub device: Option<String>,
+    /// Lab requests never start a process: only [`LlamaServerProvider::ensure_started`]
+    /// may. A server that exited or was stopped after a timeout is not silently
+    /// replaced, so a later request cannot run on a different process than the
+    /// one the lab restarted and measured.
+    pub no_implicit_start: bool,
     /// Where the server's stdout and stderr go, so the backend it chose can be
     /// read back. The file is replaced each time the server starts.
     pub log_path: Option<PathBuf>,
@@ -98,10 +106,16 @@ pub struct LabServerOptions {
 impl LabServerOptions {
     /// The extra arguments these options add to the fixed launch arguments.
     pub fn extra_args(&self) -> Vec<String> {
-        match self.gpu_layers {
-            Some(layers) => vec!["--n-gpu-layers".into(), layers.to_string()],
-            None => Vec::new(),
+        let mut args = Vec::new();
+        if let Some(layers) = self.gpu_layers {
+            args.push("--n-gpu-layers".into());
+            args.push(layers.to_string());
         }
+        if let Some(device) = &self.device {
+            args.push("--device".into());
+            args.push(device.clone());
+        }
+        args
     }
 }
 
@@ -226,6 +240,10 @@ impl LlamaServerProvider {
     }
 
     fn endpoint(&self, cancel: &AtomicBool) -> CoreResult<(String, String)> {
+        self.endpoint_with(cancel, !self.lab.no_implicit_start)
+    }
+
+    fn endpoint_with(&self, cancel: &AtomicBool, may_start: bool) -> CoreResult<(String, String)> {
         let mut state = self
             .state
             .lock()
@@ -241,6 +259,12 @@ impl LlamaServerProvider {
                 let _ = running.child.wait();
                 state.running = None;
             }
+        }
+        if !may_start {
+            return Err(provider(
+                ProviderErrorCode::RuntimeStartFailed,
+                "The Model Lab server is not running; the lab restarts it explicitly.",
+            ));
         }
         if cancel.load(Ordering::Relaxed) {
             return Err(provider(
@@ -367,7 +391,7 @@ impl LlamaServerProvider {
     /// `/health`, without sending a request. Lets a caller time startup apart
     /// from the first request.
     pub fn ensure_started(&self, cancel: &AtomicBool) -> CoreResult<()> {
-        self.endpoint(cancel).map(|_| ())
+        self.endpoint_with(cancel, true).map(|_| ())
     }
 
     pub fn cancel_active(&self) -> CoreResult<()> {
@@ -789,9 +813,18 @@ mod tests {
         assert!(LabServerOptions::default().extra_args().is_empty());
         let cpu_only = LabServerOptions {
             gpu_layers: Some(0),
-            log_path: None,
+            device: Some("none".into()),
+            ..LabServerOptions::default()
         };
-        assert_eq!(cpu_only.extra_args(), vec!["--n-gpu-layers", "0"]);
+        assert_eq!(
+            cpu_only.extra_args(),
+            vec!["--n-gpu-layers", "0", "--device", "none"]
+        );
+        let layers_only = LabServerOptions {
+            gpu_layers: Some(0),
+            ..LabServerOptions::default()
+        };
+        assert_eq!(layers_only.extra_args(), vec!["--n-gpu-layers", "0"]);
         // The fixed product arguments are unchanged and carry no offload setting.
         let args = LlamaServerProvider::build_server_args(
             Path::new("/opt/llama-server"),
@@ -803,6 +836,56 @@ mod tests {
         assert!(!args
             .iter()
             .any(|arg| arg.contains("gpu-layers") || arg == "-ngl"));
+    }
+
+    #[test]
+    fn a_lab_provider_never_starts_a_server_for_a_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("llama-server");
+        let model_path = dir.path().join("model.gguf");
+        fs::write(&executable, b"not a server").unwrap();
+        fs::write(&model_path, b"x").unwrap();
+        let descriptor = ModelDescriptor {
+            id: "m".into(),
+            role: ModelRole::Generation,
+            repo: "r".into(),
+            revision: "r".into(),
+            files: vec![],
+            quantization: "q".into(),
+            license: "l".into(),
+            runtime: "llama.cpp".into(),
+            optional_pack: false,
+        };
+        let provider = LlamaServerProvider::from_verified_model(
+            &executable,
+            VerifiedModelFile {
+                descriptor,
+                path: model_path,
+            },
+            1,
+        )
+        .unwrap()
+        .with_lab_options(LabServerOptions {
+            no_implicit_start: true,
+            ..LabServerOptions::default()
+        });
+        let cancel = AtomicBool::new(false);
+        let failure = provider
+            .generate_json(
+                &json!({"type": "object"}),
+                &[],
+                &GenerationBudget::default(),
+                &cancel,
+            )
+            .unwrap_err();
+        match failure {
+            CoreError::Provider(failure) => {
+                assert_eq!(failure.code, ProviderErrorCode::RuntimeStartFailed);
+                assert!(failure.message.contains("restarts it explicitly"));
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(provider.server_pid(), None, "nothing was spawned");
     }
 
     #[test]
@@ -840,6 +923,7 @@ mod tests {
         let provider = build(LabServerOptions {
             gpu_layers: Some(0),
             log_path: Some(log_path.clone()),
+            ..LabServerOptions::default()
         });
         assert_eq!(
             provider.lab_log(),
