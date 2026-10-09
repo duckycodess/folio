@@ -624,6 +624,7 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
     pub(crate) fn interpretation_corpus(
         &mut self,
         target_description: Option<&str>,
+        chosen_document_id: Option<&str>,
     ) -> NativeResult<InterpretationCorpus> {
         self.refresh_files()?;
         let mut documents = index::list_documents(self.conn, &self.root.id)?
@@ -648,10 +649,17 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
             .filter(|(matched, _)| *matched > 0)
             .collect::<Vec<_>>();
         candidates.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-        let mut chosen = candidates
+        // A file the user picked is read first, whatever the description says.
+        let mut chosen = chosen_document_id
+            .map(str::to_owned)
             .into_iter()
-            .map(|(_, id)| id)
             .collect::<Vec<_>>();
+        chosen.extend(
+            candidates
+                .into_iter()
+                .map(|(_, id)| id)
+                .filter(|id| Some(id.as_str()) != chosen_document_id),
+        );
         let mut seen = chosen.iter().cloned().collect::<HashSet<_>>();
         for hit in index::keyword_hits(self.conn, &self.root.id, &terms, None, 50)? {
             if seen.insert(hit.passage.document_id.clone()) {
@@ -1196,11 +1204,25 @@ mod tests {
     }
 
     #[test]
+    fn a_file_the_user_picked_is_read_whatever_the_description_says() {
+        let mut harness = Harness::fixtures();
+        let mut embedder = ConceptEmbedder::new("r1");
+        let budget = id_of(&harness.root, "personal/budget-notes.md");
+        let (corpus, _) = harness.request(&mut embedder, |index| {
+            index.interpretation_corpus(Some("something unrelated"), Some(&budget))
+        });
+        let corpus = corpus.unwrap();
+        assert!(corpus.contents.contains_key(&budget));
+        assert!(corpus.chunks.iter().any(|chunk| chunk.document_id == budget));
+        assert_eq!(corpus.contents.len(), 1, "nothing else matched");
+    }
+
+    #[test]
     fn interpretation_reads_only_the_files_a_target_description_could_mean() {
         let mut harness = Harness::fixtures();
         let mut embedder = ConceptEmbedder::new("r1");
         let (corpus, _) = harness.request(&mut embedder, |index| {
-            index.interpretation_corpus(Some("meeting notes"))
+            index.interpretation_corpus(Some("meeting notes"), None)
         });
         let corpus = corpus.unwrap();
         let all = harness.chunk_total();

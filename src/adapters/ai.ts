@@ -66,11 +66,16 @@ export function answerQuestion(
   return call("answer_question", { workspaceId, question, documentId });
 }
 
+/**
+ * `documentId` is a file the user picked or attached: a change then targets
+ * it directly instead of being resolved from the request's wording.
+ */
 export function interpretRequest(
   workspaceId: string,
   text: string,
+  documentId?: string,
 ): Promise<InterpretationResult> {
-  return call("interpret_request", { workspaceId, text });
+  return call("interpret_request", { workspaceId, text, documentId });
 }
 
 export function unloadGeneration(): Promise<void> {

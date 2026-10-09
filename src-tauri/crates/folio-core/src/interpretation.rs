@@ -220,6 +220,22 @@ pub fn resolve_model_intent(
     contents: &HashMap<String, String>,
     chunks: &[Chunk],
 ) -> InterpretationResult {
+    resolve_model_intent_for(intent, request_language, documents, contents, chunks, None)
+}
+
+/// Like [`resolve_model_intent`], for a request the user made about a file
+/// they already picked or attached. A change then targets that file, whatever
+/// the description says, so the user is not asked again which file they meant.
+/// Documents are still evidence only: the chosen id comes from the user's
+/// selection, never from a document or the model.
+pub fn resolve_model_intent_for(
+    intent: &ModelIntent,
+    request_language: Language,
+    documents: &[DocumentRecord],
+    contents: &HashMap<String, String>,
+    chunks: &[Chunk],
+    chosen_document_id: Option<&str>,
+) -> InterpretationResult {
     match intent.intent {
         IntentKind::Search => return non_mutating(NonMutatingIntent::Search, intent, None),
         IntentKind::Summarize => {
@@ -284,29 +300,48 @@ pub fn resolve_model_intent(
         IntentKind::Edit | IntentKind::Rename | IntentKind::Move => {}
     }
 
-    let Some(target_description) = intent
-        .target_description
-        .as_deref()
-        .filter(|value| !value.trim().is_empty())
-    else {
-        return clarification(
-            "Which file should I use?".into(),
-            "A mutation request needs a target description.",
-        );
-    };
-    let Some(target) = resolve_target(target_description, documents, contents, chunks) else {
-        let candidates = candidate_results(target_description, documents, chunks);
-        if candidates.is_empty() {
-            return clarification(
-                "Which file should I use?".into(),
-                "No authorized file matched the target description.",
-            );
+    let target = match chosen_document_id {
+        Some(id) => {
+            let Some(document) = documents.iter().find(|document| document.id == id) else {
+                return clarification(
+                    "I could not find that file in this folder.".into(),
+                    "The chosen file is not in the folder's index.",
+                );
+            };
+            (
+                document.clone(),
+                duplicate_paths(document, documents, contents),
+            )
         }
-        return InterpretationResult::NeedsFileSelection {
-            candidates,
-            pending_intent: serde_json::to_string(intent).unwrap_or_else(|_| "{}".into()),
-            purpose: FileSelectionPurpose::Change,
-        };
+        None => {
+            let Some(target_description) = intent
+                .target_description
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            else {
+                return clarification(
+                    "Which file should I use?".into(),
+                    "A mutation request needs a target description.",
+                );
+            };
+            let Some(target) = resolve_target(target_description, documents, contents, chunks)
+            else {
+                let candidates = candidate_results(target_description, documents, chunks);
+                if candidates.is_empty() {
+                    return clarification(
+                        "Which file should I use?".into(),
+                        "No authorized file matched the target description.",
+                    );
+                }
+                return InterpretationResult::NeedsFileSelection {
+                    candidates,
+                    pending_intent: serde_json::to_string(intent)
+                        .unwrap_or_else(|_| "{}".into()),
+                    purpose: FileSelectionPurpose::Change,
+                };
+            };
+            target
+        }
     };
     let (document, exact_duplicate_paths) = target;
     if document.media_type == "application/pdf" {
@@ -1069,6 +1104,85 @@ mod tests {
             resolve(&about(IntentKind::Search, "meeting notes")),
             InterpretationResult::NonMutating { document: None, .. }
         ));
+    }
+
+    fn chosen_edit(description: Option<&str>) -> ModelIntent {
+        ModelIntent {
+            target_description: description.map(str::to_owned),
+            find: Some("October 20".into()),
+            replace: Some("October 21".into()),
+            ..intent(IntentKind::Edit)
+        }
+    }
+
+    fn resolve_chosen(model_intent: &ModelIntent, chosen: &str) -> InterpretationResult {
+        let (documents, chunks) = corpus();
+        let contents = documents
+            .iter()
+            .map(|document| {
+                let text = chunks
+                    .iter()
+                    .filter(|chunk| chunk.document_id == document.id)
+                    .map(|chunk| chunk.text.as_str())
+                    .collect::<String>();
+                (document.id.clone(), text)
+            })
+            .collect::<HashMap<_, _>>();
+        resolve_model_intent_for(
+            model_intent,
+            Language::En,
+            &documents,
+            &contents,
+            &chunks,
+            Some(chosen),
+        )
+    }
+
+    #[test]
+    fn a_change_to_a_chosen_file_needs_no_description_and_ignores_a_misleading_one() {
+        for description in [None, Some("notes"), Some("the budget file")] {
+            let result = resolve_chosen(&chosen_edit(description), "projects/project-plan.md");
+            match result {
+                InterpretationResult::Proposal {
+                    proposal: OperationProposal::Edit { relative_path, .. },
+                    exact_duplicate_paths,
+                    ..
+                } => {
+                    assert_eq!(relative_path, "projects/project-plan.md", "{description:?}");
+                    assert_eq!(exact_duplicate_paths, ["archive/project-plan-copy.md"]);
+                }
+                other => panic!("{description:?}: {other:?}"),
+            }
+        }
+        let mut rename = intent(IntentKind::Rename);
+        rename.target_description = Some("meeting notes".into());
+        rename.destination = Some("plan-final.md".into());
+        assert!(matches!(
+            resolve_chosen(&rename, "projects/project-plan.md"),
+            InterpretationResult::Proposal {
+                proposal: OperationProposal::Rename { relative_path, .. },
+                ..
+            } if relative_path == "projects/project-plan.md"
+        ));
+    }
+
+    #[test]
+    fn a_chosen_file_outside_the_index_or_a_pdf_is_never_changed() {
+        assert!(matches!(
+            resolve_chosen(&chosen_edit(None), "nowhere/missing.md"),
+            InterpretationResult::NeedsClarification { .. }
+        ));
+        let (mut documents, chunks) = corpus();
+        documents[0].media_type = "application/pdf".into();
+        let result = resolve_model_intent_for(
+            &chosen_edit(None),
+            Language::En,
+            &documents,
+            &HashMap::new(),
+            &chunks,
+            Some("projects/project-plan.md"),
+        );
+        assert!(matches!(result, InterpretationResult::Unsupported { .. }));
     }
 
     #[test]

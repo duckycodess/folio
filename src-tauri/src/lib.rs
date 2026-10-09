@@ -1648,7 +1648,8 @@ async fn answer_question(
 
 /// Interprets a request. The model sees the request only; the folder's index is
 /// brought up to date, and then only the few files the target description could
-/// mean are read, to resolve it.
+/// mean are read, to resolve it. `document_id` is a file the user picked or
+/// attached: a change then targets it directly.
 #[tauri::command]
 async fn interpret_request(
     app: AppHandle,
@@ -1658,7 +1659,9 @@ async fn interpret_request(
     generation_state: State<'_, GenerationState>,
     workspace_id: String,
     text: String,
+    document_id: Option<String>,
 ) -> Result<InterpretationResult, FolioError> {
+    let document_id = ai_boundary::validate_document_filter(&workspace_id, document_id.as_deref())?;
     let request = AiRequest::new(
         &app,
         state.inner(),
@@ -1678,13 +1681,17 @@ async fn interpret_request(
                 Ok(intent) => intent,
                 Err(invalid) => return Ok(invalid),
             };
-            let corpus = index.interpretation_corpus(intent.target_description.as_deref())?;
-            Ok(interpretation::resolve_model_intent(
+            let corpus = index.interpretation_corpus(
+                intent.target_description.as_deref(),
+                document_id.as_deref(),
+            )?;
+            Ok(interpretation::resolve_model_intent_for(
                 &intent,
                 grounding::detect_language(&text),
                 &corpus.documents,
                 &corpus.contents,
                 &corpus.chunks,
+                document_id.as_deref(),
             ))
         })
     })
