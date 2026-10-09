@@ -14,6 +14,11 @@ export interface DocumentRecord {
   contentHash?: string;
 }
 
+/**
+ * `start`/`end` are UTF-16 code-unit offsets (JavaScript string indices) into the
+ * document's extracted text, so `content.slice(start, end) === text`. For PDFs the
+ * extracted text is the pages joined by a blank line; `page` is 1-based.
+ */
 export interface SourcePassage {
   documentId: DocumentId;
   start: number;
@@ -109,6 +114,96 @@ export interface ActionPlan {
 export interface WorkspaceInfo {
   id: string;
   rootPath: string;
+}
+
+/** A folder previously authorized through the native picker. */
+export interface KnownWorkspace extends WorkspaceInfo {
+  authorizedAt: string;
+  lastOpenedAt: string | null;
+  /** False when the folder is gone or Folio lost permission to read it. */
+  available: boolean;
+}
+
+export type NativeErrorCode =
+  | "PATH_ESCAPE"
+  | "NOT_AUTHORIZED"
+  | "NOT_FOUND"
+  | "UNSUPPORTED"
+  | "TOO_LARGE"
+  | "INVALID_INPUT"
+  | "BUSY"
+  | "EMBEDDING_SPACE_MISMATCH"
+  | "IO"
+  | "DATABASE";
+
+/** Every native command rejects with this shape. */
+export interface NativeError {
+  code: NativeErrorCode;
+  message: string;
+}
+
+export type MediaType = "text/plain" | "text/markdown" | "application/pdf";
+
+/**
+ * `indexed`: current content is searchable. `unsupported`: readable but not indexable
+ * (e.g. a scanned PDF without a text layer). `failed`: never indexed successfully.
+ * `stale`: the file changed but could not be re-read; search shows the previous version.
+ */
+export type IndexStatus = "indexed" | "unsupported" | "failed" | "stale";
+
+/** A document as recorded by the native index. `id` is stable across Folio renames/moves. */
+export interface IndexedDocument extends DocumentRecord {
+  contentHash: string;
+  mediaType: MediaType;
+  status: IndexStatus;
+  statusMessage?: string;
+  modifiedAt: string;
+  indexedAt: string | null;
+}
+
+export interface IndexProgress {
+  workspaceId: string;
+  phase: "discovering" | "indexing" | "linking" | "done" | "cancelled";
+  processed: number;
+  total: number;
+  currentPath?: string;
+}
+
+/** Counts describe one scan; `unchanged` documents were not re-extracted. */
+export interface ScanSummary {
+  workspaceId: string;
+  total: number;
+  added: number;
+  updated: number;
+  unchanged: number;
+  removed: number;
+  unsupported: number;
+  failed: number;
+  stale: number;
+  skipped: number;
+  cancelled: boolean;
+  durationMs: number;
+}
+
+/** Documents whose bytes were re-read and found identical; not a similarity judgement. */
+export interface DuplicateGroup {
+  contentHash: string;
+  sizeBytes: number;
+  documents: IndexedDocument[];
+}
+
+/** A chunk without a vector in the given embedding space. */
+export interface PendingChunk {
+  chunkId: number;
+  documentId: DocumentId;
+  text: string;
+}
+
+/** Exact cosine match within a single embedding space. */
+export interface VectorCandidate {
+  chunkId: number;
+  score: number;
+  passage: SourcePassage;
 }
 
 export interface BenchmarkResult {
