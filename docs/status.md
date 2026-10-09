@@ -325,6 +325,8 @@ real-model quality, or target-device resource use.
 - Headless Edge, browser preview with sample files: Shift+F10 on a focused node opens the menu with all four actions disabled and the reason; Enter on a disabled item opens nothing; Escape returns focus to the node and a second Escape deselects; a right-click on a node that wasn't open opens its menu; reopening the file doesn't reopen the menu; Home's ⋯ menu is unchanged. No page errors.
 - **Not checked:** an actual delete, rename, move or edit from the map against the real native core (only sample files in the browser preview), screen readers, and the Tauri app. Writes only after approval, stale previews being refused and Undo of a deletion are covered by #44's native tests; this PR reuses that plan flow.
 
+Restored on main (2026-10-11, macOS, Node.js): #73 had been merged into `gab/35-activity-source` after #72 landed, so none of this reached main until now. The merge was adapted to main's newer shell and Ripple list; the delete preview passes `generationReady` and, as in #73, shows no Ripple Explain. `npm run check`, `npm test` (485 passed, 9 todo) and `npm run build` pass. Not checked in the Tauri app, and `cargo test` was not run (no native changes).
+
 PR #73 review follow-up (2026-10-10, Linux, Node.js 24.15.0):
 
 - Delete recovers from a stale preview: a refused apply keeps the preview, and Preview again (or Retry after a failed preview) reads the file again, so the old hash is never resent. The dialog closes only on Cancel, Escape, Done or a folder change, not when the preview is being rebuilt. Delete uses `fileActionAvailability`, so it also refuses PDFs itself. `useOrganize` approves only from a preview on screen with no refusal.
