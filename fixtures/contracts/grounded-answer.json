@@ -1,45 +1,43 @@
 {
-  "text": "Ang deadline ay October 20.",
+  "text": "Community Learning Project is due October 20.",
   "sources": [
     {
-      "documentId": "fixtures:projects/project-plan.md",
-      "documentContentHash": "sha256:8a1cd1bb4f42b6836f0b671648dd3ef81e28a5b08e5d96c72e7e094ea75786ef",
+      "documentId": "fixtures:projects/submission-checklist.md",
+      "documentContentHash": "sha256:8b3538ff1e91ed23104eb5ca6083bf4e44ea37cc8bcb23878d384ca1346bc15a",
       "offsetUnit": "utf8Byte",
-      "start": 84,
-      "end": 94,
-      "text": "October 20"
+      "start": 43,
+      "end": 88,
+      "text": "Community Learning Project — due October 20"
     }
   ],
   "kind": "fileSummary",
   "sentences": [
     {
-      "text": "Ang deadline ay October 20.",
+      "text": "Community Learning Project is due October 20.",
       "citations": [
         {
-          "documentId": "fixtures:projects/project-plan.md",
-          "documentContentHash": "sha256:8a1cd1bb4f42b6836f0b671648dd3ef81e28a5b08e5d96c72e7e094ea75786ef",
+          "documentId": "fixtures:projects/submission-checklist.md",
+          "documentContentHash": "sha256:8b3538ff1e91ed23104eb5ca6083bf4e44ea37cc8bcb23878d384ca1346bc15a",
           "offsetUnit": "utf8Byte",
-          "start": 84,
-          "end": 94,
-          "text": "October 20"
+          "start": 43,
+          "end": 88,
+          "text": "Community Learning Project — due October 20"
         }
       ]
     }
   ],
-  "coverage": [
-    "fixtures:projects/project-plan.md"
-  ],
+  "coverage": ["fixtures:projects/submission-checklist.md"],
   "modelId": "qwen3-0.6b-q4",
   "revision": "revision-a",
   "coverageRanges": [
     {
-      "documentId": "fixtures:projects/project-plan.md",
-      "documentContentHash": "sha256:8a1cd1bb4f42b6836f0b671648dd3ef81e28a5b08e5d96c72e7e094ea75786ef",
+      "documentId": "fixtures:projects/submission-checklist.md",
+      "documentContentHash": "sha256:8b3538ff1e91ed23104eb5ca6083bf4e44ea37cc8bcb23878d384ca1346bc15a",
       "offsetUnit": "utf8Byte",
       "ranges": [
         {
           "start": 0,
-          "end": 390
+          "end": 303
         }
       ],
       "complete": true

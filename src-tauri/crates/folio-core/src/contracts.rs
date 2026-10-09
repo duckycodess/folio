@@ -339,35 +339,35 @@ mod contract_tests {
     #[test]
     fn grounded_result_round_trips() {
         let passage = SourcePassage {
-            document_id: "fixtures:projects/project-plan.md".into(),
+            document_id: "fixtures:projects/submission-checklist.md".into(),
             document_content_hash:
-                "sha256:8a1cd1bb4f42b6836f0b671648dd3ef81e28a5b08e5d96c72e7e094ea75786ef".into(),
+                "sha256:8b3538ff1e91ed23104eb5ca6083bf4e44ea37cc8bcb23878d384ca1346bc15a".into(),
             offset_unit: OffsetUnit::Utf8Byte,
-            start: 84,
-            end: 94,
-            text: "October 20".into(),
+            start: 43,
+            end: 88,
+            text: "Community Learning Project — due October 20".into(),
             page: None,
         };
         round_trip(
             "grounded-answer",
             serde_json::to_value(GroundedResult {
-                text: "Ang deadline ay October 20.".into(),
+                text: "Community Learning Project is due October 20.".into(),
                 sources: vec![passage.clone()],
-                coverage: vec!["fixtures:projects/project-plan.md".into()],
+                coverage: vec!["fixtures:projects/submission-checklist.md".into()],
                 model_id: "qwen3-0.6b-q4".into(),
                 revision: "revision-a".into(),
                 kind: GroundedAnswerKind::FileSummary,
                 sentences: vec![GroundedSentence {
-                    text: "Ang deadline ay October 20.".into(),
+                    text: "Community Learning Project is due October 20.".into(),
                     citations: vec![passage],
                 }],
                 coverage_ranges: vec![CoverageEntry {
-                    document_id: "fixtures:projects/project-plan.md".into(),
+                    document_id: "fixtures:projects/submission-checklist.md".into(),
                     document_content_hash:
-                        "sha256:8a1cd1bb4f42b6836f0b671648dd3ef81e28a5b08e5d96c72e7e094ea75786ef"
+                        "sha256:8b3538ff1e91ed23104eb5ca6083bf4e44ea37cc8bcb23878d384ca1346bc15a"
                             .into(),
                     offset_unit: OffsetUnit::Utf8Byte,
-                    ranges: vec![CoverageRange { start: 0, end: 390 }],
+                    ranges: vec![CoverageRange { start: 0, end: 303 }],
                     complete: true,
                 }],
                 uncited_sentence_count: 0,

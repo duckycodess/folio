@@ -211,6 +211,21 @@ mod tests {
     }
 
     #[test]
+    fn utf8_offsets_keep_non_ascii_prefix_bytes() {
+        let content = "ñ\n\nOctober 20";
+        let chunks = chunk_text("notes.md", content, 10, &content_hash(content)).unwrap();
+
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].start, 0);
+        assert_eq!(chunks[0].end, 4);
+        assert_eq!(chunks[0].text, "ñ\n\n");
+        assert_eq!(chunks[1].start, 4);
+        assert_eq!(chunks[1].end, 14);
+        assert_eq!(chunks[1].text, "October 20");
+        assert_eq!(&content[chunks[1].start..chunks[1].end], chunks[1].text);
+    }
+
+    #[test]
     fn paragraph_chunks_merge_without_splitting_surrogates() {
         let content = "one\n\ntwo 📄\n\nthree";
         let source = InterimTextChunker::new(vec![TextDocument::new(record("notes.md"), content)]);

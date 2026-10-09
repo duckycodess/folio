@@ -4,7 +4,7 @@ import providerError from "../../fixtures/contracts/provider-error.json";
 import modelDescriptor from "../../fixtures/contracts/model-descriptor.json";
 import groundedAnswer from "../../fixtures/contracts/grounded-answer.json";
 import interpretationResult from "../../fixtures/contracts/interpretation-result.json";
-import projectPlan from "../../fixtures/documents/projects/project-plan.md?raw";
+import submissionChecklist from "../../fixtures/documents/projects/submission-checklist.md?raw";
 import { assertPassageMatches, sliceByUtf8Offsets } from "./offsets";
 import type {
   GroundedAnswer,
@@ -150,34 +150,38 @@ describe("native contract goldens", () => {
     const answer: GroundedAnswer = result;
     expect(result.kind).toBe("fileSummary");
     expect(answer.sources[0].documentId).toBe(
-      "fixtures:projects/project-plan.md",
+      "fixtures:projects/submission-checklist.md",
     );
-    expect(answer.coverage).toEqual(["fixtures:projects/project-plan.md"]);
+    expect(answer.coverage).toEqual([
+      "fixtures:projects/submission-checklist.md",
+    ]);
     expect(answer.revision).toBe("revision-a");
     expect(result.coverageRanges[0].offsetUnit).toBe("utf8Byte");
+    expect(result.sources[0].start).toBe(43);
+    expect(result.sources[0].end).toBe(88);
     expect(interpretationResult.status).toBe("needsClarification");
     expect(hasOnlyCamelCaseKeys(answer)).toBe(true);
     expect(hasOnlyCamelCaseKeys(result)).toBe(true);
     expect(hasOnlyCamelCaseKeys(interpretationResult)).toBe(true);
 
     const expectedHash =
-      "sha256:8a1cd1bb4f42b6836f0b671648dd3ef81e28a5b08e5d96c72e7e094ea75786ef";
+      "sha256:8b3538ff1e91ed23104eb5ca6083bf4e44ea37cc8bcb23878d384ca1346bc15a";
     for (const passage of [
       ...result.sources,
       ...result.sentences.flatMap((sentence) => sentence.citations),
     ]) {
       expect(passage.documentContentHash).toBe(expectedHash);
-      assertPassageMatches(passage, projectPlan, expectedHash);
-      expect(sliceByUtf8Offsets(projectPlan, passage.start, passage.end)).toBe(
-        passage.text,
-      );
+      assertPassageMatches(passage, submissionChecklist, expectedHash);
+      expect(
+        sliceByUtf8Offsets(submissionChecklist, passage.start, passage.end),
+      ).toBe(passage.text);
     }
     for (const entry of result.coverageRanges) {
       expect(entry.documentContentHash).toBe(expectedHash);
       for (const range of entry.ranges) {
-        expect(sliceByUtf8Offsets(projectPlan, range.start, range.end)).toBe(
-          projectPlan.slice(0),
-        );
+        expect(
+          sliceByUtf8Offsets(submissionChecklist, range.start, range.end),
+        ).toBe(submissionChecklist.slice(0));
       }
     }
   });
