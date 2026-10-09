@@ -2,6 +2,7 @@ import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { failSoon, simulatedFailure } from "../adapters/simulate";
 import {
   chooseWorkspace,
+  listFolder,
   loadFixtureDocuments,
   nativeAvailable,
   readNativeDocument,
@@ -49,8 +50,6 @@ export interface WorkspaceState {
   results: SearchResult[];
   relationships: Relationship[];
   selected: DocumentRecord | undefined;
-  /** Related documents for the selection, from explicit links only. */
-  neighbors: DocumentRecord[];
   busy: boolean;
   failure: Failure | null;
   dismissFailure: () => void;
@@ -61,6 +60,11 @@ export interface WorkspaceState {
   selectDocument: (document: DocumentRecord) => Promise<void>;
   clearSelection: () => void;
   selectFolder: () => Promise<void>;
+  /**
+   * Lists the open folder again after Folio changed it. Paths, and so
+   * document identities, may have changed; a vanished selection is cleared.
+   */
+  refreshFolder: () => Promise<void>;
   /** Desktop only: list the bundled sample files before adding a folder. */
   showSamples: () => void;
 }
@@ -112,19 +116,6 @@ export function useWorkspace(): WorkspaceState {
     () => discoverExplicitReferences(documents),
     [documents],
   );
-  const neighbors = useMemo(() => {
-    const ids = new Set(
-      relationships
-        .filter(
-          (edge) =>
-            edge.sourceId === selectedId || edge.targetId === selectedId,
-        )
-        .map((edge) =>
-          edge.sourceId === selectedId ? edge.targetId : edge.sourceId,
-        ),
-    );
-    return documents.filter((document) => ids.has(document.id));
-  }, [relationships, selectedId, documents]);
 
   async function selectDocument(document: DocumentRecord) {
     const current = ++request.current;
@@ -200,6 +191,22 @@ export function useWorkspace(): WorkspaceState {
     }
   }
 
+  async function refreshFolder() {
+    if (!workspace) return;
+    try {
+      const listing = await listFolder(workspace.id);
+      setDocuments(listing.documents);
+      setSelectedId((id) =>
+        listing.documents.some((document) => document.id === id) ? id : "",
+      );
+    } catch (cause) {
+      setFailure({
+        error: toFolioError(cause),
+        retry: () => void refreshFolder(),
+      });
+    }
+  }
+
   return {
     documents,
     workspace,
@@ -213,7 +220,6 @@ export function useWorkspace(): WorkspaceState {
     results,
     relationships,
     selected,
-    neighbors,
     busy,
     failure,
     dismissFailure: () => setFailure(null),
@@ -224,6 +230,7 @@ export function useWorkspace(): WorkspaceState {
     selectDocument,
     clearSelection: () => setSelectedId(""),
     selectFolder,
+    refreshFolder,
     showSamples: () => {
       if (samplesRequested || folderOpened.current) return;
       setLoading(true);

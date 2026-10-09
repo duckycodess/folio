@@ -596,3 +596,129 @@
     gap: var(--space-4);
   }
 }
+
+/* Organize flow (journey B) */
+.organize-flow,
+.flow-step {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font: var(--text-small);
+  color: var(--color-text-secondary);
+}
+.step {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.step-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 50%;
+  font-variant-numeric: tabular-nums;
+}
+.step.is-current {
+  color: var(--color-text);
+  font-weight: 600;
+}
+.step.is-current .step-number {
+  border-color: var(--brand-gold);
+  background: var(--brand-gold);
+  color: var(--color-text-on-gold);
+}
+.step.is-done .step-number {
+  background: var(--color-surface-muted);
+}
+.suggestions {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.suggestions legend {
+  margin-bottom: var(--space-2);
+}
+.suggestion-list,
+.duplicate-groups {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.suggestion {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.suggestion:hover {
+  background: var(--color-surface-muted);
+}
+.suggestion input {
+  margin-top: 3px;
+  accent-color: var(--brand-charcoal);
+}
+.suggestion-text,
+.suggestion-paths {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.suggestion-paths {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.duplicate-group {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  overflow-wrap: anywhere;
+}
+.plan-table-wrap {
+  overflow-x: auto;
+}
+.plan-table {
+  width: 100%;
+  border-collapse: collapse;
+  font: var(--text-body);
+}
+.plan-table th,
+.plan-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+  text-align: left;
+  vertical-align: top;
+}
+.plan-table th {
+  font: var(--text-small);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  background: var(--color-surface-muted);
+}
+.plan-path {
+  overflow-wrap: anywhere;
+}
+.plan-reason {
+  display: block;
+  font: var(--text-small);
+  color: var(--color-text-secondary);
+}

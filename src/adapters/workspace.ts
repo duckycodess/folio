@@ -126,11 +126,21 @@ export async function chooseWorkspace(): Promise<ChosenWorkspace | null> {
   try {
     const info = await invoke<WorkspaceInfo | null>("choose_workspace");
     if (!info) return null;
+    return { info, ...(await listFolder(info.id)) };
+  } catch (cause) {
+    throw toFolioError(cause);
+  }
+}
+
+/** Lists an authorized folder again, for example after Folio changed it. */
+export async function listFolder(
+  workspaceId: string,
+): Promise<Omit<ChosenWorkspace, "info">> {
+  try {
     const listing = await invoke<NativeListing>("list_documents", {
-      workspaceId: info.id,
+      workspaceId,
     });
     return {
-      info,
       documents: listing.documents.map(toRecord),
       skipped: listing.skipped,
     };

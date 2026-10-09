@@ -1,7 +1,8 @@
 import { ArrowRight } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { simulatedFailure } from "../adapters/simulate";
 import type { Drafts } from "../app/drafts";
+import type { OrganizeController } from "../app/useOrganize";
 import type { WorkspaceState } from "../app/useWorkspace";
 import type { DocumentRecord } from "../domain/contracts";
 import type { FolioError } from "../domain/errors";
@@ -13,14 +14,29 @@ import { Panel } from "../ui/Panel";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
 import { listedSelection } from "../shell/reader";
 import { FileList } from "./FileList";
+import { OrganizeFlowPanel } from "./OrganizeFlowPanel";
 
 export function OrganizeView({
   workspace,
   drafts,
+  organize,
 }: {
   workspace: WorkspaceState;
   drafts: Drafts;
+  organize: OrganizeController;
 }) {
+  const { plan, report } = organize.state;
+  // A name typed for a file is done with once that rename is saved.
+  useEffect(() => {
+    if (!plan || !report) return;
+    for (const outcome of report.batch.outcomes) {
+      const operation = plan.operations[outcome.operationIndex];
+      if (outcome.status === "succeeded" && operation?.kind === "rename")
+        drafts.clearRenameName(operation.documentId);
+    }
+    // Only a new report clears drafts.
+  }, [report]);
+
   // Like the reader, ignore a chosen file that the current search leaves out,
   // and offer only files the search includes.
   const selected = listedSelection(workspace.selected, workspace.results);
@@ -35,13 +51,16 @@ export function OrganizeView({
         </p>
       </header>
 
+      <OrganizeFlowPanel workspace={workspace} organize={organize} />
+
       <Panel title="Collections">
         <EmptyState
           illustration={<Olio pose="organizing" size={96} />}
           title="No collections yet"
         >
-          Collections group related files without moving or copying them.
-          Creating collections isn't available in this version yet.
+          Collections are virtual: they group related files without moving or
+          copying them. Creating collections isn't available in this version
+          yet.
         </EmptyState>
       </Panel>
 
@@ -53,6 +72,11 @@ export function OrganizeView({
             document={selected}
             name={drafts.renameName(selected.id)}
             onNameChange={(name) => drafts.setRenameName(selected.id, name)}
+            onPreview={
+              workspace.source === "folder"
+                ? (name) => organize.previewRename(selected, name)
+                : undefined
+            }
             onChangeFile={() => {
               workspace.clearSelection();
               // The form is replaced by the file list; keep focus in it.
@@ -86,12 +110,15 @@ function RenameForm({
   name,
   onNameChange,
   onChangeFile,
+  onPreview,
 }: {
   document: DocumentRecord;
   /** Kept outside the form, so it survives errors and switching views. */
   name: string;
   onNameChange: (name: string) => void;
   onChangeFile: () => void;
+  /** With a folder open, asks the native core for an exact plan. */
+  onPreview?: (name: string) => void;
 }) {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [failure, setFailure] = useState<FolioError | null>(null);
@@ -104,7 +131,9 @@ function RenameForm({
     // In practice mode, the preview step fails the way a refused change would.
     const simulated = simulatedFailure("changes");
     setFailure(simulated ?? null);
-    if (!simulated) setPreviewOpen(true);
+    if (simulated) return;
+    if (onPreview) onPreview(trimmed);
+    else setPreviewOpen(true);
   }
 
   return (
@@ -173,8 +202,8 @@ function RenameForm({
           <strong className="rename-to">{trimmed}</strong>
         </div>
         <p className="muted">
-          Preview only — no file was changed. Applying renames isn't available
-          in this version yet.
+          Preview only — no file was changed. Renaming works on a folder you add
+          in the desktop app; sample files can't be changed.
         </p>
       </Modal>
     </>

@@ -23,6 +23,7 @@ import { useRelationships } from "../app/useRelationships";
 import { useWorkspace, type WorkspaceSourceKind } from "../app/useWorkspace";
 import { simulatedCode } from "../adapters/simulate";
 import { useDrafts } from "../app/drafts";
+import { useOrganize } from "../app/useOrganize";
 import { RECOVERY } from "../app/recovery";
 import { AnnouncerProvider } from "../ui/Announcer";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
@@ -88,6 +89,8 @@ export function AppShell() {
   const workspace = useWorkspace();
   const drafts = useDrafts();
   const relations = useRelationships(workspace);
+  // Above the views, so an apply in progress survives switching views.
+  const organize = useOrganize(workspace, relations.refresh);
   const [view, setView] = useState<ViewId>("home");
   const searchInput = useRef<HTMLInputElement>(null);
   const platform = useMemo(currentPlatform, []);
@@ -285,7 +288,11 @@ export function AppShell() {
               )}
               {view === "files" && <FilesView workspace={workspace} />}
               {view === "organize" && (
-                <OrganizeView workspace={workspace} drafts={drafts} />
+                <OrganizeView
+                  workspace={workspace}
+                  drafts={drafts}
+                  organize={organize}
+                />
               )}
               {view === "graph" && (
                 <GraphView workspace={workspace} relations={relations} />
