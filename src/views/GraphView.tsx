@@ -1,9 +1,16 @@
-import { ArrowLeftRight, ArrowRight, Waypoints } from "lucide-react";
-import { useEffect } from "react";
+import {
+  ArrowLeftRight,
+  ArrowRight,
+  List,
+  Network,
+  Waypoints,
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import type { RelationshipsState } from "../app/useRelationships";
 import type { WorkspaceState } from "../app/useWorkspace";
-import { describeConnection, type Connection } from "../domain/connections";
+import { describeConnection } from "../domain/connections";
 import type { DocumentRecord } from "../domain/contracts";
+import { graphPairs, type GraphPair } from "../domain/graph";
 import { Badge } from "../ui/Badge";
 import { EmptyState } from "../ui/EmptyState";
 import { FileTypeIcon } from "../ui/FileTypeIcon";
@@ -13,32 +20,12 @@ import {
   CoverageNote,
   originalLocation,
 } from "./Connections";
+import { ConceptMap } from "./graph/ConceptMap";
 
-interface Pair {
-  from: DocumentRecord;
-  to: DocumentRecord;
-  connection: Connection;
-}
+type GraphMode = "map" | "list";
 
-/** Each connection once: seen from the file that comes first by path. */
-function allPairs(
-  documents: DocumentRecord[],
-  relations: RelationshipsState,
-): Pair[] {
-  const sorted = [...documents].sort((a, b) =>
-    a.relativePath.localeCompare(b.relativePath),
-  );
-  const order = new Map(sorted.map((document, index) => [document.id, index]));
-  const byId = new Map(sorted.map((document) => [document.id, document]));
-  const pairs: Pair[] = [];
-  for (const from of sorted)
-    for (const connection of relations.connectionsOf(from.id)) {
-      const to = byId.get(connection.otherId);
-      if (to && order.get(from.id)! < order.get(to.id)!)
-        pairs.push({ from, to, connection });
-    }
-  return pairs;
-}
+/** The last Map/List choice, kept while the app runs. */
+let rememberedMode: GraphMode = "map";
 
 function FileEnd({
   document,
@@ -62,9 +49,69 @@ function FileEnd({
   );
 }
 
+function ConnectionList({
+  pairs,
+  workspace,
+  relations,
+}: {
+  pairs: GraphPair[];
+  workspace: WorkspaceState;
+  relations: RelationshipsState;
+}) {
+  const byId = new Map(workspace.documents.map((d) => [d.id, d]));
+  return (
+    <ul className="relationship-list">
+      {pairs.map(({ from, to, connection }) => {
+        const label = describeConnection(connection);
+        const directed =
+          connection.direction === "outgoing" ||
+          connection.direction === "incoming";
+        const [first, second] =
+          connection.direction === "incoming" ? [to, from] : [from, to];
+        return (
+          <li
+            key={`${connection.kind}-${from.id}-${to.id}`}
+            className="connection connection-pair"
+          >
+            <div className="connection-ends">
+              <FileEnd
+                document={first}
+                workspace={workspace}
+                onOpen={() => workspace.selectDocument(first)}
+              />
+              {directed ? (
+                <ArrowRight size={16} aria-label="links to" />
+              ) : (
+                <ArrowLeftRight size={16} aria-label="and" />
+              )}
+              <FileEnd
+                document={second}
+                workspace={workspace}
+                onOpen={() => workspace.selectDocument(second)}
+              />
+            </div>
+            <p className="connection-provenance">
+              <Badge>
+                {connection.kind === "explicitReference" ? "Link" : label.type}
+              </Badge>{" "}
+              {label.provenance}
+            </p>
+            <ConnectionEvidence
+              evidence={connection.evidence}
+              byId={byId}
+              onOpen={relations.openPassage}
+            />
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 /**
- * The relationships of the whole workspace as a keyboard- and screen-reader-
- * friendly list. A drawn graph would be an extra view, never the only one.
+ * The relationships of the whole workspace, as a concept map or as a
+ * keyboard- and screen-reader-friendly list. Both are drawn from the same
+ * pairs; the list is an equal alternative, never a fallback.
  */
 export function GraphView({
   workspace,
@@ -75,8 +122,17 @@ export function GraphView({
 }) {
   const { request } = relations;
   useEffect(request, [request]);
-  const pairs = allPairs(workspace.documents, relations);
-  const byId = new Map(workspace.documents.map((d) => [d.id, d]));
+  const { documents } = workspace;
+  const { relationships, duplicates } = relations;
+  const pairs = useMemo(
+    () => graphPairs(documents, relationships, duplicates),
+    [documents, relationships, duplicates],
+  );
+  const [mode, setMode] = useState<GraphMode>(rememberedMode);
+  function choose(next: GraphMode) {
+    rememberedMode = next;
+    setMode(next);
+  }
 
   return (
     <div className="view">
@@ -97,53 +153,41 @@ export function GraphView({
       >
         <CoverageNote relations={relations} />
         {pairs.length ? (
-          <ul className="relationship-list">
-            {pairs.map(({ from, to, connection }) => {
-              const label = describeConnection(connection);
-              const directed =
-                connection.direction === "outgoing" ||
-                connection.direction === "incoming";
-              const [first, second] =
-                connection.direction === "incoming" ? [to, from] : [from, to];
-              return (
-                <li
-                  key={`${connection.kind}-${from.id}-${to.id}`}
-                  className="connection connection-pair"
-                >
-                  <div className="connection-ends">
-                    <FileEnd
-                      document={first}
-                      workspace={workspace}
-                      onOpen={() => workspace.selectDocument(first)}
-                    />
-                    {directed ? (
-                      <ArrowRight size={16} aria-label="links to" />
-                    ) : (
-                      <ArrowLeftRight size={16} aria-label="and" />
-                    )}
-                    <FileEnd
-                      document={second}
-                      workspace={workspace}
-                      onOpen={() => workspace.selectDocument(second)}
-                    />
-                  </div>
-                  <p className="connection-provenance">
-                    <Badge>
-                      {connection.kind === "explicitReference"
-                        ? "Link"
-                        : label.type}
-                    </Badge>{" "}
-                    {label.provenance}
-                  </p>
-                  <ConnectionEvidence
-                    evidence={connection.evidence}
-                    byId={byId}
-                    onOpen={relations.openPassage}
-                  />
-                </li>
-              );
-            })}
-          </ul>
+          <>
+            <div className="segmented" role="group" aria-label="Show as">
+              <button
+                type="button"
+                className="segmented-option"
+                aria-pressed={mode === "map"}
+                onClick={() => choose("map")}
+              >
+                <Network size={16} aria-hidden="true" />
+                Map
+              </button>
+              <button
+                type="button"
+                className="segmented-option"
+                aria-pressed={mode === "list"}
+                onClick={() => choose("list")}
+              >
+                <List size={16} aria-hidden="true" />
+                List
+              </button>
+            </div>
+            {mode === "map" ? (
+              <ConceptMap
+                workspace={workspace}
+                relations={relations}
+                pairs={pairs}
+              />
+            ) : (
+              <ConnectionList
+                pairs={pairs}
+                workspace={workspace}
+                relations={relations}
+              />
+            )}
+          </>
         ) : (
           <EmptyState
             icon={<Waypoints size={24} />}

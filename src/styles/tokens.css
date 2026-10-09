@@ -37,6 +37,12 @@
   --file-markdown-bg: #20231f;
   --file-markdown-fg: #ffffff;
 
+  /* Graph lines and node rims reuse text colours, so each theme's contrast
+     pairs apply (docs/design.md). Line style and labels carry the meaning. */
+  --graph-edge: var(--color-text-secondary);
+  --graph-edge-ai: var(--color-link);
+  --graph-node-rim: var(--color-text-secondary);
+
   /* Olio sits directly on light surfaces; dark themes give it a disc. */
   --olio-backdrop: transparent;
   --olio-scale: 1;

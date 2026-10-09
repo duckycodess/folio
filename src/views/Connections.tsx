@@ -103,7 +103,7 @@ export function CoverageNote({ relations }: { relations: RelationshipsState }) {
   }
 }
 
-function ConnectionItem({
+export function ConnectionItem({
   connection,
   origin,
   other,
