@@ -109,6 +109,9 @@ describe("suggested collections", () => {
     expect(nameProblem("bad\u0007name")).toBe(
       "Remove the control characters from the name.",
     );
+    expect(nameProblem("Thesis \u202efdp.exe")).toBe(
+      "Remove the invisible formatting characters from the name.",
+    );
   });
 });
 

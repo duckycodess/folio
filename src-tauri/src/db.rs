@@ -12,7 +12,9 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/004_retry_backoff.sql"),
     include_str!("../migrations/005_delete_history.sql"),
     include_str!("../migrations/006_activity.sql"),
-    include_str!("../migrations/007_collections.sql"),
+    // Numbered after #101's 007 and 008. `user_version` counts positions in
+    // this list, so whichever merges later is appended after the other.
+    include_str!("../migrations/009_collections.sql"),
 ];
 
 impl From<rusqlite::Error> for FolioError {

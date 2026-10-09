@@ -66,7 +66,8 @@ describe("suggested collections in Organize", () => {
       { type: "received", request: 1, result: RESULT },
       { type: "failed", request: 1, error: folioError("internal", "late") },
     );
-    expect(stopped.status).toBe("idle");
+    // Stopped stays on screen, so focus has somewhere to go.
+    expect(stopped.status).toBe("stopped");
     expect(stopped.result).toBeNull();
   });
 
@@ -101,5 +102,65 @@ describe("suggested collections in Organize", () => {
     expect(refused.keepError).toEqual({ groupId: GROUP.id, error });
     expect(refused.kept).toEqual({});
     expect(refused.drafts[GROUP.id]?.name).toBe("Deadlines");
+  });
+});
+
+describe("analyzing again", () => {
+  it("keeps an edited name and unticked files for a group that comes back", () => {
+    const refused = run(
+      ...ready,
+      { type: "editName", groupId: GROUP.id, name: "Mga deadline" },
+      { type: "toggleMember", groupId: GROUP.id, documentId: "w:b.md" },
+      { type: "keepStarted", groupId: GROUP.id },
+      {
+        type: "keepFailed",
+        groupId: GROUP.id,
+        error: folioError("targetChanged", "A file changed. Analyze again."),
+      },
+    );
+    const grown = {
+      ...GROUP,
+      members: [
+        ...GROUP.members,
+        { documentId: "w:c.md", relativePath: "c.md", contentHash: "sha256:c" },
+      ],
+    } as unknown as SuggestedCollection;
+    const again = [
+      { type: "cleared", request: 2 },
+      { type: "started", request: 3 },
+      {
+        type: "received",
+        request: 3,
+        result: { ...RESULT, groups: [grown] },
+      },
+    ] as SuggestEvent[];
+    const state = again.reduce(suggestFlow, refused);
+    // The new file is ticked; the one the user unticked stays unticked.
+    expect(state.drafts[GROUP.id]).toEqual({
+      name: "Mga deadline",
+      chosen: ["w:a.md", "w:c.md"],
+    });
+    expect(state.keepError).toBeNull();
+  });
+
+  it("still shows a kept group as kept", () => {
+    const state = run(
+      ...ready,
+      { type: "keepStarted", groupId: GROUP.id },
+      { type: "kept", groupId: GROUP.id, collection: KEPT },
+      { type: "started", request: 2 },
+      { type: "received", request: 2, result: RESULT },
+    );
+    expect(state.kept[GROUP.id]).toBe(KEPT);
+  });
+
+  it("forgets everything when the folder changes", () => {
+    const state = run(
+      ...ready,
+      { type: "editName", groupId: GROUP.id, name: "Mga deadline" },
+      { type: "reset", request: 2 },
+    );
+    expect(state.drafts).toEqual({});
+    expect(state.result).toBeNull();
   });
 });

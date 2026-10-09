@@ -28,6 +28,21 @@ test.describe("Journey B: collections without a local model", () => {
     ).toBeVisible();
     await expect(folio.getByText("Name written by local AI")).toHaveCount(0);
   });
+
+  test("says when the collections couldn't be listed, rather than none exist", async ({
+    folio,
+  }) => {
+    await fake(folio).failNext(
+      "list_collections",
+      "internal",
+      "Folio's local index could not be read or updated.",
+    );
+    await addFolder(folio);
+    await openView(folio, "Organize");
+    await expect(
+      notice(folio, "Folio's local index could not be read or updated."),
+    ).toBeVisible();
+  });
 });
 
 test.describe("Journey B: suggested collections", () => {

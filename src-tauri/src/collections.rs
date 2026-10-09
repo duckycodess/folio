@@ -1,4 +1,4 @@
-//! Virtual collections (#78, ADR 0015): named groups of document references
+//! Virtual collections (#78, ADR 0016): named groups of document references
 //! that leave every file where it is. Keeping or editing one changes no file,
 //! so it is a plain native command, not an action plan, and it is not recorded
 //! in Activity. Members follow Folio's own renames, moves and deletions; a file
@@ -59,8 +59,8 @@ pub fn clean_name(raw: &str) -> NativeResult<String> {
     if name.is_empty() {
         return Err(invalid("Give the collection a name.").with_detail("reason", "nameEmpty"));
     }
-    if name.chars().count() > MAX_COLLECTION_NAME_CHARS || name.chars().any(char::is_control) {
-        return Err(invalid("Collection names are at most 80 characters, without control characters.").with_detail("reason", "nameInvalid"));
+    if name.chars().count() > MAX_COLLECTION_NAME_CHARS || name.chars().any(|character| character.is_control() || folio_core::collections::is_invisible_format(character)) {
+        return Err(invalid("Collection names are at most 80 characters, without control or invisible formatting characters.").with_detail("reason", "nameInvalid"));
     }
     Ok(name)
 }
@@ -99,23 +99,30 @@ fn unique_ids<'a>(ids: impl Iterator<Item = &'a str>) -> NativeResult<Vec<&'a st
 /// analysis read, so a file that changed since is not filed by a stale reason.
 pub fn keep(conn: &mut Connection, root: &ScopedRoot, name: &str, members: &[KeptMember], now: i64) -> NativeResult<VirtualCollection> {
     let name = clean_name(name)?;
-    let ids = unique_ids(members.iter().map(|member| member.document_id.as_str()))?;
-    if ids.len() < 2 {
-        return Err(invalid("A collection needs at least two files.").with_detail("reason", "tooFewMembers"));
-    }
-    let mut paths = Vec::new();
-    for member in members.iter().filter(|member| ids.contains(&member.document_id.as_str())) {
-        if paths.iter().any(|(id, _): &(String, String)| id == &member.document_id) {
+    unique_ids(members.iter().map(|member| member.document_id.as_str()))?;
+    let mut paths: Vec<(String, String)> = Vec::new();
+    for member in members {
+        let (id, relative_path) = canonical(root, &member.document_id)?;
+        if paths.iter().any(|(kept, _)| kept == &id) {
             continue;
         }
-        let relative_path = parse_document_id(&root.id, &member.document_id)?;
         let current = workspace::document_hash(&root.path, &relative_path)?;
         if current != member.expected_content_hash {
             return Err(error(ErrorCode::TargetChanged, "A file in this group changed since Folio analyzed it. Analyze again.").with_detail("path", relative_path.as_str()));
         }
-        paths.push((member.document_id.clone(), relative_path));
+        paths.push((id, relative_path));
+    }
+    if paths.len() < 2 {
+        return Err(invalid("A collection needs at least two files.").with_detail("reason", "tooFewMembers"));
     }
     create(conn, root, &name, &paths, now)
+}
+
+/// The document identity Folio itself derives from the path, so a member matches
+/// the identities the writer uses when it renames, moves or deletes the file.
+fn canonical(root: &ScopedRoot, raw: &str) -> NativeResult<(String, String)> {
+    let relative_path = parse_document_id(&root.id, raw)?;
+    Ok((document_id(&root.id, &relative_path), relative_path))
 }
 
 fn create(conn: &mut Connection, root: &ScopedRoot, name: &str, paths: &[(String, String)], now: i64) -> NativeResult<VirtualCollection> {
@@ -150,22 +157,22 @@ pub fn remove(conn: &Connection, workspace_id: &str, collection_id: &str) -> Nat
 pub fn add_members(conn: &mut Connection, root: &ScopedRoot, collection_id: &str, document_ids: &[String], now: i64) -> NativeResult<VirtualCollection> {
     owned(conn, &root.id, collection_id)?;
     let ids = unique_ids(document_ids.iter().map(String::as_str))?;
-    let present: i64 = conn.query_row("SELECT count(*) FROM collection_members WHERE collection_id = ?1", [collection_id], |row| row.get(0))?;
+    let present: i64 = conn.query_row("SELECT count(*) FROM collection_members WHERE collection_id = ?1 AND removed_by_history_id IS NULL", [collection_id], |row| row.get(0))?;
     if present as usize + ids.len() > MAX_MEMBERS {
         return Err(invalid("A collection holds at most 500 files.").with_detail("reason", "tooManyMembers"));
     }
     let mut paths = Vec::new();
-    for id in ids {
-        let relative_path = parse_document_id(&root.id, id)?;
+    for raw in ids {
+        let (id, relative_path) = canonical(root, raw)?;
         workspace::resolve_document(&root.path, &relative_path)?;
         paths.push((id, relative_path));
     }
     let tx = conn.transaction()?;
     for (id, relative_path) in paths {
-        // Adding a file Folio had deleted and then restored again simply clears the mark.
+        // A file already in the collection stays as it is.
         tx.execute(
             "INSERT INTO collection_members (collection_id, document_id, relative_path, added_at) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (collection_id, document_id) DO UPDATE SET removed_by_history_id = NULL, relative_path = excluded.relative_path",
+             ON CONFLICT (collection_id, document_id) WHERE removed_by_history_id IS NULL DO NOTHING",
             params![collection_id, id, relative_path, now.to_string()],
         )?;
     }
@@ -178,7 +185,7 @@ pub fn add_members(conn: &mut Connection, root: &ScopedRoot, collection_id: &str
 pub fn remove_members(conn: &Connection, root: &ScopedRoot, collection_id: &str, document_ids: &[String], now: i64) -> NativeResult<VirtualCollection> {
     owned(conn, &root.id, collection_id)?;
     for id in unique_ids(document_ids.iter().map(String::as_str))? {
-        conn.execute("DELETE FROM collection_members WHERE collection_id = ?1 AND document_id = ?2", params![collection_id, id])?;
+        conn.execute("DELETE FROM collection_members WHERE collection_id = ?1 AND document_id = ?2 AND removed_by_history_id IS NULL", params![collection_id, id])?;
     }
     conn.execute("UPDATE collections SET updated_at = ?1 WHERE id = ?2", params![now.to_string(), collection_id])?;
     get(conn, root, collection_id)
@@ -236,14 +243,17 @@ pub fn present_member_ids(conn: &Connection, root: &ScopedRoot, collection_id: &
 /* ----------------------------------------------- following Folio's own changes */
 
 /// Folio renamed or moved a file (or undid that): its memberships move with it.
+/// Only visible members move. A member hidden by a Folio deletion keeps its
+/// identity, so undoing that deletion restores the file that was deleted.
 pub fn follow_relocation(conn: &Connection, workspace_id: &str, from: &str, to: &str) -> NativeResult<()> {
     let (old, new) = (document_id(workspace_id, from), document_id(workspace_id, to));
-    // A stale member already using the new identity gives way to the one that moved.
+    // A stale visible member already using the new identity gives way to the one that moved.
     conn.execute(
-        "DELETE FROM collection_members WHERE document_id = ?2 AND collection_id IN (SELECT collection_id FROM collection_members WHERE document_id = ?1)",
+        "DELETE FROM collection_members WHERE document_id = ?2 AND removed_by_history_id IS NULL
+         AND collection_id IN (SELECT collection_id FROM collection_members WHERE document_id = ?1 AND removed_by_history_id IS NULL)",
         params![old, new],
     )?;
-    conn.execute("UPDATE collection_members SET document_id = ?2, relative_path = ?3 WHERE document_id = ?1", params![old, new, to])?;
+    conn.execute("UPDATE collection_members SET document_id = ?2, relative_path = ?3 WHERE document_id = ?1 AND removed_by_history_id IS NULL", params![old, new, to])?;
     Ok(())
 }
 
@@ -257,14 +267,22 @@ pub fn follow_deletion(conn: &Connection, workspace_id: &str, relative_path: &st
 }
 
 /// Undo restored a file Folio deleted: it returns to the collections it left.
+/// Where the user has since added a file under the same identity, that member stays.
 pub fn follow_restore(conn: &Connection, history_entry_id: &str) -> NativeResult<()> {
+    conn.execute(
+        "DELETE FROM collection_members WHERE removed_by_history_id = ?1 AND EXISTS (
+           SELECT 1 FROM collection_members visible WHERE visible.collection_id = collection_members.collection_id
+           AND visible.document_id = collection_members.document_id AND visible.removed_by_history_id IS NULL)",
+        [history_entry_id],
+    )?;
     conn.execute("UPDATE collection_members SET removed_by_history_id = NULL WHERE removed_by_history_id = ?1", [history_entry_id])?;
     Ok(())
 }
 
-/// Undo removed a file Folio created: it leaves its collections for good.
+/// Undo removed a file Folio created: it leaves its collections for good. A
+/// member hidden by an earlier deletion of that path is not touched.
 pub fn follow_removal(conn: &Connection, workspace_id: &str, relative_path: &str) -> NativeResult<()> {
-    conn.execute("DELETE FROM collection_members WHERE document_id = ?1", [document_id(workspace_id, relative_path)])?;
+    conn.execute("DELETE FROM collection_members WHERE document_id = ?1 AND removed_by_history_id IS NULL", [document_id(workspace_id, relative_path)])?;
     Ok(())
 }
 
@@ -409,5 +427,75 @@ mod tests {
         assert_eq!(present_member_ids(&conn, &root, &collection.id).unwrap(), HashSet::from([id_of(&root, NOTES)]));
         let cleaned = remove_members(&conn, &root, &collection.id, &[id_of(&root, PLAN)], 2).unwrap();
         assert_eq!(member_paths(&cleaned), [(NOTES, false)]);
+    }
+
+    fn rows(conn: &Connection, collection_id: &str) -> Vec<(String, Option<String>)> {
+        conn.prepare("SELECT relative_path, removed_by_history_id FROM collection_members WHERE collection_id = ?1 ORDER BY relative_path, removed_by_history_id")
+            .unwrap()
+            .query_map([collection_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn a_rename_onto_a_deleted_members_name_doesnt_lose_it_on_undo() {
+        // C = {A, B}. Plan 1 deletes A; plan 2 renames B to A. Undo plan 2, then plan 1.
+        let (_folder, mut conn, root) = fixture_workspace();
+        let collection = keep(&mut conn, &root, "C", &kept(&root, &[PLAN, NOTES]), 1).unwrap();
+        follow_deletion(&conn, &root.id, PLAN, "history-1-0").unwrap();
+        follow_relocation(&conn, &root.id, NOTES, PLAN).unwrap();
+        // The hidden member and the file now using its name are separate rows.
+        assert_eq!(rows(&conn, &collection.id), [(PLAN.to_owned(), None), (PLAN.to_owned(), Some("history-1-0".to_owned()))]);
+        follow_relocation(&conn, &root.id, PLAN, NOTES).unwrap();
+        follow_restore(&conn, "history-1-0").unwrap();
+        assert_eq!(member_paths(&get(&conn, &root, &collection.id).unwrap()), [(NOTES, false), (PLAN, false)]);
+    }
+
+    #[test]
+    fn a_new_file_taking_a_deleted_members_name_never_receives_its_membership() {
+        // Plan 1 deletes A; plan 2 creates a new A; plan 3 renames it to X. Undo all three.
+        let (_folder, mut conn, root) = fixture_workspace();
+        let collection = keep(&mut conn, &root, "C", &kept(&root, &[PLAN, NOTES]), 1).unwrap();
+        follow_deletion(&conn, &root.id, PLAN, "history-1-0").unwrap();
+        follow_relocation(&conn, &root.id, PLAN, "projects/x.md").unwrap();
+        assert!(rows(&conn, &collection.id).iter().all(|(path, _)| path != "projects/x.md"), "the renamed new file isn't a member");
+        follow_relocation(&conn, &root.id, "projects/x.md", PLAN).unwrap();
+        // Undoing the create removes only a visible member, never the hidden one.
+        follow_removal(&conn, &root.id, PLAN).unwrap();
+        assert_eq!(rows(&conn, &collection.id), [(NOTES.to_owned(), None), (PLAN.to_owned(), Some("history-1-0".to_owned()))]);
+        follow_restore(&conn, "history-1-0").unwrap();
+        assert_eq!(member_paths(&get(&conn, &root, &collection.id).unwrap()), [(NOTES, false), (PLAN, false)]);
+    }
+
+    #[test]
+    fn a_restore_gives_way_to_a_member_added_again_meanwhile() {
+        let (_folder, mut conn, root) = fixture_workspace();
+        let collection = keep(&mut conn, &root, "C", &kept(&root, &[PLAN, NOTES]), 1).unwrap();
+        follow_deletion(&conn, &root.id, PLAN, "history-1-0").unwrap();
+        add_members(&mut conn, &root, &collection.id, &[id_of(&root, PLAN)], 2).unwrap();
+        follow_restore(&conn, "history-1-0").unwrap();
+        assert_eq!(rows(&conn, &collection.id), [(NOTES.to_owned(), None), (PLAN.to_owned(), None)]);
+    }
+
+    #[test]
+    fn members_are_stored_under_folios_own_identity() {
+        let (folder, mut conn, root) = fixture_workspace();
+        fs::write(folder.path().join("notes/caf\u{e9}.md"), "Kape at tala.").unwrap();
+        // A decomposed "é" from the caller still names the composed file on disk.
+        let decomposed = format!("{}:notes/cafe\u{301}.md", root.id);
+        let hash = workspace::document_hash(&root.path, "notes/caf\u{e9}.md").unwrap();
+        let members = vec![KeptMember { document_id: decomposed.clone(), expected_content_hash: hash.clone() }, KeptMember { document_id: decomposed, expected_content_hash: hash }, kept(&root, &[PLAN]).remove(0)];
+        let collection = keep(&mut conn, &root, "Kape", &members, 1).unwrap();
+        let ids = collection.members.iter().map(|member| member.document_id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids, [id_of(&root, "notes/caf\u{e9}.md"), id_of(&root, PLAN)], "stored once, under the composed identity");
+        follow_relocation(&conn, &root.id, "notes/caf\u{e9}.md", "notes/kape.md").unwrap();
+        assert!(get(&conn, &root, &collection.id).unwrap().members.iter().any(|member| member.relative_path == "notes/kape.md"));
+    }
+
+    #[test]
+    fn names_with_invisible_formatting_are_refused() {
+        assert_eq!(clean_name("Thesis \u{202E}fdp.exe").unwrap_err().details.unwrap()["reason"], "nameInvalid");
+        assert_eq!(clean_name("Mga deadline").unwrap(), "Mga deadline");
     }
 }

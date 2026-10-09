@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { cancelGeneration } from "../adapters/ai";
 import {
   keepCollection,
   listCollections,
   removeCollection,
   removeCollectionMembers,
   renameCollection,
+  stopSuggestions,
   suggestCollections,
 } from "../adapters/collections";
 import { cleanCollectionName, keptMembers } from "../domain/collections";
@@ -28,16 +28,17 @@ export interface CollectionsController {
   /** Lists again, e.g. after Folio renamed or moved files. */
   reload: () => void;
   rename: (collectionId: string, name: string) => Promise<boolean>;
-  remove: (collectionId: string) => void;
+  /** Resolves true once the collection is gone; its files stay where they are. */
+  remove: (collectionId: string) => Promise<boolean>;
   removeMember: (collectionId: string, documentId: string) => void;
   suggestions: SuggestState;
   suggest: () => void;
   /**
-   * Drops the analysis and stops the model writing names. The runtime runs
-   * one generation at a time, so this stops whichever request holds it.
+   * Stops grouping natively, before it takes the generation slot or by
+   * cancelling the naming it holds; never another feature's generation.
    */
   stopSuggest: () => void;
-  /** Forgets earlier suggestions without stopping any generation. */
+  /** Hides the suggestions before a new analysis, keeping the drafts. */
   clearSuggestions: () => void;
   editName: (groupId: string, name: string) => void;
   toggleMember: (groupId: string, documentId: string) => void;
@@ -75,10 +76,17 @@ export function useCollections(
     reload();
   }, [folderId, reload]);
 
+  /** Only replies for the folder still open may change what's shown. */
+  const stillOpen = (folder: string) => current.current === folder;
+
   function replace(updated: VirtualCollection) {
     setCollections((list) =>
       list.map((item) => (item.id === updated.id ? updated : item)),
     );
+  }
+
+  function refused(folder: string, cause: unknown) {
+    if (stillOpen(folder)) setError(toFolioError(cause));
   }
 
   async function suggest() {
@@ -107,7 +115,7 @@ export function useCollections(
         keptMembers(group, draft),
       );
       dispatch({ type: "kept", groupId, collection });
-      setCollections((list) => [collection, ...list]);
+      if (stillOpen(folderId)) setCollections((list) => [collection, ...list]);
     } catch (cause) {
       dispatch({ type: "keepFailed", groupId, error: toFolioError(cause) });
     }
@@ -116,35 +124,42 @@ export function useCollections(
   async function rename(collectionId: string, name: string) {
     if (!folderId) return false;
     try {
-      replace(await renameCollection(folderId, collectionId, name));
+      const renamed = await renameCollection(folderId, collectionId, name);
+      if (!stillOpen(folderId)) return false;
+      replace(renamed);
       setError(null);
       return true;
     } catch (cause) {
-      setError(toFolioError(cause));
+      refused(folderId, cause);
       return false;
     }
   }
 
   async function remove(collectionId: string) {
-    if (!folderId) return;
+    if (!folderId) return false;
     try {
       await removeCollection(folderId, collectionId);
+      if (!stillOpen(folderId)) return false;
       setCollections((list) => list.filter((item) => item.id !== collectionId));
       setError(null);
+      return true;
     } catch (cause) {
-      setError(toFolioError(cause));
+      refused(folderId, cause);
+      return false;
     }
   }
 
   async function removeMember(collectionId: string, documentId: string) {
     if (!folderId) return;
     try {
-      replace(
-        await removeCollectionMembers(folderId, collectionId, [documentId]),
-      );
+      const updated = await removeCollectionMembers(folderId, collectionId, [
+        documentId,
+      ]);
+      if (!stillOpen(folderId)) return;
+      replace(updated);
       setError(null);
     } catch (cause) {
-      setError(toFolioError(cause));
+      refused(folderId, cause);
     }
   }
 
@@ -155,7 +170,7 @@ export function useCollections(
     dismissError: () => setError(null),
     reload,
     rename,
-    remove: (collectionId) => void remove(collectionId),
+    remove,
     removeMember: (collectionId, documentId) =>
       void removeMember(collectionId, documentId),
     suggestions,
@@ -163,10 +178,13 @@ export function useCollections(
     stopSuggest: () => {
       if (suggestions.status !== "grouping") return;
       dispatch({ type: "stopped", request: ++next.current });
-      void cancelGeneration().catch(() => undefined);
+      void stopSuggestions().catch(() => undefined);
     },
-    clearSuggestions: () =>
-      dispatch({ type: "reset", request: ++next.current }),
+    clearSuggestions: () => {
+      if (suggestions.status === "grouping")
+        void stopSuggestions().catch(() => undefined);
+      dispatch({ type: "cleared", request: ++next.current });
+    },
     editName: (groupId, name) => dispatch({ type: "editName", groupId, name }),
     toggleMember: (groupId, documentId) =>
       dispatch({ type: "toggleMember", groupId, documentId }),

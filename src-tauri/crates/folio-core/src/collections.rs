@@ -300,10 +300,16 @@ pub fn clean_name(raw: &str) -> Option<String> {
         .trim_start_matches(|character: char| quote(character) || character.is_whitespace())
         .trim_end_matches(|character: char| quote(character) || character.is_whitespace() || matches!(character, '.' | ':' | ';'));
     let length = trimmed.chars().count();
-    if length == 0 || length > MAX_COLLECTION_NAME_CHARS || trimmed.chars().any(char::is_control) {
+    if length == 0 || length > MAX_COLLECTION_NAME_CHARS || trimmed.chars().any(|character| character.is_control() || is_invisible_format(character)) {
         return None;
     }
     Some(trimmed.to_owned())
+}
+
+/// Invisible formatting characters (zero-width, bidirectional overrides and
+/// isolates, the BOM), which could make a name display differently from its text.
+pub fn is_invisible_format(character: char) -> bool {
+    matches!(character, '\u{00AD}' | '\u{061C}' | '\u{180E}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
 }
 
 fn group_id(members: &[SuggestedMember], fingerprint: &str) -> String {
@@ -645,6 +651,10 @@ mod tests {
         assert_eq!(clean_name(&"a".repeat(MAX_COLLECTION_NAME_CHARS + 1)), None);
         assert_eq!(clean_name(&"é".repeat(MAX_COLLECTION_NAME_CHARS)).map(|name| name.chars().count()), Some(MAX_COLLECTION_NAME_CHARS));
         assert_eq!(clean_name("bad\u{7}name"), None);
+        // A right-to-left override would make the name read differently on screen.
+        assert_eq!(clean_name("Thesis \u{202E}fdp.exe"), None);
+        assert_eq!(clean_name("zero\u{200B}width"), None);
+        assert_eq!(clean_name("Mga Tala ñ").as_deref(), Some("Mga Tala ñ"));
     }
 
     #[test]

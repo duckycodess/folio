@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CollectionsController } from "../app/useCollections";
 import type { WorkspaceState } from "../app/useWorkspace";
 import { membersLabel, nameProblem } from "../domain/collections";
@@ -23,9 +23,43 @@ export function CollectionsPanel({
   /** Makes the collection Organize's target. */
   onAnalyze: (collectionId: string) => void;
 }) {
+  // Counted, so removing a second collection of the same name moves focus again.
+  const [removed, setRemoved] = useState<{
+    name: string;
+    count: number;
+  } | null>(null);
+  const status = useRef<HTMLParagraphElement>(null);
+  // The removed collection's controls are gone; focus says what happened.
+  useEffect(() => {
+    if (removed) status.current?.focus();
+  }, [removed]);
+  const removedNote = removed && (
+    <p ref={status} tabIndex={-1} className="muted">
+      Removed “{removed.name}”. Its files stay where they are.
+    </p>
+  );
+  const errorNotice = collections.error && (
+    <Notice
+      tone="warning"
+      action={
+        <button
+          type="button"
+          className="link-button"
+          onClick={collections.dismissError}
+        >
+          Dismiss
+        </button>
+      }
+    >
+      {collections.error.message}
+    </Notice>
+  );
+
   if (!collections.available || !collections.collections.length)
     return (
       <Panel title="Collections">
+        {errorNotice}
+        {removedNote}
         {/* No Olio here: the floating launcher is the view's one Olio (#66). */}
         <EmptyState title="No collections yet">
           Collections are virtual: they group related files without moving or
@@ -43,22 +77,8 @@ export function CollectionsPanel({
         Collections group files without moving or copying them. Removing one
         leaves its files where they are.
       </p>
-      {collections.error && (
-        <Notice
-          tone="warning"
-          action={
-            <button
-              type="button"
-              className="link-button"
-              onClick={collections.dismissError}
-            >
-              Dismiss
-            </button>
-          }
-        >
-          {collections.error.message}
-        </Notice>
-      )}
+      {errorNotice}
+      {removedNote}
       <ul className="collection-list">
         {collections.collections.map((collection) => (
           <CollectionItem
@@ -67,6 +87,9 @@ export function CollectionsPanel({
             workspace={workspace}
             collections={collections}
             onAnalyze={onAnalyze}
+            onRemoved={(name) =>
+              setRemoved((last) => ({ name, count: (last?.count ?? 0) + 1 }))
+            }
           />
         ))}
       </ul>
@@ -79,11 +102,13 @@ function CollectionItem({
   workspace,
   collections,
   onAnalyze,
+  onRemoved,
 }: {
   collection: VirtualCollection;
   workspace: WorkspaceState;
   collections: CollectionsController;
   onAnalyze: (collectionId: string) => void;
+  onRemoved: (name: string) => void;
 }) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -147,7 +172,11 @@ function CollectionItem({
             <>
               <Button
                 variant="secondary"
-                onClick={() => collections.remove(collection.id)}
+                onClick={() =>
+                  void collections
+                    .remove(collection.id)
+                    .then((done) => done && onRemoved(collection.name))
+                }
               >
                 Remove “{collection.name}”
               </Button>

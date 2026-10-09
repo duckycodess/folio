@@ -9,7 +9,7 @@ import type {
 import { toFolioError } from "../domain/errors";
 
 /**
- * Virtual collections (#78, ADR 0015). The native core stores them; none of
+ * Virtual collections (#78, ADR 0016). The native core stores them; none of
  * these commands changes a file, so none of them needs a plan or approval.
  */
 async function call<T>(command: string, args?: Record<string, unknown>) {
@@ -23,12 +23,21 @@ async function call<T>(command: string, args?: Record<string, unknown>) {
 /**
  * Groups the folder's files by meaning with the local embedding model, and
  * names each group with the local generation model when one is set up. Stop
- * with `cancelGeneration` from the AI adapter; names written so far are kept.
+ * with `stopSuggestions`; a stopped request rejects with `cancelled`.
  */
 export function suggestCollections(
   workspaceId: WorkspaceId,
 ): Promise<CollectionSuggestions> {
   return call<CollectionSuggestions>("suggest_collections", { workspaceId });
+}
+
+/**
+ * Stops the running suggestions natively: before they take the generation
+ * slot, or by cancelling the naming they hold. Another feature's generation is
+ * never cancelled.
+ */
+export function stopSuggestions(): Promise<void> {
+  return call<void>("stop_suggestions");
 }
 
 export function listCollections(

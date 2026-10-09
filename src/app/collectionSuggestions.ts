@@ -11,7 +11,8 @@ import type { FolioError } from "../domain/errors";
  * here: just the drafts the user edits and what was kept.
  */
 export interface SuggestState {
-  status: "idle" | "grouping" | "ready" | "failed";
+  /** `stopped` keeps the section on screen, so focus has somewhere to go. */
+  status: "idle" | "grouping" | "ready" | "failed" | "stopped";
   /** Only the reply to this request may change what's shown. */
   request: number;
   result: CollectionSuggestions | null;
@@ -30,6 +31,8 @@ export type SuggestEvent =
   | { type: "failed"; request: number; error: FolioError }
   /** Stop takes a new request number, so a late reply can't come back. */
   | { type: "stopped"; request: number }
+  /** Hides the suggestions before a new analysis, keeping the drafts. */
+  | { type: "cleared"; request: number }
   | { type: "editName"; groupId: string; name: string }
   | { type: "toggleMember"; groupId: string; documentId: string }
   | { type: "keepStarted"; groupId: string }
@@ -54,26 +57,66 @@ export function suggestFlow(
 ): SuggestState {
   switch (event.type) {
     case "started":
-      return { ...SUGGEST_START, status: "grouping", request: event.request };
-    case "received":
+      // The drafts, what was kept and the last result stay: a group that
+      // comes back has the same id, so the user's name, unticked files and
+      // Keep survive analyzing again. The last result is hidden meanwhile.
+      return {
+        ...state,
+        status: "grouping",
+        request: event.request,
+        error: null,
+        keeping: null,
+        keepError: null,
+      };
+    case "received": {
       if (event.request !== state.request || state.status !== "grouping")
         return state;
+      const before = new Map(
+        (state.result?.groups ?? []).map((group) => [
+          group.id,
+          group.members.map((member) => member.documentId),
+        ]),
+      );
       return {
         ...state,
         status: "ready",
         result: event.result,
         drafts: Object.fromEntries(
-          event.result.groups.map((group) => [group.id, draftFor(group)]),
+          event.result.groups.map((group) => {
+            const earlier = state.drafts[group.id];
+            if (!earlier) return [group.id, draftFor(group)];
+            const unticked = (before.get(group.id) ?? []).filter(
+              (id) => !earlier.chosen.includes(id),
+            );
+            return [
+              group.id,
+              {
+                name: earlier.name,
+                chosen: group.members
+                  .map((member) => member.documentId)
+                  .filter((id) => !unticked.includes(id)),
+              },
+            ];
+          }),
         ),
       };
+    }
     case "failed":
       if (event.request !== state.request || state.status !== "grouping")
         return state;
       return { ...state, status: "failed", error: event.error };
     case "stopped":
       return state.status === "grouping"
-        ? { ...SUGGEST_START, request: event.request }
+        ? { ...state, status: "stopped", request: event.request }
         : state;
+    case "cleared":
+      return {
+        ...state,
+        status: "idle",
+        request: event.request,
+        error: null,
+        keepError: null,
+      };
     case "editName": {
       const draft = state.drafts[event.groupId];
       if (!draft || state.kept[event.groupId]) return state;

@@ -1182,7 +1182,7 @@ export interface OrganizationSuggestions {
   filenames: OrganizationSuggestion[];
 }
 
-/* -------------------------------------------- virtual collections (#78, ADR 0015) */
+/* -------------------------------------------- virtual collections (#78, ADR 0016) */
 
 /** One file of a suggested collection, with the revision the analysis read. */
 export interface SuggestedMember {
