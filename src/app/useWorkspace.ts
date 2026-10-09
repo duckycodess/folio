@@ -2,6 +2,7 @@ import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { failSoon, simulatedFailure } from "../adapters/simulate";
 import {
   chooseWorkspace,
+  listFolder,
   loadFixtureDocuments,
   nativeAvailable,
   readNativeDocument,
@@ -61,6 +62,11 @@ export interface WorkspaceState {
   selectDocument: (document: DocumentRecord) => Promise<void>;
   clearSelection: () => void;
   selectFolder: () => Promise<void>;
+  /**
+   * Lists the open folder again after Folio changed it. Paths, and so
+   * document identities, may have changed; a vanished selection is cleared.
+   */
+  refreshFolder: () => Promise<void>;
   /** Desktop only: list the bundled sample files before adding a folder. */
   showSamples: () => void;
 }
@@ -200,6 +206,22 @@ export function useWorkspace(): WorkspaceState {
     }
   }
 
+  async function refreshFolder() {
+    if (!workspace) return;
+    try {
+      const listing = await listFolder(workspace.id);
+      setDocuments(listing.documents);
+      setSelectedId((id) =>
+        listing.documents.some((document) => document.id === id) ? id : "",
+      );
+    } catch (cause) {
+      setFailure({
+        error: toFolioError(cause),
+        retry: () => void refreshFolder(),
+      });
+    }
+  }
+
   return {
     documents,
     workspace,
@@ -224,6 +246,7 @@ export function useWorkspace(): WorkspaceState {
     selectDocument,
     clearSelection: () => setSelectedId(""),
     selectFolder,
+    refreshFolder,
     showSamples: () => {
       if (samplesRequested || folderOpened.current) return;
       setLoading(true);
