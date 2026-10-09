@@ -74,7 +74,7 @@ export function PlanTable({
             <tr key={`${row.from}-${row.to}-${index}`}>
               <td>{row.action}</td>
               <td className="plan-path">{row.from ?? "New file"}</td>
-              <td className="plan-path">{row.to}</td>
+              <td className="plan-path">{row.to ?? "Removed"}</td>
               {withStatus && (
                 <td>
                   {OUTCOME_LABELS[row.status ?? "notStarted"]}

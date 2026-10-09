@@ -7,6 +7,7 @@ const entry = (overrides: Partial<HistoryEntry>): HistoryEntry => ({
   id: `h${++n}`,
   planId: "p1",
   operationIndex: 0,
+  operationKind: "move",
   appliedAt: 1000,
   beforeRelativePath: "Downloads/a.md",
   afterRelativePath: "Research/a.md",

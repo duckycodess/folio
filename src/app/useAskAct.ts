@@ -79,6 +79,18 @@ function subscribe(listener: () => void) {
 }
 
 /**
+ * Opens Ask & Act on a scope chosen elsewhere (Home's folder filter). The
+ * user can still change it there; nothing is sent.
+ */
+export function prefillAskScope(folderId: string | undefined, scope: string) {
+  update((state) =>
+    state.folderId === folderId
+      ? { ...state, scope }
+      : { folderId, scope, turns: [], next: 0 },
+  );
+}
+
+/**
  * Ask & Act: one read-only request at a time over the open folder. Retrieved
  * text is shown as evidence only; nothing here can approve or apply a change.
  */

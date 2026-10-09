@@ -11,10 +11,11 @@ import { recoveryFor } from "./recovery";
 
 /** One line of an exact preview: what happens to which path. */
 export interface PlanRow {
-  action: "Rename" | "Move" | "Edit" | "Create";
+  action: "Rename" | "Move" | "Edit" | "Create" | "Delete";
   /** Absent for a new file. */
   from?: string;
-  to: string;
+  /** Absent for a deleted file. */
+  to?: string;
 }
 
 export function planRow(operation: FileOperation): PlanRow {
@@ -34,6 +35,8 @@ export function planRow(operation: FileOperation): PlanRow {
       };
     case "create":
       return { action: "Create", to: operation.destinationRelativePath };
+    case "delete":
+      return { action: "Delete", from: operation.relativePath };
   }
 }
 
@@ -55,6 +58,10 @@ export interface ApplySummary {
 
 function changes(count: number): string {
   return `${count} ${count === 1 ? "change" : "changes"}`;
+}
+
+function files(count: number): string {
+  return `${count} ${count === 1 ? "file" : "files"}`;
 }
 
 /**
@@ -118,10 +125,15 @@ export function summarizeApply(
     );
 
   const complete = saved === total;
+  const onlyDeletions = plan.operations.every(
+    (operation) => operation.kind === "delete",
+  );
   return {
     tone: complete && report.indexRefreshed ? "saved" : "partial",
     headline: complete
-      ? `Saved ${changes(saved)}.`
+      ? onlyDeletions
+        ? `Deleted ${files(saved)}.`
+        : `Saved ${changes(saved)}.`
       : report.batch.stopReason === "cancelled"
         ? `Stopped after ${changed} of ${changes(total)}.`
         : `Saved ${changed} of ${changes(total)}.${failed?.reason ? ` Stopped at ${failed.from ?? failed.to}: ${failed.reason}.` : ""}`,

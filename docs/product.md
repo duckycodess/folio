@@ -75,7 +75,7 @@ Keep generation and embeddings behind separate adapters. Different embedding rev
 
 ## Boundaries
 
-TXT and Markdown support content editing. Text-based PDFs support reading and indexing; PDF content editing and scanned-PDF OCR are later work. Natural-language deletion is outside the agreed hackathon delivery.
+TXT and Markdown support content editing. Text-based PDFs support reading and indexing; PDF content editing and scanned-PDF OCR are later work. Natural-language deletion is outside the agreed hackathon delivery. Deleting one TXT or Markdown file from the Graph is a manual action with an exact preview, approval and Undo; Folio keeps the file's contents in history and lists the files whose links will break without changing them (ADR 0010).
 
 The demo uses 10–20 prepared documents with known related facts. The starter includes 15 text fixtures; PDF parser acceptance requires adding and testing text-based PDF fixtures.
 
