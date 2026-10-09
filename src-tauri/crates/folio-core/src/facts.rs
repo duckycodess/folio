@@ -23,7 +23,10 @@
 //!    span on the other side; two heading-only subjects never match. An
 //!    explicit link between the documents is deliberately not an input: it can
 //!    never substitute for a subject.
-//! 4. **No negation or contrast** in either clause or its sentence.
+//! 4. **No negation or contrast** in either clause or its sentence, and no
+//!    reschedule, cancel or past-value word (moved, cancelled, originally,
+//!    was, inilipat, kinansela, dati, ...). A clause with two or more dates
+//!    ("from October 20 to October 27") gives no date fact.
 //!
 //! The lexicons are small hand-made lists and the gates are uncalibrated: a
 //! missing role word or a document without a proper-noun subject or heading
@@ -239,8 +242,78 @@ const NEGATION: &[&str] = &[
     "walang",
     "huwag",
     "hwag",
+    "wag",
     "iba",
     "ibang",
+];
+
+/// A rescheduled, cancelled or past value: the clause may name a date that
+/// no longer holds, so it yields no fact. Used exactly like [`NEGATION`].
+const RESCHEDULE: &[&str] = &[
+    "move",
+    "moved",
+    "moves",
+    "moving",
+    "reschedule",
+    "rescheduled",
+    "resched",
+    "postpone",
+    "postponed",
+    "delayed",
+    "pushed",
+    "shifted",
+    "cancel",
+    "cancelled",
+    "canceled",
+    "cancellation",
+    "change",
+    "changed",
+    "previously",
+    "previous",
+    "originally",
+    "original",
+    "formerly",
+    "former",
+    "initially",
+    "old",
+    "was",
+    "were",
+    "dati",
+    "dating",
+    "orihinal",
+    "inilipat",
+    "nilipat",
+    "ilipat",
+    "ililipat",
+    "lumipat",
+    "na-move",
+    "ni-move",
+    "i-move",
+    "na-resched",
+    "ni-resched",
+    "i-resched",
+    "na-reschedule",
+    "ni-reschedule",
+    "i-reschedule",
+    "na-postpone",
+    "i-postpone",
+    "ipinagpaliban",
+    "pinagpaliban",
+    "ipagpaliban",
+    "ipagpapaliban",
+    "naantala",
+    "kinansela",
+    "kanselado",
+    "kanselahin",
+    "na-cancel",
+    "kina-cancel",
+    "i-cancel",
+    "binago",
+    "nabago",
+    "babaguhin",
+    "pinalitan",
+    "napalitan",
+    "papalitan",
 ];
 
 fn is_negated(text: &str, span: (usize, usize)) -> bool {
@@ -252,6 +325,7 @@ fn is_negated(text: &str, span: (usize, usize)) -> bool {
             .to_lowercase();
         NEGATION.contains(&word.as_str())
             || NEGATION.contains(&plain.as_str())
+            || RESCHEDULE.contains(&word.as_str())
             || plain.ends_with("n't")
             || plain.starts_with("'di")
     })
@@ -521,6 +595,23 @@ fn clause_anchors(text: &str, tokens: &[Token<'_>]) -> Vec<Anchor> {
         if let Some(day_token) = tokens.get(index + 1) {
             if let Some(day) = day_of(day_token) {
                 let year = tokens.get(index + 2).and_then(year_of);
+                // Mid-clause "May 12 kalahok" is still the Filipino "there
+                // are 12 participants" when a counted noun follows the number;
+                // "May 12, 2026" and "on May 12" stay dates.
+                let after_preposition = index.checked_sub(1).is_some_and(|i| {
+                    matches!(
+                        tokens[i].word().as_str(),
+                        "on" | "by" | "until" | "before" | "noong" | "hanggang"
+                    )
+                });
+                let counted_noun_follows = tokens
+                    .iter()
+                    .skip(index + 2)
+                    .take(3)
+                    .any(|next| count_class(&next.word()).is_some() || next.word() == "katao");
+                if month == 5 && year.is_none() && !after_preposition && counted_noun_follows {
+                    continue;
+                }
                 anchors.push(Anchor::Date { month, day, year });
                 consumed[index + 1] = true;
                 if year.is_some() {
@@ -588,6 +679,16 @@ fn clause_anchors(text: &str, tokens: &[Token<'_>]) -> Vec<Anchor> {
         if let Some(class) = class {
             anchors.push(Anchor::Quantity { value, class });
         }
+    }
+    // Two dates in one clause ("moved from October 20 to October 27",
+    // "mula Oktubre 20 sa Oktubre 27") may be an old and a new value: no
+    // date from such a clause is a fact.
+    let dates = anchors
+        .iter()
+        .filter(|anchor| matches!(anchor, Anchor::Date { .. }))
+        .count();
+    if dates >= 2 {
+        anchors.retain(|anchor| !matches!(anchor, Anchor::Date { .. }));
     }
     anchors
 }
@@ -833,6 +934,80 @@ mod tests {
             "Iba ito sa Community Learning Project na deadline ay October 20.",
         ] {
             assert!(chunk_facts(text).is_empty(), "negated: {text}");
+        }
+    }
+
+    #[test]
+    fn a_moved_date_is_not_shared_with_the_date_it_replaced() {
+        let current = "The Community Learning Project deadline is October 20.";
+        for moved in [
+            "The Community Learning Project deadline was moved from October 20 to October 27.",
+            "Inilipat ang deadline ng Community Learning Project mula Oktubre 20 sa Oktubre 27.",
+            "Na-move ang deadline ng Community Learning Project mula October 20 to October 27.",
+        ] {
+            assert!(chunk_facts(moved).is_empty(), "two dates: {moved}");
+            assert!(!shared(moved, current), "moved: {moved}");
+        }
+    }
+
+    #[test]
+    fn reschedule_cancel_and_past_value_words_reject_the_date() {
+        for text in [
+            "The Community Learning Project deadline was October 20.",
+            "The Community Learning Project deadline, originally October 20, stands.",
+            "The Community Learning Project deadline was postponed to October 20.",
+            "The Community Learning Project meeting on October 20 is cancelled.",
+            "The Community Learning Project meeting on October 20 is canceled.",
+            "The Community Learning Project deadline previously October 20.",
+            "The Community Learning Project deadline has been rescheduled to October 20.",
+            "Ipinagpaliban ang pulong ng Community Learning Project sa Oktubre 20.",
+            "Kinansela ang pulong ng Community Learning Project sa Oktubre 20.",
+            "Dati ang deadline ng Community Learning Project ay Oktubre 20.",
+            "Binago ang deadline ng Community Learning Project sa Oktubre 20.",
+            "Huwag na ituloy ang pulong ng Community Learning Project sa Oktubre 20.",
+            "Wag na ituloy ang pulong ng Community Learning Project sa Oktubre 20.",
+        ] {
+            assert!(chunk_facts(text).is_empty(), "rejected: {text}");
+        }
+    }
+
+    #[test]
+    fn the_current_deadline_in_two_files_is_still_shared() {
+        assert!(shared(
+            "The Community Learning Project deadline is October 23.",
+            "Ang deadline ng Community Learning Project ay Oktubre 23.",
+        ));
+        assert!(shared(
+            "# Community Learning Project\n\nThe project submission deadline is October 23.",
+            "Napag-usapan namin na October 23 pa rin ang deadline ng Community Learning Project.",
+        ));
+    }
+
+    #[test]
+    fn a_mid_clause_existential_may_before_a_counted_noun_is_not_a_date() {
+        let facts = chunk_facts("Paalala: May 12 kalahok sa pulong ng Community Learning Project.");
+        assert!(
+            facts
+                .iter()
+                .all(|fact| !matches!(fact.anchor, Anchor::Date { .. })),
+            "existential may: {facts:?}"
+        );
+        for dated in [
+            "The Community Learning Project meeting is on May 12.",
+            "The Community Learning Project meeting is May 12, 2026.",
+            "The Community Learning Project deadline is May 12 at noon.",
+        ] {
+            assert!(
+                matches!(
+                    chunk_facts(dated).first().map(|f| f.anchor),
+                    Some(Anchor::Date {
+                        month: 5,
+                        day: 12,
+                        ..
+                    })
+                ),
+                "a date: {dated}"
+            );
         }
     }
 
