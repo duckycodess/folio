@@ -7,6 +7,7 @@ mod error;
 mod extract;
 mod identity;
 mod index;
+mod lab_commands;
 mod lab_store;
 mod organize;
 mod plan;
@@ -1695,6 +1696,7 @@ pub fn run() {
         .manage(EmbeddingState::default())
         .manage(GenerationState::default())
         .manage(InstallState::default())
+        .manage(lab_commands::LabState::default())
         .setup(|app| {
             let directory = app.path().app_data_dir()?;
             std::fs::create_dir_all(&directory)?;
@@ -1743,7 +1745,13 @@ pub fn run() {
             answer_question,
             interpret_request,
             cancel_generation,
-            unload_generation
+            unload_generation,
+            lab_commands::lab_models,
+            lab_commands::run_model_lab,
+            lab_commands::cancel_model_lab,
+            lab_commands::list_lab_results,
+            lab_commands::list_lab_runs,
+            lab_commands::record_lab_review
         ])
         .build(tauri::generate_context!())
         .expect("Folio could not start");
