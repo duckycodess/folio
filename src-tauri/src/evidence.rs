@@ -103,7 +103,7 @@ pub(crate) struct SkippedDocument {
 }
 
 /// What the persistent index holds for a folder, and how much of it a semantic
-/// search can use. `method` is `hybrid` only when vectors exist in the space of
+/// search can use. `method` is `hybrid` only when every chunk has a vector in the space of
 /// the loaded embedding model; otherwise search is keyword search.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -145,7 +145,9 @@ pub(crate) fn status(
     let documents = index::list_documents(conn, workspace_id)?;
     let indexed = documents.iter().filter(|document| document.status == "indexed");
     let (embedded, chunks) = index::embedding_coverage(conn, workspace_id, space_fingerprint.unwrap_or(""))?;
-    let hybrid = space_fingerprint.is_some() && embedded > 0;
+    // Only a fully embedded folder is searched by meaning everywhere; a cancelled
+    // fill leaves part of it keyword-only.
+    let hybrid = space_fingerprint.is_some() && chunks > 0 && embedded == chunks;
     Ok(IndexStatus {
         workspace_id: Some(workspace_id.to_owned()),
         document_count: indexed.count(),

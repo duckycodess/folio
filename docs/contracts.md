@@ -146,8 +146,8 @@ a Model Lab run, `semantic_search`, `answer_question` and `rebuild_index`
 return `providerBusy` (`details.reason` = `modelLabRunning`);
 `interpret_request` reads no vectors and is unaffected. `index_status(workspaceId?)`
 reads SQLite only: `documentCount`, `chunkCount`, `embeddedChunkCount` (known
-once the embedding model is loaded), `method` (`hybrid` only when chunks have
-vectors in the loaded model's space) and `skippedDocuments`. `PendingChunk`
+once the embedding model is loaded), `method` (`hybrid` only when every chunk has a
+vector in the loaded model's space) and `skippedDocuments`. `PendingChunk`
 additionally carries `title` and `relativePath`, which the fill embeds in front
 of the chunk text.
 

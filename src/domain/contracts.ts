@@ -494,7 +494,7 @@ export interface PreparingProgress {
 
 /**
  * What the persistent index holds for a folder, as AI requests use it.
- * `method` is `hybrid` only when chunks have vectors in the loaded embedding
+ * `method` is `hybrid` only when every chunk has a vector in the loaded embedding
  * model's space; otherwise search is keyword search. `embeddedChunkCount` is
  * known once a request has loaded the embedding model.
  */
