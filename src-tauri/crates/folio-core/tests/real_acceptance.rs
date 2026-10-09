@@ -865,6 +865,7 @@ fn r8_cancellation_and_recovery() {
         max_output_tokens: 512,
         temperature: 0.0,
         seed: 7,
+        cache_prompt: None,
     };
     let cancellation_flag = Arc::new(AtomicBool::new(false));
     let (sender, receiver) = mpsc::channel();
@@ -905,6 +906,7 @@ fn r8_cancellation_and_recovery() {
             max_output_tokens: 32,
             temperature: 0.0,
             seed: 7,
+            cache_prompt: None,
         },
         &AtomicBool::new(false),
     );

@@ -15,17 +15,52 @@ import type {
 } from "../domain/contracts";
 import { toFolioError, type FolioError } from "../domain/errors";
 import {
-  addTurn,
   inScope,
   summaryTarget,
-  updateTurn,
+  targetsChosenFile,
   type AskOutcome,
   type AskTurn,
 } from "./askAct";
+import {
+  activeConversation,
+  addTurnTo,
+  chatSnapshot,
+  clearTurnsIn,
+  conversationsForFolder,
+  conversationTitle,
+  deleteAllConversations as clearAllConversations,
+  ensureActiveConversation,
+  newConversation as startConversation,
+  openConversation as activateConversation,
+  setConversationScope,
+  subscribeChat,
+  updateTurnIn,
+} from "./chatStore";
 import { summarize } from "./useSummary";
 import type { WorkspaceState } from "./useWorkspace";
 
 const RESULT_LIMIT = 20;
+
+/**
+ * The browser preview's practice replies. `TAURI_ENV_PLATFORM` is set while
+ * `tauri build` runs, so in the desktop build this branch is dead code and
+ * the mock adapter is not bundled at all.
+ */
+async function practiceReply(
+  request: string,
+  onProgress: (partial: AskOutcome) => void,
+): Promise<AskOutcome> {
+  if (import.meta.env.TAURI_ENV_PLATFORM)
+    throw new Error("Practice replies are not part of the desktop app.");
+  const { mockReply } = await import("../adapters/mockChat");
+  return mockReply(request, onProgress);
+}
+
+export interface ConversationSummary {
+  id: string;
+  title: string;
+  updatedAt: number;
+}
 
 export interface AskActController {
   /** The open folder's id; Ask & Act needs a folder in the desktop app. */
@@ -41,58 +76,28 @@ export interface AskActController {
   turns: AskTurn[];
   busy: boolean;
   find: (request: string) => void;
-  ask: (request: string) => void;
+  /** `chosen` is the file the user picked; a change must target it. */
+  ask: (request: string, chosen?: DocumentRecord) => void;
   /** Summarizes the chosen file of an earlier turn. */
   chooseForSummary: (turnId: number, document: DocumentRecord) => void;
   cancel: () => void;
   clear: () => void;
-}
-
-/**
- * The Ask & Act session for the open folder: scope and replies. It outlives
- * the page, so leaving Ask & Act (or a reply finishing while away) loses
- * nothing until another folder is opened.
- */
-interface AskSession {
-  folderId: string | undefined;
-  scope: string;
-  turns: AskTurn[];
-  next: number;
-}
-
-let current: AskSession = {
-  folderId: undefined,
-  scope: "",
-  turns: [],
-  next: 0,
-};
-const listeners = new Set<() => void>();
-
-function update(change: (state: AskSession) => AskSession) {
-  current = change(current);
-  listeners.forEach((listener) => listener());
-}
-
-function subscribe(listener: () => void) {
-  listeners.add(listener);
-  return () => listeners.delete(listener);
-}
-
-/**
- * Opens Ask & Act on a scope chosen elsewhere (Home's folder filter). The
- * user can still change it there; nothing is sent.
- */
-export function prefillAskScope(folderId: string | undefined, scope: string) {
-  update((state) =>
-    state.folderId === folderId
-      ? { ...state, scope }
-      : { folderId, scope, turns: [], next: 0 },
-  );
+  /** The conversation currently open. Both Ask & Act and the floating chat
+   * read and write this same id: there is no copy to keep in sync. */
+  conversationId: string | null;
+  /** This folder's other conversations, most recent first. */
+  history: ConversationSummary[];
+  openConversation: (id: string) => void;
+  newConversation: () => void;
+  /** Kept on this device only; clears every folder's history. */
+  deleteAllConversations: () => void;
 }
 
 /**
  * Ask & Act: one read-only request at a time over the open folder. Retrieved
  * text is shown as evidence only; nothing here can approve or apply a change.
+ * Shared by the full Ask & Act page and the floating Olio chat (#66) through
+ * one conversation store (`chatStore.ts`), keyed by the open folder.
  */
 export function useAskAct(workspace: WorkspaceState): AskActController {
   const desktop = isAvailable();
@@ -100,8 +105,10 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
     desktop && workspace.source === "folder"
       ? workspace.workspace?.id
       : undefined;
-  const session = useSyncExternalStore(subscribe, () => current);
-  const { scope, turns } = session;
+  const snapshot = useSyncExternalStore(subscribeChat, chatSnapshot);
+  const conversation = activeConversation(snapshot, folderId);
+  const scope = conversation?.scope ?? "";
+  const turns = conversation?.turns ?? [];
   const [index, setIndex] = useState<ProviderIndexStatus | null>(null);
   const [preparing, setPreparing] = useState(false);
   const [indexError, setIndexError] = useState<FolioError | null>(null);
@@ -114,10 +121,10 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
     };
   }, []);
 
-  // A different folder starts afresh; the same folder keeps its replies.
+  // A different folder gets its own conversation (its latest, or a fresh
+  // one); it never shows another folder's turns.
   useEffect(() => {
-    if (current.folderId !== folderId)
-      update(() => ({ folderId, scope: "", turns: [], next: 0 }));
+    ensureActiveConversation(folderId);
     setIndex(null);
     if (!folderId) return;
     indexStatus()
@@ -125,39 +132,45 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
       .catch(() => undefined);
   }, [folderId]);
 
-  const busy = turns.some((turn) => turn.status === "running");
-
-  // Written to the session even if Ask & Act was left meanwhile.
-  function finish(id: number, change: Partial<AskTurn>) {
-    update((state) => ({
-      ...state,
-      turns: updateTurn(state.turns, id, change),
-    }));
-  }
+  // One request at a time across every conversation and folder: starting a
+  // new conversation, or switching to another, must not start a second one.
+  const busy = snapshot.conversations.some((other) =>
+    other.turns.some((turn) => turn.status === "running"),
+  );
 
   async function run(
     action: AskTurn["action"],
     request: string,
-    work: (folder: string) => Promise<AskOutcome>,
+    work: (
+      folder: string,
+      onProgress: (partial: AskOutcome) => void,
+    ) => Promise<AskOutcome>,
+    chosen?: DocumentRecord,
   ) {
     const text = request.trim();
-    if (!folderId || busy || !text) return;
-    const id = current.next + 1;
-    update((state) => ({
-      ...state,
-      next: id,
-      turns: addTurn(state.turns, {
-        id,
-        request: text,
-        action,
-        status: "running",
-      }),
-    }));
+    // Without a folder, the desktop app has nothing to search; the browser
+    // preview's practice mode (below) needs no folder at all.
+    if ((desktop && !folderId) || busy || !text) return;
+    // Captured now, so the reply lands in this conversation even if the
+    // user switches to another one (or another folder) meanwhile.
+    const conversationId = ensureActiveConversation(folderId);
+    const id = addTurnTo(conversationId, {
+      request: text,
+      action,
+      status: "running",
+      chosen,
+    });
+    const onProgress = (partial: AskOutcome) =>
+      updateTurnIn(conversationId, id, { outcome: partial });
     try {
-      finish(id, { status: "done", outcome: await work(folderId) });
+      updateTurnIn(conversationId, id, {
+        status: "done",
+        outcome: await work(folderId ?? "", onProgress),
+      });
     } catch (cause) {
       const error = toFolioError(cause);
-      finish(
+      updateTurnIn(
+        conversationId,
         id,
         error.code === "cancelled"
           ? { status: "cancelled" }
@@ -181,6 +194,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
   async function interpret(
     folder: string,
     request: string,
+    chosen?: DocumentRecord,
   ): Promise<AskOutcome> {
     const meaning = await interpretRequest(folder, request);
     switch (meaning.status) {
@@ -213,6 +227,10 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
       case "needsClarification":
         return { type: "clarify", question: meaning.question };
       case "proposal":
+        // Naming the chosen file in the request doesn't bind the model, so
+        // a change to any other file is refused here, before any preview.
+        if (chosen && !targetsChosenFile(meaning.proposal, chosen.id))
+          return { type: "otherFile", proposal: meaning.proposal, chosen };
         return { type: "proposal", proposal: meaning.proposal };
       case "unsupported":
         return { type: "unsupported", reason: meaning.reason };
@@ -225,7 +243,8 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
     folderId,
     desktop,
     scope,
-    setScope: (folder) => update((state) => ({ ...state, scope: folder })),
+    setScope: (folder) =>
+      setConversationScope(ensureActiveConversation(folderId), folder),
     index: index && index.workspaceId === folderId ? index : null,
     preparing,
     indexError,
@@ -241,23 +260,44 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
     turns,
     busy,
     find: (request) =>
-      void run("find", request, async (folder) => ({
-        type: "results",
-        query: request.trim(),
-        results: await search(folder, request),
-      })),
-    ask: (request) =>
-      void run("ask", request, (folder) => interpret(folder, request)),
+      void run("find", request, async (folder, onProgress) =>
+        desktop
+          ? {
+              type: "results",
+              query: request.trim(),
+              results: await search(folder, request),
+            }
+          : practiceReply(request, onProgress),
+      ),
+    ask: (request, chosen) =>
+      void run(
+        "ask",
+        request,
+        (folder, onProgress) =>
+          desktop
+            ? interpret(folder, request, chosen)
+            : practiceReply(request, onProgress),
+        chosen,
+      ),
     chooseForSummary: (turnId, document) => {
-      if (!folderId) return;
+      if (!folderId || !conversation) return;
       void summarize(folderId, document.id);
-      finish(turnId, { outcome: { type: "summary", document } });
+      updateTurnIn(conversation.id, turnId, {
+        outcome: { type: "summary", document },
+      });
     },
     cancel: () => void cancelGeneration().catch(() => undefined),
-    clear: () =>
-      update((state) => ({
-        ...state,
-        turns: state.turns.filter((turn) => turn.status === "running"),
+    clear: () => conversation && clearTurnsIn(conversation.id),
+    conversationId: conversation?.id ?? null,
+    history: conversationsForFolder(snapshot, folderId)
+      .filter((c) => c.id !== conversation?.id)
+      .map((c) => ({
+        id: c.id,
+        title: conversationTitle(c),
+        updatedAt: c.updatedAt,
       })),
+    openConversation: (id) => activateConversation(id),
+    newConversation: () => void startConversation(folderId, ""),
+    deleteAllConversations: () => clearAllConversations(),
   };
 }

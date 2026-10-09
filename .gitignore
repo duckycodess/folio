@@ -1,5 +1,8 @@
 node_modules/
 dist/
+playwright-report/
+test-results/
+.playwright/
 target/
 src-tauri/target/
 .env
@@ -27,5 +30,4 @@ Thumbs.db
 .idea/
 .vscode/
 
-# Design source sheets (not committed until decided; see docs/design.md)
-/olio-asset-pack*
+__pycache__/

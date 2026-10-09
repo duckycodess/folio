@@ -1,0 +1,81 @@
+name: Installer preparation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-preparation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Package ${{ matrix.platform }} test build
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            os: windows-2022
+            target: x86_64-pc-windows-msvc
+            bundle: nsis
+          - platform: macos-arm64
+            os: macos-15
+            target: aarch64-apple-darwin
+            bundle: dmg
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: packaging-${{ runner.os }}-${{ matrix.target }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+      - run: npm ci
+      - name: Record actual tool versions
+        run: |
+          node --version > "$RUNNER_TEMP/node-version.txt"
+          npm --version > "$RUNNER_TEMP/npm-version.txt"
+          rustc -Vv > "$RUNNER_TEMP/rustc-version.txt"
+          cargo --version > "$RUNNER_TEMP/cargo-version.txt"
+          npm run --silent tauri -- --version > "$RUNNER_TEMP/tauri-version.txt"
+      - name: Generate installer icons from the committed artwork
+        run: npm run tauri -- icon src-tauri/icons/source.svg --output src-tauri/target/packaging-icons
+      - name: Refuse stale bundles and mark this build
+        run: >-
+          node scripts/collect-packaging.mjs --begin
+          ${{ matrix.target }} ${{ matrix.bundle }} "$RUNNER_TEMP"
+      - name: Build installer preparation artifact
+        run: >-
+          npm run tauri -- build --ci
+          --config src-tauri/tauri.packaging.conf.json
+          --target ${{ matrix.target }} --bundles ${{ matrix.bundle }}
+          -- --locked
+      - name: Collect installer, checksums and preparation metadata
+        run: >-
+          node scripts/collect-packaging.mjs
+          ${{ matrix.target }} ${{ matrix.bundle }}
+          "$RUNNER_TEMP/folio-installer-artifacts" "$RUNNER_TEMP"
+      - name: Upload preparation artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: folio-${{ matrix.platform }}-test-build-${{ github.sha }}
+          path: ${{ runner.temp }}/folio-installer-artifacts/
+          if-no-files-found: error
+          retention-days: 7

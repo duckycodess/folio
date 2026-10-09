@@ -1,7 +1,6 @@
 import type { OrganizeController } from "../app/useOrganize";
 import type { WorkspaceState } from "../app/useWorkspace";
 import { EmptyState } from "../ui/EmptyState";
-import { Olio } from "../ui/Olio";
 import { Panel } from "../ui/Panel";
 import { OrganizeFlowPanel } from "./OrganizeFlowPanel";
 
@@ -26,13 +25,15 @@ export function OrganizeView({
         </p>
       </header>
 
-      <OrganizeFlowPanel workspace={workspace} organize={organize} />
+      <OrganizeFlowPanel
+        workspace={workspace}
+        organize={organize}
+        onOpenFile={workspace.selectDocument}
+      />
 
       <Panel title="Collections">
-        <EmptyState
-          illustration={<Olio pose="organizing" size={96} />}
-          title="No collections yet"
-        >
+        {/* No Olio here: the floating launcher is the view's one Olio (#66). */}
+        <EmptyState title="No collections yet">
           Collections are virtual: they group related files without moving or
           copying them. Creating collections isn't available in this version
           yet.
