@@ -692,11 +692,58 @@ fn validate_destination(destination: &str, source_name: Option<&str>) -> Result<
 fn normalize_stem(value: &str) -> String {
     let last = value.rsplit(['/', '\\']).next().unwrap_or(value);
     let stem = last.rsplit_once('.').map_or(last, |(stem, _)| stem);
-    stem.split(|character: char| !character.is_alphanumeric())
-        .filter(|part| !part.is_empty())
-        .map(str::to_lowercase)
-        .collect::<Vec<_>>()
-        .join(" ")
+    words(stem).join(" ")
+}
+
+/// Precomposed Latin letters and the base letter NFD leaves once its marks
+/// are stripped. The crate has no Unicode normalization, so this covers the
+/// accented letters of Latin-1 and Latin Extended-A.
+const ACCENTED: &[(&str, char)] = &[
+    ("àáâãäåāăąǎ", 'a'),
+    ("çćĉċč", 'c'),
+    ("ď", 'd'),
+    ("èéêëēĕėęě", 'e'),
+    ("ĝğġģ", 'g'),
+    ("ĥ", 'h'),
+    ("ìíîïĩīĭįǐ", 'i'),
+    ("ĵ", 'j'),
+    ("ķ", 'k'),
+    ("ĺļľ", 'l'),
+    ("ñńņňǹ", 'n'),
+    ("òóôõöōŏőǒ", 'o'),
+    ("ŕŗř", 'r'),
+    ("śŝşš", 's'),
+    ("ţť", 't'),
+    ("ùúûüũūŭůűųǔ", 'u'),
+    ("ŵ", 'w'),
+    ("ýÿŷ", 'y'),
+    ("źżž", 'z'),
+];
+
+/// Case- and accent-insensitive, like the frontend and the index ("nino"
+/// finds "Niño"): lowercase, combining marks dropped, accented letters to
+/// their base letter.
+fn fold(value: &str) -> String {
+    value
+        .chars()
+        .flat_map(char::to_lowercase)
+        .filter(|character| !('\u{300}'..='\u{36f}').contains(character))
+        .map(|character| {
+            ACCENTED
+                .iter()
+                .find(|(accented, _)| accented.contains(character))
+                .map_or(character, |(_, base)| *base)
+        })
+        .collect()
+}
+
+/// The folded words of a value.
+fn words(value: &str) -> Vec<String> {
+    fold(value)
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn non_mutating(
@@ -743,44 +790,92 @@ const TARGET_FILLER: &[&str] = &[
     "talaan",
 ];
 
-/// The words of a file's relative path, without its extension.
-fn path_words(document: &DocumentRecord) -> Vec<String> {
-    let path = document.relative_path.to_lowercase();
-    let stem = path
-        .rsplit_once('.')
-        .map_or(path.as_str(), |(stem, _)| stem);
-    stem.split(|character: char| !character.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .map(str::to_owned)
-        .collect()
+/// Extensions a description may write after a file name ("plan.md").
+const NAME_EXTENSIONS: &[&str] = &["md", "markdown", "txt", "pdf"];
+
+/// The most files offered when a description names several.
+const MAX_NAMED_CANDIDATES: usize = 5;
+
+/// The words of a file's name, without its extension. Folder names are not
+/// part of it: "my notes" names `notes.md`, not every file in `notes/`.
+fn name_words(document: &DocumentRecord) -> Vec<String> {
+    let name = document.name.as_str();
+    words(name.rsplit_once('.').map_or(name, |(stem, _)| stem))
 }
 
 /// Whether the description names this file: every informative word of the
-/// description is a word of the file's name or path. A topic ("the budget
-/// deadline") that no file name contains names no file, so it is not a reason
-/// to ask which file is meant.
+/// description is a word of the file's name. A topic ("the budget deadline")
+/// that no file name contains names no file, so it is not a reason to ask
+/// which file is meant.
 fn names_document(description: &str, document: &DocumentRecord) -> bool {
-    let words = informative_words(description);
-    if words.is_empty() {
+    let wanted = informative_words(description);
+    if wanted.is_empty() {
         return false;
     }
-    let path = path_words(document);
-    words.iter().all(|word| path.contains(word))
+    let name = name_words(document);
+    wanted.iter().all(|word| name.contains(word))
 }
 
-/// The description without the words that only point at "a file".
+/// Whether the description writes out the file's full name, extension
+/// included, so naming `old-notes.md` doesn't also name `notes.md`.
+fn writes_name(description: &str, document: &DocumentRecord) -> bool {
+    let written = fold(description);
+    let name = fold(&document.name);
+    if name.is_empty() {
+        return false;
+    }
+    written.match_indices(&name).any(|(start, _)| {
+        let before = written[..start].chars().next_back();
+        let after = written[start + name.len()..].chars().next();
+        !before.is_some_and(|character| {
+            character.is_alphanumeric() || matches!(character, '_' | '.' | '-')
+        }) && !after
+            .is_some_and(|character| character.is_alphanumeric() || matches!(character, '_' | '-'))
+    })
+}
+
+/// The folded description without the words that only point at "a file" and
+/// without an extension written after a name ("project-plan.md").
 fn informative_words(description: &str) -> Vec<String> {
-    description
-        .split(|character: char| !character.is_alphanumeric())
-        .filter(|word| !word.is_empty())
-        .map(str::to_lowercase)
-        .filter(|word| !TARGET_FILLER.contains(&word.as_str()))
-        .collect()
+    let folded = fold(description).chars().collect::<Vec<_>>();
+    let mut informative = Vec::new();
+    let mut index = 0;
+    while index < folded.len() {
+        if !folded[index].is_alphanumeric() {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < folded.len() && folded[index].is_alphanumeric() {
+            index += 1;
+        }
+        let word = folded[start..index].iter().collect::<String>();
+        let is_extension = start >= 2
+            && folded[start - 1] == '.'
+            && folded[start - 2].is_alphanumeric()
+            && NAME_EXTENSIONS.contains(&word.as_str());
+        if !is_extension && !TARGET_FILLER.contains(&word.as_str()) {
+            informative.push(word);
+        }
+    }
+    informative
+}
+
+/// How many words of the file's name the description leaves out: a tighter
+/// match leaves out fewer.
+fn extra_name_words(description: &[String], document: &DocumentRecord) -> usize {
+    let mut name = name_words(document);
+    name.sort();
+    name.dedup();
+    name.iter()
+        .filter(|word| !description.contains(word))
+        .count()
 }
 
 /// A question or summary request: bound to one file when the request names
-/// one, asking which when it names several the resolver cannot tell apart, and
-/// unbound otherwise.
+/// one, asking which when it names a few the resolver cannot tell apart, and
+/// unbound otherwise, including when it names so many that the words are a
+/// topic rather than a file.
 fn named_non_mutating(
     intent: NonMutatingIntent,
     purpose: FileSelectionPurpose,
@@ -796,40 +891,57 @@ fn named_non_mutating(
     else {
         return non_mutating(intent, model_intent, None);
     };
-    let named = documents
+    let written = documents
         .iter()
-        .filter(|document| names_document(description, document))
+        .filter(|document| writes_name(description, document))
         .cloned()
         .collect::<Vec<_>>();
+    let named = if written.is_empty() {
+        documents
+            .iter()
+            .filter(|document| names_document(description, document))
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        written
+    };
+    let wanted = informative_words(description);
     let document = match named.as_slice() {
         [] => return non_mutating(intent, model_intent, None),
         [only] => only.clone(),
-        several => match resolve_target(
-            &informative_words(description).join(" "),
-            several,
-            contents,
-            chunks,
-        ) {
-            Some((resolved, _duplicates)) => resolved,
-            None => {
-                let mut candidates = several
-                    .iter()
-                    .map(|document| selection_candidate(document, chunks))
-                    .collect::<Vec<_>>();
-                candidates.sort_by(|left, right| {
-                    left.document
-                        .relative_path
-                        .cmp(&right.document.relative_path)
-                });
-                candidates.truncate(5);
-                return InterpretationResult::NeedsFileSelection {
-                    candidates,
-                    pending_intent: serde_json::to_string(model_intent)
-                        .unwrap_or_else(|_| "{}".into()),
-                    purpose,
-                };
+        several => {
+            let stem = wanted.join(" ");
+            let exact = several
+                .iter()
+                .filter(|document| normalize_stem(&document.name) == stem)
+                .collect::<Vec<_>>();
+            if let [only] = exact.as_slice() {
+                (*only).clone()
+            } else if several.len() > MAX_NAMED_CANDIDATES {
+                return non_mutating(intent, model_intent, None);
+            } else {
+                match resolve_target(&stem, several, contents, chunks) {
+                    Some((resolved, _duplicates)) => resolved,
+                    None => {
+                        let mut ranked = several.to_vec();
+                        ranked.sort_by(|left, right| {
+                            extra_name_words(&wanted, left)
+                                .cmp(&extra_name_words(&wanted, right))
+                                .then_with(|| left.relative_path.cmp(&right.relative_path))
+                        });
+                        return InterpretationResult::NeedsFileSelection {
+                            candidates: ranked
+                                .iter()
+                                .map(|document| selection_candidate(document, chunks))
+                                .collect(),
+                            pending_intent: serde_json::to_string(model_intent)
+                                .unwrap_or_else(|_| "{}".into()),
+                            purpose,
+                        };
+                    }
+                }
             }
-        },
+        }
     };
     InterpretationResult::NonMutating {
         intent,
@@ -1158,6 +1270,167 @@ mod tests {
             resolve(&about(IntentKind::Search, "meeting notes")),
             InterpretationResult::NonMutating { document: None, .. }
         ));
+    }
+
+    /// Resolves against a folder of the given paths, each a document whose
+    /// name is the last path segment and whose text mentions no file name.
+    fn resolve_among(paths: &[&str], model_intent: &ModelIntent) -> InterpretationResult {
+        let mut documents = Vec::new();
+        let mut chunks = Vec::new();
+        for path in paths {
+            let name = path.rsplit('/').next().unwrap();
+            let (record, mut file_chunks) = document(path, name, "# Heading\n\nSome text.");
+            documents.push(DocumentRecord {
+                content: None,
+                ..record
+            });
+            chunks.append(&mut file_chunks);
+        }
+        resolve_model_intent(
+            model_intent,
+            Language::En,
+            &documents,
+            &HashMap::new(),
+            &chunks,
+        )
+    }
+
+    fn bound_path(result: &InterpretationResult) -> Option<&str> {
+        match result {
+            InterpretationResult::NonMutating {
+                document: Some(document),
+                ..
+            } => Some(document.relative_path.as_str()),
+            _ => None,
+        }
+    }
+
+    fn candidate_paths(result: &InterpretationResult) -> Vec<&str> {
+        match result {
+            InterpretationResult::NeedsFileSelection { candidates, .. } => candidates
+                .iter()
+                .map(|candidate| candidate.document.relative_path.as_str())
+                .collect(),
+            other => panic!("expected a file selection, got {other:?}"),
+        }
+    }
+
+    fn is_folder_wide(result: &InterpretationResult) -> bool {
+        matches!(
+            result,
+            InterpretationResult::NonMutating { document: None, .. }
+        )
+    }
+
+    #[test]
+    fn a_file_named_with_its_extension_is_the_file() {
+        for description in [
+            "project-plan.md",
+            "the project-plan.md file",
+            "PROJECT-PLAN.MD",
+        ] {
+            let result = resolve(&about(IntentKind::Question, description));
+            assert_eq!(
+                bound_path(&result),
+                Some("projects/project-plan.md"),
+                "{description}: {result:?}"
+            );
+        }
+        let paths = ["docs/Sample_Resume.pdf", "docs/cover-letter.md"];
+        let result = resolve_among(&paths, &about(IntentKind::Summarize, "Sample_Resume.pdf"));
+        assert_eq!(
+            bound_path(&result),
+            Some("docs/Sample_Resume.pdf"),
+            "{result:?}"
+        );
+        // The written extension tells two files with one stem apart.
+        let paths = ["a/report.md", "b/report.pdf"];
+        for (description, expected) in
+            [("report.pdf", "b/report.pdf"), ("report.md", "a/report.md")]
+        {
+            let result = resolve_among(&paths, &about(IntentKind::Question, description));
+            assert_eq!(
+                bound_path(&result),
+                Some(expected),
+                "{description}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn file_names_match_regardless_of_case_and_accents() {
+        let paths = ["reports/Niño_report.md", "reports/budget.md"];
+        for description in [
+            "nino report",
+            "NIÑO REPORT",
+            "Niño_report.md",
+            "nino_report.md",
+        ] {
+            let result = resolve_among(&paths, &about(IntentKind::Question, description));
+            assert_eq!(
+                bound_path(&result),
+                Some("reports/Niño_report.md"),
+                "{description}: {result:?}"
+            );
+        }
+        let paths = ["reports/Pérez-Plan.md", "reports/budget.md"];
+        let result = resolve_among(&paths, &about(IntentKind::Question, "perez plan"));
+        assert_eq!(
+            bound_path(&result),
+            Some("reports/Pérez-Plan.md"),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn a_folder_name_does_not_name_the_files_inside_it() {
+        let paths = [
+            "notes/alpha.md",
+            "notes/beta.md",
+            "notes/gamma.md",
+            "plan.md",
+        ];
+        let result = resolve_among(&paths, &about(IntentKind::Question, "my notes"));
+        assert!(is_folder_wide(&result), "{result:?}");
+        let result = resolve(&about(IntentKind::Question, "projects"));
+        assert!(is_folder_wide(&result), "{result:?}");
+    }
+
+    #[test]
+    fn many_matching_files_mean_the_whole_folder_not_a_chooser() {
+        let paths = [
+            "a/budget-notes.md",
+            "b/meeting-notes.md",
+            "c/study-notes.md",
+            "d/team-notes.md",
+            "e/trip-notes.md",
+            "f/week-notes.md",
+        ];
+        let result = resolve_among(&paths, &about(IntentKind::Question, "notes"));
+        assert!(is_folder_wide(&result), "{result:?}");
+        // A file named exactly that is still the file.
+        let mut with_exact = paths.to_vec();
+        with_exact.push("z/notes.md");
+        let result = resolve_among(&with_exact, &about(IntentKind::Question, "notes"));
+        assert_eq!(bound_path(&result), Some("z/notes.md"), "{result:?}");
+    }
+
+    #[test]
+    fn a_chooser_lists_the_tightest_matches_first() {
+        let paths = [
+            "a/old-team-weekly-notes.md",
+            "b/alpha-beta-notes.md",
+            "c/zeta-notes.md",
+        ];
+        let result = resolve_among(&paths, &about(IntentKind::Question, "notes"));
+        assert_eq!(
+            candidate_paths(&result),
+            [
+                "c/zeta-notes.md",
+                "b/alpha-beta-notes.md",
+                "a/old-team-weekly-notes.md"
+            ]
+        );
     }
 
     fn chosen_edit(description: Option<&str>) -> ModelIntent {
