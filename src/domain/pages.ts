@@ -1,4 +1,4 @@
-import { utf8Length, utf8OffsetToUtf16Index } from "./offsets";
+import { utf8Length, utf8OffsetsToUtf16Indices } from "./offsets";
 
 /** One PDF page's text in the read content, as UTF-8 byte offsets (like passages). */
 export interface PageRange {
@@ -26,41 +26,36 @@ export function readerBlocks(
   if (!pages?.length) return null;
   const length = utf8Length(content);
   let previousEnd = 0;
-  const blocks: ReaderBlock[] = [];
+  for (const range of pages) {
+    if (
+      !Number.isInteger(range.page) ||
+      range.start < previousEnd ||
+      range.end < range.start ||
+      range.end > length
+    )
+      return null;
+    previousEnd = range.end;
+  }
+  let indices: number[];
   try {
-    for (const range of pages) {
-      if (
-        !Number.isInteger(range.page) ||
-        range.start < previousEnd ||
-        range.end < range.start ||
-        range.end > length
-      )
-        return null;
-      previousEnd = range.end;
-      blocks.push({
-        kind: "page",
-        page: range.page,
-        start: utf8OffsetToUtf16Index(content, range.start),
-        end: utf8OffsetToUtf16Index(content, range.end),
-      });
-    }
+    // One pass for every page: converting each offset separately re-encodes
+    // the whole text and freezes the reader on long PDFs.
+    indices = utf8OffsetsToUtf16Indices(
+      content,
+      pages.flatMap((range) => [range.start, range.end]),
+    );
   } catch {
     // An offset inside a character: the ranges don't belong to this text.
     return null;
   }
+  const blocks: ReaderBlock[] = pages.map((range, i) => ({
+    kind: "page",
+    page: range.page,
+    start: indices[2 * i],
+    end: indices[2 * i + 1],
+  }));
   const listed = new Set(pages.map((range) => range.page));
   for (const page of unreadablePages)
     if (!listed.has(page)) blocks.push({ kind: "unreadable", page });
   return blocks.sort((a, b) => a.page - b.page);
-}
-
-/** The page of `blocks` that holds string index `index`, if any. */
-export function pageAt(
-  blocks: ReaderBlock[],
-  index: number,
-): number | undefined {
-  return blocks.find(
-    (block) =>
-      block.kind === "page" && index >= block.start && index < block.end,
-  )?.page;
 }

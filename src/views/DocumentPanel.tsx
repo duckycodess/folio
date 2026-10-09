@@ -248,7 +248,9 @@ export function DocumentPanel({
             ) : (
               <p className="muted">
                 {document.mediaType === "application/pdf"
-                  ? "PDF text is read in the desktop app; this preview can't read PDFs."
+                  ? workspace.nativeAvailable
+                    ? "Folio couldn't read this PDF's text."
+                    : "PDF text is read in the desktop app; this preview can't read PDFs."
                   : "This file hasn't been read yet."}
               </p>
             )}

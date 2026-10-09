@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { utf8Length } from "./offsets";
-import { pageAt, readerBlocks, type PageRange } from "./pages";
+import { readerBlocks, type PageRange } from "./pages";
 
 // Two pages joined by a blank line, as the native reader returns them.
 const first = "Gabay sa pahintulot (consent).";
@@ -57,11 +57,21 @@ describe("reader pages", () => {
     ).toBeNull();
   });
 
-  it("finds the page that holds a passage", () => {
-    const blocks = readerBlocks(content, pages)!;
-    expect(pageAt(blocks, content.indexOf("Niño"))).toBe(2);
-    expect(pageAt(blocks, 0)).toBe(1);
-    // The blank line between pages belongs to neither.
-    expect(pageAt(blocks, first.length)).toBeUndefined();
+  it("lays out a long PDF quickly", () => {
+    // 600 pages of Taglish text with multi-byte characters, as extracted.
+    const page = "Ang deadline — sa Oktubre, sabi ni Niño. ".repeat(70);
+    const text = Array.from({ length: 600 }, () => page).join("\n\n");
+    const ranges: PageRange[] = [];
+    let at = 0;
+    for (let n = 1; n <= 600; n++) {
+      ranges.push({ page: n, start: at, end: at + utf8Length(page) });
+      at += utf8Length(page) + 2;
+    }
+    const started = performance.now();
+    const blocks = readerBlocks(text, ranges)!;
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(blocks).toHaveLength(600);
+    const last = blocks[599];
+    expect(last.kind === "page" && text.slice(last.start, last.end)).toBe(page);
   });
 });

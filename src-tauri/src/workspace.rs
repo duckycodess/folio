@@ -661,6 +661,9 @@ mod tests {
         let json = serde_json::to_value(&read).unwrap();
         assert_eq!(json["pages"][1]["page"], 2);
         assert!(json.get("unreadablePages").is_none());
+        // When present, unreadable pages use the camelCase key the reader reads.
+        let partly = DocumentText { unreadable_pages: vec![2], ..read };
+        assert_eq!(serde_json::to_value(&partly).unwrap()["unreadablePages"], serde_json::json!([2]));
     }
 
     #[test]

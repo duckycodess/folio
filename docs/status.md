@@ -81,6 +81,13 @@ Checked on macOS with Node.js 26.10.0. There's no Rust toolchain on this host, s
   - a TXT file stays one block;
   - no horizontal scroll.
 
+After Gab's review:
+
+- page ranges are converted in one pass (a 600-page layout test must finish in under 0.5 s; it took 13.8 s before);
+- a PDF the desktop app can't read says "Folio couldn't read this PDF's text." instead of blaming the browser preview;
+- a Rust test pins the `unreadablePages` key;
+- the unused `pageAt` is removed.
+
 Not verified: a real PDF read by the desktop app, a real PDF with a page that fails extraction, screen readers, and the Tauri webview.
 
 ### Search evidence (2026-10-10, issue #19)
