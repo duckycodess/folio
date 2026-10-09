@@ -85,10 +85,11 @@ pub fn extract(kind: MediaKind, bytes: &[u8]) -> NativeResult<Extraction> {
     }
 }
 
-/// Text shown by the reader. Offsets in search results and evidence index into this string.
-pub fn document_text(kind: MediaKind, bytes: &[u8]) -> NativeResult<String> {
+/// Text shown by the reader, with each PDF page's byte range and the pages that couldn't be
+/// read. Offsets in search results and evidence index into `text`.
+pub fn document_pages(kind: MediaKind, bytes: &[u8]) -> NativeResult<ExtractedText> {
     match extract(kind, bytes)? {
-        Extraction::Text(extracted) => Ok(extracted.text),
+        Extraction::Text(extracted) => Ok(extracted),
         Extraction::Unsupported(reason) => Err(error(ErrorCode::DocumentNotText, reason)),
     }
 }
