@@ -363,6 +363,7 @@ export function AppShell() {
                   searchShortcut={searchShortcutLabel(platform)}
                   onSearch={onSearch}
                   fileActions={fileActions}
+                  onOpenPassage={relations.openPassage}
                 />
               )}
               {view === "organize" && (
