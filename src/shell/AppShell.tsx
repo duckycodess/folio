@@ -19,6 +19,7 @@ import {
   THEME_LABELS,
   type ThemePreference,
 } from "../app/theme";
+import { useRelationships } from "../app/useRelationships";
 import { useWorkspace, type WorkspaceSourceKind } from "../app/useWorkspace";
 import { simulatedCode } from "../adapters/simulate";
 import { useDrafts } from "../app/drafts";
@@ -87,8 +88,9 @@ function isEditable(target: EventTarget | null) {
 export function AppShell() {
   const workspace = useWorkspace();
   const drafts = useDrafts();
+  const relations = useRelationships(workspace);
   // Above the views, so an apply in progress survives switching views.
-  const organize = useOrganize(workspace);
+  const organize = useOrganize(workspace, relations.refresh);
   const [view, setView] = useState<ViewId>("home");
   const searchInput = useRef<HTMLInputElement>(null);
   const platform = useMemo(currentPlatform, []);
@@ -292,7 +294,9 @@ export function AppShell() {
                   organize={organize}
                 />
               )}
-              {view === "graph" && <GraphView workspace={workspace} />}
+              {view === "graph" && (
+                <GraphView workspace={workspace} relations={relations} />
+              )}
               {view === "assistant" && (
                 <AssistantView drafts={drafts} onNavigate={setView} />
               )}
@@ -306,6 +310,7 @@ export function AppShell() {
             key={reading.id}
             document={reading}
             workspace={workspace}
+            relations={relations}
             onClose={closeDocument}
             onNavigate={setView}
           />

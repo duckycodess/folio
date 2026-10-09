@@ -82,7 +82,11 @@ export function renameOperation(
   };
 }
 
-export function useOrganize(workspace: WorkspaceState): OrganizeController {
+export function useOrganize(
+  workspace: WorkspaceState,
+  /** Called after Folio changed files, so other views re-read the index. */
+  onFilesChanged: () => void = () => {},
+): OrganizeController {
   const [state, dispatch] = useReducer(organizeFlow, ORGANIZE_START);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [undo, setUndo] = useState<UndoState>(NO_UNDO);
@@ -177,6 +181,7 @@ export function useOrganize(workspace: WorkspaceState): OrganizeController {
       const report = await applyPlan(folderId, plan);
       dispatch({ type: "applied", request, report });
       setUndo(NO_UNDO);
+      onFilesChanged();
       await Promise.all([
         workspace.refreshFolder(),
         listHistory(folderId)
@@ -208,6 +213,7 @@ export function useOrganize(workspace: WorkspaceState): OrganizeController {
     try {
       const report = await undoPlan(folderId, preview);
       setUndo({ ...NO_UNDO, report });
+      onFilesChanged();
       await workspace.refreshFolder();
     } catch (cause) {
       setUndo({ ...undo, busy: false, error: toFolioError(cause) });

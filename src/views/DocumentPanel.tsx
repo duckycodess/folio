@@ -1,6 +1,8 @@
-import { ArrowLeft, Sparkles, X } from "lucide-react";
+import { ArrowLeft, CornerUpLeft, Sparkles, X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
+import type { RelationshipsState } from "../app/useRelationships";
 import type { WorkspaceState } from "../app/useWorkspace";
+import { highlightRange, passageState } from "../domain/connections";
 import type { DocumentRecord } from "../domain/contracts";
 import type { ViewId } from "../shell/navigation";
 import { Badge } from "../ui/Badge";
@@ -8,13 +10,8 @@ import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { FileTypeIcon } from "../ui/FileTypeIcon";
 import { Progress } from "../ui/Progress";
-import {
-  fileKind,
-  folderOf,
-  formatBytes,
-  formatModified,
-  languageLabel,
-} from "./format";
+import { RelatedList } from "./Connections";
+import { fileKind, formatBytes, formatModified, languageLabel } from "./format";
 
 const TABS = ["Summary", "Details", "Related"] as const;
 type Tab = (typeof TABS)[number];
@@ -22,6 +19,7 @@ type Tab = (typeof TABS)[number];
 interface DocumentPanelProps {
   document: DocumentRecord;
   workspace: WorkspaceState;
+  relations: RelationshipsState;
   onClose: () => void;
   onNavigate: (view: ViewId) => void;
 }
@@ -29,10 +27,34 @@ interface DocumentPanelProps {
 export function DocumentPanel({
   document,
   workspace,
+  relations,
   onClose,
   onNavigate,
 }: DocumentPanelProps) {
-  const [tab, setTab] = useState<Tab>("Details");
+  // Evidence opened from Related or Graph shows the passage in Details.
+  const focus =
+    relations.focus?.documentId === document.id ? relations.focus : null;
+  const [tab, setTab] = useState<Tab>(
+    relations.returnedTo === document.id ? "Related" : "Details",
+  );
+  const mark = useRef<HTMLElement>(null);
+  const origin = relations.trail[relations.trail.length - 1];
+  const range =
+    focus && document.content !== undefined
+      ? highlightRange(focus, document)
+      : null;
+
+  useEffect(() => {
+    if (!focus) return;
+    setTab("Details");
+  }, [focus]);
+
+  // Once the passage is on screen, bring it into view and move focus to it.
+  useEffect(() => {
+    if (!range || tab !== "Details") return;
+    mark.current?.scrollIntoView({ block: "center" });
+    mark.current?.focus({ preventScroll: true });
+  }, [range?.[0], range?.[1], tab]);
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const id = useId();
   const heading = useRef<HTMLHeadingElement>(null);
@@ -100,6 +122,17 @@ export function DocumentPanel({
           <X size={18} aria-hidden="true" />
         </button>
       </div>
+
+      {origin && (
+        <button
+          type="button"
+          className="link-button trail-back"
+          onClick={relations.back}
+        >
+          <CornerUpLeft size={16} aria-hidden="true" />
+          Back to {origin.name}
+        </button>
+      )}
 
       <div role="tablist" aria-label="Document" className="tabs">
         {TABS.map((name, index) => (
@@ -180,7 +213,26 @@ export function DocumentPanel({
             {workspace.busy && document.content === undefined ? (
               <Progress label="Reading file" />
             ) : document.content !== undefined ? (
-              <pre className="source-text">{document.content}</pre>
+              <>
+                {focus && !range && (
+                  <p className="muted">
+                    {passageState(focus, document) === "changed"
+                      ? "This file has changed since the connection was found, so the passage can't be highlighted."
+                      : "The passage can't be shown in this file."}
+                  </p>
+                )}
+                {range ? (
+                  <pre className="source-text">
+                    {document.content.slice(0, range[0])}
+                    <mark ref={mark} className="source-highlight" tabIndex={-1}>
+                      {document.content.slice(range[0], range[1])}
+                    </mark>
+                    {document.content.slice(range[1])}
+                  </pre>
+                ) : (
+                  <pre className="source-text">{document.content}</pre>
+                )}
+              </>
             ) : (
               <p className="muted">
                 {document.mediaType === "application/pdf"
@@ -191,33 +243,13 @@ export function DocumentPanel({
           </>
         )}
 
-        {tab === "Related" &&
-          (workspace.neighbors.length ? (
-            <ul className="related-list">
-              {workspace.neighbors.map((related) => (
-                <li key={related.id}>
-                  <button
-                    type="button"
-                    className="related-item"
-                    onClick={() => workspace.selectDocument(related)}
-                  >
-                    <FileTypeIcon mediaType={related.mediaType} size={20} />
-                    <span className="related-text">
-                      <span className="related-name">{related.name}</span>
-                      <span className="related-path">
-                        {folderOf(related.relativePath)}
-                      </span>
-                    </span>
-                    <Badge>Linked in file</Badge>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          ) : (
-            <EmptyState title="No linked files">
-              Folio currently shows only links written inside files.
-            </EmptyState>
-          ))}
+        {tab === "Related" && (
+          <RelatedList
+            document={document}
+            workspace={workspace}
+            relations={relations}
+          />
+        )}
       </div>
     </aside>
   );
