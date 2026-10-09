@@ -8,7 +8,8 @@
 - File table and reader ([issue #17](https://github.com/duckycodess/folio/issues/17)): name, location, type, modified and size columns that drop to fit the space; the reader beside the table (or in place of it below 860px) shows the file's text as read-only, with its full path. The reader never shows a file the current list excludes. In the desktop app, Folio starts with an "Add folder" state (sample files on request); an added folder with no readable files offers "Choose another folder". The browser preview lists sample files and says so.
 - Relationships with evidence ([issue #21](https://github.com/duckycodess/folio/issues/21)): the document panel's Related tab and the Graph view list every connected file. Each entry has its type (link and direction, or exact duplicate), how Folio knows it, the file's original folder, and evidence excerpts that open the source with the passage highlighted. Files opened from Related keep a "Back to" link to the origin. With a folder open, links and duplicates come from the native index (`list_relationships`, `list_duplicates`) merged with links in opened files. If the folder hasn't been indexed, the UI says so; no UI runs the index scan yet. Exact duplicates are also found from content hashes Folio already has. The list is the only Graph view; there is no drawn graph. Similarity and shared-fact connections have labels and tests, but no producer yet.
 - Shared error and recovery states ([issue #18](https://github.com/duckycodess/folio/issues/18)): every error code maps to one plain-language message and next step ([error-states.md](error-states.md)), shown through one recovery notice in every workflow. Drafts (the Ask & Act request, rename names per file) survive errors and view changes. Success after opening a folder is shown only once the native core reports it. Each view announces into its own live region. Modals keep Tab inside them. A browser-only practice mode (`?simulate=<code>`) triggers each state in its own flow.
-- Home as the file browser ([#42](https://github.com/duckycodess/folio/issues/42), [#43](https://github.com/duckycodess/folio/issues/43), ADR 0010). The Files tab is gone. Home lists every file, sorted by path, with a count. Each row has a keyboard-accessible ⋯ menu (Open, Rename…, Move to folder…, Show related), and the document panel has the same menu. Rename and Move use the exact preview, Approve and Undo flow from #22, in a dialog. The search field is only on Home, centred, and ⌘K / Ctrl K from any page opens Home and focuses it. Rows take an optional `renderDetail` slot for #19's search evidence. With the sample files, Rename and Move explain that a folder is needed.
+- Graph entry points ([#40](https://github.com/duckycodess/folio/issues/40)): Graph starts from all files, one file, a folder (including connections that leave it) or a keyword topic. With a file open, it starts from that file, and opening a file from the list makes it the new start, with keyboard focus moved to the list's new title. A topic with no letters or digits matches nothing. Confirmed connections (links, identical copies) are listed apart from suggested ones (similarity, possible shared facts), which only appear when the index has them. A "Where these files are" panel counts the connected files per folder. That count isn't a written summary: the relationship summary needs a local model and isn't built. Arrow keys, Home and End move between the files in the list.
+- Home as the file browser ([#42](https://github.com/duckycodess/folio/issues/42), [#43](https://github.com/duckycodess/folio/issues/43), ADR 0010). The Files tab is gone. Home lists every file, sorted by path, with a count. Each row has a keyboard-accessible ⋯ menu (Open, Rename…, Move to folder…, Show related), and the document panel has the same menu. Rename and Move use the exact preview, Approve and Undo flow from #22, in a dialog. The search field is only on Home, centred, and ⌘K / Ctrl K from any page opens Home and focuses it. Rows take an optional `renderDetail` slot for #19's search evidence. With the sample files, Rename and Move explain that a folder is needed. In practice mode (`?simulate=<code>`), they show the simulated refusal instead.
 - Organize flow ([issue #22](https://github.com/duckycodess/folio/issues/22)), desktop only. Analyze re-indexes the open folder, with live progress and Stop, then lists exact duplicates (by content, never moved or deleted) and filename suggestions to tick. The exact preview shows every from → to path from the native plan. Approve echoes that plan's digest and applies it. The result is worded from the per-file outcomes, so a batch that stopped partway never says nothing changed. It shows what was recorded in history and offers a Preview Undo. A refused apply keeps the preview, with Preview again. The Rename form uses the same native plan with a folder open. With the sample files, Organize explains that a folder is needed. Virtual collections are still not available.
 - Search evidence ([issue #19](https://github.com/duckycodess/folio/issues/19)): each Home search result shows how it matched (words in the text or in the name; "Similar meaning" only for semantic results) and up to two excerpts with the query words highlighted, case- and accent-insensitive, plus page labels for PDFs. Selecting an excerpt opens the reader at that highlighted passage. In an open folder, text search uses the persistent index (FTS5 keyword search), merged with file-name matches. An unindexed folder says that only names are searched and offers **Index this folder**, with progress and Stop. A file kept open outside the results is labelled, and a note says that finding files by meaning needs a local AI model.
 - Home filters, pinned folders and recent files ([issue #33](https://github.com/duckycodess/folio/issues/33)):
@@ -61,11 +62,36 @@
 
 ## Pending
 
-Multilingual embedding integration, semantic search, model lifecycle/downloads, local generation, AI summaries, command interpretation, model-generated Ripple explanations and similarity/shared-fact discovery (issues #4 and #8), creating folders during moves, UI use of the native index and actions (the current UI still searches loaded content), live file watching, multi-folder workspaces, and real Model Lab results.
+Model-generated Ripple explanations and similarity/shared-fact discovery (issues #4 and #8), creating folders during moves, UI use of the native index and actions (the current UI still searches loaded content), live file watching, multi-folder workspaces, native packaging, and real Model Lab results remain pending. Issue #4 on `FOLIO-4` carries multilingual embedding, semantic search, local generation, grounded summaries/answers, model/runtime setup and proposal-only interpretation through its own interim in-memory chunking and vector index; it does not yet read #3's persistent index, and its proposals are not yet connected to #5's native plan/apply path.
+
+Two `llama-server` hardening items from the #15 review remain open:
+
+- **Port race.** The parent picks a free loopback port and releases it before the child binds it, so a local process that takes the port in that gap could answer `/health` and receive the key and prompt. Fixing it needs the child to report the port it bound; that hasn't been verified against the pinned b11524 build.
+- **Orphaned server on macOS and Linux.** If Folio itself crashes, `llama-server` keeps running until it's killed. Windows is covered by a kill-on-close Job Object. macOS has no parent-death signal, so this needs a small watchdog helper or a startup sweep of stale servers.
 
 Provider cases are listed as pending, not mocked, in `src/domain/pending.test.ts`. Writer tests use real temporary folders; they are not evidence about the desktop window, installers or a real user's folders.
 
-No AI or save completion should be presented until the corresponding native/provider implementation succeeds. Model sizes, installed size, memory targets, and platform support remain subject to measurements.
+No AI or save completion should be presented without the corresponding native/provider evidence. Model sizes, installed size, memory targets, and platform support remain subject to measurements.
+
+## Remote CI verification after conflict resolution
+
+GitHub Actions run [37939253553](https://github.com/duckycodess/folio/actions/runs/37939253553) passed at `7265b05` (2026-10-09): frontend formatting/type checks/tests/build plus the Linux core suite, and native `cargo test --manifest-path src-tauri/Cargo.toml` on Windows and macOS. This supersedes earlier compile/test uncertainty for that revision only. No local WSL tests were resumed. CI did not run gated real-model acceptance, desktop interaction, packaging, or 8-GB measurements, and did not resolve the then-pending static contract/identity integration findings. PR #15 remains draft.
+
+The subsequent C1–C5 integration fixes are split into focused commits on
+`FOLIO-4`: native registry resolution, native document identity and hash
+parity, `FolioError` conversion, the additive `GroundedResult` boundary, and
+offset-helper contract tests. Formatting and static diff checks passed locally;
+local tests, builds and inference remain intentionally stopped because WSL
+memory pressure caused repeated restarts. GitHub Actions run
+[37943613336](https://github.com/duckycodess/folio/actions/runs/37943613336) at
+`4da77bc` completed successfully: frontend reported 9 Vitest files passed and
+1 skipped with 89 tests passed and 16 todo; Linux core reported 46 passed, 0
+failed and 2 ignored out of 48; macOS native reported 81 passed, 0 failed and
+3 ignored out of 84; Windows native reported 85 passed, 0 failed and 3
+ignored out of 88. These are hosted compile/test results only. TJ review is
+still required for the additive contract proposals and grounded-summary
+correctness; no real-model acceptance, desktop interaction, packaging, or
+8-GB measurement is claimed here.
 
 ## Verification
 
@@ -93,6 +119,36 @@ Checked on macOS with Node.js 26.10.0:
 - The filter selects first wrapped their labels around the controls, which gave them names like "FolderAll foldersTop…". The labels now point at the selects with `for`.
 
 Not verified: a real folder through the desktop app, screen readers, and the Tauri webview.
+
+### Graph entry points (2026-10-10, issue #40)
+
+Checked on macOS with Node.js 26.10.0, on top of #48:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 170 passed, 9 todo. New cases in `graphScope.test.ts` cover:
+  - each connection listed once;
+  - a file start that keeps the file first;
+  - a folder start that includes connections leaving the folder, and doesn't treat `project` as a prefix of `projects`;
+  - topic matching and an empty topic;
+  - a file that's no longer listed;
+  - links and duplicates as confirmed but never similarity or shared facts;
+  - per-folder counts.
+- Browser preview (sample files) in headless Chromium:
+  - all files: 11 confirmed and 0 suggested, across 6 folders;
+  - the folder `archive`: 2;
+  - an empty topic shows "Type a topic to start", and "deadline" gives 8;
+  - the file start follows the opened file;
+  - ArrowDown and End move between files, and Enter opens one in the reader;
+  - nothing scrolls sideways at 700px.
+
+After review (2026-10-10):
+
+- Fixed: opening a file from the list in "A file" mode used to drop focus to the page body, because the list rebuilt around the new start. Focus now moves to the new title ("Connected to …"). Fixed: a topic such as `?`, `#` or `—` used to list every connection, because it passed the blank check but gave the keyword search no words. It now matches nothing and shows "Type a topic to start".
+- With "A folder" chosen, an open folder without subfolders now shows all files instead of an empty folder name. The Suggested intro no longer says every suggestion came from comparing passages. The pair list is memoised, and the topic is deferred while typing. The Graph folder panel and the file location share one path helper. The topic help says a file matches if it has any of the words.
+- `npm run format:check`, `npm run check` and `npm run build`: passed. `npm test`: 171 passed, 9 todo. The new case covers topics with no letters or digits.
+- Browser preview (sample files) in headless Chrome: Enter on `project-plan-copy.md` from `project-plan.md` focuses "Connected to project-plan-copy.md", and Tab then reaches the first file in the list. The topics `?`, `#` and `—` give 0 found, and "plan" gives 9. The folder fallback and typing speed on a large indexed folder weren't checked in the browser.
+
+Not verified: suggested connections with real index data (no producer yet), screen readers, and the Tauri app.
 
 ### Search evidence (2026-10-10, issue #19)
 
@@ -144,6 +200,25 @@ Checked on macOS with Node.js 26.10.0, on top of #22:
   - Move offers only folders inside the open folder and previews `school/copy of plan.md → copy of plan.md`.
 
 Not verified: the real native core in the Tauri app, screen readers, and Windows.
+
+After review (2026-10-10):
+
+- Fixed: **Done** in the dialog's result closes the dialog. It used to reset the flow and reopen the form for the file's old path.
+- Fixed: the dialog can't be dismissed while a change is being applied, because Escape and Close are disabled. Before, closing it then left that flow's preview, result and Undo to show up in the next file's dialog.
+- Fixed: Show related applies to that one opening. Once another file (or none) is shown, opening the file again starts on Details.
+- Back from the preview returns focus to the name or folder field. In Move, "Choose another name" focuses the folder field.
+- A rename that only changes capital letters is refused before a plan is asked for, as the native plan would refuse it.
+- Practice mode works in the dialog again: `?simulate=<code>` shows that refusal on the sample files.
+- Menu items have an `id`, so the document panel drops Open by id rather than by label.
+- `npm run format:check`, `npm run check` and `npm run build`: passed. `npm test`: 162 passed, 9 todo, with case-only renames added to the name checks.
+- Headless Chrome with a scratch mocked native core, not committed:
+  - Done closes the dialog and focus returns to the list;
+  - during a 1.5s apply, Escape leaves the dialog open with Close disabled, and the result appears in that dialog;
+  - the next dialog, "Move notes.md", opens on its own form;
+  - Back focuses the name field;
+  - Show related → another file → reopening shows Details.
+- Practice mode, checked on the sample files: `?simulate=destinationExists` shows "A file with that name already exists" in Move, and "Choose another name" focuses the folder field.
+- The mocked core itself is still not committed.
 
 ### Organize flow (2026-10-09, issue #22)
 
@@ -399,6 +474,54 @@ Fixes for the review: edits keep permissions and refuse files Folio may not writ
 These changes were written on a Linux host without a Rust toolchain or the Tauri system libraries, so `cargo test` was not run locally. [Run 37947687958](https://github.com/duckycodess/folio/actions/runs/37947687958), for commit `8cd03f0`, passed all three jobs: frontend, `desktop-check (macos-latest)` with 144 native tests passed and 1 ignored (including both Unix permission tests), and `desktop-check (windows-latest)` with 136 passed and 1 ignored. Locally, `npm run check`, `npm test` (177 passed, 25 `todo`) and `npm run build` passed. The native suite was not run on Linux.
 
 Local inference, native packaging, and actual performance/size measurements remain unverified. Indexing time and database size have not been measured.
+
+### Issue #4 carried-forward provider and proposal evidence
+
+The FOLIO-4 branch retains the pure `folio-core` workspace member, verified model/runtime manifest, local E5 and llama.cpp adapters, grounded summaries/answers, relevance/no-generator gate, cancellation and lifecycle handling, and deterministic proposal-only interpretation. The incoming issue #2 native shell remains authoritative for workspace identity, typed errors, action-plan identity/digest, approval, and the refusal to write until issue #5. AI output is never an approval and retrieved document text never authorizes a filesystem operation.
+
+Evidence from the pre-merge FOLIO-4 checkout is preserved as historical context,
+not as verification for the merged branch: frontend checks previously passed
+(11 tests and production build); the post-restart core suite passed 43 tests
+with 0 failures and 2 ignored; the root Tauri test/build passed earlier at
+`e5a9e5b` (5 app tests and debug build), while a later root rerun was
+interrupted by WSL restart. The current branch's hosted verification is the
+named run above. Real-model results from the R8 harness are recorded below as
+Linux diagnostics only, and summary correctness remains TJ Not reviewed.
+
+The WSL native prerequisites were user-installed and verified at WebKitGTK/JavaScriptCoreGTK 2.52.6, libsoup 3.4.4, librsvg 2.58.0, with Cargo/rustc 1.96.1 available through the inline user-local PATH. Historical missing-library and Cargo 1.75 failures remain historical only. Windows Rust-native, macOS, desktop startup/folder picker, packaging, Job Object behavior, target RAM/size, #3 persistence, and #5 apply/undo remain unverified.
+
+No local test, build, or inference was run after the merge resolution because
+the user instructed that WSL-heavy execution remain stopped. Opus approved the
+static C1–C5 integration review at `4da77bc`, and the named hosted Actions run
+provides the current compile/test evidence.
+
+### Issue #4 Linux real-model diagnostics (workflow removed by user request)
+
+Between 2026-10-09 runs 37946816811 and 37952689689, a dedicated GitHub Actions
+workflow ran the ignored R8 harness (`src-tauri/crates/folio-core/tests/real_acceptance.rs`)
+with the manifest-pinned E5 int8 embedding model and llama.cpp b11524 on an
+Ubuntu x64 CPU runner, online and inside a verified `--network none` container.
+**This is diagnostic evidence, not target verification: Folio's supported
+targets are Windows and macOS.** At the user's request the Ubuntu workflow and
+its Linux-only memory sampler were removed (`d41e3af`); the harness, its
+assertions, the development calibration queries and the manifest-pinned fetch
+script remain. Model task outcomes below are model and provider behaviour, not
+caused by the operating system, and are not claimed for Windows or macOS.
+
+| Run                                                                          | Commit    | Generation model  | Phases passed (online / offline) | Failing phase                   |
+| ---------------------------------------------------------------------------- | --------- | ----------------- | -------------------------------- | ------------------------------- |
+| [37950604449](https://github.com/duckycodess/folio/actions/runs/37950604449) | `533fc0f` | Qwen3-0.6B Q4_K_M | 6/7 / 6/7                        | Taglish deadline interpretation |
+| [37951418126](https://github.com/duckycodess/folio/actions/runs/37951418126) | `40f19b0` | Qwen3-0.6B Q8_0   | 6/7 / 6/7                        | Taglish deadline interpretation |
+| [37951847593](https://github.com/duckycodess/folio/actions/runs/37951847593) | `a25ecb7` | Qwen3-1.7B Q4_K_M | 6/7 / 6/7                        | summary citations               |
+| [37952689689](https://github.com/duckycodess/folio/actions/runs/37952689689) | `a43fad4` | Qwen3-1.7B Q4_K_M | 6/7 / 6/7                        | summary citations               |
+
+- Passing in every listed run: English→Filipino, Filipino→English and Taglish retrieval; the evidence gate (unrelated query returns nothing and the generator is not called); ambiguity asks for file selection; cancellation within the bound and recovery.
+- Both Qwen3-0.6B files put `October 20 to October 23` into both `find` and `replace`; the resolver correctly asked for clarification. Qwen3-1.7B produced the correct edit proposal for both phrasings, but its summaries added two uncited link sentences ("See the meeting notes.", "See the submission checklist."), so the every-sentence-cited assertion failed. No single pinned model passed all seven phases.
+- The evidence-gate constants (`GATE_MIN_TOP_COSINE = 0.813`, `GATE_MIN_MARGIN = 0.031`) were set from the separate development queries in run 37949760186, never from the acceptance inputs; on that data the gate passes 7 of 8 related and 0 of 6 unrelated queries. The calibration is tight (the top-cosine floor is 0.0005 above the highest unrelated development score) and used the same 15 synthetic documents as acceptance, so passing acceptance on that corpus does not show the gate generalises to real folders. The per-chunk semantic floor (`MIN_SEMANTIC_SCORE = 0.35`) does not filter within E5's score band; tightening it changes real-model ranking and waits for target-platform calibration.
+- Qwen3-1.7B: llama-server peak resident memory about 2.4 GB (process tree about 2.9 GB) on that runner; the model file alone is 1,107,409,472 bytes, above the under-1-GB default target. These are process observations on a 16 GB runner, not whole-device or 8-GB-target measurements.
+- Summary factual correctness and output language remain Not reviewed by TJ.
+
+**Pending:** real-model acceptance on Windows and macOS, a model decision, and independent review of the issue #4 changes made after `637f3e4`.
 
 ## Product-context refresh
 

@@ -1,0 +1,17 @@
+{
+  "id": "qwen3-0.6b-q4",
+  "role": "generation",
+  "repo": "unsloth/Qwen3-0.6B-GGUF",
+  "revision": "revision-a",
+  "files": [
+    {
+      "path": "Qwen3-0.6B-Q4_K_M.gguf",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bytes": 396700000
+    }
+  ],
+  "quantization": "Q4_K_M",
+  "license": "apache-2.0",
+  "runtime": "llama.cpp",
+  "optionalPack": false
+}
