@@ -86,8 +86,9 @@ Automatic virtual collections and project-wide summaries are stretch goals. Virt
 ## Engineering targets
 
 - Windows and macOS desktop delivery; phones follow later.
-- An 8 GB laptop without a dedicated GPU is the minimum test target; do not claim smoothness before measurements.
-- Default app, runtime, tokenizer, and model files target under 1 GB installed. Original documents, variable indexes, and bounded history are accounted for separately. Optional model packs can have a separately displayed size.
+- An 8 GB total-device-RAM laptop without a dedicated GPU is the minimum test target. The operating system, Folio, inference processes, and other applications share that RAM; it is not an 8 GB allowance for Folio alone. CPU-only inference is required; do not claim safe resource use or smoothness before target-device measurements.
+- There is currently no hard cap on optional model download or on-disk size. Downloads remain explicit and user-triggered, with exact sizes displayed, integrity verification, and disk-space safety. Removing the disk/download cap does not relax the RAM target or automatically qualify a model for supported use.
+- Default app, runtime, tokenizer, and model files still target under 1 GB installed; this is a design target, not a download restriction. Original documents, variable indexes, and bounded history are accounted for separately. Optional model packs have separately displayed sizes.
 - Normal browsing and search remain responsive while inference runs. Generation has progress and cancellation.
 - One active generative model/request initially. Models load on demand and unload when idle.
 
