@@ -896,7 +896,13 @@ async fn answer_question(
             &index_state,
             &workspace_id,
         )?;
-        let results = search_snapshot(&app, &embedding_state, &snapshot, &question)?;
+        let results = search_snapshot(
+            &app,
+            &embedding_state,
+            &snapshot,
+            &question,
+            document_id.as_deref(),
+        )?;
         let passages = results
             .into_iter()
             .filter(|result| {
@@ -936,12 +942,17 @@ fn search_snapshot(
     embedding_state: &EmbeddingState,
     snapshot: &IndexSnapshot,
     query: &str,
+    document_id: Option<&str>,
 ) -> Result<Vec<SearchResult>, NativeProviderError> {
     let limit = folio_core::generation::MAX_PASSAGES;
     if snapshot.embedding_space.is_none() {
         return Ok(snapshot
             .retriever
-            .keyword(&snapshot.documents, &snapshot.chunks, query, limit));
+            .keyword(&snapshot.documents, &snapshot.chunks, query, snapshot.chunks.len())
+            .into_iter()
+            .filter(|result| document_id.is_none_or(|id| result.document.id == id))
+            .take(limit)
+            .collect());
     };
     let query_embedding = with_embedding_provider(app, embedding_state, |provider| {
         provider.embed_query(query, None).map_err(native_error)
@@ -953,11 +964,12 @@ fn search_snapshot(
     })?;
     snapshot
         .retriever
-        .search(
+        .search_scoped(
             &snapshot.documents,
             &snapshot.chunks,
             query,
             Some(&query_embedding),
+            document_id,
             limit,
         )
         .map_err(native_error)
