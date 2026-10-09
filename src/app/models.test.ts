@@ -139,13 +139,21 @@ describe("model setup", () => {
     expect(isGenerationReady(installed, SETUP, NO_RUNTIME)).toBe(false);
     expect(
       isGenerationReady(
-        modelGroups([SMALL], { small: { id: "small", status: "notInstalled" } }, SETUP),
+        modelGroups(
+          [SMALL],
+          { small: { id: "small", status: "notInstalled" } },
+          SETUP,
+        ),
         SETUP,
         RUNTIME,
       ),
     ).toBe(false);
     expect(
-      isGenerationReady(installed, { ...SETUP, selectedGeneration: null }, RUNTIME),
+      isGenerationReady(
+        installed,
+        { ...SETUP, selectedGeneration: null },
+        RUNTIME,
+      ),
     ).toBe(false);
   });
 });

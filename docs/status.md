@@ -308,6 +308,7 @@ of real model quality.
 - `npm run check`: passed. `npm test`: 344 passed, 9 todo, with 9 pending cases skipped. `npm run build`: passed (`tsc --noEmit` plus Vite production build).
 - The precise Model Lab guarantee is limited to `sync_embeddings`: its initial space probe and each provider batch check inside `EmbeddingState` before any provider load. A batch already holding the lock may finish if Lab starts; Lab then unloads the slot and the next sync batch returns `providerBusy`. The existing live `semantic_search` snapshot path can still reload the product provider during Lab, and #27 does not migrate it.
 - Not verified here: real E5 inference or cross-language model quality, Windows or macOS native execution, the desktop window, packaging, live semantic search over the persistent store, or automatic UI triggering.
+
 ### Adaptive layout and resizable reader (2026-10-10, issue #67)
 
 - The shell picks its layout from its own measured width, not fixed window breakpoints (`src/app/shellLayout.ts`). The sidebar keeps its labels while there's room. With a file open, the sidebar collapses to the icon rail before the list loses its 420px minimum. Only when even the rail leaves too little room does the reader overlay the list from the right ([ADR 0012](adr/0012-reader-overlay-instead-of-full-width-replacement.md)). The list stays mounted behind it and is made `inert`.

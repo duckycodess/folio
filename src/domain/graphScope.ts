@@ -58,8 +58,7 @@ export function relationshipSummaryScope(
     .sort(
       (left, right) =>
         connectionStrength(right.pair.connection) -
-          connectionStrength(left.pair.connection) ||
-        left.index - right.index,
+          connectionStrength(left.pair.connection) || left.index - right.index,
     );
   if (focusDocumentId && all.has(focusDocumentId)) add(focusDocumentId);
   for (const { pair } of ranked) {

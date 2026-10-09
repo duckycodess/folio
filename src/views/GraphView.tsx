@@ -528,8 +528,8 @@ export function GraphView({
           {!generationReady && (
             <p className="muted">
               Set up and select an installed writing model and runtime in Model
-              Lab to write a relationship summary. The connections and
-              evidence above do not need a model.
+              Lab to write a relationship summary. The connections and evidence
+              above do not need a model.
             </p>
           )}
           {summaryScope.totalDocuments > summaryDocumentIds.length && (
