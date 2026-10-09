@@ -285,7 +285,7 @@ fn finish_lab(
 /// What a lab run holds for its whole duration: the generation slot (so user
 /// generation gets `providerBusy`) and the install lock (so no model or runtime
 /// can be installed, removed, re-selected or replaced under it).
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct LabHold {
     cancel: Arc<AtomicBool>,
     install_lock: Arc<AtomicBool>,
