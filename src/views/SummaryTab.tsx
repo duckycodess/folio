@@ -42,7 +42,7 @@ function SaveSummaryDialog({
   relations: RelationshipsState;
   onClose: () => void;
 }) {
-  const organize = useOrganize(workspace, relations.refresh);
+  const organize = useOrganize(workspace, "summary", relations.refresh);
   const { state } = organize;
   const heading = useRef<HTMLHeadingElement>(null);
   const previewButton = useRef<HTMLButtonElement>(null);

@@ -7,7 +7,6 @@ import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { Notice } from "../ui/Notice";
-import { Olio } from "../ui/Olio";
 import { Panel } from "../ui/Panel";
 
 /**
@@ -27,10 +26,8 @@ export function CollectionsPanel({
   if (!collections.available || !collections.collections.length)
     return (
       <Panel title="Collections">
-        <EmptyState
-          illustration={<Olio pose="organizing" size={96} />}
-          title="No collections yet"
-        >
+        {/* No Olio here: the floating launcher is the view's one Olio (#66). */}
+        <EmptyState title="No collections yet">
           Collections are virtual: they group related files without moving or
           copying them.{" "}
           {collections.available

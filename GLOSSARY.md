@@ -118,8 +118,11 @@ _Avoid_: A promise that every file changes or none does.
 **Undo Conflict**: A file that no longer matches what Folio saved, which stops the whole Undo.
 _Avoid_: Reversing part of a batch, or discarding a newer external edit.
 
-**Activity**: The record of changes Folio actually made to files, one entry per approved plan, with Undo when it is safe.
-_Avoid_: Listing previews, suggestions, summaries or analyses as changes.
+**Activity**: The record of every approved plan Folio ran, one entry per plan: what it changed, what failed or was cancelled, and where in Folio it was started, with Undo when it is safe.
+_Avoid_: Listing previews, suggestions, summaries or analyses, or plans that were never run, as activity; calling a failed attempt a change.
+
+**Plan Source**: Where in Folio a plan was started: Home, Organize, Graph, Ask & Act or a file's summary.
+_Avoid_: A value taken from a document or a model's output.
 
 **Olio**: Folio's mascot and the name of its assistant in Ask & Act.
 _Avoid_: Attributing an answer to Olio that no retrieved passage supports.

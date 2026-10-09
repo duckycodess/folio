@@ -42,6 +42,7 @@ export function OrganizeView({
         workspace={workspace}
         organize={organize}
         collections={collections}
+        onOpenFile={workspace.selectDocument}
       />
 
       <CollectionsPanel

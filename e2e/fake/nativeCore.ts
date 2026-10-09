@@ -1,5 +1,7 @@
 import type {
   ActionPlan,
+  ActivityBatch,
+  ActivityOperation,
   ApplyReport,
   Approval,
   BatchResult,
@@ -25,6 +27,7 @@ import type {
   OperationStatus,
   OrganizationSuggestion,
   OrganizationSuggestions,
+  PlanSource,
   ProviderIndexStatus,
   RelativePath,
   RuntimeStatus,
@@ -94,6 +97,14 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
   const MAX_SLUG_CHARS = 60;
   const MAX_IMPACT_CANDIDATES = 25;
   const MAX_PASSAGES_PER_RESULT = 3;
+  /** `PLAN_SOURCES`, repeated because this script runs without imports. */
+  const NEW_PLAN_SOURCES: readonly PlanSource[] = [
+    "home",
+    "organize",
+    "graph",
+    "assistant",
+    "summary",
+  ];
 
   const scope = globalThis as unknown as FakeScope;
   const encoder = new TextEncoder();
@@ -263,6 +274,8 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
     plan: ActionPlan;
     approval: Approval | null;
     state: "prepared" | "applied";
+    /** Set once the plan ran: what Activity lists, in the order it ran. */
+    ran?: { sequence: number; appliedAt: number; batch: BatchResult };
   }
 
   interface StoredHistory extends HistoryEntry {
@@ -317,6 +330,7 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
   let scanning: Promise<unknown> = Promise.resolve();
   let nextCallbackId = 1;
   let nextPlanNumber = 1;
+  let nextRunSequence = 1;
   let nextHistoryNumber = 1;
   let lastScan: ScanSummary | null = null;
   /** Resolves once a pre-indexed folder is in the index; every command waits. */
@@ -546,12 +560,13 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
 
   /* ----------------------------------------------------- plans and digests */
 
-  /** `FOLIO-PLAN-V1`, then every field length-prefixed in UTF-8 bytes. */
+  /** `FOLIO-PLAN-V2`, then every field length-prefixed in UTF-8 bytes. */
   function canonicalPlanBytes(plan: ActionPlan): Uint8Array {
     const field = (value: string) => `${utf8Length(value)}:${value}\n`;
-    let text = "FOLIO-PLAN-V1\n";
+    let text = "FOLIO-PLAN-V2\n";
     text += field(plan.id);
     text += field(plan.workspaceId);
+    text += field(plan.source);
     text += field(String(plan.createdAt));
     text += field(String(plan.expiresAt));
     text += field(String(plan.operations.length));
@@ -1037,11 +1052,96 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
       outcomes,
       stopReason,
     };
+    // Like the native writer, a plan that ran is kept with every outcome,
+    // including one that stopped before changing anything.
+    stored.ran = { sequence: nextRunSequence++, appliedAt: startedAt, batch };
     return {
       batch,
       historySettled: writer.historySettled ?? true,
       indexRefreshed,
     };
+  }
+
+  /* -------------------------------------------------------------- activity */
+
+  /** The paths an operation names before and after, as native Activity does. */
+  function operationPaths(
+    operation: FileOperation,
+  ): Pick<ActivityOperation, "beforeRelativePath" | "afterRelativePath"> {
+    if (operation.kind === "create")
+      return { afterRelativePath: operation.destinationRelativePath };
+    if (operation.kind === "edit")
+      return {
+        beforeRelativePath: operation.relativePath,
+        afterRelativePath: operation.relativePath,
+      };
+    if (operation.kind === "delete")
+      return { beforeRelativePath: operation.relativePath };
+    return {
+      beforeRelativePath: operation.relativePath,
+      afterRelativePath: operation.destinationRelativePath,
+    };
+  }
+
+  /**
+   * The plans this folder ran, newest first, each whole, with every
+   * operation's outcome and history. Plans prepared or approved but never run
+   * are not listed; an unknown `before` is `historyUnknown`, as natively.
+   */
+  function listActivity(
+    workspaceId: string,
+    limit: number,
+    before: string | undefined,
+  ): ActivityBatch[] {
+    const ran = Array.from(plans.values())
+      .filter((stored) => stored.plan.workspaceId === workspaceId && stored.ran)
+      .sort(
+        (a, b) =>
+          b.ran!.appliedAt - a.ran!.appliedAt ||
+          b.ran!.sequence - a.ran!.sequence,
+      );
+    let start = 0;
+    if (before !== undefined) {
+      const position = ran.findIndex((stored) => stored.plan.id === before);
+      if (position === -1)
+        fail("historyUnknown", "Folio has no recorded changes for that plan.", {
+          planId: before,
+        });
+      start = position + 1;
+    }
+    const size = Math.min(Math.max(Math.trunc(limit) || 1, 1), 100);
+    return ran.slice(start, start + size).map(({ plan, ran: recorded }) => {
+      const { batch, appliedAt } = recorded!;
+      const operations = plan.operations.map((operation, operationIndex) => {
+        const outcome = batch.outcomes.find(
+          (item) => item.operationIndex === operationIndex,
+        );
+        const entry = history.find(
+          (item) =>
+            item.planId === plan.id && item.operationIndex === operationIndex,
+        );
+        const listed: ActivityOperation = {
+          operationIndex,
+          operationKind: operation.kind,
+          ...operationPaths(operation),
+        };
+        if (outcome) listed.status = outcome.status;
+        if (outcome?.error) listed.error = outcome.error;
+        if (entry) {
+          const { beforeContent: _unused, ...shown } = entry;
+          listed.history = shown;
+        }
+        return listed;
+      });
+      return {
+        planId: plan.id,
+        source: plan.source,
+        appliedAt,
+        finishedAt: batch.finishedAt,
+        stopReason: batch.stopReason,
+        operations,
+      };
+    });
   }
 
   /* ------------------------------------------------------------------ undo */
@@ -1883,6 +1983,14 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
 
     async prepare_plan(args): Promise<ActionPlan> {
       const workspaceId = String(args.workspaceId);
+      // Like the native command, the caller must say where the change started.
+      const source = String(args.source) as PlanSource;
+      if (!NEW_PLAN_SOURCES.includes(source))
+        fail(
+          "operationUnsupported",
+          "Say where in Folio this change was started.",
+          { source },
+        );
       assertWorkspace(workspaceId);
       const operations = (args.operations as FileOperation[]) ?? [];
       const now = Date.now();
@@ -1890,6 +1998,7 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
       const plan: ActionPlan = {
         id: `plan-${nextPlanNumber++}`,
         workspaceId,
+        source,
         createdAt: now,
         expiresAt: now + options.planLifetimeMs,
         operations,
@@ -1963,6 +2072,16 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
         .reverse()
         .slice(0, limit)
         .map(({ beforeContent: _unused, ...entry }) => entry);
+    },
+
+    async list_activity(args) {
+      const workspaceId = String(args.workspaceId);
+      assertWorkspace(workspaceId);
+      return listActivity(
+        workspaceId,
+        Number(args.limit ?? 50),
+        args.before === undefined ? undefined : String(args.before),
+      );
     },
 
     async ["plugin:event|listen"](args) {

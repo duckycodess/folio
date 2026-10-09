@@ -3,12 +3,20 @@ import type { ActivityState } from "../app/useActivity";
 import type { WorkspaceState } from "../app/useWorkspace";
 import {
   batchTitle,
+  changedWithoutHistory,
   changeKind,
   CONFLICT_REASONS,
+  SOURCE_LABELS,
   STATUS_LABELS,
-  type ActivityBatch,
+  stopSummary,
+  type ActivityEntry,
 } from "../domain/activity";
-import type { HistoryEntry } from "../domain/contracts";
+import type {
+  ActivityOperation,
+  DocumentRecord,
+  HistoryEntry,
+  OperationStatus,
+} from "../domain/contracts";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
@@ -22,8 +30,9 @@ import { formatModified } from "./format";
 const FILES_SHOWN = 5;
 
 /**
- * Activity: what Folio actually changed on disk, newest first (#34). Every
- * entry comes from the native history; previews and analyses never appear.
+ * Activity: every approved plan Folio ran, newest first (#34, #35): what
+ * changed, what failed or was cancelled, and where it was started. Every
+ * entry comes from the native record; previews and analyses never appear.
  */
 export function ActivityView({
   workspace,
@@ -60,7 +69,11 @@ export function ActivityView({
         </Notice>
       )}
       <Panel title="Changes" actions={<Badge>Folio's changes only</Badge>}>
-        <ActivityBody workspace={workspace} activity={activity} />
+        <ActivityBody
+          workspace={workspace}
+          activity={activity}
+          onOpenFile={workspace.selectDocument}
+        />
       </Panel>
       <UndoDialog activity={activity} />
     </div>
@@ -70,9 +83,11 @@ export function ActivityView({
 function ActivityBody({
   workspace,
   activity,
+  onOpenFile,
 }: {
   workspace: WorkspaceState;
   activity: ActivityState;
+  onOpenFile: (document: DocumentRecord) => void;
 }) {
   if (workspace.source !== "folder")
     return (
@@ -108,30 +123,49 @@ function ActivityBody({
           <ActivityItem
             key={batch.planId}
             batch={batch}
+            documents={workspace.documents}
+            onOpenFile={onOpenFile}
             onUndo={() => activity.startUndo(batch)}
           />
         ))}
       </ol>
-      <p className="muted">
-        {activity.truncated &&
-          "Only the most recent changes are shown, and the oldest entry may be incomplete. "}
-        Failed and cancelled attempts aren't recorded yet, and neither is which
-        page started a change.
-      </p>
+      {activity.failure && (
+        <RecoveryNotice
+          error={activity.failure}
+          actions={{ retry: activity.loadOlder }}
+        />
+      )}
+      {activity.hasOlder && (
+        <Button
+          variant="ghost"
+          disabled={activity.loadingOlder}
+          onClick={activity.loadOlder}
+        >
+          {activity.loadingOlder
+            ? "Loading older changes…"
+            : "Show older changes"}
+        </Button>
+      )}
     </>
   );
 }
 
 function ActivityItem({
   batch,
+  documents,
+  onOpenFile,
   onUndo,
 }: {
-  batch: ActivityBatch;
+  batch: ActivityEntry;
+  documents: DocumentRecord[];
+  onOpenFile: (document: DocumentRecord) => void;
   onUndo: () => void;
 }) {
   const title = batchTitle(batch);
-  const shown = batch.entries.slice(0, FILES_SHOWN);
-  const hidden = batch.entries.length - shown.length;
+  const source = SOURCE_LABELS[batch.source];
+  const stopped = stopSummary(batch);
+  const shown = batch.operations.slice(0, FILES_SHOWN);
+  const hidden = batch.operations.length - shown.length;
   return (
     <li className="activity-item">
       <div className="activity-head">
@@ -141,6 +175,7 @@ function ActivityItem({
             <time dateTime={new Date(batch.appliedAt).toISOString()}>
               {formatModified(batch.appliedAt)}
             </time>
+            {source && <> · {source}</>}
           </p>
         </div>
         <Badge>{STATUS_LABELS[batch.status]}</Badge>
@@ -154,10 +189,25 @@ function ActivityItem({
           </Button>
         )}
       </div>
+      {stopped && <p className="activity-stop">{stopped}</p>}
       <ul className="activity-files">
-        {shown.map((entry) => (
-          <li key={entry.id}>
-            <ChangeLine entry={entry} />
+        {shown.map((operation) => (
+          <li key={operation.operationIndex}>
+            {operation.history ? (
+              <ChangeLine
+                entry={operation.history}
+                // The link shows the path after the change, so it opens the
+                // file now at that path. A rename's history keeps the old
+                // path's identity, which is gone once the folder is rescanned.
+                document={documentAt(
+                  documents,
+                  operation.history.afterRelativePath,
+                )}
+                onOpenFile={onOpenFile}
+              />
+            ) : (
+              <OperationLine operation={operation} />
+            )}
           </li>
         ))}
       </ul>
@@ -166,35 +216,114 @@ function ActivityItem({
           and {hidden} more {hidden === 1 ? "file" : "files"}
         </p>
       )}
-      {!batch.canUndo && batch.status !== "undone" && (
-        <p className="muted">
-          Undo isn't available: Folio couldn't keep the earlier version.
-        </p>
-      )}
+      {!batch.canUndo &&
+        batch.status !== "undone" &&
+        batch.status !== "nothingChanged" && (
+          <p className="muted">
+            Undo isn't available: Folio couldn't keep the earlier version.
+          </p>
+        )}
     </li>
   );
 }
 
-function ChangeLine({ entry }: { entry: HistoryEntry }) {
+function documentAt(
+  documents: DocumentRecord[],
+  path: string | undefined,
+): DocumentRecord | undefined {
+  return path === undefined
+    ? undefined
+    : documents.find((document) => document.relativePath === path);
+}
+
+/** The file's current path, as a button that opens it when it still exists. */
+function PathMention({
+  path,
+  document,
+  onOpenFile,
+}: {
+  path: string;
+  document: DocumentRecord | undefined;
+  onOpenFile: (document: DocumentRecord) => void;
+}) {
+  if (!document) return <span>{path}</span>;
+  return (
+    <button
+      type="button"
+      className="link-button change-line-path"
+      onClick={() => onOpenFile(document)}
+    >
+      {path}
+    </button>
+  );
+}
+
+function ChangeLine({
+  entry,
+  document,
+  onOpenFile,
+}: {
+  entry: HistoryEntry;
+  /** The file at its current path, if it still exists (deletes have none). */
+  document: DocumentRecord | undefined;
+  onOpenFile: (document: DocumentRecord) => void;
+}) {
   const kind = changeKind(entry);
   const before = entry.beforeRelativePath;
   const after = entry.afterRelativePath;
+  const mention = (path: string | undefined) =>
+    path && (
+      <PathMention path={path} document={document} onOpenFile={onOpenFile} />
+    );
   return (
     <span className={`change-line${entry.undoneAt ? " is-undone" : ""}`}>
       {kind === "create" ? (
-        <>Created {after}</>
+        <>Created {mention(after)}</>
       ) : kind === "delete" ? (
         <>Deleted {before}</>
       ) : kind === "edit" ? (
-        <>Edited {after}</>
+        <>Edited {mention(after)}</>
       ) : (
         <>
           <span>{before}</span>
           <ArrowRight size={14} aria-label="became" />
-          <span>{after}</span>
+          {mention(after)}
         </>
       )}
       {entry.undoneAt !== undefined && <span className="muted"> (undone)</span>}
+    </span>
+  );
+}
+
+const NOT_CHANGED: Record<Exclude<OperationStatus, "succeeded">, string> = {
+  failed: "failed",
+  cancelled: "cancelled, not started",
+  notStarted: "not started",
+};
+
+/** A write without history, or an operation that did not change its file. */
+function OperationLine({ operation }: { operation: ActivityOperation }) {
+  const before = operation.beforeRelativePath;
+  const after = operation.afterRelativePath;
+  const changed = changedWithoutHistory(operation);
+  const what =
+    operation.operationKind === "create"
+      ? `${changed ? "Created" : "Create"} ${after ?? "a file"}`
+      : operation.operationKind === "delete"
+        ? `${changed ? "Deleted" : "Delete"} ${before ?? "a file"}`
+        : operation.operationKind === "edit"
+          ? `${changed ? "Edited" : "Edit"} ${after ?? before ?? "a file"}`
+          : `${before ?? "a file"} → ${after ?? "a new name"}`;
+  const outcome = changed
+    ? "changed, Undo unavailable"
+    : operation.status
+      ? operation.status === "succeeded"
+        ? "changed"
+        : NOT_CHANGED[operation.status]
+      : "outcome not recorded";
+  return (
+    <span className={`change-line${changed ? "" : " is-unchanged"}`}>
+      {what} <span className="muted">({outcome})</span>
     </span>
   );
 }
@@ -254,12 +383,16 @@ function UndoDialog({ activity }: { activity: ActivityState }) {
           <ul className="activity-files">
             {restoring.map((entry) => (
               <li key={entry.id}>
+                {/* A preview of what Undo would do: nothing has changed yet,
+                    so the path isn't open-able here. */}
                 <ChangeLine
                   entry={{
                     ...entry,
                     beforeRelativePath: entry.afterRelativePath,
                     afterRelativePath: entry.beforeRelativePath,
                   }}
+                  document={undefined}
+                  onOpenFile={() => {}}
                 />
               </li>
             ))}

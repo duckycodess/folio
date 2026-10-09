@@ -1,4 +1,4 @@
--- Virtual collections (#78, ADR 0013): named groups of document references.
+-- Virtual collections (#78, ADR 0015): named groups of document references.
 -- Keeping or editing one changes no file, so it is not an action plan.
 CREATE TABLE collections (
   id TEXT PRIMARY KEY,

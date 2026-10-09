@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type {
   ActionPlan,
+  ActivityBatch,
   ApplyReport,
   Approval,
   DuplicateGroup,
@@ -156,6 +157,7 @@ describe("the browser-journey fake native core", () => {
   it("issues plan digests the shared canonical encoding reproduces", async () => {
     const plan = await call<ActionPlan>("prepare_plan", {
       workspaceId: WORKSPACE_ID,
+      source: "organize",
       operations: [await renameOperation()],
     });
     expect(plan.digest).toBe(await planDigest(plan));
@@ -167,6 +169,7 @@ describe("the browser-journey fake native core", () => {
     const canonical = structuredClone(operation);
     const preparing = call<ActionPlan>("prepare_plan", {
       workspaceId: WORKSPACE_ID,
+      source: "organize",
       operations: [operation],
     });
     if (operation.kind !== "rename") throw new Error("Expected rename fixture");
@@ -242,6 +245,7 @@ describe("the browser-journey fake native core", () => {
     for (const { operations, expected } of cases) {
       const refusal = await rejection("prepare_plan", {
         workspaceId: WORKSPACE_ID,
+        source: "organize",
         operations,
       });
       expect(refusal.code, JSON.stringify(operations)).toBe(expected);
@@ -252,6 +256,7 @@ describe("the browser-journey fake native core", () => {
         const candidate: ActionPlan = {
           id: "check",
           workspaceId: WORKSPACE_ID,
+          source: "organize",
           createdAt: now,
           expiresAt: now + 60_000,
           operations,
@@ -285,6 +290,7 @@ describe("the browser-journey fake native core", () => {
   it("writes nothing until an approval echoes the digest it was shown", async () => {
     const plan = await call<ActionPlan>("prepare_plan", {
       workspaceId: WORKSPACE_ID,
+      source: "organize",
       operations: [await renameOperation()],
     });
     expect(control().readFile(PLAN)).not.toBeNull();
@@ -346,6 +352,7 @@ describe("the browser-journey fake native core", () => {
     };
     const plan = await call<ActionPlan>("prepare_plan", {
       workspaceId: WORKSPACE_ID,
+      source: "organize",
       operations: [operation],
     });
     expect(plan.digest).toBe(await planDigest(plan));
@@ -387,6 +394,7 @@ describe("the browser-journey fake native core", () => {
     control().setWriter({ failAtIndex: 1, failCode: "destinationExists" });
     const plan = await call<ActionPlan>("prepare_plan", {
       workspaceId: WORKSPACE_ID,
+      source: "organize",
       operations,
     });
     await call("approve_plan", {
@@ -419,6 +427,92 @@ describe("the browser-journey fake native core", () => {
       workspaceId: WORKSPACE_ID,
     });
     expect(history.filter((entry) => entry.planId === plan.id)).toHaveLength(1);
+    // Activity keeps the whole batch: what changed, what failed and why, and
+    // what never ran.
+    const [batch] = await call<ActivityBatch[]>("list_activity", {
+      workspaceId: WORKSPACE_ID,
+    });
+    expect(batch.planId).toBe(plan.id);
+    expect(batch.source).toBe("organize");
+    expect(batch.stopReason).toBe("failed");
+    expect(batch.operations.map((operation) => operation.status)).toEqual([
+      "succeeded",
+      "failed",
+      "notStarted",
+    ]);
+    expect(batch.operations[0].history?.planId).toBe(plan.id);
+    expect(batch.operations[1].error?.code).toBe("destinationExists");
+    expect(batch.operations[1]).not.toHaveProperty("history");
+    expect(batch.operations[2].beforeRelativePath).toBe(
+      renames[2].relativePath,
+    );
+  });
+
+  it("refuses a plan that doesn't say where it was started", async () => {
+    const operation = await renameOperation();
+    for (const source of [undefined, "unknown", "chat"])
+      expect(
+        (
+          await rejection("prepare_plan", {
+            workspaceId: WORKSPACE_ID,
+            source,
+            operations: [operation],
+          })
+        ).code,
+      ).toBe("operationUnsupported");
+  });
+
+  it("lists only plans that ran in Activity, newest first, a page at a time", async () => {
+    const operation = await renameOperation();
+    const prepare = (source: string) =>
+      call<ActionPlan>("prepare_plan", {
+        workspaceId: WORKSPACE_ID,
+        source,
+        operations: [operation],
+      });
+    const run = async (plan: ActionPlan) => {
+      await call("approve_plan", {
+        workspaceId: WORKSPACE_ID,
+        planId: plan.id,
+        planDigest: plan.digest,
+      });
+      await call("apply_plan", { workspaceId: WORKSPACE_ID, planId: plan.id });
+    };
+    // A plan that is prepared but never run is not Activity.
+    await prepare("home");
+    const first = await prepare("organize");
+    const second = await prepare("assistant");
+    expect(first.digest).toBe(await planDigest(first));
+    // A batch that stopped before changing anything is still Activity.
+    control().setWriter({ failAtIndex: 0 });
+    await run(first);
+    control().setWriter({});
+    await run(second);
+
+    const listed = await call<ActivityBatch[]>("list_activity", {
+      workspaceId: WORKSPACE_ID,
+    });
+    expect(listed.map((batch) => [batch.planId, batch.source])).toEqual([
+      [second.id, "assistant"],
+      [first.id, "organize"],
+    ]);
+    expect(listed[0].operations[0].history?.planId).toBe(second.id);
+    expect(listed[1].operations[0].status).toBe("failed");
+    expect(listed[1].operations[0]).not.toHaveProperty("history");
+    const older = await call<ActivityBatch[]>("list_activity", {
+      workspaceId: WORKSPACE_ID,
+      limit: 1,
+      before: second.id,
+    });
+    expect(older.map((batch) => batch.planId)).toEqual([first.id]);
+    expect(
+      (
+        await rejection("list_activity", {
+          workspaceId: WORKSPACE_ID,
+          before: "plan-unknown",
+        })
+      ).code,
+    ).toBe("historyUnknown");
   });
 
   it("reports historyRequired for a change it made but cannot reverse", async () => {
@@ -426,6 +520,7 @@ describe("the browser-journey fake native core", () => {
     const operation = await renameOperation();
     const plan = await call<ActionPlan>("prepare_plan", {
       workspaceId: WORKSPACE_ID,
+      source: "organize",
       operations: [operation],
     });
     await call("approve_plan", {
@@ -468,6 +563,7 @@ describe("the browser-journey fake native core", () => {
     const operation = await renameOperation();
     const plan = await call<ActionPlan>("prepare_plan", {
       workspaceId: WORKSPACE_ID,
+      source: "organize",
       operations: [operation],
     });
     await call("approve_plan", {
@@ -509,6 +605,7 @@ describe("the browser-journey fake native core", () => {
     const before = control().readFile(PLAN);
     const plan = await call<ActionPlan>("prepare_plan", {
       workspaceId: WORKSPACE_ID,
+      source: "organize",
       operations: [await renameOperation()],
     });
     await call("approve_plan", {
@@ -538,6 +635,7 @@ describe("the browser-journey fake native core", () => {
   it("expires a preview rather than applying a stale one", async () => {
     const plan = await call<ActionPlan>("prepare_plan", {
       workspaceId: WORKSPACE_ID,
+      source: "organize",
       operations: [await renameOperation()],
     });
     control().expirePlans();

@@ -549,10 +549,30 @@ export interface ImpactCandidate {
   provenance?: RelationshipProvenance;
 }
 
+/**
+ * Where in Folio a plan was started. The UI names it when it asks for a plan,
+ * and it is part of the digest, so it can't be relabelled after approval. A
+ * closed list: no document text can supply it. `unknown` only describes plans
+ * recorded before sources existed; a new plan can't use it.
+ */
+export const PLAN_SOURCES = [
+  "home",
+  "organize",
+  "graph",
+  "assistant",
+  "summary",
+] as const;
+
+export type PlanSource = (typeof PLAN_SOURCES)[number] | "unknown";
+
+/** A source a new plan can name: anything but `unknown`. */
+export type NewPlanSource = (typeof PLAN_SOURCES)[number];
+
 export interface ActionPlan {
   /** Issued by the native core. The UI cannot mint a plan identity. */
   id: string;
   workspaceId: WorkspaceId;
+  source: PlanSource;
   /** Epoch milliseconds. */
   createdAt: number;
   /** Epoch milliseconds. Approval and application both re-check this. */
@@ -689,6 +709,37 @@ export interface HistoryEntry {
   /** False when the previous content could not be retained; Undo is then refused. */
   recoverable: boolean;
   undoneAt?: number;
+}
+
+/** One operation of an applied plan, as Activity shows it. */
+export interface ActivityOperation {
+  operationIndex: number;
+  operationKind: FileOperationKind;
+  beforeRelativePath?: RelativePath;
+  afterRelativePath?: RelativePath;
+  /**
+   * Absent when the batch was recorded before outcomes were stored and this
+   * operation left no history: its outcome is unknown, never guessed.
+   */
+  status?: OperationStatus;
+  /** Present when the operation failed. */
+  error?: FolioErrorPayload;
+  /** Present when the operation changed a file, with its Undo state. */
+  history?: HistoryEntry;
+}
+
+/**
+ * One approved plan Folio ran: what it did, where it was started and how it
+ * ended. Plans prepared or approved but never run are not batches.
+ */
+export interface ActivityBatch {
+  planId: string;
+  source: PlanSource;
+  appliedAt: number;
+  /** Absent for batches recorded before outcomes were stored. */
+  finishedAt?: number;
+  stopReason?: BatchStopReason;
+  operations: ActivityOperation[];
 }
 
 export type UndoConflictReason =
@@ -1063,7 +1114,7 @@ export type ExplicitReference = Extract<
  * A chunk without a vector in the given embedding space. Echo `contentHash`
  * when storing its vector: chunk ids can be reused after a rescan, and a vector
  * for text the chunk no longer holds is refused (`evidenceInvalid`,
- * `details.reason` = `chunkChanged`).
+ * `details.reason` = `chunkChanged` or `chunkMissing`).
  */
 export interface PendingChunk {
   chunkId: number;
@@ -1078,6 +1129,20 @@ export interface VectorCandidate {
   score: number;
   spaceFingerprint: EmbeddingSpaceFingerprint;
   passage: SourcePassage;
+}
+
+/**
+ * Result of filling the persistent embedding store. `droppedStale` counts
+ * chunks that changed or disappeared while they were being embedded and were
+ * re-listed; it is not a user-facing failure count.
+ */
+export interface EmbeddingSyncSummary {
+  workspaceId: WorkspaceId;
+  spaceFingerprint: EmbeddingSpaceFingerprint;
+  stored: number;
+  droppedStale: number;
+  cancelled: boolean;
+  complete: boolean;
 }
 
 /* ------------------------------------------------------------ native writer */
@@ -1117,7 +1182,7 @@ export interface OrganizationSuggestions {
   filenames: OrganizationSuggestion[];
 }
 
-/* -------------------------------------------- virtual collections (#78, ADR 0013) */
+/* -------------------------------------------- virtual collections (#78, ADR 0015) */
 
 /** One file of a suggested collection, with the revision the analysis read. */
 export interface SuggestedMember {

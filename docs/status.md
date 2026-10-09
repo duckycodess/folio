@@ -22,7 +22,7 @@ real-model quality, or target-device resource use.
 ## Implemented starter pieces
 
 - Golden Daylight app shell ([issue #16](https://github.com/duckycodess/folio/issues/16)): design tokens with light and proposed dark themes, locally bundled Inter and Lucide icons, sidebar navigation (Home, Files, Organize, Graph, Ask & Act, Model Lab), a global search field with a platform-aware ⌘K / Ctrl K shortcut, a document panel with Summary, Details and Related tabs, and shared button, badge, panel, list row, empty state, notice, modal and progress components. The starter `App.tsx` presentation and `src/styles.css` are retired. Summaries, Ask & Act, collections, renames and Model Lab show honest "not available yet" states; nothing is presented as AI output or a saved change.
-- Olio mascot artwork: twelve cleaned poses bundled in `src/assets/olio/`. Home's header pose follows the file list (default, confused for no results, peeking for an empty folder). The Files empty states, Organize's empty Collections and Model Lab's "no model" state also show a pose. The wordmark is still interim text.
+- Olio mascot artwork: twelve cleaned poses bundled in `src/assets/olio/`, shown through `<Olio pose size>`. Since the floating Olio chat (#66) put one Olio on every other view, the per-view poses that used to live in Home's header, Home's empty states, Organize's empty Collections and Model Lab's "no model" state were removed, so each view still shows exactly one (`docs/design.md`'s "one Olio per view"). Ask & Act, which the launcher never shows on, kept its own two poses. The wordmark is still interim text.
 - A sidebar theme switch (System, Light, Dark), remembered on the device, and coloured file-type tiles in file lists and the document panel. Checked in headless Chromium: the switch cycles, the choice survives a reload, and System removes the override. The sample files are all Markdown, so the PDF and text tiles have not been seen rendered.
 - File table and reader ([issue #17](https://github.com/duckycodess/folio/issues/17)): name, location, type, modified and size columns that drop to fit the space; the reader beside the table (or in place of it below 860px) shows the file's text as read-only, with its full path. The reader never shows a file the current list excludes. In the desktop app, Folio starts with an "Add folder" state (sample files on request); an added folder with no readable files offers "Choose another folder". The browser preview lists sample files and says so.
 - Relationships with evidence ([issue #21](https://github.com/duckycodess/folio/issues/21)): the document panel's Related tab and the Graph view list every connected file. Each entry has its type (link and direction, or exact duplicate), how Folio knows it, the file's original folder, and evidence excerpts that open the source with the passage highlighted. Files opened from Related keep a "Back to" link to the origin. With a folder open, links and duplicates come from the native index (`list_relationships`, `list_duplicates`) merged with links in opened files. If the folder hasn't been indexed, the UI says so; no UI runs the index scan yet. Exact duplicates are also found from content hashes Folio already has. Graph also draws the same connections as a concept map (below). Similarity and shared-fact connections have labels and tests, but no producer yet.
@@ -36,10 +36,15 @@ real-model quality, or target-device resource use.
   - Without a model, the shared recovery notice links to Model Lab. The browser preview says summaries need the desktop app, and sample files say a folder is needed.
   - A partial summary's coverage is measured against the file's extracted text, never its size on disk, so a PDF isn't understated. Without the text, it only says "Partial summary". Clearing never drops a running summary.
   - Summaries are kept for the session (up to 20 files) in one store that Ask & Act can also write to. Ask & Act doesn't request summaries yet (#36).
-- Ask Olio launcher ([#37](https://github.com/duckycodess/folio/issues/37)).
-  - Home has a labelled **Ask Olio** button under the centred search field, and a "Hello! Need a deeper search?" greeting that stays dismissed on this device once dismissed. There's no extra Olio image: Home keeps its one in the header.
-  - The button opens Ask & Act with Home's search as the request and Home's folder filter as the scope. Both stay editable, and nothing is sent.
-  - Coming back to Home restores its search, filters, open file and scroll position. ⌘K / Ctrl K still focuses Home search.
+- Floating Olio chat ([#66](https://github.com/duckycodess/folio/issues/66)), replacing #37's Home-only launcher. Decisions recorded in [ADR 0013](adr/0013-floating-olio-chat-on-device-history.md).
+  - A labelled **Ask Olio** launcher floats on every view except Ask & Act, with a once-dismissed greeting (`folio.olioChat.greetingDismissed`). It never opens or sends by itself. `OlioSprite` (`src/ui/OlioSprite.tsx`) is a clearly-marked placeholder animated mascot — idle, blink, wave, thinking and responding, built from the existing static poses with CSS keyframes — that freezes under `prefers-reduced-motion`; final art swaps the component without touching a caller.
+  - Clicking it opens a compact panel: Olio, the local AI status from `useModels()` (never assumed), History, Expand and Close. Below 700px it becomes a bottom sheet with no horizontal scroll.
+  - **One store, both surfaces.** `src/app/chatStore.ts` holds every conversation (keyed by the open folder), and `useAskAct` reads and writes it for both the compact chat and the full Ask & Act page: there's no second copy of turns. Conversations persist to `localStorage`, capped at 20 total (oldest dropped first), 20 turns each and about 1 million stored characters (oldest conversations left out first); damaged stored turns are dropped on load; running turns aren't persisted, since nothing is left to resume after a reload. History lists a folder's other conversations by their first request, with New conversation and a confirmed "Delete all conversations" that clears every folder's history. Opening a different folder never shows another folder's conversation.
+  - **Commands.** Typing `/` suggests `/search <query>`, `/organize` and `/summarize [file]` (`src/app/commands.ts`), which call the same `find`/navigate-to-Organize/`ask` handlers Ask & Act already used; anything else is read as an ordinary request. `parseCommand` only ever runs on the literal composer text, never on a retrieved passage, so a document's own words can't trigger a command.
+  - **Context.** The file open in the reader can be attached with a removable chip; nothing is attached automatically. The compact chat shares Ask & Act's existing allowlisted-proposal preview/Approve/Undo flow for any change Olio proposes, and the same "no delete from chat" rule (ADR 0013).
+  - **Browser preview only:** since there's no model there, the chat uses a labelled "Practice replies — not a model" mock (`src/adapters/mockChat.ts`) with simulated loading, word-by-word streaming, and `?simulate=<code>` errors with Retry — loaded only when `isAvailable()` is false. In the desktop build (`tauri build` sets `TAURI_ENV_PLATFORM`, exposed through Vite's `envPrefix`) that branch is dead code and the mock is not bundled. Ask & Act's own "needs the desktop app" page is unchanged.
+  - Enter sends, Shift+Enter adds a line; Escape inside the panel closes it and returns focus to the launcher, while Escape in a dialog over it belongs to that dialog. Controls are labelled, and the end of a request this chat started is announced (not checked with a screen reader).
+  - One request at a time across every conversation and folder: starting or opening another conversation while a request runs doesn't start a second one. A file chosen with "Use <file>", attached with the chip, or picked by `/summarize` with no argument binds the request: a proposed change to any other file is refused before a preview, as on Ask & Act (#64 review).
 - Ask & Act changes ([#23](https://github.com/duckycodess/folio/issues/23)). A change Olio understood gets **Preview change…**, which opens the exact native preview.
   - **Rename, move, create:** they become plan operations that pin the revision Olio read and refuse to overwrite.
   - **Edits:** they come from `prepare_passage_edit`, which needs the text to appear exactly once. They're refused if the file changed after Olio read it.
@@ -119,7 +124,7 @@ real-model quality, or target-device resource use.
 - FTS5 keyword search across unopened documents, returning document id, path and excerpt as `utf8Byte` passages bound to the indexed revision (`documentContentHash`), with page numbers for PDFs. Labelled `keyword`.
 - Follows the [frozen contract](contracts.md): `workspaceId:relativePath` document ids, `sha256:` hashes, `explicitReference` relationships with the raw and resolved link, `folio-space-v1/...` space fingerprints, and `{ code, message, details }` failures. `read_document` now also returns the extracted text of text-based PDFs.
 - Exact-duplicate groups are confirmed by comparing the files byte for byte in blocks, so files of any size are verified; the comparison runs without holding the index.
-- Embedding store for the provider track: registered spaces keyed by model/revision/quantization/dimensions/preprocessing, per-space pending-chunk listing, vector storage with dimension checks, and exact cosine search within one space only. A vector is stored only while its chunk still holds the text it was computed from (`contentHash`), because chunk ids can be reused after a rescan. No embedding model is connected.
+- Embedding store for the provider track: registered spaces keyed by model/revision/quantization/dimensions/preprocessing, per-space pending-chunk listing, vector storage with dimension checks, and exact cosine search within one space only. `sync_embeddings` fills the store from pending chunks with the selected local embedding model in a stored-chunk space separate from the snapshot space; stale `chunkChanged`/`chunkMissing` refusals are retried silently, bounded by stale and idle limits. Its initial space probe and each provider batch check Model Lab inside the `EmbeddingState` lock before any provider load: a batch already holding that lock may finish when Lab starts, then the next guarded batch returns `providerBusy` and keeps earlier commits. A vector is stored only while its chunk still holds the text it was computed from (`contentHash`), because chunk ids can be reused after a rescan. Live search and Model Lab still use the #4 snapshot path; the existing live `semantic_search` path can reload the product provider during Lab, and #27 does not change that limitation. No UI automatically triggers this fill.
 
 ## Native writer, Ripple, history and Undo (issue #5)
 
@@ -143,13 +148,40 @@ real-model quality, or target-device resource use.
 - Migration `005_delete_history.sql` rebuilds `history` so `operation_kind` allows `delete`, keeping existing rows.
 - No UI offers deletion yet: the Graph node actions are #45. The Organize preview names a deletion ("Delete", "Removed") and an all-delete result says "Deleted N files", but nothing builds a delete plan from the UI.
 
+## Activity: plan sources and every batch's outcome (issue #35)
+
+- Every plan now carries its **source**: `home`, `organize`, `graph`, `assistant` or `summary`. Each `useOrganize` / `usePlanAction` caller names its own, `prepare_plan` requires it and refuses `unknown`, and it is part of the canonical bytes (now `FOLIO-PLAN-V2`) in both `plan.rs` and `plan.ts`, so a plan can't be relabelled after approval (ADR 0014). The golden fixtures were regenerated from `generate-contract-cases.py`; each pinned plan has a source.
+- Migration `006_activity.sql` adds `source` (a closed list, `unknown` for earlier plans) and `outcome_json` to `action_plans`. `apply_plan` stores the `BatchResult`, so failed, cancelled and not-started operations keep their status and error. A plan that failed before changing anything is recorded; a plan that was prepared or approved but never applied is not.
+- `list_activity(workspaceId, limit?, before?)` returns one batch per applied plan, newest first, at most 100 per page and never split across pages, with every operation's paths, status, error and history entry. Plans recorded before 006 read as `unknown`; an operation with history is `succeeded`, and one without has no status rather than a guess.
+- Activity uses it: each entry says where it was started ("From Organize"), a batch that stopped says where and why ("Stopped at notes/plan.md: … The earlier change was kept."), a batch that changed nothing says so ("Couldn't move 1 file"), and operations that didn't run are listed with "failed", "cancelled, not started" or "not started". "Show older changes" loads the next page, replacing the 500-row limit that could cut a batch in half. Activity no longer says failures and sources "aren't recorded yet".
+- Checked on Windows with Node.js 20: `npm run check`, `npm test` (328 passed, 9 todo) and `npm run build`. New tests: `src/domain/activity.test.ts` (stopped, nothing changed, cancelled, unrecorded older batches, sources) and a relabelled-source digest test in `src/domain/plan.test.ts`.
+- **Rust not compiled on the first host** (not enough free disk for the native build); the files were only parse-checked with `rustfmt`. CI later compiled and ran them (see the PR conversation). The new native tests (failed and cancelled batches with outcomes, nothing-changed batches, unapplied plans excluded, paging, a relabelled source refused, and migration 006 over a pre-006 database) run only in CI's `desktop-check`. Activity hasn't been checked in a browser or the Tauri app.
+
+PR #72 review follow-up (2026-10-10, Linux, Node.js 24.15.0):
+
+- Activity counts `historyRequired` after-write failures as changed without Undo, including the first operation and partial batches. Missing legacy outcomes stay unknown rather than being labelled "Nothing changed". Reversing the recoverable entries does not label an unrecoverable write undone.
+- Older-page results, errors and loading-state updates are ignored after a folder change, reload or unmount. Paging failures appear beside the loaded batches with retry, and retry clears the old error.
+- Five new domain regressions pass; the complete frontend suite has 333 passed and 9 existing todo. Type checks and the production build passed.
+- A temporary Chromium harness exercised the actual Activity hook/view with controlled action adapters: six regressions passed for late page success/failure after a folder switch, a stale page finishing during a new page after reload, visible paging errors and retry, a first-operation `historyRequired` result, and unknown legacy outcomes. No browser exceptions occurred. These verify UI state, not native fault injection, the Tauri window or screen readers.
+
+Merge with `main` and second review follow-up (2026-10-10, Linux, Node.js 24):
+
+- Merged `main`. Activity keeps its per-operation list, and a line with history opens its file at the path it shows (#67). The browser-journey fake native core (#69) now requires a `source` in `prepare_plan` (refusing `unknown`), digests `FOLIO-PLAN-V2` with the source, and answers `list_activity` the way native does: only plans that ran, newest first, whole batches, `historyUnknown` for an unknown `before`.
+- The ADR is now 0014: `main` already has a 0012 and a 0013. It now also says the batch's kind, status and counts are derived in `activity.ts` from the native facts, and records three edge cases: a crash before outcomes are stored, cancellation only after the first operation, and an unreadable stored summary.
+- Golden fixtures now pin the Activity wire shape: `planSources`, and an `activity` case for a stopped batch and an older one recorded before sources and outcomes. Rust deserializes each one and serializes it back unchanged (so an optional field stays absent, never `null`), and TypeScript checks it has no nulls and derives the expected counts.
+- `ActionPlan.source` no longer defaults when it's missing, so a missing source is a clear error rather than `unknown`. Native logs unreadable stored summaries or outcomes and operations with no recorded kind instead of dropping them silently.
+- "Show older changes" asks for one batch more than a page, so it no longer appears when the last page is exactly full. The view type is now `ActivityEntry` (the wire type keeps `ActivityBatch`), it computes its changed and unrecorded counts once, and the identity `ATTEMPTS` map is gone.
+- New native tests: a write whose history couldn't be stored (injected with a temporary SQLite trigger) next to a delete that never ran, and a plan whose stored summary and outcomes are unreadable.
+- `npm run check`, `npm test` (427 passed, 9 todo), `npm run build` and `npm run check:bundle` passed. Playwright: 31 passed. The 4 `viewports` axe failures (`.olio-chat-greeting` outside a landmark) fail the same way on `main` and come from the Olio chat, not Activity.
+- Native: `cargo test --no-run` and `cargo check --tests` compiled everything, but the tests couldn't run on this host. It's a QEMU virtual CPU without AVX, and the test binary stops with SIGILL before any test starts, as `main`'s build does. The new native tests still need CI's `desktop-check`. The Tauri app wasn't opened.
+
 ## Virtual collections (issue #78)
 
-Gab took #78 over from Dann ([ADR 0013](adr/0013-virtual-collections-kept-natively-without-a-plan.md)). This first slice covers suggested and kept collections; model-written filenames and destination suggestions are follow-up PRs.
+Gab took #78 over from Dann ([ADR 0015](adr/0015-virtual-collections-kept-natively-without-a-plan.md)). This first slice covers suggested and kept collections; model-written filenames and destination suggestions are follow-up PRs.
 
 - Grouping (`folio-core/src/collections.rs`): average-linkage clustering of document vectors (the normalized mean of each document's chunk vectors), within the one embedding space of #4's in-memory snapshot (`VectorIndex::indexed`). A vector of another space is refused. Groups need at least two files, and a group made only of byte-identical copies is left to the exact-duplicate list. Each member carries the passage closest to the group's centre, bound to the revision read. At most 400 documents in path order, and 12 groups. The merge threshold (0.86 cosine) is provisional and has **not** been calibrated on real multilingual-E5 vectors.
 - Naming: one bounded request per group (6 passages of at most 600 bytes, 64 output tokens) through the shared generation slot. Passages are delimited as untrusted data. The name is written in the members' language as `detect_language` judges it, must cite a supplied passage, and is at most 60 characters; otherwise the group stays unnamed. Without a generation model, groups come back unnamed (`naming: generationModelMissing`). A stop keeps the names already written.
-- Storage (`src-tauri/src/collections.rs`, migration `006_collections.sql`): `suggest_collections`, `list_collections`, `keep_collection`, `rename_collection`, `remove_collection`, `add_collection_members` and `remove_collection_members`. None of them changes a file or writes history. Keeping refuses a member whose file changed since the analysis (`targetChanged`). Names are 1–80 characters; at most 200 collections per folder and 500 files per collection. Collections may share files.
+- Storage (`src-tauri/src/collections.rs`, migration `007_collections.sql`): `suggest_collections`, `list_collections`, `keep_collection`, `rename_collection`, `remove_collection`, `add_collection_members` and `remove_collection_members`. None of them changes a file or writes history. Keeping refuses a member whose file changed since the analysis (`targetChanged`). Names are 1–80 characters; at most 200 collections per folder and 500 files per collection. Collections may share files.
 - Following changes: the writer updates memberships after each applied or undone rename and move. A Folio deletion hides the member until that deletion is undone. Undoing a create removes the member. These updates are best effort after the file change and never fail it. A file renamed, moved or deleted outside Folio shows as missing and is never re-matched by hash.
 - `organization_suggestions` takes an optional `collectionId`: filename suggestions for the collection's members only, and duplicate groups that include a member (with every copy).
 - UI (desktop only): after a whole-folder Analyze, Organize groups files ("Suggested collections"), with Stop. Each group has an editable name labelled "Name written by local AI" while it is exactly the model's, the passages it cites, member checkboxes with passages, and Keep collection. The Collections panel lists kept collections with Analyze this collection, Rename, Remove collection, missing members and Remove from collection. "What to analyze" switches Organize between the folder and a collection. Home lists kept collections above the files.
@@ -163,6 +195,8 @@ Tested on Linux (QEMU x86-64 user-mode emulation with `-cpu max`, because this V
 - `cargo test -p folio-core --lib`: 178 passed (11 new grouping and naming tests with scripted vectors and a scripted generator, covering English, Filipino and Taglish members, embedding-space refusal, citations, untrusted passages and cancellation).
 - `cargo test --lib` in `src-tauri`: 221 passed, including a corpus test that loads the fixture PDF with the reader's text and hash, 7 storage tests, the collection-target filter, and a writer test that applies and undoes a rename, move and deletion.
 - `npm run check`, `npm test` (376 passed), `npm run build` and `npm run check:bundle` passed. `npm run test:e2e`: all 39 browser journeys passed, including 4 new collection journeys against the fake native core, whose canned groups stand in for the models.
+
+After merging `main` (at `d20bfae`; ADR renumbered to 0015 and the migration to `007_collections.sql`), the same QEMU host gave: `src-tauri` 251 passed, `folio-core` 179 passed, `npm test` 440 passed (9 todo), with `npm run check`, `npm run build` and `npm run check:bundle` passing. Playwright: 35 passed. The 4 `viewports` axe failures (`.olio-chat-greeting` outside a landmark) are the ones already recorded for `main` above.
 
 Not tested: real embedding or generation models (so grouping and naming quality are unmeasured), Windows and macOS builds, and native desktop interaction.
 
@@ -242,6 +276,54 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 8-GB measurement is claimed here.
 
 ## Verification
+
+### Embedding store fill (2026-10-10, issue #27)
+
+The native loop and its real SQLite seams were verified on WSL/Linux with the
+rustup Cargo toolchain (Cargo 1.96.1). The deterministic embedding fakes use
+SHA-256-derived vectors to prove hash/text/race safety; they are not evidence
+of real model quality.
+
+- `PATH=/home/pandan/.cargo/bin:$PATH cargo test --manifest-path src-tauri/Cargo.toml`: 231 passed, 2 ignored, including the merged Model Lab native suite, the guard-before-load test, the vector-reuse assertion and the strengthened Immediate-transaction handshake.
+- `PATH=/home/pandan/.cargo/bin:$PATH cargo test --manifest-path src-tauri/Cargo.toml -p folio-core`: 168 unit tests passed, 2 ignored; the loopback integration test passed; the real Model Lab run was ignored; 7 real-acceptance tests were ignored because verified local model files were not supplied.
+- `npm run check`: passed. `npm test`: 344 passed, 9 todo, with 9 pending cases skipped. `npm run build`: passed (`tsc --noEmit` plus Vite production build).
+- The precise Model Lab guarantee is limited to `sync_embeddings`: its initial space probe and each provider batch check inside `EmbeddingState` before any provider load. A batch already holding the lock may finish if Lab starts; Lab then unloads the slot and the next sync batch returns `providerBusy`. The existing live `semantic_search` snapshot path can still reload the product provider during Lab, and #27 does not migrate it.
+- Not verified here: real E5 inference or cross-language model quality, Windows or macOS native execution, the desktop window, packaging, live semantic search over the persistent store, or automatic UI triggering.
+
+### Adaptive layout and resizable reader (2026-10-10, issue #67)
+
+- The shell picks its layout from its own measured width, not fixed window breakpoints (`src/app/shellLayout.ts`). The sidebar keeps its labels while there's room. With a file open, the sidebar collapses to the icon rail before the list loses its 420px minimum. Only when even the rail leaves too little room does the reader overlay the list from the right ([ADR 0012](adr/0012-reader-overlay-instead-of-full-width-replacement.md)). The list stays mounted behind it and is made `inert`.
+- The reader can be resized by dragging the separator, or with Left/Right and Home/End on the focusable `role="separator"`. Its width stays between 320px and 60% of the window, and never wider than fits beside the list's 420px minimum when both minimums fit, so resizing can't push it into overlay. It's saved, already clamped, in `localStorage`; a width saved in a larger window narrows to fit; if storage fails, the 380px default is used.
+- File table columns drop one at a time as the row's own width shrinks: Size, then Modified, then Type, then Location (`src/app/fileColumns.ts`). The name column keeps room for the longest name, from 160px up to 320px, so the name isn't the column that gets truncated. Once Location drops, it moves under the name.
+- Files named in Activity entries and in Organize name suggestions and duplicates now open the reader.
+- Narrow Home (480px and below): filters wrap as label-above-control pairs, the search shortcut hint gives up its room so the placeholder isn't cut off, and the header mascot hides so the title stays on one line.
+- Graph: the map is taller (up to 70vh) and leaves more room under the bottom node's label. Label collisions are left for #45.
+- `docs/design.md`'s Layout section describes the resizable reader instead of the fixed 360–400px panel.
+
+Checked on macOS with Node.js 24.21.0:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test` (excluding the local `.claude/` worktrees): 344 passed, 9 todo. New unit tests cover reader-width clamping, sidebar and reader modes at boundary widths, the list's minimum width whenever the reader is split, the column drop order, the name column's width, and Activity and Organize opening the reader.
+- A scripted pass in headless Chromium against the browser preview (sample files), not committed. It ran at 1920×1080, 1440×900, 1280×850, 1180×800, 1024×768, 900×700, 860×700, 768×700, 600×700 and 400×760, and at 720×450 and 640×425 to stand in for 200% zoom, in light and dark themes:
+  - no horizontal overflow at any size, with the reader open or closed;
+  - no truncated file names in the visible list;
+  - with a file open, 9 rows visible at 1280×850 and 7 at 1024×768;
+  - sidebar labels kept at 1180px, and the rail only once the reader needs the room;
+  - in the overlay, focus moved into the reader and returned to the row on Escape.
+- The separator in the same browser: Left/Right changed the width by 16px, Home and End went to 320px and 60% of the window, dragging resized it, a drag past the edge saved the clamped width, the width survived a reload, and blocked storage fell back to 380px.
+
+Review fixes (Gab, 2026-10-10), after merging `main` (the file row's spoken "modified" date kept inside the new optional columns):
+
+- The width observer follows the app container even when it mounts after Welcome or the setup guide, so a first run doesn't keep the 1280px fallback.
+- The reader's maximum is what fits beside the list (`readerMaxWidth`), used by the layout, the clamp and the separator. Dragging or End can no longer flip it into an overlay that has no handle.
+- ⌘K/Ctrl K closes an overlaying reader before focusing search, since the list behind it is inert.
+- A panel that becomes an overlay while open moves focus into itself.
+- Activity links open the file at the path they show. A rename's history keeps the old path's identity, so the old lookup never matched.
+- The separator ignores non-primary buttons and ends a drag on pointer cancel or lost capture.
+
+Checked on Linux with Node.js 24.15.0: `npm run format:check`, `npm run check`, `npm test` and `npm run build` pass. New layout tests cover the cap beside the list and a remembered width narrowing. Not rerun in a browser.
+
+Not verified: the desktop app on Windows or macOS, screen readers, reduced motion, and browser zoom itself (smaller viewports stood in for it). Opening files from Activity and Organize needs a real folder, so it was not tried in the browser. Neither was a first run through Welcome. Graph label collisions are still open, with #45.
 
 ### Browser journeys against a fake native core (2026-10-10, issue #9)
 
@@ -519,6 +601,31 @@ Checked on macOS with Node.js 26.10.0, on `main` after #63 and #64:
 - Native (`folio_core::device`): device RAM from `sysctl hw.memsize` on macOS, `GetPhysicallyInstalledSystemMemory` on Windows (the installed RAM, so memory reserved for an integrated GPU still counts; `GlobalMemoryStatusEx` is the fallback) and `/proc/meminfo` on Linux; free space from `statvfs` or `GetDiskFreeSpaceExW`, measured at the nearest existing folder. **Not built on this host** (no Rust toolchain). In CI it compiles on macOS and Windows (`desktop-check`), but its tests (device RAM reported, free space for an existing folder and for one not created yet) run only on Linux, in the `frontend` job's folio-core step, where they passed. The macOS and Windows code paths are compiled there, never run. After Gab's review, the Windows path asks for the installed RAM first; that change was formatted with `rustfmt` but, like the rest of this path, is only compiled in CI and has not been run on a Windows computer.
 
 Not verified: real downloads and the real figures in the Tauri app, an interrupted download or a hash mismatch against the real store (they surface through the shared recovery notice and the "Damaged: download again" state), and screen readers.
+
+### Floating Olio chat (2026-10-10, issue #66)
+
+Checked on macOS with Node.js 24.21.0, on `main` (#65 merged in). Built in an isolated git worktree after a concurrent session reset the shared working directory mid-task; redone there with nothing lost from that incident.
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 347 passed, 9 todo. New cases cover:
+  - `src/app/chatStore.test.ts`: folder isolation (a folder never sees another folder's conversation, including when a different folder is the active one), the 20-conversation cap (oldest dropped first), adding/updating/clearing turns, scope changes staying scoped to one conversation, conversation titles, and the persistence round-trip (including a running turn being dropped and a failed turn's typed error surviving it);
+  - `src/app/commands.test.ts`: parsing and argument capture for all three commands, case-insensitivity on the command name only, anything outside the registry (including a sentence that merely contains "/organize" mid-text) never being read as a command, and the slash-suggestion list narrowing by prefix;
+  - `src/app/localAi.test.ts`: the status label for every `useModels()` state, so the chat header can't claim readiness it hasn't checked.
+- With the **real browser preview** (sample files, no native core) in headless Chromium via Playwright, driving the actual built app rather than a mock harness:
+  - the launcher (labelled "Ask Olio") showed on Home, and was absent on Ask & Act (0 matches for `.olio-chat-launcher`);
+  - opening the chat, typing a message and pressing **Shift+Enter** added a newline without sending (composer value kept both lines); a plain **Enter** sent it;
+  - the browser-preview mock answered with the word-by-word streamed "Practice replies — not a model" reply, badge and all;
+  - typing `/` suggested all three commands with their usage and hint text;
+  - the History panel showed "New conversation" and an honest "No earlier conversations in this folder yet" for a fresh folder;
+  - **Escape** closed the panel and returned focus to the launcher button (confirmed via `document.activeElement`);
+  - at 390px wide, the panel became a bottom sheet with no horizontal scroll (`scrollWidth` vs `clientWidth`);
+  - under `prefers-reduced-motion: reduce`, the sprite's `animation-name` computed to `none`;
+  - a sent message survived a full page reload (same request text, same turn), and **Delete all conversations** (after a confirmation) actually cleared it — the first run of this check caught a real bug: the button was gated on _other_ conversations existing, not the active one with messages, so it never appeared for a folder's first conversation; fixed before this was written up.
+  - **Expand** navigated to Ask & Act, but Ask & Act's own "needs the desktop app" gate (pre-existing, unrelated to #66) hid its content there, since this preview has no Tauri core; the shared-store mechanics (same conversation id, same persisted turns) were confirmed by the reload check above and by reading the code, not by seeing the turn rendered on the Ask & Act page.
+
+Review fixes (Gab, 2026-10-10), after merging `main` (#64 review's chosen-file check, ported into `AskTurns.tsx` and the chat): one request at a time across all conversations; stored turns validated and capped on load, and the stored history capped at about 1 million characters; Escape left to dialogs over the chat; no announcement for stored history or a conversation switch, on the chat or Ask & Act; the attached file binding the request; `/search` with no query not sent and `/summarize` with no file using the attached or open file; the mock left out of the desktop bundle (checked: `TAURI_ENV_PLATFORM=linux npm run build` output has no practice-reply text, a plain `npm run build` does). Checked on Linux with Node.js 24.15.0: `npm run format:check`, `npm run check`, `npm test` and `npm run build` pass; two new `chatStore` tests cover damaged stored turns and the size cap. Not rerun in a browser.
+
+Not verified: the desktop app, a real local model (so real streaming — the native core doesn't stream today, and the compact chat shows progress + Cancel there exactly as Ask & Act already did), Expand actually rendering a turn on Ask & Act (blocked by the desktop-only gate in this environment), a rename/move/create proposal's preview-Approve-Undo cycle started from the compact chat specifically (AssistantView's existing `ChangeDialog` is reused unchanged, and its own flow is already covered under #23's entry below), and screen readers.
 
 ### Ask Olio launcher and #20 review fixes (2026-10-10, issues #37 and #20)
 

@@ -198,6 +198,7 @@
       "plan": {
         "id": "plan-taglish-deadline",
         "workspaceId": "628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c",
+        "source": "assistant",
         "createdAt": 1760000000000,
         "expiresAt": 1760000300000,
         "operations": [
@@ -210,16 +211,17 @@
           }
         ],
         "impacts": [],
-        "digest": "sha256:fa06ffe44112cb37a734d89fadf364cf9a4426963568de66249b96f275b74599"
+        "digest": "sha256:5b37244339cf1002441cf69c008b9ad22e2fea441078f22ab0bcd228b4855cec"
       },
-      "canonical": "FOLIO-PLAN-V1\n21:plan-taglish-deadline\n64:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c\n13:1760000000000\n13:1760000300000\n1:1\n4:edit\n89:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:projects/project-plan.md\n24:projects/project-plan.md\n71:sha256:320be3167ed3f71f16f45dc2546d09944cb0049fc25482369e165e56f152531a\n21:Deadline: October 23\n\n",
-      "canonicalByteLength": 373,
-      "digest": "sha256:fa06ffe44112cb37a734d89fadf364cf9a4426963568de66249b96f275b74599"
+      "canonical": "FOLIO-PLAN-V2\n21:plan-taglish-deadline\n64:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c\n9:assistant\n13:1760000000000\n13:1760000300000\n1:1\n4:edit\n89:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:projects/project-plan.md\n24:projects/project-plan.md\n71:sha256:320be3167ed3f71f16f45dc2546d09944cb0049fc25482369e165e56f152531a\n21:Deadline: October 23\n\n",
+      "canonicalByteLength": 385,
+      "digest": "sha256:5b37244339cf1002441cf69c008b9ad22e2fea441078f22ab0bcd228b4855cec"
     },
     {
       "plan": {
         "id": "plan-batch-filipino",
         "workspaceId": "628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c",
+        "source": "organize",
         "createdAt": 1760000000000,
         "expiresAt": 1760000300000,
         "operations": [
@@ -247,16 +249,17 @@
           }
         ],
         "impacts": [],
-        "digest": "sha256:ceaa26ffa44b497d10a217d48ef069d2d3ff2f6ff8df17585b84e3b5c05be5c1"
+        "digest": "sha256:a5cb6411ba82e8d503be0d9ea1cdb9eb4ec0bf7c2a62719d4cda973b57ca8a1e"
       },
-      "canonical": "FOLIO-PLAN-V1\n19:plan-batch-filipino\n64:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c\n13:1760000000000\n13:1760000300000\n1:3\n4:edit\n89:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:projects/project-plan.md\n24:projects/project-plan.md\n71:sha256:320be3167ed3f71f16f45dc2546d09944cb0049fc25482369e165e56f152531a\n21:Deadline: October 23\n\n6:rename\n81:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:notes/paalala.md\n16:notes/paalala.md\n71:sha256:a3af21e57291727b87bf893dceef62cbef14824f70813f3476cdf9f148b49fd3\n24:notes/paalala-oktubre.md\n6:create\n24:courses/pagsasanay-ñ.md\n13:text/markdown\n51:Paalala: ang huling araw ay ika-23 ng Oktubre 📅\n\n",
-      "canonicalByteLength": 697,
-      "digest": "sha256:ceaa26ffa44b497d10a217d48ef069d2d3ff2f6ff8df17585b84e3b5c05be5c1"
+      "canonical": "FOLIO-PLAN-V2\n19:plan-batch-filipino\n64:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c\n8:organize\n13:1760000000000\n13:1760000300000\n1:3\n4:edit\n89:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:projects/project-plan.md\n24:projects/project-plan.md\n71:sha256:320be3167ed3f71f16f45dc2546d09944cb0049fc25482369e165e56f152531a\n21:Deadline: October 23\n\n6:rename\n81:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:notes/paalala.md\n16:notes/paalala.md\n71:sha256:a3af21e57291727b87bf893dceef62cbef14824f70813f3476cdf9f148b49fd3\n24:notes/paalala-oktubre.md\n6:create\n24:courses/pagsasanay-ñ.md\n13:text/markdown\n51:Paalala: ang huling araw ay ika-23 ng Oktubre 📅\n\n",
+      "canonicalByteLength": 708,
+      "digest": "sha256:a5cb6411ba82e8d503be0d9ea1cdb9eb4ec0bf7c2a62719d4cda973b57ca8a1e"
     },
     {
       "plan": {
         "id": "plan-delete-pagsasanay",
         "workspaceId": "628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c",
+        "source": "graph",
         "createdAt": 1760000000000,
         "expiresAt": 1760000300000,
         "operations": [
@@ -268,11 +271,91 @@
           }
         ],
         "impacts": [],
-        "digest": "sha256:8cfff6de4d7afaa0549f2c38b2aac58a183e5edd291c388251334dc1f6285679"
+        "digest": "sha256:dcc2418c1c0d108ba2034a184bbd7ff45d2b0398505576ef2ee4fc56e3b0e2e6"
       },
-      "canonical": "FOLIO-PLAN-V1\n22:plan-delete-pagsasanay\n64:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c\n13:1760000000000\n13:1760000300000\n1:1\n6:delete\n89:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:courses/pagsasanay-ñ.md\n24:courses/pagsasanay-ñ.md\n71:sha256:60856855d91f70c2a5d62cf6d3dc76dd18cd8d0c3cbaa70c050f1b2ae79cfafb\n",
-      "canonicalByteLength": 351,
-      "digest": "sha256:8cfff6de4d7afaa0549f2c38b2aac58a183e5edd291c388251334dc1f6285679"
+      "canonical": "FOLIO-PLAN-V2\n22:plan-delete-pagsasanay\n64:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c\n5:graph\n13:1760000000000\n13:1760000300000\n1:1\n6:delete\n89:628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:courses/pagsasanay-ñ.md\n24:courses/pagsasanay-ñ.md\n71:sha256:60856855d91f70c2a5d62cf6d3dc76dd18cd8d0c3cbaa70c050f1b2ae79cfafb\n",
+      "canonicalByteLength": 359,
+      "digest": "sha256:dcc2418c1c0d108ba2034a184bbd7ff45d2b0398505576ef2ee4fc56e3b0e2e6"
+    }
+  ],
+  "planSources": [
+    "home",
+    "organize",
+    "graph",
+    "assistant",
+    "summary"
+  ],
+  "activity": [
+    {
+      "label": "stopped partway: a change, a failure and one never started",
+      "batch": {
+        "planId": "plan-batch-filipino",
+        "source": "organize",
+        "appliedAt": 1760000001000,
+        "finishedAt": 1760000001500,
+        "stopReason": "failed",
+        "operations": [
+          {
+            "operationIndex": 0,
+            "operationKind": "edit",
+            "beforeRelativePath": "projects/project-plan.md",
+            "afterRelativePath": "projects/project-plan.md",
+            "status": "succeeded",
+            "history": {
+              "id": "history-1",
+              "planId": "plan-batch-filipino",
+              "operationIndex": 0,
+              "operationKind": "edit",
+              "appliedAt": 1760000001000,
+              "documentId": "628c1c203d1706cfc3b74fdc86c3de3e9deccd208907401d4f6fc1857ee1748c:projects/project-plan.md",
+              "beforeRelativePath": "projects/project-plan.md",
+              "afterRelativePath": "projects/project-plan.md",
+              "beforeContentHash": "sha256:320be3167ed3f71f16f45dc2546d09944cb0049fc25482369e165e56f152531a",
+              "afterContentHash": "sha256:b9523f1eb0ab6f8a38f732f1d816e7d90f8d4cc81f6d62ae7bef929259c653a5",
+              "recoverable": true
+            }
+          },
+          {
+            "operationIndex": 1,
+            "operationKind": "rename",
+            "beforeRelativePath": "notes/paalala.md",
+            "afterRelativePath": "notes/paalala-oktubre.md",
+            "status": "failed",
+            "error": {
+              "code": "destinationExists",
+              "message": "A file already uses that name.",
+              "details": {
+                "path": "notes/paalala-oktubre.md"
+              }
+            }
+          },
+          {
+            "operationIndex": 2,
+            "operationKind": "create",
+            "afterRelativePath": "courses/pagsasanay-ñ.md",
+            "status": "notStarted"
+          }
+        ]
+      },
+      "changed": 1,
+      "unrecorded": 0
+    },
+    {
+      "label": "recorded before sources and outcomes were stored",
+      "batch": {
+        "planId": "plan-delete-pagsasanay",
+        "source": "unknown",
+        "appliedAt": 1760000002000,
+        "operations": [
+          {
+            "operationIndex": 0,
+            "operationKind": "delete",
+            "beforeRelativePath": "courses/pagsasanay-ñ.md"
+          }
+        ]
+      },
+      "changed": 0,
+      "unrecorded": 1
     }
   ],
   "hashes": [

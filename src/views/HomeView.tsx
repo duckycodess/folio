@@ -15,13 +15,11 @@ import type { ViewId } from "../shell/navigation";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
-import { Olio } from "../ui/Olio";
 import { Panel } from "../ui/Panel";
 import { simulatedFailure } from "../adapters/simulate";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
 import type { RowMenuItem } from "../ui/RowMenu";
 import { SearchField } from "../ui/SearchField";
-import { AskOlioLauncher } from "./AskOlioLauncher";
 import { FileList } from "./FileList";
 import { HomeFilterBar, PinnedFolders, RecentFiles } from "./HomeFilters";
 import { FolderSearchStatus, ResultEvidence } from "./SearchEvidence";
@@ -43,8 +41,6 @@ interface HomeViewProps {
   onOpenPassage: (passage: SourcePassage) => void;
   /** Filters, pinned folders and recent files, kept above the views. */
   home: HomeState;
-  /** Opens Ask & Act with Home's search and folder filled in. */
-  onAskOlio: () => void;
 }
 
 /**
@@ -71,16 +67,7 @@ export function HomeView(props: HomeViewProps) {
   return (
     <div className="view">
       <header className="page-header page-header-home">
-        {/* One Olio per view: the header pose follows the list below, and
-            the no-folder state brings its own. */}
-        {!noFolder && (
-          <Olio
-            pose={
-              documents.length ? "default" : searching ? "confused" : "peeking"
-            }
-            size={96}
-          />
-        )}
+        {/* One Olio per view: the floating Olio launcher provides it now. */}
         <div className="page-header-text">
           <h1 className="page-title">Your workspace</h1>
           <p className="page-tagline">Everything in its place.</p>
@@ -97,11 +84,6 @@ export function HomeView(props: HomeViewProps) {
             onChange={props.onSearch}
             placeholder="Search files, ideas, or projects"
             shortcut={props.searchShortcut}
-          />
-          <AskOlioLauncher
-            query={workspace.query}
-            folder={props.home.filters.folder}
-            onOpen={props.onAskOlio}
           />
         </div>
       )}
@@ -307,7 +289,7 @@ function HomeContents({
         ) : workspace.loading ? (
           <p className="muted">Loading files…</p>
         ) : workspace.source === "folder" ? (
-          <EmptyFolder workspace={workspace} showOlio={false} />
+          <EmptyFolder workspace={workspace} />
         ) : (
           <EmptyState title="No sample files">
             The sample files couldn't be loaded.

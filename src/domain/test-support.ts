@@ -5,6 +5,7 @@ import type {
   FileOperationKind,
   HistoryEntry,
   RelativePath,
+  PlanSource,
 } from "./contracts";
 import { hashText } from "./hash";
 import { documentIdFor } from "./identity";
@@ -64,10 +65,12 @@ export async function makePlan(input: {
   createdAt?: number;
   expiresAt?: number;
   workspaceId?: string;
+  source?: PlanSource;
 }): Promise<ActionPlan> {
   const plan: ActionPlan = {
     id: input.id,
     workspaceId: input.workspaceId ?? WORKSPACE,
+    source: input.source ?? "organize",
     createdAt: input.createdAt ?? 1_000,
     expiresAt: input.expiresAt ?? 2_000,
     operations: input.operations,

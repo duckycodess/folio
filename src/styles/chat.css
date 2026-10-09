@@ -1,0 +1,259 @@
+/* Floating Olio chat (#66): the launcher and its compact panel, on every
+   view except Ask & Act. Below 700px the panel becomes a full-width bottom
+   sheet so nothing scrolls sideways. */
+
+.olio-chat {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  z-index: 30;
+}
+
+.olio-chat-launcher {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+}
+.olio-chat-greeting {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin: 0;
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-float);
+  font: var(--text-small);
+}
+.olio-chat-greeting-dismiss {
+  width: 28px;
+  height: 28px;
+}
+.olio-chat-launcher-button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4) var(--space-2) var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-float);
+  font: var(--text-label);
+  cursor: pointer;
+}
+.olio-chat-launcher-button:hover {
+  background: var(--color-surface-muted);
+}
+
+.olio-chat-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(380px, calc(100vw - var(--space-6)));
+  max-height: min(600px, calc(100vh - var(--space-6)));
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-float);
+  overflow: hidden;
+}
+.olio-chat-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-3) var(--space-3) var(--space-2);
+  border-bottom: 1px solid var(--color-border);
+}
+.olio-chat-head-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.olio-chat-title {
+  margin: 0;
+  font: var(--text-heading);
+}
+.olio-chat-status {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font: var(--text-small);
+  overflow-wrap: anywhere;
+}
+
+.olio-chat-messages {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  overflow-y: auto;
+}
+.olio-chat-empty {
+  margin: 0;
+}
+.olio-chat-turn {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.olio-chat-request {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.olio-chat-scope {
+  margin: 0;
+  padding: 0 var(--space-3);
+  font: var(--text-small);
+}
+
+.olio-chat-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+}
+
+.olio-chat-composer {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+.olio-chat-input {
+  flex: 1 1 auto;
+  resize: none;
+}
+.olio-chat-suggestions {
+  position: absolute;
+  bottom: 100%;
+  left: var(--space-3);
+  right: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  margin: 0 0 var(--space-1);
+  padding: var(--space-1);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-float);
+  list-style: none;
+}
+.olio-chat-suggestion {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: none;
+  font: var(--text-body);
+  text-align: left;
+  cursor: pointer;
+}
+.olio-chat-suggestion:hover {
+  background: var(--color-surface-muted);
+}
+
+.olio-chat-history {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  overflow-y: auto;
+}
+.olio-chat-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.olio-chat-history-item {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: none;
+  font: var(--text-body);
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+.olio-chat-history-item:hover {
+  background: var(--color-surface-muted);
+}
+
+@media (max-width: 700px) {
+  .olio-chat {
+    right: var(--space-2);
+    bottom: var(--space-2);
+    left: var(--space-2);
+  }
+  .olio-chat-panel {
+    width: 100%;
+    max-height: min(80vh, calc(100vh - var(--space-6)));
+  }
+}
+
+/* OlioSprite: a placeholder animated mascot built from the static poses. */
+.olio-sprite {
+  display: inline-flex;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--olio-backdrop);
+}
+.olio-sprite img {
+  display: block;
+  transform: scale(var(--olio-scale));
+  user-select: none;
+}
+.olio-sprite-blink img {
+  animation: olio-sprite-blink 4s ease-in-out infinite;
+}
+.olio-sprite-wave img {
+  animation: olio-sprite-wave 1.6s ease-in-out infinite;
+  transform-origin: 70% 85%;
+}
+.olio-sprite-thinking img {
+  animation: olio-sprite-thinking 2s ease-in-out infinite;
+}
+.olio-sprite-responding img {
+  animation: olio-sprite-thinking 1.2s ease-in-out infinite;
+}
+@keyframes olio-sprite-blink {
+  0%,
+  92%,
+  100% {
+    transform: scale(var(--olio-scale)) scaleY(1);
+  }
+  96% {
+    transform: scale(var(--olio-scale)) scaleY(0.1);
+  }
+}
+@keyframes olio-sprite-wave {
+  0%,
+  100% {
+    transform: scale(var(--olio-scale)) rotate(0deg);
+  }
+  50% {
+    transform: scale(var(--olio-scale)) rotate(8deg);
+  }
+}
+@keyframes olio-sprite-thinking {
+  0%,
+  100% {
+    transform: scale(var(--olio-scale)) translateY(0);
+  }
+  50% {
+    transform: scale(var(--olio-scale)) translateY(-3px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .olio-sprite img {
+    animation: none;
+  }
+}

@@ -11,7 +11,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/003_actions.sql"),
     include_str!("../migrations/004_retry_backoff.sql"),
     include_str!("../migrations/005_delete_history.sql"),
-    include_str!("../migrations/006_collections.sql"),
+    include_str!("../migrations/006_activity.sql"),
+    include_str!("../migrations/007_collections.sql"),
 ];
 
 impl From<rusqlite::Error> for FolioError {
@@ -119,5 +120,42 @@ mod tests {
         assert_eq!(defaults, (0, "edit".into(), 1));
         let indexed: i64 = conn.query_row("SELECT count(*) FROM sqlite_master WHERE type = 'index' AND name = 'history_plan_idx' AND tbl_name = 'history'", [], |row| row.get(0)).unwrap();
         assert_eq!(indexed, 1);
+    }
+
+    #[test]
+    fn migration_006_keeps_earlier_plans_as_unknown_and_rebuilds_them_from_history() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.pragma_update(None, "foreign_keys", "ON").unwrap();
+        for sql in &MIGRATIONS[..5] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.pragma_update(None, "user_version", 5).unwrap();
+        // A two-operation plan from before 006 that stopped at its second operation.
+        conn.execute_batch(
+            r#"INSERT INTO workspaces (id, root_path, authorized_at) VALUES ('w', '/w', '0');
+             INSERT INTO action_plans (id, workspace_id, plan_json, plan_digest, status, created_at, expires_at, applied_at, stop_reason) VALUES ('p', 'w', '{"operations":[{"kind":"rename","relativePath":"b.md","destinationRelativePath":"c.md"},{"kind":"edit","relativePath":"a.md"}],"impacts":[]}', 'd', 'failed', '0', '1', '5', 'failed');
+             INSERT INTO history (id, plan_id, operation_index, operation_kind, document_ref, before_path, after_path, before_hash, after_hash, applied_at, recoverable) VALUES ('h0', 'p', 0, 'rename', 'w:b.md', 'b.md', 'c.md', 'sha256:c', 'sha256:c', '5', 1);"#,
+        )
+        .unwrap();
+
+        migrate(&mut conn).unwrap();
+        let (source, outcome): (String, Option<String>) = conn.query_row("SELECT source, outcome_json FROM action_plans WHERE id = 'p'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!((source.as_str(), outcome), ("unknown", None));
+        assert!(conn.execute("UPDATE action_plans SET source = 'document' WHERE id = 'p'", []).is_err(), "only the closed list of sources is stored");
+
+        let batches = crate::writer::list_activity(&conn, "w", 10, None).unwrap();
+        assert_eq!(batches.len(), 1);
+        let batch = &batches[0];
+        assert_eq!(batch.source, crate::contracts::PlanSource::Unknown);
+        assert_eq!(batch.stop_reason, Some(crate::contracts::BatchStopReason::Failed));
+        assert_eq!(batch.finished_at, None);
+        assert_eq!(batch.operations.len(), 2);
+        // The rename left history, so it succeeded; the edit's outcome was never
+        // recorded, so it has no status rather than an invented failure.
+        assert_eq!(batch.operations[0].status, Some(crate::contracts::OperationStatus::Succeeded));
+        assert_eq!(batch.operations[0].history.as_ref().map(|entry| entry.id.as_str()), Some("h0"));
+        assert_eq!(batch.operations[1].status, None);
+        assert_eq!(batch.operations[1].before_relative_path.as_deref(), Some("a.md"));
+        assert!(batch.operations[1].error.is_none() && batch.operations[1].history.is_none());
     }
 }

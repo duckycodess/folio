@@ -9,7 +9,7 @@ import type {
 import { toFolioError } from "../domain/errors";
 
 /**
- * Virtual collections (#78, ADR 0013). The native core stores them; none of
+ * Virtual collections (#78, ADR 0015). The native core stores them; none of
  * these commands changes a file, so none of them needs a plan or approval.
  */
 async function call<T>(command: string, args?: Record<string, unknown>) {

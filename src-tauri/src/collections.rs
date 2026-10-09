@@ -1,4 +1,4 @@
-//! Virtual collections (#78, ADR 0013): named groups of document references
+//! Virtual collections (#78, ADR 0015): named groups of document references
 //! that leave every file where it is. Keeping or editing one changes no file,
 //! so it is a plain native command, not an action plan, and it is not recorded
 //! in Activity. Members follow Folio's own renames, moves and deletions; a file

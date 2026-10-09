@@ -18,6 +18,7 @@ import type {
   DocumentRecord,
   FileOperation,
   HistoryEntry,
+  NewPlanSource,
   UndoPreflight,
   UndoReport,
 } from "../domain/contracts";
@@ -90,6 +91,11 @@ const NO_UNDO: UndoState = {
 
 export function useOrganize(
   workspace: WorkspaceState,
+  /**
+   * Where in Folio these changes start (Activity shows it). Part of each
+   * plan's digest, so it can't be changed after approval.
+   */
+  source: NewPlanSource,
   /** Called after Folio changed files, so other views re-read the index. */
   onFilesChanged: () => void = () => {},
 ): OrganizeController {
@@ -160,7 +166,7 @@ export function useOrganize(
     dispatch({ type: "prepareStarted", request, operations });
     if (!folderId) return noFolder(request);
     try {
-      const plan = await preparePlan(folderId, operations);
+      const plan = await preparePlan(folderId, source, operations);
       dispatch({ type: "prepared", request, plan });
     } catch (cause) {
       dispatch({ type: "failed", request, error: toFolioError(cause) });

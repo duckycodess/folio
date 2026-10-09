@@ -44,7 +44,20 @@ const LAB_PROGRESS_EVENT: &str = "folio://lab-progress";
 /// The cancel flag of the lab run in progress, if any. It is the same flag the
 /// generation state holds as its active request, so unloading generation
 /// (including at exit) also stops the lab.
-pub(crate) type LabState = Arc<Mutex<Option<Arc<AtomicBool>>>>;
+///
+/// A distinct type, not an alias: Tauri keeps one managed state per type, and
+/// `InstallState` has the same inner type. An alias made `.manage` panic at
+/// startup, so the app never opened.
+#[derive(Clone, Default)]
+pub(crate) struct LabState(Arc<Mutex<Option<Arc<AtomicBool>>>>);
+
+impl std::ops::Deref for LabState {
+    type Target = Mutex<Option<Arc<AtomicBool>>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
 
 /// A manifest model and whether the lab could run it now. `modelFileBytes` is
 /// the pinned size of the model's own files, not an installed size.
