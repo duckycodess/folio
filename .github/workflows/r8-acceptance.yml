@@ -197,7 +197,7 @@ jobs:
           test -x "$llama_server"
           printf 'FOLIO_LLAMA_SERVER=%s\n' "$llama_server" >> "$GITHUB_ENV"
           "$llama_server" --version >"$RUNNER_TEMP/folio-r8/llama-server-version.txt" 2>&1 || true
-          ort_library="$(find "$GITHUB_WORKSPACE/target" -type f -name 'libonnxruntime.so*' -print -quit 2>/dev/null || true)"
+          ort_library="$(find "$GITHUB_WORKSPACE/target" \( -type f -o -type l \) -name 'libonnxruntime.so*' -print -quit 2>/dev/null || true)"
           if [[ -z "$ort_library" ]]; then
             echo "ready=false" >> "$GITHUB_OUTPUT"
             echo "No libonnxruntime.so was found in target; Docker offline execution is not verified." > "$RUNNER_TEMP/folio-r8/offline/blocked.txt"
