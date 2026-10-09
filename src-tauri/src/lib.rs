@@ -541,6 +541,34 @@ fn markdown_title(name: &str, content: &str) -> String {
         .to_owned()
 }
 
+fn document_record(
+    root: &ScopedRoot,
+    document_id: &str,
+    relative_path: &str,
+    document_text: &DocumentText,
+    content: &str,
+) -> DocumentRecord {
+    DocumentRecord {
+        id: document_id.into(),
+        workspace_id: root.id.clone(),
+        relative_path: relative_path.into(),
+        name: Path::new(relative_path)
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(relative_path)
+            .into(),
+        title: markdown_title(relative_path, content),
+        language: grounding::detect_language(content),
+        media_type: media_type_for_path(relative_path)
+            .unwrap_or("text/plain")
+            .into(),
+        size_bytes: document_text.size_bytes,
+        modified_at_ms: document_text.modified_at_ms,
+        content: Some(content.into()),
+        content_hash: Some(document_text.content_hash.clone()),
+    }
+}
+
 fn with_embedding_provider<T, F>(
     app: &AppHandle,
     embedding_state: &EmbeddingState,
@@ -946,6 +974,14 @@ async fn summarize_document(
     workspace_id: String,
     document_id: String,
 ) -> Result<GroundedAnswer, NativeProviderError> {
+    let relative_path =
+        ai_boundary::parse_document_id(&workspace_id, &document_id).map_err(|error| {
+            NativeProviderError {
+                code: folio_core::contracts::ProviderErrorCode::IoError,
+                message: error.message,
+                detail: None,
+            }
+        })?;
     let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id).map_err(|error| {
         NativeProviderError {
             code: folio_core::contracts::ProviderErrorCode::IoError,
@@ -955,7 +991,7 @@ async fn summarize_document(
     })?;
     let generation_state = generation_state.inner().clone();
     run_blocking(move || {
-        let document_text = workspace::read_text(&root.path, &document_id).map_err(|error| {
+        let document_text = workspace::read_text(&root.path, &relative_path).map_err(|error| {
             NativeProviderError {
                 code: folio_core::contracts::ProviderErrorCode::IoError,
                 message: error.to_string(),
@@ -963,25 +999,13 @@ async fn summarize_document(
             }
         })?;
         let content = document_text.content.clone();
-        let record = DocumentRecord {
-            id: document_id.clone(),
-            workspace_id: workspace_id.clone(),
-            relative_path: document_id.clone(),
-            name: Path::new(&document_id)
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or(&document_id)
-                .into(),
-            title: markdown_title(&document_id, &content),
-            language: grounding::detect_language(&content),
-            media_type: media_type_for_path(&document_id)
-                .unwrap_or("text/plain")
-                .into(),
-            size_bytes: document_text.size_bytes,
-            modified_at_ms: document_text.modified_at_ms,
-            content: Some(content.clone()),
-            content_hash: Some(document_text.content_hash),
-        };
+        let record = document_record(
+            &root,
+            &document_id,
+            &relative_path,
+            &document_text,
+            &content,
+        );
         let chunks = InterimTextChunker::new(vec![TextDocument::new(record, content.clone())])
             .chunks(&document_id)
             .map_err(native_error)?;
@@ -1010,6 +1034,12 @@ async fn answer_question(
     question: String,
     document_id: Option<String>,
 ) -> Result<GroundedAnswer, NativeProviderError> {
+    let document_id = ai_boundary::validate_document_filter(&workspace_id, document_id.as_deref())
+        .map_err(|error| NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::IoError,
+            message: error.message,
+            detail: None,
+        })?;
     let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id).map_err(|error| {
         NativeProviderError {
             code: folio_core::contracts::ProviderErrorCode::IoError,
@@ -1183,6 +1213,30 @@ mod tests {
         assert_eq!(skipped.len(), 1);
         assert_eq!(skipped[0].relative_path, "invalid.md");
         assert!(skipped[0].reason.contains("valid UTF-8"));
+    }
+
+    #[test]
+    fn summary_record_preserves_the_native_document_id() {
+        let root = ScopedRoot {
+            id: "workspace".into(),
+            path: PathBuf::from("/tmp/workspace"),
+        };
+        let text = DocumentText {
+            content: "# Notes\nPaalala".into(),
+            content_hash: "sha256:observed".into(),
+            size_bytes: 15,
+            modified_at_ms: Some(42),
+        };
+        let record = document_record(
+            &root,
+            "workspace:notes/paalala.md",
+            "notes/paalala.md",
+            &text,
+            &text.content,
+        );
+        assert_eq!(record.id, "workspace:notes/paalala.md");
+        assert_eq!(record.relative_path, "notes/paalala.md");
+        assert_eq!(record.content_hash.as_deref(), Some("sha256:observed"));
     }
 }
 

@@ -207,16 +207,22 @@ pub struct ModelInstallState {
 pub enum OperationProposal {
     Edit {
         document_id: DocumentId,
+        relative_path: String,
+        observed_content_hash: String,
         find: String,
         replace: String,
         target_evidence: SourcePassage,
     },
     Rename {
         document_id: DocumentId,
+        relative_path: String,
+        observed_content_hash: String,
         destination_relative_path: String,
     },
     Move {
         document_id: DocumentId,
+        relative_path: String,
+        observed_content_hash: String,
         destination_relative_path: String,
     },
     Create {

@@ -538,6 +538,8 @@ export type OperationProposal =
   | {
       kind: "edit";
       documentId: DocumentId;
+      relativePath: RelativePath;
+      observedContentHash: ContentHash;
       find: string;
       replace: string;
       targetEvidence: SourcePassage;
@@ -545,6 +547,8 @@ export type OperationProposal =
   | {
       kind: "rename" | "move";
       documentId: DocumentId;
+      relativePath: RelativePath;
+      observedContentHash: ContentHash;
       destinationRelativePath: RelativePath;
     }
   | {

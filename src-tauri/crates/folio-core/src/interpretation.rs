@@ -240,14 +240,24 @@ pub fn resolve_model_intent(
             if let Err(reason) = validate_destination(destination, Some(&document.name)) {
                 return clarification(reason, "The destination must stay a TXT/Markdown path.");
             }
+            let Some(current_content_hash) = observed_content_hash(&document, contents) else {
+                return clarification(
+                    "I could not read the current contents of that file.".into(),
+                    "A proposal must carry the current file revision.",
+                );
+            };
             let proposal = if intent.intent == IntentKind::Rename {
                 OperationProposal::Rename {
                     document_id: document.id,
+                    relative_path: document.relative_path,
+                    observed_content_hash: current_content_hash,
                     destination_relative_path: destination.replace('\\', "/"),
                 }
             } else {
                 OperationProposal::Move {
                     document_id: document.id,
+                    relative_path: document.relative_path,
+                    observed_content_hash: current_content_hash,
                     destination_relative_path: destination.replace('\\', "/"),
                 }
             };
@@ -297,6 +307,8 @@ fn resolve_edit(
             "Proposal validation needs current file content.",
         );
     };
+    let current_content_hash =
+        observed_content_hash(document, contents).unwrap_or_else(|| content_hash(content));
     let matches = content.match_indices(find).collect::<Vec<_>>();
     if matches.is_empty() {
         return clarification(
@@ -344,6 +356,8 @@ fn resolve_edit(
     InterpretationResult::Proposal {
         proposal: OperationProposal::Edit {
             document_id: document.id.clone(),
+            relative_path: document.relative_path.clone(),
+            observed_content_hash: current_content_hash,
             find: find.into(),
             replace: replace.into(),
             target_evidence: evidence,
@@ -351,6 +365,21 @@ fn resolve_edit(
         request_language,
         exact_duplicate_paths,
     }
+}
+
+fn observed_content_hash(
+    document: &DocumentRecord,
+    contents: &HashMap<String, String>,
+) -> Option<String> {
+    document
+        .content_hash
+        .clone()
+        .or_else(|| {
+            contents
+                .get(&document.id)
+                .map(|content| content_hash(content))
+        })
+        .or_else(|| document.content.as_deref().map(content_hash))
 }
 
 fn resolve_target(
