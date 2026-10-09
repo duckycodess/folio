@@ -516,11 +516,22 @@ fn terms(query: &str) -> Vec<String> {
     terms
 }
 
+/// English and Filipino function words that never make a chunk evidence.
+const STOP_WORDS: &[&str] = &[
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is", "it", "of", "on",
+    "or", "that", "the", "this", "to", "was", "with", "ang", "ay", "ito", "kay", "mga", "na",
+    "nang", "ng", "ni", "pa", "para", "po", "sa", "si", "yung",
+];
+
+fn is_stop_word(term: &str) -> bool {
+    STOP_WORDS.contains(&term)
+}
+
 /// BM25 over the supplied chunks, normalized by the summed IDF weights of the
 /// query's informative terms (the score of a chunk of average length
-/// containing each of them once). Terms found in more than half of the chunks
-/// carry no weight, so a query of only common words has no keyword evidence. Returns one score
-/// in [0, 1] per chunk, aligned with `chunks`.
+/// containing each of them once). Stop words and terms found in nearly every
+/// chunk carry no weight, so a query of only common words has no keyword
+/// evidence. Returns one score in [0, 1] per chunk, aligned with `chunks`.
 fn bm25_scores(chunks: &[Chunk], terms: &[String]) -> Vec<f32> {
     if chunks.is_empty() || terms.is_empty() {
         return vec![0.0; chunks.len()];
@@ -538,9 +549,11 @@ fn bm25_scores(chunks: &[Chunk], terms: &[String]) -> Vec<f32> {
                 .iter()
                 .filter(|tokens| tokens.iter().any(|token| token == term))
                 .count() as f32;
-            // A term in more than half of the chunks ("the", "ang", a shared
-            // header word) says nothing about which chunk is evidence.
-            if frequency > (count / 2.0).max(1.0) {
+            // Function words ("the", "ang") and a term in nearly every chunk (a
+            // shared header word) say nothing about which chunk is evidence. A
+            // meaningful word that is merely common, such as a project's name,
+            // keeps its (low) weight.
+            if is_stop_word(term) || frequency >= (count * 0.9).max(2.0) {
                 return 0.0;
             }
             (1.0 + (count - frequency + 0.5) / (frequency + 0.5)).ln()
@@ -703,6 +716,36 @@ mod tests {
             .search(&documents, &chunks, "budget", None, 5)
             .unwrap();
         assert_eq!(results[0].document.id, "b.md");
+    }
+
+    #[test]
+    fn a_meaningful_word_in_most_files_still_matches_in_keyword_mode() {
+        // "project" is in 3 of 5 files, like 9 of the 15 sample files; it is
+        // common, not meaningless, so keyword-only search still finds it.
+        let source = InterimTextChunker::new(vec![
+            document("plan.md", "project plan due October 20"),
+            document("notes.md", "meeting notes for the project"),
+            document("checklist.md", "project submission checklist"),
+            document("budget.md", "monthly budget for transport"),
+            document("grocery.md", "grocery list for the week"),
+        ]);
+        let documents = source.documents();
+        let chunks = source.all_chunks().unwrap();
+        let retriever = HybridRetriever::default();
+        let results = retriever
+            .search(&documents, &chunks, "project", None, 5)
+            .unwrap();
+        let mut found = results
+            .iter()
+            .map(|result| result.document.id.as_str())
+            .collect::<Vec<_>>();
+        found.sort();
+        assert_eq!(found, ["checklist.md", "notes.md", "plan.md"]);
+        // Function words alone are still not evidence.
+        assert!(retriever
+            .search(&documents, &chunks, "the for", None, 5)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
