@@ -5,3 +5,20 @@ All names, events, and document contents here are fictional examples for Folio. 
 The deadline change should flag relevant Community Learning Project passages without changing the unrelated mathematics practice date. The duplicate copy should be detected by content hash. Project-plan-copy contains relative links inherited from its original folder; broken links in that copied location must not be invented as valid references.
 
 The benchmark file contains labels, not model results. Add a text-based PDF fixture and extraction test before claiming PDF support.
+
+## Contract fixtures
+
+`contracts/contract-cases.json` holds the frozen wire encodings: the error-code
+list, content hashes, workspace and document identities, path rules, UTF-8
+source offsets for Filipino and Taglish text, embedding-space fingerprints, and
+canonical action-plan bytes with their digests.
+
+`contracts/generate-contract-cases.py` produces that file. It is a third
+implementation of the rules in [docs/contracts.md](../docs/contracts.md),
+written from that document rather than from the TypeScript or Rust code, and
+both suites are checked against its output — so the two languages are pinned to
+one encoding rather than to each other's mistakes.
+
+Regenerate with `python3 fixtures/contracts/generate-contract-cases.py`, only
+together with a deliberate, announced contract change, and re-run `npm test`
+and `cargo test` afterwards.

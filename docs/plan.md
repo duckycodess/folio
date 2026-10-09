@@ -4,7 +4,7 @@ The original time budget was approximately 12 hours for four people. Rebase this
 
 ## Shared first hour
 
-All four people read the scope and contracts. Build the native shell on at least one Windows and one macOS machine immediately. Freeze contract names and error shapes before parallel implementation. Run the current frontend preview to confirm SOS and journeys A/B/C remain visible.
+All four people read the scope and contracts. Build the native shell on at least one Windows and one macOS machine immediately. Freeze contract names and error shapes before parallel implementation; the frozen boundary is recorded in [contracts](contracts.md) and pinned by `fixtures/contracts/contract-cases.json`. Run the current frontend preview to confirm SOS and journeys A/B/C remain visible.
 
 Track identifiers describe work boundaries, not person numbers. The user assigned Person 1 to TJ, Person 2 to Dann, Person 3 to Gab and Person 4 to Louise. TJ gets most checking; Louise owns the replacement UI. Gab owns both native implementation tracks.
 
