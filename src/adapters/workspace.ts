@@ -251,7 +251,7 @@ export function pendingEmbeddingChunks(
 export function putEmbeddings(
   workspaceId: WorkspaceId,
   spaceFingerprint: EmbeddingSpaceFingerprint,
-  items: { chunkId: number; vector: number[] }[],
+  items: { chunkId: number; contentHash: ContentHash; vector: number[] }[],
 ): Promise<number> {
   return call<number>("put_embeddings", {
     workspaceId,

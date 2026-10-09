@@ -195,6 +195,18 @@ struct Existing {
     status: String,
 }
 
+/// What reading one file produced. Computed without touching the index, so a batch
+/// holds the SQLite write lock only while its results are stored.
+enum Prepared {
+    /// Size and modification time match a current record: not read at all.
+    Unchanged,
+    /// Read, and byte-identical to what the index holds.
+    SameBytes,
+    Indexed { hash: String, title: Option<String>, note: Option<String>, chunks: Vec<extract::Chunk> },
+    Unsupported { hash: String, reason: String },
+    Failure { hash: Option<String>, reason: String },
+}
+
 enum Outcome {
     Unchanged,
     Added,
@@ -213,41 +225,84 @@ fn modified_nanos(metadata: &std::fs::Metadata) -> String {
     metadata.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map(|elapsed| elapsed.as_nanos().to_string()).unwrap_or_default()
 }
 
-fn discover(root: &Path) -> NativeResult<(Vec<Found>, usize)> {
-    let mut found = Vec::new();
-    let mut skipped = 0;
+/// What a walk of the folder saw.
+struct Discovery {
+    found: Vec<Found>,
+    skipped: usize,
+    /// Relative paths (files or folders) that could not be read this time. Records at or
+    /// below them are kept as they are rather than treated as deleted.
+    unreadable: Vec<String>,
+    /// A failure whose location is unknown: nothing may be treated as deleted.
+    unreadable_unknown: bool,
+}
+
+fn relative_display(root: &Path, path: &Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?.to_string_lossy().replace('\\', "/");
+    (!relative.is_empty()).then_some(relative)
+}
+
+/// Lists the supported files below the root. The document limit is checked here, before
+/// anything is written, so a folder over the limit is refused rather than partly indexed.
+fn discover(root: &Path) -> NativeResult<Discovery> {
+    let mut discovery = Discovery { found: Vec::new(), skipped: 0, unreadable: Vec::new(), unreadable_unknown: false };
     let walker = WalkDir::new(root).follow_links(false).into_iter().filter_entry(|entry| entry.depth() == 0 || !(entry.file_type().is_dir() && skipped_directory(entry.file_name())));
     for entry in walker {
-        let Ok(entry) = entry else {
-            skipped += 1;
-            continue;
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(failure) => {
+                discovery.skipped += 1;
+                match failure.path().and_then(|path| relative_display(root, path)) {
+                    Some(relative) => discovery.unreadable.push(relative),
+                    None => discovery.unreadable_unknown = true,
+                }
+                continue;
+            }
         };
         // Symlinks report their own type here, so links never enter the index.
         if !entry.file_type().is_file() || entry.file_name().to_string_lossy().starts_with('.') { continue; }
         let Some(kind) = MediaKind::from_path(entry.path()) else { continue };
-        let (Ok(relative), Ok(metadata)) = (relative_path_below(root, entry.path()), entry.metadata()) else {
-            skipped += 1;
+        let Ok(relative) = relative_path_below(root, entry.path()) else {
+            discovery.skipped += 1;
             continue;
         };
-        found.push(Found { relative, path: entry.path().to_path_buf(), kind, size: metadata.len() as i64, modified: modified_nanos(&metadata) });
-        if found.len() > MAX_DOCUMENTS {
-            return Err(error(ErrorCode::DocumentTooLarge, "Folio supports up to 5,000 TXT, Markdown and PDF documents per folder. Choose a smaller folder."));
+        let Ok(metadata) = entry.metadata() else {
+            discovery.skipped += 1;
+            discovery.unreadable.push(relative);
+            continue;
+        };
+        discovery.found.push(Found { relative, path: entry.path().to_path_buf(), kind, size: metadata.len() as i64, modified: modified_nanos(&metadata) });
+        if discovery.found.len() > MAX_DOCUMENTS {
+            return Err(error(ErrorCode::WorkspaceUnavailable, "This folder has more than 5,000 TXT, Markdown and PDF documents. Choose a smaller folder.").with_detail("reason", "tooManyDocuments").with_detail("limit", MAX_DOCUMENTS.to_string()));
         }
     }
-    found.sort_by(|a, b| a.relative.cmp(&b.relative));
-    Ok((found, skipped))
+    discovery.found.sort_by(|a, b| a.relative.cmp(&b.relative));
+    Ok(discovery)
+}
+
+/// Whether `path` is, or lies inside, one of the `unreadable` locations.
+fn covered_by(path: &str, unreadable: &[String]) -> bool {
+    unreadable.iter().any(|location| path == location || path.strip_prefix(location.as_str()).is_some_and(|rest| rest.starts_with('/')))
+}
+
+/// Records that are really gone: not found, and not inside something that could not be read.
+fn removed_paths<'a>(existing: impl Iterator<Item = &'a String>, present: &HashSet<&str>, discovery: &Discovery) -> Vec<String> {
+    if discovery.unreadable_unknown { return Vec::new(); }
+    existing.filter(|path| !present.contains(path.as_str()) && !covered_by(path, &discovery.unreadable)).cloned().collect()
 }
 
 /// Incrementally indexes the authorized folder. Unchanged files are not re-read; changed
 /// files have their chunks, vectors, relationships and caches replaced; deleted files are
-/// removed. Cancellation keeps all completed batches.
+/// removed, while records inside folders that could not be read are kept. Each batch is
+/// read and extracted first and only then written, so the write lock is held briefly.
+/// Cancellation keeps all completed batches.
 pub fn scan_workspace(conn: &mut Connection, root: &ScopedRoot, cancel: &AtomicBool, progress: &mut dyn FnMut(&IndexProgress)) -> NativeResult<ScanSummary> {
     let started = std::time::Instant::now();
     let root_path = workspace::available_root(&root.path)?;
     let report = |phase, processed, total, current_path| IndexProgress { workspace_id: root.id.clone(), phase, processed, total, current_path };
     progress(&report("discovering", 0, 0, None));
-    let (found, skipped) = discover(&root_path)?;
-    let mut summary = ScanSummary { workspace_id: root.id.clone(), total: found.len(), skipped, ..Default::default() };
+    let discovery = discover(&root_path)?;
+    let found = &discovery.found;
+    let mut summary = ScanSummary { workspace_id: root.id.clone(), total: found.len(), skipped: discovery.skipped, ..Default::default() };
 
     let mut existing: HashMap<String, Existing> = HashMap::new();
     {
@@ -260,24 +315,27 @@ pub fn scan_workspace(conn: &mut Connection, root: &ScopedRoot, cancel: &AtomicB
     }
 
     let present: HashSet<&str> = found.iter().map(|file| file.relative.as_str()).collect();
-    let removed: Vec<&Existing> = existing.iter().filter(|(path, _)| !present.contains(path.as_str())).map(|(_, record)| record).collect();
+    let removed = removed_paths(existing.keys(), &present, &discovery);
     if !removed.is_empty() {
         let tx = conn.transaction()?;
-        for record in &removed { forget_document(&tx, &record.id)?; }
+        for path in &removed { forget_document(&tx, &existing[path].id)?; }
         tx.commit()?;
         summary.removed = removed.len();
     }
 
     let mut processed = 0;
-    'batches: for batch in found.chunks(BATCH_SIZE) {
-        let tx = conn.transaction()?;
+    for batch in found.chunks(BATCH_SIZE) {
+        let mut prepared = Vec::with_capacity(batch.len());
         for file in batch {
             if cancel.load(Ordering::SeqCst) {
                 summary.cancelled = true;
-                tx.commit()?;
-                break 'batches;
+                break;
             }
-            match index_file(&tx, &root.id, file, existing.get(&file.relative), false)? {
+            prepared.push((file, prepare_file(file, existing.get(&file.relative), false)));
+        }
+        let tx = conn.transaction()?;
+        for (file, result) in prepared {
+            match store_prepared(&tx, &root.id, file, existing.get(&file.relative), result)? {
                 Outcome::Unchanged => summary.unchanged += 1,
                 Outcome::Added => summary.added += 1,
                 Outcome::Updated => summary.updated += 1,
@@ -289,6 +347,7 @@ pub fn scan_workspace(conn: &mut Connection, root: &ScopedRoot, cancel: &AtomicB
         }
         tx.commit()?;
         progress(&report("indexing", processed, found.len(), batch.last().map(|file| file.relative.clone())));
+        if summary.cancelled { break; }
     }
 
     if summary.added + summary.updated + summary.removed + summary.unsupported + summary.failed > 0 {
@@ -302,51 +361,74 @@ pub fn scan_workspace(conn: &mut Connection, root: &ScopedRoot, cancel: &AtomicB
     Ok(summary)
 }
 
-/// `verify` skips the size/mtime shortcut and compares content hashes, for files Folio just wrote.
-fn index_file(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior: Option<&Existing>, verify: bool) -> NativeResult<Outcome> {
+/// Reads, hashes and extracts one file. Never touches the index. A `stale` or `failed`
+/// record is always re-read, so a file that was locked, offline or briefly unreadable
+/// recovers on the next scan. `verify` also re-reads current records (files Folio wrote).
+fn prepare_file(file: &Found, prior: Option<&Existing>, verify: bool) -> Prepared {
     if let Some(prior) = prior {
-        if !verify && prior.size == file.size && prior.modified == file.modified { return Ok(Outcome::Unchanged); }
+        let retry = prior.status == "stale" || prior.status == "failed";
+        if !verify && !retry && prior.size == file.size && prior.modified == file.modified { return Prepared::Unchanged; }
     }
     let bytes = match workspace::read_bounded(&file.path, file.kind.max_bytes()) {
         Ok(bytes) => Some(bytes),
         Err(failure) if failure.code == ErrorCode::DocumentTooLarge => None,
-        Err(failure) => return record_failure(tx, workspace_id, file, prior, &failure.message, None),
+        Err(failure) => return Prepared::Failure { hash: None, reason: failure.message },
     };
     let hash = match &bytes {
         Some(bytes) => content_hash(bytes),
         None => match sha256_file(&file.path) {
             Ok(hash) => hash,
-            Err(failure) => return record_failure(tx, workspace_id, file, prior, &failure.message, None),
+            Err(failure) => return Prepared::Failure { hash: None, reason: failure.message },
         },
     };
-    if let Some(prior) = prior {
-        if prior.hash == hash {
-            // Same bytes as indexed: refresh metadata only. A stale record whose file returned
-            // to its indexed content is current again.
+    // Identical bytes need no extraction, except for a `failed` record, which is retried
+    // in case the failure came from the extractor rather than the file.
+    if prior.is_some_and(|prior| prior.hash == hash && prior.status != "failed") { return Prepared::SameBytes; }
+    let Some(bytes) = bytes else {
+        return Prepared::Unsupported { hash, reason: format!("Larger than the {} MiB limit for this file type.", file.kind.max_bytes() / 1024 / 1024) };
+    };
+    match extract::extract(file.kind, &bytes) {
+        Ok(Extraction::Text(extracted)) => {
+            let note = (!extracted.skipped_pages.is_empty()).then(|| {
+                let pages: Vec<String> = extracted.skipped_pages.iter().map(u32::to_string).collect();
+                format!("Page(s) {} could not be read; the rest of the document is searchable.", pages.join(", "))
+            });
+            Prepared::Indexed { title: extract::title_of(&extracted.text), chunks: extract::chunk(&extracted), hash, note }
+        }
+        Ok(Extraction::Unsupported(reason)) => Prepared::Unsupported { hash, reason },
+        Err(failure) => Prepared::Failure { hash: Some(hash), reason: failure.message },
+    }
+}
+
+/// Writes one prepared result. Runs inside the batch transaction and does no file I/O.
+fn store_prepared(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior: Option<&Existing>, prepared: Prepared) -> NativeResult<Outcome> {
+    match prepared {
+        Prepared::Unchanged => Ok(Outcome::Unchanged),
+        Prepared::SameBytes => {
+            // Refresh metadata only. A stale record whose file is back to its indexed
+            // content is current again.
+            let prior = prior.expect("identical bytes imply a prior record");
             tx.execute(
                 "UPDATE documents SET size_bytes = ?1, modified_at = ?2, status = CASE status WHEN 'stale' THEN 'indexed' ELSE status END, status_message = CASE status WHEN 'stale' THEN NULL ELSE status_message END WHERE id = ?3",
                 params![file.size, file.modified, prior.id],
             )?;
-            return Ok(Outcome::Unchanged);
+            Ok(Outcome::Unchanged)
         }
-    }
-    let Some(bytes) = bytes else {
-        let reason = format!("Larger than the {} MiB limit for this file type.", file.kind.max_bytes() / 1024 / 1024);
-        return record_unsupported(tx, workspace_id, file, prior, &hash, &reason);
-    };
-    match extract::extract(file.kind, &bytes) {
-        Ok(Extraction::Text(extracted)) => {
-            let title = extract::title_of(&extracted.text);
-            let id = upsert_document(tx, workspace_id, file, prior, &hash, title.as_deref(), "indexed", None, true)?;
+        Prepared::Indexed { hash, title, note, chunks } => {
+            let id = upsert_document(tx, workspace_id, file, prior, &hash, title.as_deref(), "indexed", note.as_deref(), true)?;
             clear_derived(tx, &id)?;
             let mut insert = tx.prepare_cached("INSERT INTO chunks (document_id, ordinal, chunk_text, start_offset, end_offset, page, content_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")?;
-            for chunk in extract::chunk(&extracted) {
+            for chunk in chunks {
                 insert.execute(params![id, chunk.ordinal as i64, chunk.text, chunk.start as i64, chunk.end as i64, chunk.page, content_hash(chunk.text.as_bytes())])?;
             }
             Ok(if prior.is_some() { Outcome::Updated } else { Outcome::Added })
         }
-        Ok(Extraction::Unsupported(reason)) => record_unsupported(tx, workspace_id, file, prior, &hash, &reason),
-        Err(failure) => record_failure(tx, workspace_id, file, prior, &failure.message, Some(&hash)),
+        Prepared::Unsupported { hash, reason } => {
+            let id = upsert_document(tx, workspace_id, file, prior, &hash, None, "unsupported", Some(&reason), false)?;
+            clear_derived(tx, &id)?;
+            Ok(Outcome::Unsupported)
+        }
+        Prepared::Failure { hash, reason } => record_failure(tx, workspace_id, file, prior, &reason, hash.as_deref()),
     }
 }
 
@@ -373,14 +455,9 @@ fn upsert_document(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior
     }
 }
 
-fn record_unsupported(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior: Option<&Existing>, hash: &str, reason: &str) -> NativeResult<Outcome> {
-    let id = upsert_document(tx, workspace_id, file, prior, hash, None, "unsupported", Some(reason), false)?;
-    clear_derived(tx, &id)?;
-    Ok(Outcome::Unsupported)
-}
-
 /// Extraction failure never erases valid prior state: an indexed document keeps its chunks
 /// and becomes `stale`; a document with no usable prior index is recorded as `failed`.
+/// Both are retried on every scan until a read succeeds.
 fn record_failure(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior: Option<&Existing>, reason: &str, hash: Option<&str>) -> NativeResult<Outcome> {
     match prior {
         Some(prior) if prior.status == "indexed" || prior.status == "stale" => {
@@ -413,21 +490,27 @@ pub fn forget_document(tx: &Transaction<'_>, document_id: &str) -> NativeResult<
     Ok(())
 }
 
+fn existing_at(conn: &Connection, workspace_id: &str, relative: &str) -> NativeResult<Option<Existing>> {
+    Ok(conn
+        .query_row("SELECT id, size_bytes, modified_at, content_hash, status FROM documents WHERE workspace_id = ?1 AND relative_path = ?2", [workspace_id, relative], |row| {
+            Ok(Existing { id: row.get(0)?, size: row.get(1)?, modified: row.get(2)?, hash: row.get(3)?, status: row.get(4)? })
+        })
+        .optional()?)
+}
+
 /// Re-indexes specific files after Folio changed them, then rebuilds link relationships.
-/// Paths that no longer exist are removed from the index.
+/// Paths that no longer exist are removed from the index. Files are read before the
+/// write transaction opens.
 #[allow(dead_code)]
 pub fn refresh_paths(conn: &mut Connection, root: &ScopedRoot, relative_paths: &[String]) -> NativeResult<()> {
-    let tx = conn.transaction()?;
+    let mut prepared = Vec::new();
+    let mut gone = Vec::new();
     for relative in relative_paths {
-        let prior = tx
-            .query_row("SELECT id, size_bytes, modified_at, content_hash, status FROM documents WHERE workspace_id = ?1 AND relative_path = ?2", [&root.id, relative], |row| {
-                Ok(Existing { id: row.get(0)?, size: row.get(1)?, modified: row.get(2)?, hash: row.get(3)?, status: row.get(4)? })
-            })
-            .optional()?;
+        let prior = existing_at(conn, &root.id, relative)?;
         let path = match workspace::resolve_document(&root.path, relative) {
             Ok(path) => path,
             Err(failure) if failure.code == ErrorCode::DocumentUnavailable => {
-                if let Some(prior) = prior { forget_document(&tx, &prior.id)?; }
+                if let Some(prior) = prior { gone.push(prior.id); }
                 continue;
             }
             Err(failure) => return Err(failure),
@@ -435,7 +518,13 @@ pub fn refresh_paths(conn: &mut Connection, root: &ScopedRoot, relative_paths: &
         let kind = MediaKind::from_path(&path).ok_or_else(|| error(ErrorCode::UnsupportedMediaType, "Folio indexes TXT, Markdown and text-based PDF files."))?;
         let metadata = std::fs::metadata(&path)?;
         let file = Found { relative: relative.clone(), path, kind, size: metadata.len() as i64, modified: modified_nanos(&metadata) };
-        index_file(&tx, &root.id, &file, prior.as_ref(), true)?;
+        let result = prepare_file(&file, prior.as_ref(), true);
+        prepared.push((file, prior, result));
+    }
+    let tx = conn.transaction()?;
+    for id in &gone { forget_document(&tx, id)?; }
+    for (file, prior, result) in prepared {
+        store_prepared(&tx, &root.id, &file, prior.as_ref(), result)?;
     }
     rebuild_explicit_references(&tx, &root.id)?;
     tx.commit()?;
@@ -468,7 +557,9 @@ fn percent_decode(value: &str) -> Option<String> {
 }
 
 /// Mirrors the frontend's link resolution: relative links only, never above the root,
-/// and the result must be a valid workspace path.
+/// and the result must be a valid workspace path. Matching is case-sensitive on purpose,
+/// like the frontend and like document identities: on a case-insensitive Windows or macOS
+/// folder, `[x](Notes.md)` does not resolve to `notes.md`, so no link is invented.
 pub fn linked_path(source_path: &str, link: &str) -> Option<String> {
     if has_scheme_or_root(link) { return None; }
     let decoded = percent_decode(link.split(['?', '#']).next().unwrap_or(""))?;
@@ -572,10 +663,21 @@ fn find_word(haystack: &str, term: &str) -> Option<usize> {
     None
 }
 
-/// A window of the chunk around the first query term, located with UTF-8 byte offsets.
-fn excerpt(document_id: &str, document_hash: &str, chunk_text: &str, chunk_start: usize, page: Option<u32>, terms: &[String]) -> SourcePassage {
+/// Where FTS5 placed its first match marker. `highlight()` inserts the markers into the
+/// original chunk text, so the offset of the first marker is the match's offset there —
+/// including matches FTS5 made by folding case or accents ("cafe" for "café").
+fn highlighted_offset(highlighted: &str, chunk_text: &str) -> Option<usize> {
+    highlighted.find(MATCH_START).filter(|offset| chunk_text.is_char_boundary(*offset))
+}
+
+const MATCH_START: char = '\u{1}';
+
+/// A window of the chunk around the first match, located with UTF-8 byte offsets.
+fn excerpt(document_id: &str, document_hash: &str, chunk_text: &str, highlighted: &str, chunk_start: usize, page: Option<u32>, terms: &[String]) -> SourcePassage {
     let lower = chunk_text.to_lowercase();
-    let hit = if lower.len() == chunk_text.len() { terms.iter().filter_map(|term| find_word(&lower, term)).min().unwrap_or(0) } else { 0 };
+    let hit = highlighted_offset(highlighted, chunk_text)
+        .or_else(|| (lower.len() == chunk_text.len()).then(|| terms.iter().filter_map(|term| find_word(&lower, term)).min()).flatten())
+        .unwrap_or(0);
     let boundaries: Vec<usize> = chunk_text.char_indices().map(|(index, _)| index).chain(std::iter::once(chunk_text.len())).collect();
     let hit_char = boundaries.partition_point(|&index| index < hit);
     let from_char = hit_char.saturating_sub(EXCERPT_BEFORE);
@@ -592,15 +694,15 @@ pub fn search(conn: &Connection, workspace_id: &str, query: &str, limit: usize) 
     let expression = terms.iter().map(|term| format!("\"{term}\"")).collect::<Vec<_>>().join(" OR ");
     let limit = limit.clamp(1, 100);
     let mut statement = conn.prepare(
-        "SELECT c.document_id, d.content_hash, c.chunk_text, c.start_offset, c.page, bm25(chunks_fts) AS rank FROM chunks_fts JOIN chunks c ON c.chunk_id = chunks_fts.rowid JOIN documents d ON d.id = c.document_id WHERE chunks_fts MATCH ?1 AND d.workspace_id = ?2 ORDER BY rank LIMIT ?3",
+        "SELECT c.document_id, d.content_hash, c.chunk_text, c.start_offset, c.page, bm25(chunks_fts) AS rank, highlight(chunks_fts, 0, char(1), char(2)) FROM chunks_fts JOIN chunks c ON c.chunk_id = chunks_fts.rowid JOIN documents d ON d.id = c.document_id WHERE chunks_fts MATCH ?1 AND d.workspace_id = ?2 ORDER BY rank LIMIT ?3",
     )?;
     let rows = statement.query_map(params![expression, workspace_id, (limit * 8).min(400) as i64], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?, row.get::<_, Option<u32>>(4)?, row.get::<_, f64>(5)?))
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?, row.get::<_, Option<u32>>(4)?, row.get::<_, f64>(5)?, row.get::<_, String>(6)?))
     })?;
     let mut grouped: Vec<(String, f64, Vec<SourcePassage>)> = Vec::new();
     for row in rows {
-        let (document_id, hash, text, start, page, rank) = row?;
-        let found = excerpt(&document_id, &hash, &text, start as usize, page, &terms);
+        let (document_id, hash, text, start, page, rank, highlighted) = row?;
+        let found = excerpt(&document_id, &hash, &text, &highlighted, start as usize, page, &terms);
         match grouped.iter().position(|(id, _, _)| *id == document_id) {
             Some(index) if grouped[index].2.len() < PASSAGES_PER_RESULT => grouped[index].2.push(found),
             Some(_) => {}
@@ -616,33 +718,72 @@ pub fn search(conn: &Connection, workspace_id: &str, query: &str, limit: usize) 
 
 // ---------------------------------------------------------------- exact duplicates
 
-/// Groups documents whose bytes are identical. The stored hash only nominates candidates;
-/// each group is confirmed by re-reading and comparing the files.
-pub fn duplicate_groups(conn: &Connection, root: &ScopedRoot) -> NativeResult<Vec<DuplicateGroup>> {
+/// Documents that share a content hash: candidates only, read from the index. Cheap, so it
+/// can run while the index is locked; `verify_duplicates` does the file I/O afterwards.
+pub fn duplicate_candidates(conn: &Connection, workspace_id: &str) -> NativeResult<Vec<(String, Vec<IndexedDocument>)>> {
     let mut statement = conn.prepare(
         "SELECT content_hash FROM documents WHERE workspace_id = ?1 AND content_hash != '' AND status IN ('indexed','unsupported') GROUP BY content_hash HAVING count(*) > 1 ORDER BY content_hash",
     )?;
-    let hashes: Vec<String> = statement.query_map([&root.id], |row| row.get(0))?.collect::<Result<_, _>>()?;
-    let mut groups = Vec::new();
+    let hashes: Vec<String> = statement.query_map([workspace_id], |row| row.get(0))?.collect::<Result<_, _>>()?;
+    let mut candidates = Vec::new();
     for hash in hashes {
         let mut members = conn.prepare(&format!("SELECT {DOCUMENT_COLUMNS} FROM documents WHERE workspace_id = ?1 AND content_hash = ?2 ORDER BY relative_path"))?;
-        let documents: Vec<IndexedDocument> = members.query_map([&root.id, &hash], document_from_row)?.collect::<Result<_, _>>()?;
-        let mut confirmed: Vec<(Vec<u8>, Vec<IndexedDocument>)> = Vec::new();
+        let documents = members.query_map([workspace_id, &hash], document_from_row)?.collect::<Result<_, _>>()?;
+        candidates.push((hash, documents));
+    }
+    Ok(candidates)
+}
+
+fn fill(reader: &mut impl Read, buffer: &mut [u8]) -> std::io::Result<usize> {
+    let mut filled = 0;
+    while filled < buffer.len() {
+        match reader.read(&mut buffer[filled..])? {
+            0 => break,
+            read => filled += read,
+        }
+    }
+    Ok(filled)
+}
+
+/// Compares two files byte for byte in fixed-size blocks, so files of any size are verified
+/// without loading them into memory.
+fn same_bytes(a: &Path, b: &Path) -> std::io::Result<bool> {
+    if std::fs::metadata(a)?.len() != std::fs::metadata(b)?.len() { return Ok(false); }
+    let (mut left, mut right) = (std::fs::File::open(a)?, std::fs::File::open(b)?);
+    let (mut left_block, mut right_block) = (vec![0u8; 64 * 1024], vec![0u8; 64 * 1024]);
+    loop {
+        let (read_left, read_right) = (fill(&mut left, &mut left_block)?, fill(&mut right, &mut right_block)?);
+        if read_left != read_right || left_block[..read_left] != right_block[..read_right] { return Ok(false); }
+        if read_left == 0 { return Ok(true); }
+    }
+}
+
+/// Confirms candidate groups by re-reading the files: the stored hash only nominates them.
+/// Files that cannot be read now are left out of the group rather than assumed identical.
+pub fn verify_duplicates(root: &Path, candidates: Vec<(String, Vec<IndexedDocument>)>) -> Vec<DuplicateGroup> {
+    let mut groups = Vec::new();
+    for (hash, documents) in candidates {
+        let mut confirmed: Vec<(PathBuf, Vec<IndexedDocument>)> = Vec::new();
         for document in documents {
-            let Ok(path) = workspace::resolve_document(&root.path, &document.relative_path) else { continue };
-            let Ok(bytes) = workspace::read_bounded(&path, extract::MAX_PDF_BYTES) else { continue };
-            match confirmed.iter_mut().find(|(existing, _)| *existing == bytes) {
+            let Ok(path) = workspace::resolve_document(root, &document.relative_path) else { continue };
+            match confirmed.iter_mut().find(|(representative, _)| same_bytes(representative, &path).unwrap_or(false)) {
                 Some((_, members)) => members.push(document),
-                None => confirmed.push((bytes, vec![document])),
+                None => confirmed.push((path, vec![document])),
             }
         }
-        for (bytes, documents) in confirmed {
-            if documents.len() > 1 && content_hash(&bytes) == hash {
-                groups.push(DuplicateGroup { content_hash: hash.clone(), size_bytes: bytes.len() as u64, documents });
+        for (representative, documents) in confirmed {
+            if documents.len() > 1 && sha256_file(&representative).ok().as_deref() == Some(hash.as_str()) {
+                groups.push(DuplicateGroup { content_hash: hash.clone(), size_bytes: documents[0].size_bytes, documents });
             }
         }
     }
-    Ok(groups)
+    groups
+}
+
+/// Groups documents whose bytes are identical.
+#[cfg(test)]
+pub fn duplicate_groups(conn: &Connection, root: &ScopedRoot) -> NativeResult<Vec<DuplicateGroup>> {
+    Ok(verify_duplicates(&root.path, duplicate_candidates(conn, &root.id)?))
 }
 
 // ---------------------------------------------------------------- embedding store
@@ -661,6 +802,10 @@ pub struct EmbeddingSpace {
 #[serde(rename_all = "camelCase")]
 pub struct ChunkVector {
     pub chunk_id: i64,
+    /// The `contentHash` of the chunk text the vector was computed from, as listed by
+    /// `pending_embedding_chunks`. Chunk ids can be reused after a rescan, so a vector is
+    /// only stored while the chunk still holds that text.
+    pub content_hash: String,
     pub vector: Vec<f32>,
 }
 
@@ -670,6 +815,8 @@ pub struct PendingChunk {
     pub chunk_id: i64,
     pub document_id: String,
     pub text: String,
+    /// Echo this back in `ChunkVector` so a vector for replaced text is refused.
+    pub content_hash: String,
 }
 
 #[derive(Serialize, Debug)]
@@ -717,11 +864,14 @@ pub fn put_embeddings(conn: &mut Connection, workspace_id: &str, fingerprint: &s
     let tx = conn.transaction()?;
     for item in items {
         check_vector(&item.vector, dimensions)?;
-        let owned: Option<i64> = tx
-            .query_row("SELECT c.chunk_id FROM chunks c JOIN documents d ON d.id = c.document_id WHERE c.chunk_id = ?1 AND d.workspace_id = ?2", params![item.chunk_id, workspace_id], |row| row.get(0))
+        let current: Option<String> = tx
+            .query_row("SELECT c.content_hash FROM chunks c JOIN documents d ON d.id = c.document_id WHERE c.chunk_id = ?1 AND d.workspace_id = ?2", params![item.chunk_id, workspace_id], |row| row.get(0))
             .optional()?;
-        if owned.is_none() {
-            return Err(error(ErrorCode::EvidenceInvalid, "That chunk is not in this folder's current index.").with_detail("chunkId", item.chunk_id.to_string()));
+        let refuse = |reason: &str| error(ErrorCode::EvidenceInvalid, "That chunk changed or left this folder's index. Fetch the pending chunks again.").with_detail("chunkId", item.chunk_id.to_string()).with_detail("reason", reason);
+        match current {
+            None => return Err(refuse("chunkMissing")),
+            Some(hash) if hash != item.content_hash => return Err(refuse("chunkChanged")),
+            Some(_) => {}
         }
         let blob: Vec<u8> = item.vector.iter().flat_map(|value| value.to_le_bytes()).collect();
         tx.execute("INSERT OR REPLACE INTO embeddings (chunk_id, space_id, vector) VALUES (?1, ?2, ?3)", params![item.chunk_id, fingerprint, blob])?;
@@ -734,9 +884,9 @@ pub fn put_embeddings(conn: &mut Connection, workspace_id: &str, fingerprint: &s
 pub fn pending_embedding_chunks(conn: &Connection, workspace_id: &str, fingerprint: &str, limit: usize) -> NativeResult<Vec<PendingChunk>> {
     space_dimensions(conn, fingerprint)?;
     let mut statement = conn.prepare(
-        "SELECT c.chunk_id, c.document_id, c.chunk_text FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.workspace_id = ?1 AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.chunk_id = c.chunk_id AND e.space_id = ?2) ORDER BY c.chunk_id LIMIT ?3",
+        "SELECT c.chunk_id, c.document_id, c.chunk_text, c.content_hash FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.workspace_id = ?1 AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.chunk_id = c.chunk_id AND e.space_id = ?2) ORDER BY c.chunk_id LIMIT ?3",
     )?;
-    let rows = statement.query_map(params![workspace_id, fingerprint, limit.clamp(1, 512) as i64], |row| Ok(PendingChunk { chunk_id: row.get(0)?, document_id: row.get(1)?, text: row.get(2)? }))?;
+    let rows = statement.query_map(params![workspace_id, fingerprint, limit.clamp(1, 512) as i64], |row| Ok(PendingChunk { chunk_id: row.get(0)?, document_id: row.get(1)?, text: row.get(2)?, content_hash: row.get(3)? }))?;
     Ok(rows.collect::<Result<_, _>>()?)
 }
 
@@ -859,6 +1009,29 @@ pub mod tests {
         let hits = search(&conn, &root.id, "authoritative schedule", 5).unwrap();
         assert_eq!(hits[0].document.relative_path, "projects/submission-checklist.md");
         assert_located(folder.path(), "projects/submission-checklist.md", &hits[0].passages[0]);
+    }
+
+    #[test]
+    fn an_accent_folded_match_is_located_in_the_excerpt() {
+        let (folder, mut conn, root) = fixture_workspace();
+        let filler = "Walang kinalaman na pangungusap. ".repeat(20);
+        fs::write(folder.path().join("notes/kape.md"), format!("# Kape\n\n{filler}Nagkita kami sa café sa Quezon City.\n")).unwrap();
+        scan(&mut conn, &root);
+        let hits = search(&conn, &root.id, "cafe", 5).unwrap();
+        assert_eq!(hits[0].document.relative_path, "notes/kape.md");
+        assert!(hits[0].passages[0].text.contains("café"), "the excerpt shows why it matched");
+        assert_located(folder.path(), "notes/kape.md", &hits[0].passages[0]);
+    }
+
+    #[test]
+    fn large_duplicates_are_verified_by_streaming() {
+        let (folder, mut conn, root) = fixture_workspace();
+        let big: Vec<u8> = (0..(extract::MAX_PDF_BYTES as usize + 1024)).map(|index| (index % 251) as u8).collect();
+        fs::write(folder.path().join("research/export-a.pdf"), &big).unwrap();
+        fs::write(folder.path().join("research/export-b.pdf"), &big).unwrap();
+        scan(&mut conn, &root);
+        let groups = duplicate_groups(&conn, &root).unwrap();
+        assert!(groups.iter().any(|group| group.documents.iter().map(|document| document.relative_path.as_str()).collect::<Vec<_>>() == vec!["research/export-a.pdf", "research/export-b.pdf"]));
     }
 
     #[test]
@@ -1049,13 +1222,13 @@ pub mod tests {
         assert_ne!(old, new);
         assert_eq!(register_space(&conn, &space("r1")).unwrap(), old);
         let pending = pending_embedding_chunks(&conn, &root.id, &old, 2).unwrap();
-        put_embeddings(&mut conn, &root.id, &old, &[ChunkVector { chunk_id: pending[0].chunk_id, vector: vec![1.0, 0.0, 0.0] }]).unwrap();
-        put_embeddings(&mut conn, &root.id, &new, &[ChunkVector { chunk_id: pending[1].chunk_id, vector: vec![1.0, 0.0, 0.0] }]).unwrap();
+        put_embeddings(&mut conn, &root.id, &old, &[ChunkVector { chunk_id: pending[0].chunk_id, content_hash: pending[0].content_hash.clone(), vector: vec![1.0, 0.0, 0.0] }]).unwrap();
+        put_embeddings(&mut conn, &root.id, &new, &[ChunkVector { chunk_id: pending[1].chunk_id, content_hash: pending[1].content_hash.clone(), vector: vec![1.0, 0.0, 0.0] }]).unwrap();
         let from_old = vector_candidates(&conn, &root.id, &old, &[1.0, 0.0, 0.0], 10).unwrap();
         assert_eq!(from_old.iter().map(|candidate| candidate.chunk_id).collect::<Vec<_>>(), vec![pending[0].chunk_id]);
         assert_eq!(from_old[0].space_fingerprint, old);
         assert_eq!(pending_embedding_chunks(&conn, &root.id, &new, 1000).unwrap().iter().filter(|chunk| chunk.chunk_id == pending[0].chunk_id).count(), 1);
-        let mismatch = put_embeddings(&mut conn, &root.id, &old, &[ChunkVector { chunk_id: pending[0].chunk_id, vector: vec![1.0; 4] }]).unwrap_err();
+        let mismatch = put_embeddings(&mut conn, &root.id, &old, &[ChunkVector { chunk_id: pending[0].chunk_id, content_hash: pending[0].content_hash.clone(), vector: vec![1.0; 4] }]).unwrap_err();
         assert_eq!(mismatch.code, ErrorCode::EmbeddingSpaceMismatch);
         assert_eq!(vector_candidates(&conn, &root.id, &old, &[1.0; 4], 3).unwrap_err().code, ErrorCode::EmbeddingSpaceMismatch);
     }
@@ -1066,12 +1239,119 @@ pub mod tests {
         scan(&mut conn, &root);
         let space = register_space(&conn, &EmbeddingSpace { model_id: "m".into(), revision: "1".into(), quantization: "q".into(), dimensions: 2, preprocessing_fingerprint: "p".into() }).unwrap();
         let plan_id = id_of(&root, "projects/project-plan.md");
-        let chunk_id: i64 = conn.query_row("SELECT chunk_id FROM chunks WHERE document_id = ?1", [&plan_id], |row| row.get(0)).unwrap();
-        put_embeddings(&mut conn, &root.id, &space, &[ChunkVector { chunk_id, vector: vec![0.5, 0.5] }]).unwrap();
+        let (chunk_id, content_hash): (i64, String) = conn.query_row("SELECT chunk_id, content_hash FROM chunks WHERE document_id = ?1", [&plan_id], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        put_embeddings(&mut conn, &root.id, &space, &[ChunkVector { chunk_id, content_hash, vector: vec![0.5, 0.5] }]).unwrap();
         fs::write(folder.path().join("projects/project-plan.md"), "# Plan\n\nRewritten content with a different length.").unwrap();
         scan(&mut conn, &root);
         let vectors: i64 = conn.query_row("SELECT count(*) FROM embeddings", [], |row| row.get(0)).unwrap();
         assert_eq!(vectors, 0);
+    }
+
+    // TJ's repros from the PR #11 review, plus cross-platform versions of the Unix ones.
+    #[cfg(unix)]
+    #[test]
+    fn stale_document_is_retried_once_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = tempfile::tempdir().unwrap();
+        let file = folder.path().join("a.md");
+        fs::write(&file, "first version").unwrap();
+        let mut conn = db::open_in_memory().unwrap();
+        let root = authorize(&conn, folder.path());
+        scan(&mut conn, &root);
+        fs::write(&file, "second version, longer").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o000)).unwrap();
+        assert_eq!(scan(&mut conn, &root).stale, 1);
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        scan(&mut conn, &root);
+        assert_eq!(status_of(&conn, &root, "a.md").0, "indexed");
+    }
+
+    /// A read that failed and later succeeds on a file with the same size and modification
+    /// time, as when a lock is released or a cloud placeholder finishes downloading.
+    fn becomes_readable_with_same_metadata(path: &Path, unreadable: &[u8], readable: &[u8]) {
+        assert_eq!(unreadable.len(), readable.len());
+        let modified = fs::metadata(path).unwrap().modified().unwrap();
+        fs::write(path, readable).unwrap();
+        fs::File::options().write(true).open(path).unwrap().set_modified(modified).unwrap();
+    }
+
+    #[test]
+    fn stale_and_failed_documents_are_retried_even_when_size_and_time_match() {
+        let (folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let stale_file = folder.path().join("notes/paalala.md");
+        let broken = [0xffu8, 0xfe, 0xfd, b'x', b'y', b'z'];
+        fs::write(&stale_file, broken).unwrap();
+        let failed_file = folder.path().join("notes/bago.md");
+        fs::write(&failed_file, broken).unwrap();
+        let first = scan(&mut conn, &root);
+        assert_eq!((first.stale, first.failed), (1, 1));
+        becomes_readable_with_same_metadata(&stale_file, &broken, b"ayos..");
+        becomes_readable_with_same_metadata(&failed_file, &broken, b"bago..");
+        scan(&mut conn, &root);
+        assert_eq!(status_of(&conn, &root, "notes/paalala.md").0, "indexed");
+        assert_eq!(status_of(&conn, &root, "notes/bago.md").0, "indexed");
+        assert_eq!(paths(&search(&conn, &root.id, "ayos", 5).unwrap()), vec!["notes/paalala.md"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_subfolder_is_not_treated_as_deleted() {
+        use std::os::unix::fs::PermissionsExt;
+        let folder = tempfile::tempdir().unwrap();
+        fs::create_dir(folder.path().join("sub")).unwrap();
+        fs::write(folder.path().join("sub/a.md"), "keep me").unwrap();
+        let mut conn = db::open_in_memory().unwrap();
+        let root = authorize(&conn, folder.path());
+        scan(&mut conn, &root);
+        fs::set_permissions(folder.path().join("sub"), fs::Permissions::from_mode(0o000)).unwrap();
+        let summary = scan(&mut conn, &root);
+        fs::set_permissions(folder.path().join("sub"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(summary.removed, 0);
+        assert_eq!(paths(&search(&conn, &root.id, "keep", 5).unwrap()), vec!["sub/a.md"], "its index data is kept");
+    }
+
+    #[test]
+    fn records_inside_unreadable_locations_are_never_removed() {
+        let existing: Vec<String> = ["sub/a.md", "sub/deeper/b.md", "subway.md", "gone.md", "kept.md"].iter().map(|path| path.to_string()).collect();
+        let present: HashSet<&str> = ["kept.md"].into_iter().collect();
+        let discovery = Discovery { found: Vec::new(), skipped: 1, unreadable: vec!["sub".into()], unreadable_unknown: false };
+        assert_eq!(removed_paths(existing.iter(), &present, &discovery), vec!["subway.md".to_string(), "gone.md".to_string()]);
+        let unknown = Discovery { unreadable_unknown: true, ..discovery };
+        assert!(removed_paths(existing.iter(), &present, &unknown).is_empty(), "a failure with no location removes nothing");
+    }
+
+    #[test]
+    fn a_folder_over_the_document_limit_is_refused_before_anything_is_written() {
+        let folder = tempfile::tempdir().unwrap();
+        for index in 0..=MAX_DOCUMENTS { fs::write(folder.path().join(format!("n{index}.txt")), "x").unwrap(); }
+        let mut conn = db::open_in_memory().unwrap();
+        let root = authorize(&conn, folder.path());
+        let failure = scan_workspace(&mut conn, &root, &AtomicBool::new(false), &mut |_| {}).unwrap_err();
+        assert_eq!((failure.code, failure.detail("reason")), (ErrorCode::WorkspaceUnavailable, Some("tooManyDocuments")));
+        assert!(list_documents(&conn, &root.id).unwrap().is_empty());
+    }
+
+    // TJ's repro from the PR #11 review: a reused chunk id must not accept a vector
+    // computed for the text it held before the rescan.
+    #[test]
+    fn stale_vector_is_rejected_after_rescan() {
+        let folder = tempfile::tempdir().unwrap();
+        fs::write(folder.path().join("a.md"), "alpha old text").unwrap();
+        let mut conn = db::open_in_memory().unwrap();
+        let root = authorize(&conn, folder.path());
+        scan(&mut conn, &root);
+        let space = register_space(&conn, &EmbeddingSpace { model_id: "m".into(), revision: "1".into(), quantization: "q".into(), dimensions: 2, preprocessing_fingerprint: "p".into() }).unwrap();
+        let pending = pending_embedding_chunks(&conn, &root.id, &space, 10).unwrap().remove(0);
+        fs::write(folder.path().join("a.md"), "bravo new and longer text").unwrap();
+        scan(&mut conn, &root);
+        let reused: i64 = conn.query_row("SELECT count(*) FROM chunks WHERE chunk_id = ?1", [pending.chunk_id], |row| row.get(0)).unwrap();
+        assert_eq!(reused, 1, "the id was reused for the new text, which is what makes this dangerous");
+        let accepted = put_embeddings(&mut conn, &root.id, &space, &[ChunkVector { chunk_id: pending.chunk_id, content_hash: pending.content_hash, vector: vec![1.0, 0.0] }]);
+        assert_eq!(accepted.unwrap_err().detail("reason"), Some("chunkChanged"));
+        let refetched = pending_embedding_chunks(&conn, &root.id, &space, 10).unwrap().remove(0);
+        assert!(refetched.text.starts_with("bravo"));
+        put_embeddings(&mut conn, &root.id, &space, &[ChunkVector { chunk_id: refetched.chunk_id, content_hash: refetched.content_hash, vector: vec![1.0, 0.0] }]).unwrap();
     }
 
     #[test]

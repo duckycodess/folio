@@ -369,24 +369,38 @@ pub fn remembered_root(conn: &Connection, workspace_id: &str) -> NativeResult<Pa
     })
 }
 
-pub fn known_workspaces(conn: &Connection) -> NativeResult<Vec<KnownWorkspace>> {
+/// The remembered folders as stored, without touching the filesystem. `available` is
+/// filled in by `with_availability`, which may block on a slow or unreachable path and so
+/// runs without holding the index.
+pub fn remembered_workspaces(conn: &Connection) -> NativeResult<Vec<KnownWorkspace>> {
     let mut statement = conn.prepare(
         "SELECT id, root_path, authorized_at, last_opened_at FROM workspaces
          ORDER BY CAST(last_opened_at AS INTEGER) DESC",
     )?;
     let rows = statement.query_map([], |row| {
-        let root_path: String = row.get(1)?;
         let authorized_at: String = row.get(2)?;
         let last_opened_at: Option<String> = row.get(3)?;
         Ok(KnownWorkspace {
             id: row.get(0)?,
-            available: available_root(Path::new(&root_path)).is_ok(),
-            root_path,
+            root_path: row.get(1)?,
             authorized_at: authorized_at.parse().unwrap_or_default(),
             last_opened_at: last_opened_at.and_then(|value| value.parse().ok()),
+            available: false,
         })
     })?;
     Ok(rows.collect::<Result<_, _>>()?)
+}
+
+pub fn with_availability(mut workspaces: Vec<KnownWorkspace>) -> Vec<KnownWorkspace> {
+    for workspace in &mut workspaces {
+        workspace.available = available_root(Path::new(&workspace.root_path)).is_ok();
+    }
+    workspaces
+}
+
+#[cfg(test)]
+pub fn known_workspaces(conn: &Connection) -> NativeResult<Vec<KnownWorkspace>> {
+    Ok(with_availability(remembered_workspaces(conn)?))
 }
 
 #[cfg(test)]

@@ -6,7 +6,10 @@ use crate::identity::media_type_for_path;
 
 pub const MAX_TEXT_BYTES: u64 = 2 * 1024 * 1024;
 pub const MAX_PDF_BYTES: u64 = 20 * 1024 * 1024;
-const MAX_PDF_PAGE_CONTENT: usize = 16 * 1024 * 1024;
+/// Bounds every decompressed PDF stream: object and cross-reference streams while
+/// loading, and each page's content while extracting. Exceeding it is an error, not
+/// an allocation, so a decompression bomb cannot exhaust memory.
+const MAX_PDF_STREAM_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CHUNK_CHARS: usize = 1200;
 const PAGE_SEPARATOR: &str = "\n\n";
 
@@ -45,6 +48,8 @@ impl MediaKind {
 pub struct ExtractedText {
     pub text: String,
     pub pages: Vec<(Option<u32>, Range<usize>)>,
+    /// PDF pages whose text could not be extracted; the rest was indexed.
+    pub skipped_pages: Vec<u32>,
 }
 
 pub enum Extraction {
@@ -71,9 +76,9 @@ pub fn extract(kind: MediaKind, bytes: &[u8]) -> NativeResult<Extraction> {
         MediaKind::Text | MediaKind::Markdown => {
             let text = decode_text(bytes)?;
             let len = text.len();
-            Ok(Extraction::Text(ExtractedText { text, pages: vec![(None, 0..len)] }))
+            Ok(Extraction::Text(ExtractedText { text, pages: vec![(None, 0..len)], skipped_pages: Vec::new() }))
         }
-        MediaKind::Pdf => extract_pdf(bytes),
+        MediaKind::Pdf => extract_pdf(bytes, MAX_PDF_STREAM_BYTES),
     }
 }
 
@@ -90,37 +95,57 @@ fn decode_text(bytes: &[u8]) -> NativeResult<String> {
     String::from_utf8(bytes.to_vec()).map_err(|_| error(ErrorCode::DocumentNotText, "This document is not valid UTF-8 text."))
 }
 
-fn extract_pdf(bytes: &[u8]) -> NativeResult<Extraction> {
+/// Loads a PDF with every object and cross-reference stream bounded by `stream_limit`.
+/// lopdf drops an object stream that would exceed it rather than allocating it.
+fn load_pdf(bytes: &[u8], stream_limit: usize) -> Result<lopdf::Document, String> {
+    lopdf::Document::load_mem_with_options(bytes, lopdf::LoadOptions::with_max_decompressed_size(stream_limit)).map_err(|error| error.to_string())
+}
+
+fn extract_pdf(bytes: &[u8], stream_limit: usize) -> NativeResult<Extraction> {
     let owned = bytes.to_vec();
-    let result = std::panic::catch_unwind(move || -> Result<Vec<(u32, String)>, String> {
-        let document = lopdf::Document::load_mem(&owned).map_err(|error| error.to_string())?;
+    let result = std::panic::catch_unwind(move || -> Result<Vec<(u32, Result<String, String>)>, String> {
+        let document = load_pdf(&owned, stream_limit)?;
         if document.is_encrypted() {
             return Err("The PDF is encrypted.".into());
         }
-        let mut pages = Vec::new();
-        for number in document.get_pages().keys() {
-            let text = document.extract_text_with_limit(&[*number], MAX_PDF_PAGE_CONTENT).unwrap_or_default();
-            pages.push((*number, text));
-        }
-        Ok(pages)
+        Ok(document
+            .get_pages()
+            .keys()
+            .map(|number| (*number, document.extract_text_with_limit(&[*number], stream_limit).map_err(|error| error.to_string())))
+            .collect())
     });
     let pages = match result {
         Ok(Ok(pages)) => pages,
         Ok(Err(reason)) => return Err(error(ErrorCode::DocumentNotText, "The PDF could not be read.").with_detail("cause", reason)),
         Err(_) => return Err(error(ErrorCode::DocumentNotText, "The PDF could not be read.")),
     };
-    if pages.iter().all(|(_, text)| text.trim().is_empty()) {
-        return Ok(Extraction::Unsupported("No text layer was found. Scanned PDFs need OCR, which Folio does not support.".into()));
+    if pages.is_empty() {
+        return Err(error(ErrorCode::DocumentNotText, "The PDF has no pages Folio could read."));
+    }
+    let first_failure = pages.iter().find_map(|(_, page)| page.as_ref().err().cloned());
+    let has_text = pages.iter().any(|(_, page)| page.as_ref().is_ok_and(|text| !text.trim().is_empty()));
+    if !has_text {
+        // A page that failed is not evidence of a scan: only report OCR when every page
+        // was read and none had text.
+        return match first_failure {
+            Some(cause) => Err(error(ErrorCode::DocumentNotText, "The PDF's text could not be extracted.").with_detail("cause", cause)),
+            None => Ok(Extraction::Unsupported("No text layer was found. Scanned PDFs need OCR, which Folio does not support.".into())),
+        };
     }
     let mut text = String::new();
     let mut ranges = Vec::new();
-    for (index, (number, page_text)) in pages.iter().enumerate() {
-        if index > 0 { text.push_str(PAGE_SEPARATOR); }
+    let mut skipped_pages = Vec::new();
+    for (number, page) in &pages {
+        let Ok(page_text) = page else {
+            skipped_pages.push(*number);
+            continue;
+        };
+        if !ranges.is_empty() { text.push_str(PAGE_SEPARATOR); }
         let start = text.len();
         text.push_str(page_text.trim_end());
         ranges.push((Some(*number), start..text.len()));
     }
-    Ok(Extraction::Text(ExtractedText { text, pages: ranges }))
+    Ok(Extraction::Text(ExtractedText { text, pages: ranges, skipped_pages }))
 }
 
 /// First Markdown H1, else the first short non-empty line.
@@ -289,6 +314,39 @@ pub mod testpdf {
         finish(doc, pages_id, kids, resources_id)
     }
 
+    /// A page whose compressed content inflates to `inflated_bytes`, optionally after one
+    /// readable text page. Under a smaller page limit its text cannot be extracted.
+    pub fn pdf_with_oversized_page(inflated_bytes: usize, with_readable_page: bool) -> Vec<u8> {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let font_id = doc.add_object(dictionary! { "Type" => "Font", "Subtype" => "Type1", "BaseFont" => "Helvetica" });
+        let resources_id = doc.add_object(dictionary! { "Font" => dictionary! { "F1" => font_id } });
+        let mut kids = Vec::new();
+        if with_readable_page {
+            let readable = Content { operations: vec![Operation::new("BT", vec![]), Operation::new("Tf", vec!["F1".into(), 12.into()]), Operation::new("Td", vec![72.into(), 760.into()]), Operation::new("Tj", vec![Object::string_literal("Readable page.")]), Operation::new("ET", vec![])] };
+            let readable_id = doc.add_object(Stream::new(dictionary! {}, readable.encode().unwrap()));
+            kids.push(doc.add_object(dictionary! { "Type" => "Page", "Parent" => pages_id, "Contents" => readable_id }).into());
+        }
+        let mut oversized = b"% ".to_vec();
+        oversized.extend(std::iter::repeat_n(b'A', inflated_bytes));
+        oversized.push(b'\n');
+        let mut stream = Stream::new(dictionary! {}, oversized);
+        stream.compress().unwrap();
+        let oversized_id = doc.add_object(stream);
+        kids.push(doc.add_object(dictionary! { "Type" => "Page", "Parent" => pages_id, "Contents" => oversized_id }).into());
+        finish(doc, pages_id, kids, resources_id)
+    }
+
+    /// A text PDF saved with compressed object streams, carrying an object that inflates
+    /// to `inflated_bytes` — a decompression bomb when that exceeds the load limit.
+    pub fn pdf_with_large_object_stream(inflated_bytes: usize) -> Vec<u8> {
+        let mut doc = Document::load_mem(&text_pdf(&[&["Bomb carrier."]])).unwrap();
+        doc.add_object(Object::string_literal(vec![b'A'; inflated_bytes]));
+        let mut bytes = Vec::new();
+        doc.save_modern(&mut bytes).unwrap();
+        bytes
+    }
+
     /// An image-only page with no text layer, standing in for a scanned document.
     pub fn image_only_pdf() -> Vec<u8> {
         let mut doc = Document::with_version("1.5");
@@ -315,7 +373,7 @@ mod tests {
     use super::*;
 
     fn plain(text: &str) -> ExtractedText {
-        ExtractedText { text: text.to_owned(), pages: vec![(None, 0..text.len())] }
+        ExtractedText { text: text.to_owned(), pages: vec![(None, 0..text.len())], skipped_pages: Vec::new() }
     }
 
     #[test]
@@ -362,6 +420,35 @@ mod tests {
         assert_eq!(chunks.iter().map(|chunk| chunk.page).collect::<Vec<_>>(), vec![Some(1), Some(2)]);
         assert!(chunks[0].text.contains("Consent guide page one."));
         assert!(chunks[1].text.contains("Pirma bago ang interview."));
+    }
+
+    #[test]
+    fn a_decompression_bomb_is_never_inflated_while_loading() {
+        const LIMIT: usize = 64 * 1024;
+        let bomb = testpdf::pdf_with_large_object_stream(4 * LIMIT);
+        assert!(bomb.len() < LIMIT, "the object stream is compressed");
+        let loaded = load_pdf(&bomb, LIMIT).unwrap();
+        let largest = loaded.objects.values().filter_map(|object| object.as_str().ok()).map(<[u8]>::len).max().unwrap_or(0);
+        assert!(largest <= LIMIT, "an object stream past the limit is dropped, not allocated");
+        let unbounded = lopdf::Document::load_mem(&bomb).unwrap();
+        assert!(unbounded.objects.values().filter_map(|object| object.as_str().ok()).any(|text| text.len() == 4 * LIMIT), "without the limit the same file inflates");
+        assert_eq!(extract_pdf(&bomb, LIMIT).err().unwrap().code, ErrorCode::DocumentNotText, "a PDF whose pages were dropped is not called a scan");
+    }
+
+    #[test]
+    fn a_page_that_cannot_be_read_is_skipped_not_called_a_scan() {
+        let pdf = testpdf::pdf_with_oversized_page(256 * 1024, true);
+        let Extraction::Text(extracted) = extract_pdf(&pdf, 64 * 1024).unwrap() else { panic!("the readable page is indexed") };
+        assert!(extracted.text.contains("Readable page."));
+        assert_eq!(extracted.skipped_pages, vec![2]);
+    }
+
+    #[test]
+    fn a_pdf_whose_only_pages_fail_is_an_error_not_unsupported() {
+        let pdf = testpdf::pdf_with_oversized_page(256 * 1024, false);
+        let failure = extract_pdf(&pdf, 64 * 1024).err().unwrap();
+        assert_eq!(failure.code, ErrorCode::DocumentNotText);
+        assert!(failure.message.contains("could not be extracted"));
     }
 
     #[test]

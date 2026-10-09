@@ -76,6 +76,22 @@ fn now_ms() -> i64 {
         .unwrap_or_default()
 }
 
+/// Runs blocking file work off the async workers.
+async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Result<T, FolioError> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|cause| error(ErrorCode::Internal, "A background task stopped unexpectedly.").with_detail("cause", cause.to_string()))
+}
+
+/// Remembering a folder for later sessions is best effort: the folder is authorized for
+/// this session either way, so a failure to store it must not be reported as a failure
+/// to open it.
+fn remember_best_effort(state: &Folio, info: &WorkspaceInfo) {
+    if let Err(failure) = state.index().and_then(|index| workspace::remember(&index, info)) {
+        eprintln!("Folio could not remember {} for later sessions: {}", info.root_path, failure.message);
+    }
+}
+
 fn unavailable_state() -> FolioError {
     error(
         ErrorCode::Internal,
@@ -94,16 +110,16 @@ async fn choose_workspace(
     let path = folder
         .into_path()
         .map_err(|cause| error(ErrorCode::WorkspaceUnavailable, cause.to_string()))?;
-    let mut workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
-    let info = workspaces.authorize(&path)?;
-    workspace::remember(&*state.index()?, &info)?;
+    let info = state.workspaces.lock().map_err(|_| unavailable_state())?.authorize(&path)?;
+    remember_best_effort(&state, &info);
     Ok(Some(info))
 }
 
 /// Folders chosen in earlier sessions, with whether each is still reachable.
 #[tauri::command]
 async fn list_workspaces(state: State<'_, Folio>) -> Result<Vec<KnownWorkspace>, FolioError> {
-    workspace::known_workspaces(&*state.index()?)
+    let remembered = workspace::remembered_workspaces(&*state.index()?)?;
+    blocking(move || workspace::with_availability(remembered)).await
 }
 
 /// Restores a folder the user picked before. Access is revalidated and the
@@ -114,15 +130,14 @@ async fn reopen_workspace(
     workspace_id: String,
 ) -> Result<WorkspaceInfo, FolioError> {
     let path = workspace::remembered_root(&*state.index()?, &workspace_id)?;
-    let mut workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
-    let info = workspaces.authorize(&path)?;
+    let info = state.workspaces.lock().map_err(|_| unavailable_state())?.authorize(&path)?;
     if info.id != workspace_id {
         return Err(error(
             ErrorCode::WorkspaceUnavailable,
             "That folder now resolves to a different location. Choose it again.",
         ));
     }
-    workspace::remember(&*state.index()?, &info)?;
+    remember_best_effort(&state, &info);
     Ok(info)
 }
 
@@ -185,7 +200,9 @@ async fn list_duplicates(
     workspace_id: String,
 ) -> Result<Vec<DuplicateGroup>, FolioError> {
     let root = state.root(&workspace_id)?;
-    index::duplicate_groups(&*state.index()?, &root)
+    // Candidates come from the index; the byte comparison runs without holding it.
+    let candidates = index::duplicate_candidates(&*state.index()?, &workspace_id)?;
+    blocking(move || index::verify_duplicates(&root.path, candidates)).await
 }
 
 #[tauri::command]
@@ -256,9 +273,9 @@ async fn read_document(
     workspace_id: String,
     relative_path: String,
 ) -> Result<DocumentText, FolioError> {
-    let workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
-    let root = workspaces.resolve(&workspace_id)?;
-    workspace::read_text(&root.path, &relative_path)
+    // Resolve, release the registry, then read: a PDF can take a while to extract.
+    let root = state.root(&workspace_id)?;
+    blocking(move || workspace::read_text(&root.path, &relative_path)).await?
 }
 
 /// Prepare an exact plan. Nothing is written: the plan is checked against the
