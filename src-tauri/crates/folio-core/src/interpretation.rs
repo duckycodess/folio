@@ -557,6 +557,20 @@ fn validate_destination(destination: &str, source_name: Option<&str>) -> Result<
     {
         return Err("The destination cannot contain empty, '.', or '..' path segments.".into());
     }
+    // Names Windows cannot store, including `a.md:x.md` (an NTFS alternate
+    // data stream). The native plan builder checks again before any write.
+    if parts.iter().any(|part| {
+        part.ends_with('.')
+            || part.ends_with(' ')
+            || part.chars().any(|character| {
+                character.is_control()
+                    || matches!(character, ':' | '<' | '>' | '"' | '|' | '?' | '*')
+            })
+    }) {
+        return Err(
+            "The destination contains characters Windows cannot store in a file name.".into(),
+        );
+    }
     let extension = parts
         .last()
         .and_then(|name| name.rsplit_once('.'))
@@ -821,6 +835,23 @@ mod tests {
         assert!(
             matches!(result, InterpretationResult::NeedsClarification { reason, .. } if reason.contains("exactly one"))
         );
+    }
+
+    #[test]
+    fn destinations_windows_cannot_store_are_rejected() {
+        for destination in [
+            "a.md:x.md",
+            "notes?.md",
+            "bad|name.md",
+            "folder./notes.md",
+            "tab\tname.md",
+        ] {
+            assert!(
+                validate_destination(destination, None).is_err(),
+                "{destination:?} was accepted"
+            );
+        }
+        assert!(validate_destination("notes/archived-notes.md", Some("notes.md")).is_ok());
     }
 
     #[test]
