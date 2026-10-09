@@ -42,7 +42,6 @@ jobs:
     env:
       CARGO_BUILD_JOBS: 2
       CARGO_TERM_COLOR: never
-      FOLIO_R8_OUTPUT_DIR: ${{ runner.temp }}/folio-r8/online
       RUST_BACKTRACE: "1"
     steps:
       - name: Check out source
@@ -55,6 +54,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo "FOLIO_R8_OUTPUT_DIR=$RUNNER_TEMP/folio-r8/online" >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/folio-r8/online" "$RUNNER_TEMP/folio-r8/offline"
           cat > "$RUNNER_TEMP/folio-r8/README.md" <<'EOF'
           Folio Issue #4 R8 real-model acceptance evidence.
