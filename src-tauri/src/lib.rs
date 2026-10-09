@@ -924,6 +924,10 @@ struct ModelSetup {
     host_runtime_id: &'static str,
     /// Exact download size of that runtime from the pinned manifest.
     host_runtime_bytes: Option<u64>,
+    /// The whole device's physical RAM, never Folio's own process memory.
+    device_memory_bytes: Option<u64>,
+    /// Free space on the disk that holds Folio's models.
+    available_disk_bytes: Option<u64>,
 }
 
 #[tauri::command]
@@ -945,6 +949,8 @@ async fn model_setup(app: AppHandle) -> Result<ModelSetup, FolioError> {
                 .iter()
                 .find(|runtime| runtime.id == host_runtime_id)
                 .map(|runtime| runtime.files.iter().map(|file| file.bytes).sum()),
+            device_memory_bytes: folio_core::device::total_memory_bytes(),
+            available_disk_bytes: folio_core::device::available_disk_bytes(store.data_dir()),
         })
     })
     .await?)
