@@ -286,6 +286,17 @@
 .row-menu-item:focus-visible {
   background: var(--color-surface-muted);
 }
+/* Listed so people know it exists, but it can't be used here; says why. */
+.row-menu-item[aria-disabled="true"] {
+  color: var(--color-text-secondary);
+  cursor: not-allowed;
+}
+.row-menu-reason {
+  display: block;
+  max-width: 18rem;
+  font: var(--text-small);
+  white-space: normal;
+}
 .list-row-main {
   display: flex;
   align-items: center;

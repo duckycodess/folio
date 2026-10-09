@@ -38,6 +38,7 @@ import {
   originalLocation,
 } from "./Connections";
 import { ConceptMap } from "./graph/ConceptMap";
+import type { GraphActionKind } from "../app/graphActions";
 
 type StartKind = GraphStart["kind"];
 type GraphMode = "map" | "list";
@@ -183,9 +184,12 @@ function scopeTitle(start: GraphStart, byId: Map<string, DocumentRecord>) {
 export function GraphView({
   workspace,
   relations,
+  onFileAction,
 }: {
   workspace: WorkspaceState;
   relations: RelationshipsState;
+  /** Rename, move, edit or delete a file from the map, through its preview. */
+  onFileAction?: (kind: GraphActionKind, document: DocumentRecord) => void;
 }) {
   const { request } = relations;
   useEffect(request, [request]);
@@ -388,6 +392,7 @@ export function GraphView({
                 workspace={workspace}
                 relations={relations}
                 pairs={pairs}
+                onFileAction={onFileAction}
               />
             ) : (
               // Arrow keys move between files across both lists.

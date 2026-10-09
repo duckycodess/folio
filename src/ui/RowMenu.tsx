@@ -6,6 +6,11 @@ export interface RowMenuItem {
   id: string;
   label: string;
   onSelect: () => void;
+  /**
+   * Why the action can't be used here. The item stays listed, so people learn
+   * it exists, but it can't be chosen and the reason is read with it.
+   */
+  disabledReason?: string;
 }
 
 /**
@@ -16,17 +21,49 @@ export function RowMenu({
   label,
   items,
   tabbable,
+  openRequest = 0,
+  onRequestOpened,
+  onRequestedClose,
 }: {
   /** Spoken name of the button, e.g. "Actions for plan.md". */
   label: string;
   items: RowMenuItem[];
   /** Only the current row's menu is in the Tab order. */
   tabbable: boolean;
+  /**
+   * Opens the menu from elsewhere (Shift+F10 or a right-click on what the
+   * menu acts on) each time the number goes up.
+   */
+  openRequest?: number;
+  /**
+   * Called once a request has opened the menu, so the caller can clear it and
+   * a menu mounted later never reopens for an old request.
+   */
+  onRequestOpened?: () => void;
+  /**
+   * Where focus goes when a menu opened from elsewhere closes, instead of
+   * this ⋯ button: back to whatever asked for it.
+   */
+  onRequestedClose?: () => void;
 }) {
   const [open, setOpen] = useState(false);
+  const requested = useRef(false);
+  // Starts at 0, so a menu mounted by the request it should answer (a
+  // right-click on a file that wasn't open yet) still opens.
+  const seenRequest = useRef(0);
   const button = useRef<HTMLButtonElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const id = useId();
+  const reasonId = useId();
+
+  useEffect(() => {
+    if (openRequest === seenRequest.current) return;
+    seenRequest.current = openRequest;
+    if (openRequest === 0) return;
+    requested.current = true;
+    setOpen(true);
+    onRequestOpened?.();
+  }, [openRequest]);
 
   useEffect(() => {
     if (!open) return;
@@ -42,7 +79,9 @@ export function RowMenu({
 
   function close() {
     setOpen(false);
-    button.current?.focus();
+    if (requested.current && onRequestedClose) onRequestedClose();
+    else button.current?.focus();
+    requested.current = false;
   }
 
   function onMenuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -84,7 +123,10 @@ export function RowMenu({
         aria-expanded={open}
         aria-controls={open ? id : undefined}
         tabIndex={tabbable ? 0 : -1}
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => {
+          requested.current = false;
+          setOpen((value) => !value);
+        }}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") {
             event.preventDefault();
@@ -110,12 +152,23 @@ export function RowMenu({
               role="menuitem"
               tabIndex={-1}
               className="row-menu-item"
+              aria-disabled={item.disabledReason ? true : undefined}
+              aria-describedby={
+                item.disabledReason ? `${reasonId}-${item.id}` : undefined
+              }
               onClick={() => {
+                if (item.disabledReason) return;
                 setOpen(false);
+                requested.current = false;
                 item.onSelect();
               }}
             >
               {item.label}
+              {item.disabledReason && (
+                <span id={`${reasonId}-${item.id}`} className="row-menu-reason">
+                  {item.disabledReason}
+                </span>
+              )}
             </button>
           ))}
         </div>

@@ -12,6 +12,7 @@ import {
 } from "react";
 import {
   graphNavigation,
+  isActionsKey,
   NAVIGATION_KEYS,
   navigationMap,
   type GraphNavigationState,
@@ -132,6 +133,8 @@ interface GraphCanvasProps {
   label: string;
   onOpen: (id: string) => void;
   onClose: () => void;
+  /** Shift+F10, the context-menu key or a right-click on a node: its actions. */
+  onActions?: (id: string) => void;
 }
 
 /**
@@ -146,6 +149,7 @@ export function GraphCanvas({
   label,
   onOpen,
   onClose,
+  onActions,
 }: GraphCanvasProps) {
   const announce = useAnnounce();
   const ids = useId().replace(/[^a-zA-Z0-9_-]/g, "");
@@ -300,6 +304,13 @@ export function GraphCanvas({
   function onKeyDown(event: KeyboardEvent<SVGSVGElement>) {
     if (event.altKey || event.ctrlKey || event.metaKey || !viewport || !size)
       return;
+    if (isActionsKey(event)) {
+      const id = nav.focusedId ?? nav.selectedId;
+      if (!id || !onActions) return;
+      event.preventDefault();
+      onActions(id);
+      return;
+    }
     const zoomed = zoomKey(viewport, event.key, size, layoutBounds(positions));
     if (zoomed) {
       event.preventDefault();
@@ -471,6 +482,15 @@ export function GraphCanvas({
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerUp}
             onClick={onClick}
+            onContextMenu={(event) => {
+              const id = (event.target as Element)
+                .closest("[data-node-id]")
+                ?.getAttribute("data-node-id");
+              if (!id || !onActions) return;
+              event.preventDefault();
+              nodeElements.current.get(id)?.focus({ preventScroll: true });
+              onActions(id);
+            }}
             onFocus={() => (mapHasFocus.current = true)}
             onBlur={(event) => {
               if (!event.currentTarget.contains(event.relatedTarget as Node))

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   graphNavigation,
+  isActionsKey,
   NO_GRAPH_NAVIGATION,
   NOTHING_THAT_WAY,
   type GraphNavigationEvent,
@@ -190,5 +191,14 @@ describe("when the map changes", () => {
 
   it("keeps focus and selection on files that are still there", () => {
     expect(change(from("west", "east"), MAP)).toEqual(from("west", "east"));
+  });
+});
+
+describe("a file's actions", () => {
+  it("open with Shift+F10 or the context-menu key, never with F10 alone", () => {
+    expect(isActionsKey({ key: "F10", shiftKey: true })).toBe(true);
+    expect(isActionsKey({ key: "ContextMenu", shiftKey: false })).toBe(true);
+    expect(isActionsKey({ key: "F10", shiftKey: false })).toBe(false);
+    expect(isActionsKey({ key: "Enter", shiftKey: true })).toBe(false);
   });
 });

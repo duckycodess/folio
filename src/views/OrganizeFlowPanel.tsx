@@ -1,5 +1,11 @@
 import { ArrowRight, Copy, FolderOpen } from "lucide-react";
-import { useEffect, useRef, type ReactNode, type RefObject } from "react";
+import {
+  useEffect,
+  useRef,
+  type ReactNode,
+  type Ref,
+  type RefObject,
+} from "react";
 import type { OrganizeStage } from "../app/organizeFlow";
 import { planRow, summarizeApply, summarizeUndo } from "../app/planReview";
 import type { OrganizeController } from "../app/useOrganize";
@@ -265,12 +271,15 @@ export function PreviewStep({
   heading,
   cancelLabel,
   details,
+  cancelRef,
 }: {
   organize: OrganizeController;
   heading: RefObject<HTMLHeadingElement | null>;
   cancelLabel: string;
   /** More of the exact preview, such as a text diff and Ripple passages. */
   details?: ReactNode;
+  /** Lets a caller make Cancel the default, as Delete does. */
+  cancelRef?: Ref<HTMLButtonElement>;
 }) {
   const { state } = organize;
   if (!state.plan) return null;
@@ -312,7 +321,11 @@ export function PreviewStep({
               ? "this change"
               : `${state.plan.operations.length} changes`}
           </Button>
-          <Button variant="ghost" onClick={organize.backToSuggestions}>
+          <Button
+            ref={cancelRef}
+            variant="ghost"
+            onClick={organize.backToSuggestions}
+          >
             {cancelLabel}
           </Button>
         </div>
