@@ -351,15 +351,15 @@ jobs:
           runtime_ready="${{ steps.runtime.outputs.ready }}"
           if [[ "$runtime_ready" != "true" && "$runtime_ready" != "static" ]]; then
             write_status "notVerified" "compiled ONNX Runtime linkage was unavailable" "$bridge_status" "$none_status"
-            exit 0
+            exit 1
           fi
           if ! command -v docker >/dev/null 2>&1 || ! docker info >"$offline_dir/docker-info.txt" 2>&1; then
             write_status "notVerified" "Docker is unavailable on this runner" "$bridge_status" "$none_status"
-            exit 0
+            exit 1
           fi
           if ! docker pull ubuntu:24.04 >"$offline_dir/docker-pull.log" 2>&1; then
             write_status "notVerified" "ubuntu:24.04 could not be pulled; offline execution was not attempted" "$bridge_status" "$none_status"
-            exit 0
+            exit 1
           fi
 
           set +e
@@ -375,7 +375,7 @@ jobs:
           set -e
           if ! grep -q R8_NETWORK_REACHABLE "$offline_dir/network-bridge.log"; then
             write_status "notVerified" "network bridge canary could not establish a real TCP connection" "$bridge_status" "$none_status"
-            exit 0
+            exit 1
           fi
 
           set +e
@@ -399,12 +399,29 @@ jobs:
             exit 1
           fi
 
+          # The bare ubuntu:24.04 image lacks the OpenMP runtime that the pinned
+          # llama.cpp build links against. Build the offline image while the
+          # bridge network is still allowed; the acceptance phases below then
+          # run with --network none.
+          offline_image="folio-r8-offline:local"
+          if ! docker build --network host --tag "$offline_image" - >"$offline_dir/offline-image-build.log" 2>&1 <<'DOCKERFILE'
+          FROM ubuntu:24.04
+          RUN apt-get update \
+            && apt-get install --yes --no-install-recommends libgomp1 \
+            && rm -rf /var/lib/apt/lists/*
+          DOCKERFILE
+          then
+            write_status "notVerified" "the offline container image could not be built" "$bridge_status" "$none_status"
+            exit 1
+          fi
+          docker image inspect "$offline_image" --format '{{.Id}}' >"$offline_dir/offline-image-id.txt"
+
           runtime_dir="$RUNNER_TEMP/folio-r8/runtime"
           if ! docker run --rm --network none \
             --volume "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE:ro" \
             --volume "$runtime_dir:$runtime_dir:ro" \
             --env "LD_LIBRARY_PATH=$FOLIO_ORT_LIBRARY_DIR:$runtime_dir" \
-            ubuntu:24.04 bash -ceu '
+            "$offline_image" bash -ceu '
               for binary in "$@"; do
                 echo "--- ldd $binary ---"
                 dependencies="$(ldd "$binary" 2>&1)" || {
@@ -418,14 +435,14 @@ jobs:
               done
             ' bash "$FOLIO_R8_TEST_BINARY" "$FOLIO_LLAMA_SERVER" >"$offline_dir/container-ldd.txt" 2>&1; then
             write_status "notVerified" "container shared-library preflight reported a missing dependency" "$bridge_status" "$none_status"
-            exit 0
+            exit 1
           fi
           if ! docker run --rm --network none \
             --volume "$runtime_dir:$runtime_dir:ro" \
             --env "LD_LIBRARY_PATH=$FOLIO_ORT_LIBRARY_DIR:$runtime_dir" \
-            ubuntu:24.04 bash -ceu '"$1" --version' bash "$FOLIO_LLAMA_SERVER" >"$offline_dir/llama-server-version.txt" 2>&1; then
+            "$offline_image" bash -ceu '"$1" --version' bash "$FOLIO_LLAMA_SERVER" >"$offline_dir/llama-server-version.txt" 2>&1; then
             write_status "notVerified" "llama-server --version failed inside the offline container" "$bridge_status" "$none_status"
-            exit 0
+            exit 1
           fi
           write_status "verified" "Docker bridge connectivity succeeded and network-none blocked the real TCP probe" "$bridge_status" "$none_status"
 
@@ -447,7 +464,7 @@ jobs:
             --env "FOLIO_QWEN_MODEL_SHA256=$FOLIO_QWEN_MODEL_SHA256" \
             --env "FOLIO_R8_OUTPUT_DIR=$offline_output" \
             --env "LD_LIBRARY_PATH=$FOLIO_ORT_LIBRARY_DIR:$RUNNER_TEMP/folio-r8/runtime" \
-            ubuntu:24.04 \
+            "$offline_image" \
             "$FOLIO_R8_TEST_BINARY" --ignored --test-threads=1 --nocapture \
             2>&1 | tee "$offline_dir/offline.log"
 
