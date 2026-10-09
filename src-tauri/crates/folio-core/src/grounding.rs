@@ -498,13 +498,7 @@ fn relationship_passages(entries: &[RelationshipSummaryEntry]) -> Vec<SourcePass
     entries
         .iter()
         .flat_map(|entry| entry.passages.iter())
-        .filter(|passage| {
-            seen.insert((
-                passage.document_id.clone(),
-                passage.start,
-                passage.end,
-            ))
-        })
+        .filter(|passage| seen.insert((passage.document_id.clone(), passage.start, passage.end)))
         .cloned()
         .collect()
 }
@@ -521,6 +515,20 @@ pub fn impact_explanation(
     cancel: &AtomicBool,
 ) -> CoreResult<GroundedResult> {
     crate::generation::check_request_length(reason_metadata)?;
+    // As for answers: no evidence means no generation, and the model reads at
+    // most `MAX_PASSAGES` passages. Ripple evidence can come from the caller,
+    // so the bound is kept here, not only in the command.
+    if passages.is_empty() {
+        return Ok(insufficient_answer(
+            provider.model_id(),
+            provider.revision(),
+            Vec::new(),
+        ));
+    }
+    let passages: Vec<SourcePassage> = passages
+        .into_iter()
+        .take(crate::generation::MAX_PASSAGES)
+        .collect();
     let mut result = answer_from_messages(
         provider,
         build_impact_messages(
@@ -675,14 +683,14 @@ fn escape_untrusted_metadata(text: &str) -> String {
         "RELATIONSHIP_METADATA_BEGIN",
         "RELATIONSHIP_METADATA_BEGIN_ESCAPED",
     )
-        .replace(
-            "RELATIONSHIP_METADATA_END",
-            "RELATIONSHIP_METADATA_END_ESCAPED",
-        )
-        .replace("IMPACT_METADATA_BEGIN", "IMPACT_METADATA_BEGIN_ESCAPED")
-        .replace("IMPACT_METADATA_END", "IMPACT_METADATA_END_ESCAPED")
-        .replace("SOURCE_BEGIN", "SOURCE_BEGIN_ESCAPED")
-        .replace("SOURCE_END", "SOURCE_END_ESCAPED")
+    .replace(
+        "RELATIONSHIP_METADATA_END",
+        "RELATIONSHIP_METADATA_END_ESCAPED",
+    )
+    .replace("IMPACT_METADATA_BEGIN", "IMPACT_METADATA_BEGIN_ESCAPED")
+    .replace("IMPACT_METADATA_END", "IMPACT_METADATA_END_ESCAPED")
+    .replace("SOURCE_BEGIN", "SOURCE_BEGIN_ESCAPED")
+    .replace("SOURCE_END", "SOURCE_END_ESCAPED")
 }
 
 fn labels_for_group(passages: &[SourcePassage], offset: usize) -> HashMap<String, SourcePassage> {
@@ -1063,6 +1071,83 @@ mod tests {
             text: text.into(),
             page: None,
         }
+    }
+
+    /// Records the messages it was sent, then answers with no sentences.
+    struct RecordingProvider {
+        sent: Mutex<Vec<String>>,
+    }
+
+    impl GenerationProvider for RecordingProvider {
+        fn model_id(&self) -> &str {
+            "recording-test-model"
+        }
+
+        fn revision(&self) -> &str {
+            "test"
+        }
+
+        fn generate_json(
+            &self,
+            _schema: &Value,
+            messages: &[ChatMessage],
+            _budget: &GenerationBudget,
+            _cancel: &AtomicBool,
+        ) -> CoreResult<Value> {
+            self.sent
+                .lock()
+                .unwrap()
+                .extend(messages.iter().map(|message| message.content.clone()));
+            Ok(json!({ "sentences": [], "insufficientEvidence": true }))
+        }
+
+        fn unload(&self) -> CoreResult<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn an_impact_explanation_without_evidence_does_not_call_generation() {
+        let provider = ScriptedProvider::new(Vec::new());
+        let result = impact_explanation(
+            &provider,
+            "Linked file",
+            "Needs review",
+            "links to the edited file",
+            Vec::new(),
+            Language::En,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(result.kind, GroundedAnswerKind::InsufficientEvidence);
+        assert_eq!(provider.calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn an_impact_explanation_reads_at_most_max_passages() {
+        let provider = RecordingProvider {
+            sent: Mutex::new(Vec::new()),
+        };
+        let passages: Vec<SourcePassage> = (0..crate::generation::MAX_PASSAGES + 4)
+            .map(|index| passage(index * 100, &format!("Unique passage marker {index:02}.")))
+            .collect();
+        impact_explanation(
+            &provider,
+            "Linked file",
+            "Needs review",
+            "links to the edited file",
+            passages,
+            Language::En,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let sent = provider.sent.lock().unwrap().join("\n");
+        let last_kept = crate::generation::MAX_PASSAGES - 1;
+        assert!(sent.contains(&format!("Unique passage marker {last_kept:02}.")));
+        assert!(!sent.contains(&format!(
+            "Unique passage marker {:02}.",
+            crate::generation::MAX_PASSAGES
+        )));
     }
 
     #[test]

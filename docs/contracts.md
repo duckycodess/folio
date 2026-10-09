@@ -95,8 +95,12 @@ pairsConsidered, pairsRemaining, overflowDocuments }` with `state` one of
 every pair of currently embedded files was compared; it never means a number of
 connections was found. `refresh_local_ai_index(workspaceId)` runs #27's
 embedding sync, then progressive discovery, reporting `folio://ai-refresh-progress`
-(`phase`: `embedding`, `admitting`, `relationships`) and ending with the
-coverage; `cancel_local_ai_refresh` stops both phases and keeps completed work.
+(`phase`: `embedding`, `admitting`, `relationships`) and returning
+`{ workspaceId, embedding?, discovery?, ended?, coverage }`: `embedding` is #27's
+`EmbeddingSyncSummary`, `discovery` this run's counts, and `ended` why it
+stopped (`complete`, `budgetExhausted`, `cancelled`, `spaceChanged`); each is
+absent, never `null`, when that phase didn't run. `cancel_local_ai_refresh`
+stops both phases and keeps completed work.
 `GroundedResult.basis` (`{ connections, files, incomplete }`, relationship
 summaries only) is the native count of what the model was given.
 

@@ -378,16 +378,12 @@ async fn list_relationships(
     space_fingerprint: Option<String>,
 ) -> Result<Vec<Relationship>, FolioError> {
     state.root(&workspace_id)?;
-    let active_space = active_relationship_space(
-        &app,
-        &*state.index()?,
-        space_fingerprint.as_deref(),
-    )?;
-    index::list_relationships(
-        &*state.index()?,
-        &workspace_id,
-        active_space.as_deref(),
-    )
+    // The model store is read before the index lock; one lock for both reads.
+    let selected = selected_embedding_descriptor_lenient(&app);
+    let index = state.index()?;
+    let active_space =
+        active_relationship_space_for(selected.as_ref(), &index, space_fingerprint.as_deref())?;
+    index::list_relationships(&index, &workspace_id, active_space.as_deref())
 }
 
 /// Runs progressive AI relationship discovery over the vectors #27 persisted
@@ -404,8 +400,22 @@ async fn refresh_ai_connections(
 ) -> Result<AiRelationshipRefresh, FolioError> {
     state.root(&workspace_id)?;
     let index_path = state.index_path.clone();
+    let refresh_lock = state.ai_refresh.clone();
     let cancel = state.cancel_relationships.clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
+        // One refresh at a time, shared with `refresh_local_ai_index`: taking
+        // the lock first means this call can't clear a Stop meant for a running
+        // refresh by resetting the shared flag.
+        let _refresh = match refresh_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(error(
+                    ErrorCode::ProviderBusy,
+                    "Folio is already refreshing its local AI index.",
+                ))
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err(unavailable_state()),
+        };
         cancel.store(false, Ordering::SeqCst);
         let mut conn = db::open(&index_path)?;
         let Some(active_space) =
@@ -998,10 +1008,15 @@ struct AiRefreshProgress {
 #[serde(rename_all = "camelCase")]
 struct LocalAiRefresh {
     workspace_id: String,
+    /// The embedding phase's summary; absent when it didn't run.
+    #[serde(skip_serializing_if = "Option::is_none")]
     embedding: Option<embedding_sync::EmbeddingSyncSummary>,
+    /// The discovery run's progress; absent when it didn't run.
+    #[serde(skip_serializing_if = "Option::is_none")]
     discovery: Option<ai_discovery::DiscoveryProgress>,
     /// Why discovery stopped, when it did: `complete`, `budgetExhausted`,
     /// `cancelled` or `spaceChanged`. Absent when no search model is ready.
+    #[serde(skip_serializing_if = "Option::is_none")]
     ended: Option<ai_discovery::RunEnd>,
     coverage: ai_discovery::RelationshipCoverage,
 }
@@ -1139,7 +1154,7 @@ async fn relationship_coverage(
     workspace_id: String,
 ) -> Result<ai_discovery::RelationshipCoverage, FolioError> {
     state.root(&workspace_id)?;
-    let selected = selected_embedding_descriptor(&app)?;
+    let selected = selected_embedding_descriptor_lenient(&app);
     let index = state.index()?;
     let active = active_space::resolve_installed_descriptor(&index, selected.as_ref())?;
     ai_discovery::coverage(&index, &workspace_id, active.as_deref())
@@ -1181,9 +1196,10 @@ async fn prepare_plan(
     if source == PlanSource::Unknown {
         return Err(error(ErrorCode::OperationUnsupported, "Say where in Folio this change was started.").with_detail("source", source.as_str()));
     }
-    // Read the model store before taking any lock; only AI rows of the active
-    // space reach Ripple.
-    let selected = selected_embedding_descriptor(&app)?;
+    // Read the model store before taking any lock, and only when Folio computes
+    // Ripple itself; only AI rows of the active space reach it. A store that
+    // can't be read gives links-only Ripple, never a refused preview.
+    let selected = if impacts.is_none() { selected_embedding_descriptor_lenient(&app) } else { None };
     let workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
     let root = workspaces.resolve(&workspace_id)?;
     // Ripple evidence comes from the index and each edit's diff unless the caller
@@ -1333,7 +1349,7 @@ async fn ripple_impacts(
     replaced_text: String,
 ) -> Result<Vec<ImpactCandidate>, FolioError> {
     state.root(&workspace_id)?;
-    let selected = selected_embedding_descriptor(&app)?;
+    let selected = selected_embedding_descriptor_lenient(&app);
     let index = state.index()?;
     let active_space = active_space::resolve_installed_descriptor(&index, selected.as_ref())?;
     let document = index::get_document(&index, &workspace_id, &document_id)?;
@@ -1489,7 +1505,17 @@ fn active_relationship_space(
     requested_space: Option<&str>,
 ) -> Result<Option<String>, FolioError> {
     let selected = selected_embedding_descriptor(app)?;
-    let active = active_space::resolve_installed_descriptor(conn, selected.as_ref())?;
+    active_relationship_space_for(selected.as_ref(), conn, requested_space)
+}
+
+/// `active_relationship_space` for a descriptor already read, so callers can
+/// read the model store before taking the index lock.
+fn active_relationship_space_for(
+    selected: Option<&ModelDescriptor>,
+    conn: &Connection,
+    requested_space: Option<&str>,
+) -> Result<Option<String>, FolioError> {
+    let active = active_space::resolve_installed_descriptor(conn, selected)?;
     if let (Some(active), Some(requested)) = (active.as_deref(), requested_space) {
         if active != requested {
             return Err(error(
@@ -1501,6 +1527,21 @@ fn active_relationship_space(
         }
     }
     Ok(active)
+}
+
+/// Like `selected_embedding_descriptor`, for paths that only read AI rows to
+/// display them (file previews, Ripple, Connections, coverage). A model store
+/// that can't be read means no active space, so links-only results: it never
+/// stops a user from previewing or reviewing a change.
+fn selected_embedding_descriptor_lenient(app: &AppHandle) -> Option<ModelDescriptor> {
+    lenient_descriptor(selected_embedding_descriptor(app))
+}
+
+fn lenient_descriptor(read: Result<Option<ModelDescriptor>, FolioError>) -> Option<ModelDescriptor> {
+    read.unwrap_or_else(|failure| {
+        eprintln!("Folio is showing links only: the model store could not be read: {}", failure.message);
+        None
+    })
 }
 
 /// The selected embedding model's descriptor when it is installed. Reads the
@@ -2673,6 +2714,35 @@ mod tests {
 
         let failure = read_ai_document(&root, "../outside.md").unwrap_err();
         assert_eq!(failure.code, ErrorCode::PathEscapesWorkspace);
+    }
+
+    #[test]
+    fn an_unreadable_model_store_means_links_only_not_a_refused_preview() {
+        let unreadable = Err(error(ErrorCode::Internal, "settings.json could not be parsed"));
+        assert!(lenient_descriptor(unreadable).is_none());
+        assert!(lenient_descriptor(Ok(None)).is_none());
+    }
+
+    #[test]
+    fn a_refresh_leaves_out_the_phases_that_did_not_run() {
+        let refresh = LocalAiRefresh {
+            workspace_id: "w".into(),
+            embedding: None,
+            discovery: None,
+            ended: None,
+            coverage: ai_discovery::RelationshipCoverage {
+                state: ai_discovery::CoverageState::NoActiveSpace,
+                space_fingerprint: None,
+                eligible_documents: 0,
+                indexed_documents: 0,
+                pairs_considered: 0,
+                pairs_remaining: 0,
+                overflow_documents: 0,
+            },
+        };
+        let wire = serde_json::to_value(&refresh).unwrap();
+        let keys: Vec<&str> = wire.as_object().unwrap().keys().map(String::as_str).collect();
+        assert_eq!(keys, ["coverage", "workspaceId"], "absent, never null: {wire}");
     }
 
     #[test]
