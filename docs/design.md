@@ -1,10 +1,12 @@
 # Design system: Golden Daylight
 
-Folio's visual direction is **Golden Daylight**: white surfaces, a charcoal sidebar, gold reserved for primary actions and brand moments, Inter for all UI text, and **Olio** — a folder-shaped owl — as the mascot. This document turns the brandbook into rules for the replacement UI (#6, #16 and the tickets that build on it).
+Folio's visual direction is **Golden Daylight**: white surfaces, a charcoal sidebar, gold reserved for primary actions and brand moments, Manrope for headings with DM Sans for interface text, and **Olio** — a folder-shaped owl — as the mascot. This document turns the brandbook into rules for the replacement UI (#6, #16 and the tickets that build on it).
 
 ![Golden Daylight brandbook](assets/brandbook-golden-daylight.jpg)
 
 The brandbook is a direction, not a spec of shipped features. Its screens contain illustrative files and features; [Product truth](#product-truth-in-the-mockups) lists where the MVP must differ. Product rules in `AGENTS.md` and `docs/product.md` win over this document.
+
+A second, newer reference, the Folio brandkit (`docs/assets/Folio-Brandkit/`, not committed — ask the design owner), supplied the typography above and the floating chat's mascot animation (see [Assets](#assets)). Its interactive mockup also uses a few layout values this app does not: a 222px sidebar (this app's is 240px, sized for the adaptive layout in #67), a 68px fixed header (this app's topbar height follows its content), and an ivory `#FAF9F5` canvas (this app measures its contrast ratios against white — see [Contrast rules](#contrast-rules)). Reconciling those needs a real pass against the contrast table and the #67 breakpoint math, not a drive-by change, so they are intentionally left as-is for now.
 
 ## Principles
 
@@ -133,9 +135,9 @@ Define dark values under `@media (prefers-color-scheme: dark)` and a `data-theme
 
 ## Typography
 
-**Inter** for all UI text, bundled with the app (for example via `@fontsource/inter` or font files in `src/assets/fonts/`). Never load fonts from Google Fonts or another CDN — the app must work offline.
+**Manrope** for headings (`--text-display`, `--text-title`, `--text-heading`, the wordmark) and **DM Sans** for interface text (`--text-body`, `--text-label`, `--text-small`), per the Folio brandkit (`docs/assets/Folio-Brandkit/`). Both are bundled with the app via `@fontsource/manrope` and `@fontsource/dm-sans`. Never load fonts from Google Fonts or another CDN — the app must work offline; this differs from the brandkit's own interactive mockup, which is a disposable web demo and loads them remotely.
 
-The **folio wordmark** is a custom heavy rounded logotype, not Inter. Use it only as an SVG asset (`src/assets/brand/folio-wordmark.svg`, still to be exported — see [Assets](#assets)); do not try to recreate it with CSS.
+The **folio wordmark** is a custom heavy rounded logotype, not Manrope. Use it only as an SVG asset (`src/assets/brand/folio-wordmark.svg`, still to be exported — see [Assets](#assets)); do not try to recreate it with CSS.
 
 | Token             | Size / line height                   | Weight  | Use                                                  |
 | ----------------- | ------------------------------------ | ------- | ---------------------------------------------------- |
@@ -290,7 +292,7 @@ The twelve poses in the table below are cleaned and sliced into `src/assets/olio
 
 **The app icon** (desktop window/dock/taskbar and the browser tab) is the brandkit's `folio-app-icon-1024.png`: Olio's face on the folder badge, on a charcoal square. `src-tauri/icons/` holds the generated set (`npx tauri icon docs/assets/Folio-Brandkit/assets/folio-app-icon-1024.png -o src-tauri/icons`, pruned to `icon.png`, `icon.ico` and `icon.icns` — this desktop-only app doesn't need the command's Android/iOS/Windows Store sizes) plus `source.png`, the 1024px original. `public/favicon.png` is a 64px export of the same art for the browser preview. It replaces the starter template's generic green "F" placeholder.
 
-Still to produce: **the wordmark.** Export the folio wordmark as `src/assets/brand/folio-wordmark.svg`, in a charcoal version for light surfaces and an ivory version for the sidebar. Until then the sidebar shows an interim Inter 800 wordmark.
+Still to produce: **the wordmark.** Export the folio wordmark as `src/assets/brand/folio-wordmark.svg`, in a charcoal version for light surfaces and an ivory version for the sidebar. Until then the sidebar shows an interim Manrope 800 wordmark.
 
 ### Poses and where they appear
 

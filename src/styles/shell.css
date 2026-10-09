@@ -71,7 +71,7 @@
 }
 .wordmark {
   padding: 0 var(--space-3);
-  font: 800 2rem/1 var(--font-sans);
+  font: 800 2rem/1 var(--font-heading);
   letter-spacing: -0.04em;
 }
 .wordmark-short {
