@@ -35,7 +35,7 @@ Issue #4 local inference/provider smoke evidence is now recorded below. PDF extr
 
 ## Issue #4 implementation evidence (2026-10-09)
 
-Issue #4 is implemented at the pure-core/provider and native-command-adapter level, but is not represented as fully verified or complete. The implementation is on local branch `FOLIO-4`; no `FOLIO-8` branch, benchmark harness, benchmark corpus, PR, or push was created.
+Issue #4 is implemented at the pure-core/provider and native-command-adapter level, but is not represented as fully verified or complete. The implementation is on local branch `FOLIO-4`; no `FOLIO-8` branch, Model Lab benchmark/persistence harness, benchmark corpus, PR, or push was created. The separate ignored R8 acceptance harness is not #8 work.
 
 Implemented #4 slices:
 
