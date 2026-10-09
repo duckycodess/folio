@@ -1,5 +1,5 @@
-use crate::chunking::INTERIM_CHUNKER_VERSION;
-use crate::contracts::EmbeddingSpace;
+use crate::chunking::{Chunk, INTERIM_CHUNKER_VERSION};
+use crate::contracts::{DocumentRecord, EmbeddingSpace};
 use crate::error::{CoreError, CoreResult};
 use ort::{session::Session, value::Tensor};
 use serde::Serialize;
@@ -16,6 +16,55 @@ use tokenizers::utils::truncation::{TruncationParams, TruncationStrategy};
 pub const DEFAULT_MAX_TOKENS: usize = 512;
 pub const DEFAULT_BATCH_SIZE: usize = 16;
 pub const EMBEDDING_IDLE_UNLOAD: Duration = Duration::from_secs(5 * 60);
+/// Passages are embedded with their document title and path words, so a
+/// query naming a document ("plano ng proyekto", "project plan") can match
+/// it across languages. Part of the embedding-space fingerprint.
+pub const PASSAGE_CONTEXT_VERSION: &str = "title-path-v1";
+
+/// The text embedded for one passage: document title, path words, then the
+/// passage. Only the embedding input changes; source offsets, citations and
+/// displayed text remain the original passage.
+pub fn passage_embedding_text(document: Option<&DocumentRecord>, chunk: &Chunk) -> String {
+    let Some(document) = document else {
+        return chunk.text.clone();
+    };
+    let stem = document
+        .relative_path
+        .rsplit_once('.')
+        .map_or(document.relative_path.as_str(), |(stem, _)| stem);
+    let path_words = stem
+        .split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{}\n{}\n{}", document.title.trim(), path_words, chunk.text)
+}
+
+/// Embedding inputs for `chunks`, aligned by index.
+pub fn passage_embedding_texts(documents: &[DocumentRecord], chunks: &[Chunk]) -> Vec<String> {
+    chunks
+        .iter()
+        .map(|chunk| {
+            let document = documents
+                .iter()
+                .find(|document| document.id == chunk.document_id);
+            passage_embedding_text(document, chunk)
+        })
+        .collect()
+}
+
+/// Markdown `# ` heading, or the given fallback name.
+pub fn markdown_title(name: &str, content: &str) -> String {
+    content
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("# ")
+                .map(str::trim)
+                .filter(|title| !title.is_empty())
+        })
+        .unwrap_or(name)
+        .to_owned()
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EmbeddingKind {
@@ -140,7 +189,7 @@ impl OrtE5Provider {
             "query: ",
             "passage: ",
             max_tokens,
-            INTERIM_CHUNKER_VERSION,
+            &format!("{INTERIM_CHUNKER_VERSION}+{PASSAGE_CONTEXT_VERSION}"),
         );
         let session = Arc::new(Mutex::new(Some(session)));
         let active = Arc::new(AtomicBool::new(false));
@@ -460,6 +509,42 @@ mod tests {
             first,
             embedding_fingerprint("model", "tokenizer", "query: ", "passage: ", 512, "v2")
         );
+    }
+
+    #[test]
+    fn passage_embedding_text_adds_title_and_path_words_only_to_the_input() {
+        let document = DocumentRecord {
+            id: "w:projects/project-plan.md".into(),
+            workspace_id: "w".into(),
+            relative_path: "projects/project-plan.md".into(),
+            name: "project-plan.md".into(),
+            title: "Community Learning Project".into(),
+            language: crate::contracts::Language::En,
+            media_type: "text/markdown".into(),
+            size_bytes: 8,
+            modified_at_ms: None,
+            content: None,
+            content_hash: None,
+        };
+        let chunk = Chunk {
+            document_id: "w:projects/project-plan.md".into(),
+            ordinal: 0,
+            text: "Due soon".into(),
+            start: 0,
+            end: 8,
+            content_hash: "sha256:00".into(),
+        };
+        assert_eq!(
+            passage_embedding_text(Some(&document), &chunk),
+            "Community Learning Project\nprojects project plan\nDue soon"
+        );
+        assert_eq!(passage_embedding_text(None, &chunk), "Due soon");
+        assert_eq!(
+            passage_embedding_texts(&[document], std::slice::from_ref(&chunk)),
+            vec!["Community Learning Project\nprojects project plan\nDue soon".to_owned()]
+        );
+        assert_eq!(markdown_title("x.md", "intro\n# Heading \nbody"), "Heading");
+        assert_eq!(markdown_title("x.md", "no heading"), "x.md");
     }
 
     #[test]

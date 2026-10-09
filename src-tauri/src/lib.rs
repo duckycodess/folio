@@ -537,7 +537,7 @@ fn load_corpus(
             workspace_id: row.workspace_id.clone(),
             relative_path: row.relative_path.clone(),
             name: row.name.clone(),
-            title: markdown_title(&row.name, &content),
+            title: folio_core::embeddings::markdown_title(&row.name, &content),
             language: Language::Unknown,
             media_type: row.media_type.clone(),
             size_bytes: document_text.size_bytes,
@@ -551,18 +551,6 @@ fn load_corpus(
     }
     let chunks = InterimTextChunker::new(text_documents).all_chunks()?;
     Ok((documents, contents, chunks, skipped_documents))
-}
-
-fn markdown_title(name: &str, content: &str) -> String {
-    content
-        .lines()
-        .find_map(|line| {
-            line.strip_prefix("# ")
-                .map(str::trim)
-                .filter(|title| !title.is_empty())
-        })
-        .unwrap_or(name)
-        .to_owned()
 }
 
 fn document_record(
@@ -581,7 +569,7 @@ fn document_record(
             .and_then(|value| value.to_str())
             .unwrap_or(relative_path)
             .into(),
-        title: markdown_title(relative_path, content),
+        title: folio_core::embeddings::markdown_title(relative_path, content),
         language: grounding::detect_language(content),
         media_type: media_type_for_path(relative_path)
             .unwrap_or("text/plain")
@@ -702,10 +690,7 @@ fn build_snapshot(
     let mut retriever = HybridRetriever::default();
     let mut embedding_space = None;
     if let Some((space, vectors)) = with_embedding_provider(app, embedding_state, |provider| {
-        let texts = chunks
-            .iter()
-            .map(|chunk| chunk.text.clone())
-            .collect::<Vec<_>>();
+        let texts = folio_core::embeddings::passage_embedding_texts(&documents, &chunks);
         let vectors = provider
             .embed(&texts, EmbeddingKind::Passage, None)
             .map_err(native_error)?;

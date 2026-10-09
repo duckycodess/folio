@@ -177,7 +177,7 @@ fn fixture_corpus() -> (Vec<DocumentRecord>, HashMap<String, String>, Vec<Chunk>
             workspace_id: "fixtures".into(),
             relative_path: (*relative_path).into(),
             name: name.into(),
-            title: name.into(),
+            title: folio_core::embeddings::markdown_title(name, &content),
             language: grounding::detect_language(&content),
             media_type: "text/markdown".into(),
             size_bytes: content.len() as u64,
@@ -265,10 +265,7 @@ fn prepared() -> &'static PreparedAcceptance {
         let inputs = verified_inputs();
         let (documents, contents, chunks) = fixture_corpus();
         let embeddings = embedding_provider(&inputs);
-        let passage_texts = chunks
-            .iter()
-            .map(|chunk| chunk.text.clone())
-            .collect::<Vec<_>>();
+        let passage_texts = folio_core::embeddings::passage_embedding_texts(&documents, &chunks);
         let vectors = embeddings
             .embed(&passage_texts, EmbeddingKind::Passage, None)
             .expect("real E5 passage embeddings");
