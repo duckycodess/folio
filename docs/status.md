@@ -217,8 +217,8 @@ not as verification for the merged branch: frontend checks previously passed
 with 0 failures and 2 ignored; the root Tauri test/build passed earlier at
 `e5a9e5b` (5 app tests and debug build), while a later root rerun was
 interrupted by WSL restart. The current branch's hosted verification is the
-named run above; the ignored real-provider R8 harness has no new adapter
-output, and summary correctness remains TJ Not reviewed.
+named run above. Real-model results from the R8 harness are recorded below as
+Linux diagnostics only, and summary correctness remains TJ Not reviewed.
 
 The WSL native prerequisites were user-installed and verified at WebKitGTK/JavaScriptCoreGTK 2.52.6, libsoup 3.4.4, librsvg 2.58.0, with Cargo/rustc 1.96.1 available through the inline user-local PATH. Historical missing-library and Cargo 1.75 failures remain historical only. Windows Rust-native, macOS, desktop startup/folder picker, packaging, Job Object behavior, target RAM/size, #3 persistence, and #5 apply/undo remain unverified.
 
@@ -226,6 +226,34 @@ No local test, build, or inference was run after the merge resolution because
 the user instructed that WSL-heavy execution remain stopped. Opus approved the
 static C1–C5 integration review at `4da77bc`, and the named hosted Actions run
 provides the current compile/test evidence.
+
+### Issue #4 Linux real-model diagnostics (workflow removed by user request)
+
+Between 2026-10-09 runs 37946816811 and 37952689689, a dedicated GitHub Actions
+workflow ran the ignored R8 harness (`src-tauri/crates/folio-core/tests/real_acceptance.rs`)
+with the manifest-pinned E5 int8 embedding model and llama.cpp b11524 on an
+Ubuntu x64 CPU runner, online and inside a verified `--network none` container.
+**This is diagnostic evidence, not target verification: Folio's supported
+targets are Windows and macOS.** At the user's request the Ubuntu workflow and
+its Linux-only memory sampler were removed (`d41e3af`); the harness, its
+assertions, the development calibration queries and the manifest-pinned fetch
+script remain. Model task outcomes below are model and provider behaviour, not
+caused by the operating system, and are not claimed for Windows or macOS.
+
+| Run                                                                          | Commit    | Generation model  | Phases passed (online / offline) | Failing phase                   |
+| ---------------------------------------------------------------------------- | --------- | ----------------- | -------------------------------- | ------------------------------- |
+| [37950604449](https://github.com/duckycodess/folio/actions/runs/37950604449) | `533fc0f` | Qwen3-0.6B Q4_K_M | 6/7 / 6/7                        | Taglish deadline interpretation |
+| [37951418126](https://github.com/duckycodess/folio/actions/runs/37951418126) | `40f19b0` | Qwen3-0.6B Q8_0   | 6/7 / 6/7                        | Taglish deadline interpretation |
+| [37951847593](https://github.com/duckycodess/folio/actions/runs/37951847593) | `a25ecb7` | Qwen3-1.7B Q4_K_M | 6/7 / 6/7                        | summary citations               |
+| [37952689689](https://github.com/duckycodess/folio/actions/runs/37952689689) | `a43fad4` | Qwen3-1.7B Q4_K_M | 6/7 / 6/7                        | summary citations               |
+
+- Passing in every listed run: English→Filipino, Filipino→English and Taglish retrieval; the evidence gate (unrelated query returns nothing and the generator is not called); ambiguity asks for file selection; cancellation within the bound and recovery.
+- Both Qwen3-0.6B files put `October 20 to October 23` into both `find` and `replace`; the resolver correctly asked for clarification. Qwen3-1.7B produced the correct edit proposal for both phrasings, but its summaries added two uncited link sentences ("See the meeting notes.", "See the submission checklist."), so the every-sentence-cited assertion failed. No single pinned model passed all seven phases.
+- The evidence-gate constants (`GATE_MIN_TOP_COSINE = 0.813`, `GATE_MIN_MARGIN = 0.031`) were set from the separate development queries in run 37949760186, never from the acceptance inputs; on that data the gate passes 7 of 8 related and 0 of 6 unrelated queries.
+- Qwen3-1.7B: llama-server peak resident memory about 2.4 GB (process tree about 2.9 GB) on that runner; the model file alone is 1,107,409,472 bytes, above the under-1-GB default target. These are process observations on a 16 GB runner, not whole-device or 8-GB-target measurements.
+- Summary factual correctness and output language remain Not reviewed by TJ.
+
+**Pending:** real-model acceptance on Windows and macOS, a model decision, and independent review of the issue #4 changes made after `637f3e4`.
 
 ## Product-context refresh
 
