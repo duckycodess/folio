@@ -159,20 +159,29 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 
 ## Verification
 
-### Adaptive layout and resizable reader, in progress (2026-10-10, issue #67)
+### Adaptive layout and resizable reader (2026-10-10, issue #67)
 
-The first part of #67, opened as a draft PR:
-
-- The shell now picks its layout from its own measured width, not fixed window breakpoints (`src/app/shellLayout.ts`). The sidebar keeps its labels while there's room. With a file open, the sidebar collapses to the icon rail before the list loses its 420px minimum. Only when even the rail leaves too little room does the reader overlay the list, which stays mounted behind it and is made `inert`.
-- The reader can be resized by dragging the separator, or with Left/Right and Home/End on the focusable `role="separator"`. Its width stays between 320px and 60% of the window and is remembered in `localStorage`; if storage fails, the 380px default is used.
-- File table columns drop one at a time as the table's own width shrinks: Size, then Modified, then Type, then Location (`src/app/fileColumns.ts`). The name column is never dropped. Once Location drops, it moves under the name.
+- The shell picks its layout from its own measured width, not fixed window breakpoints (`src/app/shellLayout.ts`). The sidebar keeps its labels while there's room. With a file open, the sidebar collapses to the icon rail before the list loses its 420px minimum. Only when even the rail leaves too little room does the reader overlay the list from the right ([ADR 0012](adr/0012-reader-overlay-instead-of-full-width-replacement.md)). The list stays mounted behind it and is made `inert`.
+- The reader can be resized by dragging the separator, or with Left/Right and Home/End on the focusable `role="separator"`. Its width stays between 320px and 60% of the window and is saved, already clamped, in `localStorage`; if storage fails, the 380px default is used.
+- File table columns drop one at a time as the row's own width shrinks: Size, then Modified, then Type, then Location (`src/app/fileColumns.ts`). The name column keeps room for the longest name, from 160px up to 320px, so the name isn't the column that gets truncated. Once Location drops, it moves under the name.
+- Files named in Activity entries and in Organize name suggestions and duplicates now open the reader.
+- Narrow Home (480px and below): filters wrap as label-above-control pairs, the search shortcut hint gives up its room so the placeholder isn't cut off, and the header mascot hides so the title stays on one line.
+- Graph: the map is taller (up to 70vh) and leaves more room under the bottom node's label. Label collisions are left for #45.
+- `docs/design.md`'s Layout section describes the resizable reader instead of the fixed 360–400px panel.
 
 Checked on macOS with Node.js 24.21.0:
 
 - `npm run format:check`, `npm run check` and `npm run build`: passed.
-- `npm test` (excluding the local `.claude/` worktrees): 342 passed, 9 todo. New unit tests cover reader-width clamping, sidebar and reader modes at boundary widths, the list's minimum width whenever the reader is split, and the column drop order.
+- `npm test` (excluding the local `.claude/` worktrees): 344 passed, 9 todo. New unit tests cover reader-width clamping, sidebar and reader modes at boundary widths, the list's minimum width whenever the reader is split, the column drop order, the name column's width, and Activity and Organize opening the reader.
+- A scripted pass in headless Chromium against the browser preview (sample files), not committed. It ran at 1920×1080, 1440×900, 1280×850, 1180×800, 1024×768, 900×700, 860×700, 768×700, 600×700 and 400×760, and at 720×450 and 640×425 to stand in for 200% zoom, in light and dark themes:
+  - no horizontal overflow at any size, with the reader open or closed;
+  - no truncated file names in the visible list;
+  - with a file open, 9 rows visible at 1280×850 and 7 at 1024×768;
+  - sidebar labels kept at 1180px, and the rail only once the reader needs the room;
+  - in the overlay, focus moved into the reader and returned to the row on Escape.
+- The separator in the same browser: Left/Right changed the width by 16px, Home and End went to 320px and 60% of the window, dragging resized it, a drag past the edge saved the clamped width, the width survived a reload, and blocked storage fell back to 380px.
 
-Not verified: the app was not run in a browser or the desktop app for this change, so dragging, keyboard resizing, the overlay, focus and dark mode have not been checked by hand. There are no component tests for `ResizeHandle`. Still open from #67: opening the reader from Activity and Organize, the list being pushed below the fold, the narrow-window header and narrow Home, and the Graph map label issues.
+Not verified: the desktop app on Windows or macOS, screen readers, reduced motion, and browser zoom itself (smaller viewports stood in for it). Opening files from Activity and Organize needs a real folder, so it was not tried in the browser. Graph label collisions are still open, with #45.
 
 ### Shared plan review and Edit text (2026-10-10, issue #45)
 

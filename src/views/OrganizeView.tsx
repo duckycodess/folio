@@ -26,7 +26,11 @@ export function OrganizeView({
         </p>
       </header>
 
-      <OrganizeFlowPanel workspace={workspace} organize={organize} />
+      <OrganizeFlowPanel
+        workspace={workspace}
+        organize={organize}
+        onOpenFile={workspace.selectDocument}
+      />
 
       <Panel title="Collections">
         <EmptyState

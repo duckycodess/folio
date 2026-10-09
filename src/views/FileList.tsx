@@ -1,12 +1,18 @@
 import {
   useId,
+  useLayoutEffect,
   useState,
   type CSSProperties,
   type FocusEvent,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import { fileColumnsTemplate, visibleColumns } from "../app/fileColumns";
+import {
+  fileColumnsTemplate,
+  NAME_MIN_WIDTH,
+  nameColumnWidth,
+  visibleColumns,
+} from "../app/fileColumns";
 import { useElementWidth } from "../app/useElementWidth";
 import type { DocumentRecord, SearchResult } from "../domain/contracts";
 import { FileTypeIcon } from "../ui/FileTypeIcon";
@@ -58,7 +64,38 @@ export function FileList({
   const byId = new Map(results?.map((result) => [result.document.id, result]));
   // Falls back to showing every column until the first measurement lands.
   const [tableRef, tableWidth] = useElementWidth<HTMLDivElement>(1200);
-  const shown = visibleColumns(tableWidth);
+  // What a row's grid can't use (its padding and the ⋯ menu), and the room
+  // the longest name needs. Neither depends on which columns show, so
+  // measuring them after each render settles at once.
+  const [fit, setFit] = useState({ chrome: 32, name: NAME_MIN_WIDTH });
+  useLayoutEffect(() => {
+    const table = tableRef.current;
+    const row = table?.querySelector<HTMLElement>(".list-row");
+    if (!table || !row) return;
+    const style = getComputedStyle(row);
+    const grid =
+      row.clientWidth -
+      parseFloat(style.paddingLeft) -
+      parseFloat(style.paddingRight);
+    const chrome = Math.round(table.clientWidth - grid);
+    let longest = 0;
+    for (const title of table.querySelectorAll<HTMLElement>(
+      ".list-row-title",
+    )) {
+      const main = title.closest(".list-row-main");
+      const indent = main
+        ? title.getBoundingClientRect().left - main.getBoundingClientRect().left
+        : 0;
+      longest = Math.max(longest, indent + title.scrollWidth);
+    }
+    const name = nameColumnWidth(Math.ceil(longest));
+    setFit((previous) =>
+      previous.chrome === chrome && previous.name === name
+        ? previous
+        : { chrome, name },
+    );
+  });
+  const shown = visibleColumns(tableWidth - fit.chrome, fit.name);
   const showLocationColumn = shown.includes("location");
   const showType = shown.includes("type");
   const showModified = shown.includes("modified");

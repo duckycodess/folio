@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   COLUMN_DROP_ORDER,
   fileColumnsTemplate,
+  NAME_MAX_WIDTH,
   NAME_MIN_WIDTH,
+  nameColumnWidth,
   visibleColumns,
 } from "./fileColumns";
 
@@ -48,6 +50,21 @@ describe("visibleColumns", () => {
 
   it("keeps at least the name's minimum width available once every column is dropped", () => {
     expect(visibleColumns(NAME_MIN_WIDTH + 32)).toEqual([]);
+  });
+});
+
+describe("name column width", () => {
+  it("drops a column sooner when the longest name needs more room", () => {
+    // 160 + 4 columns (448) + 5 gaps (80) = 688 fits a short name only.
+    expect(visibleColumns(688, NAME_MIN_WIDTH)).toHaveLength(4);
+    expect(visibleColumns(688, 200)).toEqual(["location", "type", "modified"]);
+  });
+
+  it("follows the longest name, within its minimum and maximum", () => {
+    expect(nameColumnWidth(90)).toBe(NAME_MIN_WIDTH);
+    expect(nameColumnWidth(240)).toBe(240);
+    expect(nameColumnWidth(900)).toBe(NAME_MAX_WIDTH);
+    expect(nameColumnWidth(Number.NaN)).toBe(NAME_MIN_WIDTH);
   });
 });
 

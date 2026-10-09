@@ -150,6 +150,10 @@
 
 /* Main column */
 .main-column {
+  /* Placed explicitly: the overlay reader shares this cell, and grid places
+     explicit items first, so auto-placement would push the list out of it. */
+  grid-column: 2;
+  grid-row: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -212,6 +216,13 @@
   flex-direction: column;
   gap: var(--space-1);
   min-width: 0;
+}
+/* Narrow Home (#67 item 6): the mascot gives up its room so "Your
+   workspace" fits on one line instead of wrapping. */
+@media (max-width: 480px) {
+  .page-header-home .olio {
+    display: none;
+  }
 }
 .page-header-compact .page-title {
   font: var(--text-title);
@@ -757,10 +768,22 @@
 /* Home's search (#43): centred under the header, full width when narrow. */
 .home-search {
   display: flex;
+  flex-wrap: wrap;
   justify-content: center;
+  gap: var(--space-2);
 }
 .home-search .search-field {
   max-width: 640px;
+}
+/* Narrow Home (#67 item 6): the ⌘K / Ctrl K hint gives up its room so the
+   placeholder ("Search files, ideas, or projects") isn't cut off. */
+@media (max-width: 480px) {
+  .home-search .search-field-shortcut {
+    display: none;
+  }
+  .home-search .search-field input {
+    padding-right: var(--space-3);
+  }
 }
 
 /* Model Lab: model setup cards and per-task results. */
@@ -840,6 +863,7 @@
 .home-filters {
   display: flex;
   flex-wrap: wrap;
+  justify-content: center;
   align-items: center;
   gap: var(--space-3);
 }
@@ -852,13 +876,27 @@
 .filter .select {
   max-width: 14rem;
 }
-.home-filters {
-  justify-content: center;
-}
 .filter-label {
   font: var(--text-small);
   font-weight: 600;
   color: var(--color-text-secondary);
+}
+/* Narrow Home (#67 item 6): each filter wraps as a label-above-control pair
+   instead of a label-beside-select row that ends up centred as a whole. */
+@media (max-width: 480px) {
+  .home-filters {
+    justify-content: stretch;
+    align-items: stretch;
+  }
+  .filter {
+    flex: 1 1 100%;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-1);
+  }
+  .filter .select {
+    max-width: none;
+  }
 }
 .select {
   min-height: 36px;
@@ -1348,6 +1386,11 @@
 .change-line.is-undone > span:not(.muted) {
   text-decoration: line-through;
   color: var(--color-text-secondary);
+}
+/* Opens the file at its current path (#67): same size as the rest of the
+   line, not the larger default link-button text. */
+.change-line-path {
+  font: inherit;
 }
 
 /* Ask & Act changes: the exact text diff and Ripple passages. */

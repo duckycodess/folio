@@ -28,6 +28,7 @@ import {
   type ThemePreference,
 } from "../app/theme";
 import {
+  clampReaderWidth,
   computeShellLayout,
   loadReaderWidth,
   READER_MAX_RATIO,
@@ -192,8 +193,11 @@ export function AppShell() {
     requestedReaderWidth,
   );
   function resizeReader(next: number) {
-    setRequestedReaderWidth(next);
-    saveReaderWidth(next);
+    // Kept within this window's range, so a drag past the edge doesn't
+    // leave a width that jumps open in a larger window later.
+    const width = clampReaderWidth(next, appWidth);
+    setRequestedReaderWidth(width);
+    saveReaderWidth(width);
   }
 
   // "Show related" is for that one opening: once another file (or none) is

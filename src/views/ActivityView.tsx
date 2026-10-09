@@ -8,7 +8,7 @@ import {
   STATUS_LABELS,
   type ActivityBatch,
 } from "../domain/activity";
-import type { HistoryEntry } from "../domain/contracts";
+import type { DocumentRecord, HistoryEntry } from "../domain/contracts";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
@@ -60,7 +60,11 @@ export function ActivityView({
         </Notice>
       )}
       <Panel title="Changes" actions={<Badge>Folio's changes only</Badge>}>
-        <ActivityBody workspace={workspace} activity={activity} />
+        <ActivityBody
+          workspace={workspace}
+          activity={activity}
+          onOpenFile={workspace.selectDocument}
+        />
       </Panel>
       <UndoDialog activity={activity} />
     </div>
@@ -70,9 +74,11 @@ export function ActivityView({
 function ActivityBody({
   workspace,
   activity,
+  onOpenFile,
 }: {
   workspace: WorkspaceState;
   activity: ActivityState;
+  onOpenFile: (document: DocumentRecord) => void;
 }) {
   if (workspace.source !== "folder")
     return (
@@ -108,6 +114,8 @@ function ActivityBody({
           <ActivityItem
             key={batch.planId}
             batch={batch}
+            documents={workspace.documents}
+            onOpenFile={onOpenFile}
             onUndo={() => activity.startUndo(batch)}
           />
         ))}
@@ -124,9 +132,13 @@ function ActivityBody({
 
 function ActivityItem({
   batch,
+  documents,
+  onOpenFile,
   onUndo,
 }: {
   batch: ActivityBatch;
+  documents: DocumentRecord[];
+  onOpenFile: (document: DocumentRecord) => void;
   onUndo: () => void;
 }) {
   const title = batchTitle(batch);
@@ -157,7 +169,11 @@ function ActivityItem({
       <ul className="activity-files">
         {shown.map((entry) => (
           <li key={entry.id}>
-            <ChangeLine entry={entry} />
+            <ChangeLine
+              entry={entry}
+              document={documents.find((d) => d.id === entry.documentId)}
+              onOpenFile={onOpenFile}
+            />
           </li>
         ))}
       </ul>
@@ -175,23 +191,58 @@ function ActivityItem({
   );
 }
 
-function ChangeLine({ entry }: { entry: HistoryEntry }) {
+/** The file's current path, as a button that opens it when it still exists. */
+function PathMention({
+  path,
+  document,
+  onOpenFile,
+}: {
+  path: string;
+  document: DocumentRecord | undefined;
+  onOpenFile: (document: DocumentRecord) => void;
+}) {
+  if (!document) return <span>{path}</span>;
+  return (
+    <button
+      type="button"
+      className="link-button change-line-path"
+      onClick={() => onOpenFile(document)}
+    >
+      {path}
+    </button>
+  );
+}
+
+function ChangeLine({
+  entry,
+  document,
+  onOpenFile,
+}: {
+  entry: HistoryEntry;
+  /** The file at its current path, if it still exists (deletes have none). */
+  document: DocumentRecord | undefined;
+  onOpenFile: (document: DocumentRecord) => void;
+}) {
   const kind = changeKind(entry);
   const before = entry.beforeRelativePath;
   const after = entry.afterRelativePath;
+  const mention = (path: string | undefined) =>
+    path && (
+      <PathMention path={path} document={document} onOpenFile={onOpenFile} />
+    );
   return (
     <span className={`change-line${entry.undoneAt ? " is-undone" : ""}`}>
       {kind === "create" ? (
-        <>Created {after}</>
+        <>Created {mention(after)}</>
       ) : kind === "delete" ? (
         <>Deleted {before}</>
       ) : kind === "edit" ? (
-        <>Edited {after}</>
+        <>Edited {mention(after)}</>
       ) : (
         <>
           <span>{before}</span>
           <ArrowRight size={14} aria-label="became" />
-          <span>{after}</span>
+          {mention(after)}
         </>
       )}
       {entry.undoneAt !== undefined && <span className="muted"> (undone)</span>}
@@ -254,12 +305,16 @@ function UndoDialog({ activity }: { activity: ActivityState }) {
           <ul className="activity-files">
             {restoring.map((entry) => (
               <li key={entry.id}>
+                {/* A preview of what Undo would do: nothing has changed yet,
+                    so the path isn't open-able here. */}
                 <ChangeLine
                   entry={{
                     ...entry,
                     beforeRelativePath: entry.afterRelativePath,
                     afterRelativePath: entry.beforeRelativePath,
                   }}
+                  document={undefined}
+                  onOpenFile={() => {}}
                 />
               </li>
             ))}

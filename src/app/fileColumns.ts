@@ -28,11 +28,25 @@ export const COLUMN_GAP = 16;
 
 /** The name column's own minimum, below which it would start truncating hard. */
 export const NAME_MIN_WIDTH = 160;
+/**
+ * The most room the name asks for before other columns give way: past this,
+ * a very long name truncates rather than pushing every other column out.
+ */
+export const NAME_MAX_WIDTH = 320;
 
-function widthFor(columns: FileColumn[]): number {
+/**
+ * What the name column needs: the longest name's natural width, kept
+ * between NAME_MIN_WIDTH and NAME_MAX_WIDTH.
+ */
+export function nameColumnWidth(longestName: number): number {
+  if (!Number.isFinite(longestName)) return NAME_MIN_WIDTH;
+  return Math.min(NAME_MAX_WIDTH, Math.max(NAME_MIN_WIDTH, longestName));
+}
+
+function widthFor(columns: FileColumn[], nameWidth: number): number {
   const gaps = (columns.length + 1) * COLUMN_GAP;
   return (
-    NAME_MIN_WIDTH +
+    nameWidth +
     gaps +
     columns.reduce((total, column) => total + COLUMN_WIDTH[column], 0)
   );
@@ -41,14 +55,17 @@ function widthFor(columns: FileColumn[]): number {
 const ALL_COLUMNS: FileColumn[] = ["location", "type", "modified", "size"];
 
 /**
- * The columns that fit a table of `containerWidth`, keeping the name column
- * at its minimum and dropping the lowest-priority column first until the
- * rest fit.
+ * The columns that fit a row of `rowWidth` (the grid's own width, after the
+ * row's padding and ⋯ menu), keeping `nameWidth` for the name and dropping
+ * the lowest-priority column first until the rest fit.
  */
-export function visibleColumns(containerWidth: number): FileColumn[] {
+export function visibleColumns(
+  rowWidth: number,
+  nameWidth: number = NAME_MIN_WIDTH,
+): FileColumn[] {
   let shown = ALL_COLUMNS;
   for (const candidate of COLUMN_DROP_ORDER) {
-    if (widthFor(shown) <= containerWidth) break;
+    if (widthFor(shown, nameWidth) <= rowWidth) break;
     shown = shown.filter((column) => column !== candidate);
   }
   return shown;
