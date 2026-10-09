@@ -341,7 +341,31 @@ impl ModelStore {
             ));
         }
         fs::remove_dir_all(root)?;
-        Ok(())
+        self.clear_selection(id)
+    }
+
+    /// A removed model can no longer be selected for either role.
+    fn clear_selection(&self, id: &str) -> CoreResult<()> {
+        let mut settings = self.read_settings()?;
+        let before = (
+            settings.embedding_model_id.clone(),
+            settings.generation_model_id.clone(),
+        );
+        if settings.embedding_model_id.as_deref() == Some(id) {
+            settings.embedding_model_id = None;
+        }
+        if settings.generation_model_id.as_deref() == Some(id) {
+            settings.generation_model_id = None;
+        }
+        if before
+            == (
+                settings.embedding_model_id.clone(),
+                settings.generation_model_id.clone(),
+            )
+        {
+            return Ok(());
+        }
+        self.write_settings(&settings)
     }
 
     pub fn select_model(&self, role: ModelRole, id: &str) -> CoreResult<()> {
@@ -358,23 +382,32 @@ impl ModelStore {
                 "Only a fully verified installed model can be selected.",
             ));
         }
+        let mut settings = self.read_settings()?;
+        match role {
+            ModelRole::Embedding => settings.embedding_model_id = Some(id.into()),
+            ModelRole::Generation => settings.generation_model_id = Some(id.into()),
+        }
+        self.write_settings(&settings)
+    }
+
+    fn read_settings(&self) -> CoreResult<ModelSettings> {
         let settings_path = self.data_dir.join("settings.json");
-        fs::create_dir_all(&self.data_dir)?;
-        let mut settings = if settings_path.exists() {
+        Ok(if settings_path.exists() {
             serde_json::from_str::<ModelSettings>(&fs::read_to_string(&settings_path)?)?
         } else {
             ModelSettings {
                 embedding_model_id: None,
                 generation_model_id: None,
             }
-        };
-        match role {
-            ModelRole::Embedding => settings.embedding_model_id = Some(id.into()),
-            ModelRole::Generation => settings.generation_model_id = Some(id.into()),
-        }
+        })
+    }
+
+    fn write_settings(&self, settings: &ModelSettings) -> CoreResult<()> {
+        fs::create_dir_all(&self.data_dir)?;
+        let settings_path = self.data_dir.join("settings.json");
         let temporary = settings_path.with_extension("json.partial");
         let mut file = File::create(&temporary)?;
-        serde_json::to_writer_pretty(&mut file, &settings)?;
+        serde_json::to_writer_pretty(&mut file, settings)?;
         file.write_all(b"\n")?;
         file.sync_all()?;
         fs::rename(temporary, settings_path)?;
@@ -1254,6 +1287,32 @@ mod tests {
         symlink(&outside, partial_path(&destination)).unwrap();
 
         assert!(is_symlink_or_inside_symlink(&root, &partial_path(&destination)).unwrap());
+    }
+
+    #[test]
+    fn removing_a_selected_model_clears_its_selection() {
+        let temp = tempfile::tempdir().unwrap();
+        let bytes = b"model-bytes";
+        let store = store(temp.path(), descriptor(bytes));
+        let path = temp.path().join("models/test-model/nested/model.bin");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, bytes).unwrap();
+        store
+            .select_model(ModelRole::Embedding, "test-model")
+            .unwrap();
+        assert_eq!(
+            store
+                .selected_model(ModelRole::Embedding)
+                .unwrap()
+                .as_deref(),
+            Some("test-model")
+        );
+        store.remove_model("test-model").unwrap();
+        assert!(store
+            .selected_model(ModelRole::Embedding)
+            .unwrap()
+            .is_none());
+        assert!(!path.exists());
     }
 
     #[test]

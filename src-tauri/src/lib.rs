@@ -710,15 +710,26 @@ async fn remove_model(
     app: AppHandle,
     index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
+    generation_state: State<'_, GenerationState>,
+    install_state: State<'_, InstallState>,
     model_id: String,
 ) -> Result<(), FolioError> {
     let index_state = index_state.inner().clone();
     let embedding_state = embedding_state.inner().clone();
+    let generation_state = generation_state.inner().clone();
+    let install_state = install_state.inner().clone();
     let result = run_blocking(move || {
-        let result = model_store(&app)?
-            .remove_model(&model_id)
-            .map_err(native_error);
-        unload_embedding(&embedding_state)?;
+        // Serialized with installs and selections, and nothing keeps the
+        // model's files open while they are deleted.
+        let lock = begin_install(&install_state)?;
+        let result = (|| {
+            unload_generation_for_model(&generation_state, &model_id)?;
+            unload_embedding(&embedding_state)?;
+            model_store(&app)?
+                .remove_model(&model_id)
+                .map_err(native_error)
+        })();
+        finish_install(&install_state, &lock)?;
         result
     })
     .await;
@@ -727,24 +738,52 @@ async fn remove_model(
     Ok(())
 }
 
+/// Stop the generation server if it is serving `model_id`.
+fn unload_generation_for_model(
+    generation_state: &GenerationState,
+    model_id: &str,
+) -> Result<(), NativeProviderError> {
+    let serving = generation_state
+        .lock()
+        .map_err(|_| NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::IoError,
+            message: "The local generation state is unavailable.".into(),
+            detail: None,
+        })?
+        .slot
+        .as_ref()
+        .is_some_and(|slot| slot.model_id == model_id);
+    if serving {
+        unload_generation_now(generation_state)?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn select_model(
     app: AppHandle,
     index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
+    install_state: State<'_, InstallState>,
     role: ModelRole,
     model_id: String,
 ) -> Result<(), FolioError> {
     let embedding_selection = matches!(&role, ModelRole::Embedding);
     let index_state = index_state.inner().clone();
     let embedding_state = embedding_state.inner().clone();
+    let install_state = install_state.inner().clone();
     let result = run_blocking(move || {
+        let lock = begin_install(&install_state)?;
         let result = model_store(&app)?
             .select_model(role, &model_id)
             .map_err(native_error);
-        if embedding_selection {
-            unload_embedding(&embedding_state)?;
-        }
+        let unloaded = if embedding_selection {
+            unload_embedding(&embedding_state)
+        } else {
+            Ok(())
+        };
+        finish_install(&install_state, &lock)?;
+        unloaded?;
         result
     })
     .await;
