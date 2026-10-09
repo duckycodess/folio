@@ -1,0 +1,15 @@
+# Floating Olio chat: no delete, one Olio per view, on-device history
+
+Issue #66 asked for a floating Olio launcher on every view except Ask & Act, opening a compact chat that shares one conversation with the full Ask & Act page. The issue itself raised four open decisions; this records the answers taken.
+
+**No delete from chat.** Natural-language deletion already stays out of scope (`docs/product.md`), and `interpret_request`'s Rust allowlist (`IntentKind`) refuses it. The compact chat follows the same rule as Ask & Act: a delete request comes back `unsupported`, worded to point at the file's manual Delete from the Graph (ADR 0010, `0010-recoverable-delete.md`), which keeps its own exact preview, approval and Undo.
+
+**One Olio per view.** `docs/design.md` already enforces this; `HomeView.tsx` was already turning off `EmptyFolder`'s Olio because its header shows one. Since the floating launcher now puts an Olio on every view it appears on, the view's own in-page Olio is removed rather than kept alongside it: Home's header pose, Home's no-folder and empty-folder illustrations, Organize's empty Collections, and Model Lab's no-model state. Ask & Act is unaffected (the launcher never shows there), and Onboarding is unaffected (it runs before the shell's views do).
+
+**The Home launcher (#37) is replaced**, not kept alongside the floating one. Its rules carry over: a labelled button, nothing sent until the user asks, and a greeting that stays dismissed on this device once dismissed. What does not carry over is #37's automatic prefill of Home's search text and folder filter into Ask & Act: the floating launcher appears on every view, not just Home, so there is no one "current search" to carry. Instead, the compact chat offers the open file (if any) as a removable "Attach" chip, consistent with the new acceptance criterion that context is attached only when the user chooses to.
+
+**History is kept on this device only.** Conversations quote passages from the user's documents, so they are not sent anywhere. They live in the app's own `localStorage` (`chatStore.ts`), in plain text. That includes the requests, file names and paths, and the quoted passages of search results. They are capped at 20 conversations total (oldest dropped first), 20 turns per conversation (the same cap Ask & Act already used in memory) and about 1 million characters stored; past that, the oldest conversations are not saved. Stored history that is damaged or from another version is dropped turn by turn rather than breaking the chat. "Delete all conversations" clears every folder's history at once; there is no per-conversation delete yet. Conversations are isolated per open folder: switching folders shows that folder's own latest conversation (or none), never another folder's.
+
+One store (`chatStore.ts`) serves both the compact chat and the full Ask & Act page, through `useAskAct`. Running turns are dropped rather than persisted, since there is nothing to resume after a reload; finished turns, including their typed error code and message, survive it.
+
+Decided with Louise on 2026-10-10 for issue #66.

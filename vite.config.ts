@@ -4,6 +4,9 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,
+  // `tauri build` sets TAURI_ENV_*; the desktop build uses it to leave the
+  // browser preview's practice replies out of the bundle.
+  envPrefix: ["VITE_", "TAURI_ENV_"],
   server: {
     port: 1420,
     strictPort: true,

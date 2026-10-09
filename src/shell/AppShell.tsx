@@ -40,13 +40,13 @@ import { AnnouncerProvider } from "../ui/Announcer";
 import type { RowMenuItem } from "../ui/RowMenu";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
 import { Notice } from "../ui/Notice";
-import { prefillAskScope } from "../app/useAskAct";
-import { AssistantView } from "../views/AssistantView";
+import { AssistantView, type OpenFile } from "../views/AssistantView";
 import { DocumentPanel } from "../views/DocumentPanel";
 import {
   FileActionDialog,
   type FileActionKind,
 } from "../views/FileActionDialog";
+import { FloatingOlioChat } from "../views/FloatingOlioChat";
 import { GraphView } from "../views/GraphView";
 import { HomeView } from "../views/HomeView";
 import { ActivityView } from "../views/ActivityView";
@@ -289,6 +289,18 @@ export function AppShell() {
     );
   }
 
+  // Shared by Ask & Act and the floating Olio chat (#66): both open a file
+  // from a turn's result the same way.
+  const openFromAsk: OpenFile = (document, tab) => {
+    if (tab)
+      setPanelTab((current) => ({
+        documentId: document.id,
+        tab,
+        request: (current?.request ?? 0) + 1,
+      }));
+    void workspace.selectDocument(document);
+  };
+
   function onSearch(query: string) {
     workspace.setQuery(query);
     // In narrow windows the reader covers the list; show the results instead.
@@ -461,15 +473,6 @@ export function AppShell() {
                   fileActions={fileActions}
                   onOpenPassage={relations.openPassage}
                   home={home}
-                  onAskOlio={() => {
-                    const query = workspace.query.trim();
-                    if (query) drafts.setInstruction(query);
-                    prefillAskScope(
-                      workspace.workspace?.id,
-                      home.filters.folder ?? "",
-                    );
-                    setView("assistant");
-                  }}
                 />
               )}
               {view === "organize" && (
@@ -484,15 +487,7 @@ export function AppShell() {
                   relations={relations}
                   drafts={drafts}
                   onNavigate={setView}
-                  onOpenFile={(document, tab) => {
-                    if (tab)
-                      setPanelTab((current) => ({
-                        documentId: document.id,
-                        tab,
-                        request: (current?.request ?? 0) + 1,
-                      }));
-                    void workspace.selectDocument(document);
-                  }}
+                  onOpenFile={openFromAsk}
                 />
               )}
               {view === "activity" && (
@@ -531,6 +526,17 @@ export function AppShell() {
             onClose={closeActionDialog}
           />
         )}
+        {/* Its own live region: independent of whichever view is showing. */}
+        <AnnouncerProvider>
+          <FloatingOlioChat
+            workspace={workspace}
+            relations={relations}
+            view={view}
+            onNavigate={setView}
+            onOpenFile={openFromAsk}
+            currentFile={reading}
+          />
+        </AnnouncerProvider>
       </div>
     </AnnouncerProvider>
   );
