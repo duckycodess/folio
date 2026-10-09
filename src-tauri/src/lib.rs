@@ -333,7 +333,10 @@ async fn apply_plan(
 
 #[tauri::command]
 async fn list_models(app: AppHandle) -> Result<Vec<ModelDescriptor>, FolioError> {
-    Ok(run_blocking(move || Ok(model_store(&app)?.manifest().models.clone())).await?)
+    Ok(
+        run_blocking::<_, FolioError, _>(move || Ok(model_store(&app)?.manifest().models.clone()))
+            .await?,
+    )
 }
 
 #[tauri::command]
@@ -432,9 +435,9 @@ async fn select_model(
 #[tauri::command]
 async fn runtime_status(app: AppHandle, runtime_id: String) -> Result<RuntimeStatus, FolioError> {
     Ok(run_blocking::<_, FolioError, _>(move || {
-        model_store(&app)?
+        Ok(model_store(&app)?
             .runtime_status(&runtime_id)
-            .map_err(native_error)
+            .map_err(native_error)?)
     })
     .await?)
 }
