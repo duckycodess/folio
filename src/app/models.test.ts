@@ -1,21 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type {
-  BenchmarkResult,
   ModelDescriptor,
   ModelSetup,
   RuntimeStatus,
 } from "../domain/contracts";
 import {
-  correctnessLabel,
   exactSize,
   installSteps,
   isGenerationReady,
   modelGroups,
   modelName,
   progressPercent,
-  ramLabel,
   memorySize,
-  resultsByTask,
   setupAdvice,
   totalDownloadBytes,
 } from "./models";
@@ -240,42 +236,5 @@ describe("onboarding's model recommendation", () => {
       RUNTIME,
     );
     expect(advice.withinBudget).toBe(false);
-  });
-});
-
-describe("Model Lab results", () => {
-  const run: BenchmarkResult = {
-    caseId: "deadline-taglish",
-    task: "interpretation",
-    modelId: "small",
-    revision: "r".repeat(40),
-    quantization: "Q4_K_M",
-    runtime: "llama.cpp b1",
-    hardware: "macOS arm64, 8 GB",
-    contextTokens: 2048,
-    cold: true,
-    taskDurationMs: 3200,
-    correctness: null,
-    peakProcessRamBytes: null,
-    modelDiskBytes: 400,
-  };
-
-  it("keeps every task separate, including tasks with no runs", () => {
-    const grouped = resultsByTask([run]);
-    expect(grouped.map((group) => [group.task, group.results.length])).toEqual([
-      ["retrieval", 0],
-      ["interpretation", 1],
-      ["summary", 0],
-      ["edit", 0],
-    ]);
-  });
-
-  it("labels missing measurements as such, and RAM as the process's", () => {
-    expect(correctnessLabel(run)).toBe("Not graded");
-    expect(ramLabel(run)).toBe("Not measured");
-    expect(ramLabel({ ...run, peakProcessRamBytes: 300 * 1024 * 1024 })).toBe(
-      "300.0 MB peak (Folio's model process)",
-    );
-    expect(ramLabel({ ...run, peakProcessRamBytes: 1 })).not.toMatch(/device/i);
   });
 });

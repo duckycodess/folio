@@ -88,6 +88,7 @@ import {
   type ViewId,
 } from "./navigation";
 import { readerDocument } from "./reader";
+import folioWordmark from "../assets/brand/folio-wordmark.png";
 
 const ICONS: Record<ViewId, LucideIcon> = {
   home: House,
@@ -437,15 +438,18 @@ export function AppShell() {
               Skip to content
             </a>
             <aside className="sidebar">
-              {/* Interim text wordmark until the logo SVG is exported. */}
-              <span className="wordmark" role="img" aria-label="Folio">
-                <span className="wordmark-full" aria-hidden="true">
-                  folio
-                </span>
-                <span className="wordmark-short" aria-hidden="true">
-                  f
-                </span>
-              </span>
+              {/* The brandkit's gold eye wordmark and motto (docs/design.md). */}
+              <div className="brand">
+                <img
+                  className="wordmark"
+                  src={folioWordmark}
+                  alt="Folio"
+                  width={178}
+                  height={64}
+                  draggable={false}
+                />
+                <span className="brand-motto">Search. Organize. Summarize</span>
+              </div>
               <nav aria-label="Main" className="nav">
                 <NavList
                   items={PRIMARY_NAV}

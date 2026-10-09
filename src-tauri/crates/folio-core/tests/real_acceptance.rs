@@ -1,7 +1,7 @@
 use folio_core::chunking::{Chunk, ChunkSource, InterimTextChunker, TextDocument};
 use folio_core::contracts::{
     DocumentRecord, GroundedAnswerKind, InterpretationResult, Language, ModelDescriptor, ModelFile,
-    OperationProposal, ProviderErrorCode, SearchResult,
+    NonMutatingIntent, OperationProposal, ProviderErrorCode, SearchResult,
 };
 use folio_core::embeddings::{EmbeddingKind, EmbeddingProvider, OrtE5Provider};
 use folio_core::error::{CoreError, CoreResult};
@@ -633,6 +633,51 @@ fn r8_interpretation_ambiguity() {
         result,
         InterpretationResult::NeedsFileSelection { .. }
     ));
+}
+
+// #88: reported against the real desktop app and a real small local model
+// (qwen3-0.6b-q4-k-m) — a plain "Find <file>." request, naming a file that
+// unambiguously exists, was classified as a mutation with no
+// targetDescription, landing on the generic "Which file should I use?" dead
+// end instead of just running the search. interpretation.rs's prompt now
+// demonstrates a `search` example and says finding a file with nothing to
+// change is never `edit`; this is the real-model check for that fix.
+#[test]
+#[ignore = "requires verified local E5 and llama.cpp model files"]
+fn issue_88_plain_find_request_is_search_not_clarification() {
+    let prepared = prepared();
+    let generation = GenerationGuard::new(&prepared.inputs);
+    let cancel = AtomicBool::new(false);
+    let request = "Find budget-notes.md.";
+    let trace = interpretation::interpret_request_traced(
+        generation.provider.as_ref(),
+        request,
+        &prepared.documents,
+        &prepared.contents,
+        &prepared.chunks,
+        &cancel,
+    )
+    .expect("real find interpretation");
+    write_evidence(
+        "issue_88_plain_find_request_is_search_not_clarification",
+        json!({
+            "input": request,
+            "result": &trace.result,
+            "rawModelOutput": &trace.raw_model_output,
+            "promptSha256": &trace.prompt_sha256,
+        }),
+    );
+    assert!(
+        matches!(
+            trace.result,
+            InterpretationResult::NonMutating {
+                intent: NonMutatingIntent::Search,
+                ..
+            }
+        ),
+        "expected a search query for a plain find request, got {:?}",
+        trace.result
+    );
 }
 
 #[test]
