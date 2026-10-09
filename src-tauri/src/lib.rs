@@ -9,7 +9,7 @@ mod workspace;
 
 use contracts::{ActionPlan, Approval, FileOperation, ImpactCandidate};
 use error::{error, ErrorCode, FolioError};
-use folio_core::chunking::{Chunk, ChunkSource, InterimTextChunker, TextDocument};
+use folio_core::chunking::{Chunk, InterimTextChunker, TextDocument};
 use folio_core::contracts::{
     DocumentRecord, EmbeddingSpace, GroundedResult, InterpretationResult, Language,
     ModelDescriptor, ModelInstallState, ModelInstallStatus, ModelRole, NativeProviderError,
@@ -1000,20 +1000,13 @@ async fn summarize_document(
     Ok(run_blocking::<_, FolioError, _>(move || {
         let document_text = read_ai_document(&root, &relative_path)?;
         let content = document_text.content.clone();
-        let record = document_record(
-            &root,
-            &document_id,
-            &relative_path,
-            &document_text,
-            &content,
-        );
-        let chunks = InterimTextChunker::new(vec![TextDocument::new(record, content.clone())])
-            .chunks(&document_id)?;
+        let passages =
+            grounding::summary_passages(&document_id, &content, &document_text.content_hash);
         let provider = generation_provider(&app, &generation_state)?;
         let cancel = begin_generation(&generation_state)?;
         let result = grounding::summarize_document(
             provider.as_ref(),
-            grounding::passages_from_chunks(&chunks),
+            passages,
             grounding::detect_language(&content),
             cancel.as_ref(),
         );

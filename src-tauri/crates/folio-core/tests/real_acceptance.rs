@@ -668,13 +668,19 @@ fn r8_summary_cited_output() {
     let prepared = prepared();
     let generation = GenerationGuard::new(&prepared.inputs);
     let cancel = AtomicBool::new(false);
-    let project_plan_chunks = prepared
-        .chunks
+    let project_plan = prepared
+        .documents
         .iter()
-        .filter(|chunk| chunk.document_id == "projects/project-plan.md")
-        .cloned()
-        .collect::<Vec<_>>();
-    let supplied = grounding::passages_from_chunks(&project_plan_chunks);
+        .find(|document| document.id == "projects/project-plan.md")
+        .expect("project plan fixture is indexed");
+    let supplied = grounding::summary_passages(
+        &project_plan.id,
+        &prepared.contents[&project_plan.id],
+        project_plan
+            .content_hash
+            .as_deref()
+            .expect("fixture documents carry content hashes"),
+    );
     let summary = grounding::summarize_document(
         generation.provider.as_ref(),
         supplied.clone(),
@@ -705,6 +711,11 @@ fn r8_summary_cited_output() {
         json!({
             "input": "projects/project-plan.md",
             "language": "fil",
+            "suppliedPassages": &supplied,
+            "detectedOutputLanguage": {
+                "value": grounding::detect_language(&summary.text),
+                "method": "heuristic lexical detector; observation only, not asserted",
+            },
             "result": &summary,
             "requiredFacts": &required_facts,
             "factualReview": "notReviewed",

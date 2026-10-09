@@ -62,6 +62,88 @@ pub fn passages_from_chunks(chunks: &[Chunk]) -> Vec<SourcePassage> {
         .collect()
 }
 
+/// Longest paragraph passage supplied to the summarizer; longer paragraphs
+/// are split at whitespace on character boundaries.
+pub const MAX_SUMMARY_PASSAGE_BYTES: usize = 600;
+/// Generated sentences shorter than this are never matched to a passage by
+/// text alone.
+const MIN_REPAIRABLE_SENTENCE_BYTES: usize = 12;
+
+/// Paragraph-level passages for summarizing one document. Retrieval chunks
+/// merge small paragraphs, which would make every citation point at the
+/// whole file; summaries cite the paragraph that supports a sentence instead.
+/// Offsets are UTF-8 bytes into `content`, bound to `content_hash`.
+pub fn summary_passages(
+    document_id: &str,
+    content: &str,
+    content_hash: &str,
+) -> Vec<SourcePassage> {
+    let mut passages = Vec::new();
+    let mut paragraph_start = 0_usize;
+    let separators = content
+        .match_indices("\n\n")
+        .map(|(index, _)| index)
+        .chain(std::iter::once(content.len()))
+        .collect::<Vec<_>>();
+    for separator in separators {
+        if separator < paragraph_start {
+            continue;
+        }
+        let raw = &content[paragraph_start..separator];
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() {
+            let start = paragraph_start + (raw.len() - raw.trim_start().len());
+            let end = start + trimmed.len();
+            for (piece_start, piece_end) in
+                split_on_whitespace(content, start, end, MAX_SUMMARY_PASSAGE_BYTES)
+            {
+                passages.push(SourcePassage {
+                    document_id: document_id.into(),
+                    document_content_hash: content_hash.into(),
+                    offset_unit: crate::contracts::OffsetUnit::Utf8Byte,
+                    start: piece_start,
+                    end: piece_end,
+                    text: content[piece_start..piece_end].to_owned(),
+                    page: None,
+                });
+            }
+        }
+        paragraph_start = (separator + 2).min(content.len());
+    }
+    passages
+}
+
+fn split_on_whitespace(content: &str, start: usize, end: usize, max: usize) -> Vec<(usize, usize)> {
+    let mut pieces = Vec::new();
+    let mut piece_start = start;
+    while end - piece_start > max {
+        let mut cut = piece_start + max;
+        while !content.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        if let Some(space) = content[piece_start..cut].rfind(char::is_whitespace) {
+            if space > 0 {
+                cut = piece_start + space;
+            }
+        }
+        if cut <= piece_start {
+            break;
+        }
+        pieces.push((piece_start, cut));
+        piece_start = cut;
+        while let Some(character) = content[piece_start..end].chars().next() {
+            if !character.is_whitespace() {
+                break;
+            }
+            piece_start += character.len_utf8();
+        }
+    }
+    if piece_start < end {
+        pieces.push((piece_start, end));
+    }
+    pieces
+}
+
 /// Build the summary messages. Only the supplied source passages enter the
 /// source section, and they are delimited as untrusted data.
 pub fn build_summary_messages(passages: &[SourcePassage], language: &Language) -> Vec<ChatMessage> {
@@ -85,7 +167,8 @@ fn build_summary_messages_with_offset(
         ChatMessage {
             role: "user".into(),
             content: format!(
-                "Summarize the supplied passages. Every factual sentence should cite one or more ids.\n{}",
+                "Summarize the supplied passages. Every factual sentence should cite one or more ids. Write every sentence in {}.\n{}",
+                language_name(language),
                 source
             ),
         },
@@ -111,8 +194,9 @@ pub fn build_answer_messages(
         ChatMessage {
             role: "user".into(),
             content: format!(
-                "Question:\n{}\n\nEvidence:\n{}",
+                "Question:\n{}\n\nAnswer in {}.\n\nEvidence:\n{}",
                 question.trim(),
+                language_name(language),
                 source
             ),
         },
@@ -417,7 +501,8 @@ fn build_reduce_messages(
         ChatMessage {
             role: "user".into(),
             content: format!(
-                "Combine these bounded notes into concise, source-grounded sentences.\n{}",
+                "Combine these bounded notes into concise, source-grounded sentences. Write every sentence in {}.\n{}",
+                language_name(language),
                 notes_text
             ),
         },
@@ -442,14 +527,52 @@ fn validate_generated_sentences(
             if text.is_empty() {
                 return None;
             }
-            let citations = sentence
+            let mut citations = sentence
                 .citations
                 .into_iter()
                 .filter_map(|id| available.get(&id).cloned())
                 .collect::<Vec<_>>();
+            if citations.is_empty() {
+                citations = verbatim_sources(&text, available);
+            }
             Some(ValidatedSentence { text, citations })
         })
         .collect()
+}
+
+/// Supplied passages that contain `sentence` word for word (case and
+/// whitespace insensitive). Used only when the model gave no valid citation:
+/// the containment is checked evidence, not a guess, and a sentence that is
+/// not verbatim stays uncited and counted.
+fn verbatim_sources(
+    sentence: &str,
+    available: &HashMap<String, SourcePassage>,
+) -> Vec<SourcePassage> {
+    let needle = normalize_for_match(sentence);
+    if needle.len() < MIN_REPAIRABLE_SENTENCE_BYTES {
+        return Vec::new();
+    }
+    let mut matches = available
+        .iter()
+        .filter(|(_, passage)| normalize_for_match(&passage.text).contains(&needle))
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| {
+        left.1
+            .start
+            .cmp(&right.1.start)
+            .then_with(|| left.0.as_str().cmp(right.0.as_str()))
+    });
+    matches
+        .into_iter()
+        .map(|(_, passage)| passage.clone())
+        .collect()
+}
+
+fn normalize_for_match(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
 }
 
 #[derive(Clone, Debug)]
@@ -787,6 +910,71 @@ mod tests {
         .unwrap();
         assert_eq!(answer.kind, GroundedAnswerKind::InsufficientEvidence);
         assert_eq!(provider.calls.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn summary_passages_follow_paragraphs_with_exact_utf8_offsets() {
+        let content = "# Pamagat\n\nAng ñ deadline ay October 20.\n\n\nIkalawang talata.\n";
+        let passages = summary_passages("w:notes.md", content, "sha256:00");
+        let texts = passages
+            .iter()
+            .map(|passage| passage.text.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            texts,
+            [
+                "# Pamagat",
+                "Ang ñ deadline ay October 20.",
+                "Ikalawang talata."
+            ]
+        );
+        for passage in &passages {
+            assert_eq!(&content[passage.start..passage.end], passage.text);
+            assert_eq!(passage.document_content_hash, "sha256:00");
+            assert_eq!(passage.offset_unit, OffsetUnit::Utf8Byte);
+        }
+        assert_eq!(passages[1].start, "# Pamagat\n\n".len());
+    }
+
+    #[test]
+    fn long_paragraphs_split_on_whitespace_within_the_cap() {
+        let content = "salitañ ".repeat(200);
+        let passages = summary_passages("w:long.md", &content, "sha256:00");
+        assert!(passages.len() > 1);
+        for passage in &passages {
+            assert!(passage.text.len() <= MAX_SUMMARY_PASSAGE_BYTES);
+            assert_eq!(&content[passage.start..passage.end], passage.text);
+            assert!(!passage.text.starts_with(' '));
+        }
+    }
+
+    #[test]
+    fn a_verbatim_uncited_sentence_is_linked_to_its_passage() {
+        let provider = ScriptedProvider::new(vec![json!({
+            "sentences": [
+                {"text": "The presentation is scheduled for October 24.", "citations": []},
+                {"text": "A sentence that appears nowhere.", "citations": []}
+            ],
+            "insufficientEvidence": false
+        })]);
+        let supplied = vec![
+            passage(0, "The deadline is October 20."),
+            passage(
+                30,
+                "Interviews involve 12 students. The presentation is scheduled for October 24.",
+            ),
+        ];
+        let answer = answer_question(
+            Some(&provider),
+            "When is the presentation?",
+            supplied.clone(),
+            Language::En,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(answer.sentences[0].citations, vec![supplied[1].clone()]);
+        assert!(answer.sentences[1].citations.is_empty());
+        assert_eq!(answer.uncited_sentence_count, 1);
     }
 
     #[test]
