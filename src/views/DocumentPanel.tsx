@@ -1,5 +1,5 @@
 import { ArrowLeft, FileText, Sparkles, X } from "lucide-react";
-import { useId, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import type { WorkspaceState } from "../app/useWorkspace";
 import type { DocumentRecord } from "../domain/contracts";
 import type { ViewId } from "../shell/navigation";
@@ -34,6 +34,21 @@ export function DocumentPanel({
   const [tab, setTab] = useState<Tab>("Details");
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const id = useId();
+  const heading = useRef<HTMLHeadingElement>(null);
+
+  // The panel is keyed by document, so this runs each time one opens. In
+  // narrow windows the panel replaces the list, so the row that opened it is
+  // hidden; elsewhere focus stays on the list unless it was lost (a Related
+  // link replaced the previous panel).
+  useEffect(() => {
+    const active = window.document.activeElement;
+    if (
+      window.matchMedia("(max-width: 860px)").matches ||
+      !active ||
+      active === window.document.body
+    )
+      heading.current?.focus();
+  }, []);
 
   function onTabKeyDown(event: KeyboardEvent, index: number) {
     const next =
@@ -63,7 +78,12 @@ export function DocumentPanel({
           <FileText size={24} />
         </span>
         <div className="document-heading">
-          <h2 className="document-title" title={document.name}>
+          <h2
+            ref={heading}
+            className="document-title"
+            title={document.name}
+            tabIndex={-1}
+          >
             {document.name}
           </h2>
           <p className="document-meta tabular">
@@ -92,7 +112,8 @@ export function DocumentPanel({
             type="button"
             role="tab"
             id={`${id}-tab-${name}`}
-            aria-controls={`${id}-panel-${name}`}
+            // Only the selected tab's panel is rendered.
+            aria-controls={tab === name ? `${id}-panel-${name}` : undefined}
             aria-selected={tab === name}
             tabIndex={tab === name ? 0 : -1}
             className={`tab${tab === name ? " is-active" : ""}`}

@@ -32,19 +32,27 @@ export function searchShortcutLabel(platform: string): string {
 
 interface ShortcutEvent {
   key: string;
+  /** Physical key, used when the layout doesn't type Latin letters. */
+  code?: string;
   metaKey: boolean;
   ctrlKey: boolean;
   altKey: boolean;
   shiftKey: boolean;
 }
 
-/** ⌘K on macOS, Ctrl+K elsewhere; never both, so Ctrl+K on a Mac is left alone. */
+/**
+ * ⌘K on macOS, Ctrl+K elsewhere; never both, so Ctrl+K on a Mac is left alone.
+ * Latin layouts (including Dvorak) match the typed K; other layouts, such as
+ * Cyrillic or Greek, match the key in the K position.
+ */
 export function isSearchShortcut(
   event: ShortcutEvent,
   platform: string,
 ): boolean {
-  if (event.key.toLowerCase() !== "k" || event.altKey || event.shiftKey)
-    return false;
+  const isK = /^[a-z]$/i.test(event.key)
+    ? event.key.toLowerCase() === "k"
+    : event.code === "KeyK";
+  if (!isK || event.altKey || event.shiftKey) return false;
   return isApplePlatform(platform)
     ? event.metaKey && !event.ctrlKey
     : event.ctrlKey && !event.metaKey;

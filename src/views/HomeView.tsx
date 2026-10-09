@@ -68,8 +68,16 @@ export function HomeView({ workspace, onNavigate }: HomeViewProps) {
           <EmptyState icon={<SearchX size={24} />} title="No matching files">
             No file contains “{workspace.query.trim()}”. Try another word.
           </EmptyState>
+        ) : workspace.loading ? (
+          <p className="muted">Loading files…</p>
         ) : (
-          <EmptyState title="This folder has no supported files">
+          <EmptyState
+            title={
+              workspace.workspace
+                ? "This folder has no supported files"
+                : "No sample files"
+            }
+          >
             Folio reads text, Markdown and text-based PDF files.
           </EmptyState>
         )}

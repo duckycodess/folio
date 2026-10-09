@@ -40,6 +40,8 @@ export function FilesView({ workspace }: { workspace: WorkspaceState }) {
             selectedId={workspace.selected?.id}
             onSelect={workspace.selectDocument}
           />
+        ) : workspace.loading ? (
+          <p className="muted">Loading files…</p>
         ) : (
           <EmptyState title={searching ? "No matching files" : "No files yet"}>
             {searching

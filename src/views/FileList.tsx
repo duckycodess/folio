@@ -1,5 +1,5 @@
 import { FileText } from "lucide-react";
-import type { KeyboardEvent } from "react";
+import { useState, type FocusEvent, type KeyboardEvent } from "react";
 import type { DocumentRecord } from "../domain/contracts";
 import { ListRow } from "../ui/ListRow";
 import { fileKind, folderOf, formatBytes } from "./format";
@@ -11,13 +11,23 @@ interface FileListProps {
   onSelect: (document: DocumentRecord) => void;
 }
 
-/** Arrow keys, Home and End move between rows; Enter or Space opens one. */
+/**
+ * Arrow keys, Home and End move between rows; Enter or Space opens one. The
+ * single Tab stop follows the focused row, so Tab and Shift+Tab come back to it.
+ */
 export function FileList({
   label,
   documents,
   selectedId,
   onSelect,
 }: FileListProps) {
+  const [focusedId, setFocusedId] = useState<string>();
+
+  function onFocus(event: FocusEvent<HTMLDivElement>) {
+    const id = (event.target as HTMLElement).dataset.documentId;
+    if (id) setFocusedId(id);
+  }
+
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     const rows = [
       ...event.currentTarget.querySelectorAll<HTMLElement>('[role="option"]'),
@@ -38,7 +48,13 @@ export function FileList({
     rows[Math.max(0, Math.min(rows.length - 1, next))].focus();
   }
 
-  const hasSelection = documents.some((item) => item.id === selectedId);
+  const has = (id: string | undefined) =>
+    id !== undefined && documents.some((item) => item.id === id);
+  const tabStop = has(focusedId)
+    ? focusedId
+    : has(selectedId)
+      ? selectedId
+      : documents[0]?.id;
 
   return (
     <div
@@ -46,8 +62,9 @@ export function FileList({
       role="listbox"
       aria-label={label}
       onKeyDown={onKeyDown}
+      onFocus={onFocus}
     >
-      {documents.map((document, index) => (
+      {documents.map((document) => (
         <ListRow
           key={document.id}
           icon={<FileText size={20} />}
@@ -60,7 +77,7 @@ export function FileList({
             </>
           }
           selected={document.id === selectedId}
-          tabbable={hasSelection ? document.id === selectedId : index === 0}
+          tabbable={document.id === tabStop}
           dataId={document.id}
           onSelect={() => onSelect(document)}
         />
