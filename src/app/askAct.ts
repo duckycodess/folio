@@ -7,10 +7,17 @@ import type {
   SearchResult,
 } from "../domain/contracts";
 import type { FolioError } from "../domain/errors";
+import { fold } from "../domain/searchEvidence";
 
 /** What one Ask & Act request produced. Every kind is read-only. */
 export type AskOutcome =
-  | { type: "results"; query: string; results: SearchResult[] }
+  | {
+      type: "results";
+      query: string;
+      results: SearchResult[];
+      /** Only file names were searched: the index couldn't answer. */
+      namesOnly?: boolean;
+    }
   | { type: "answer"; result: GroundedResult }
   /** The file's summary is running in its Summary tab. */
   | { type: "summary"; document: DocumentRecord }
@@ -116,16 +123,17 @@ export function inScope(results: SearchResult[], folder: string) {
     : results;
 }
 
+/** Words folded like the index: case- and accent-insensitive. */
 function lowerWords(value: string): string[] {
-  return value.normalize("NFKC").toLocaleLowerCase().match(WORD) ?? [];
+  return fold(value.normalize("NFKC")).match(WORD) ?? [];
 }
 
 /**
- * Whether `written` spells out `name` as a whole file name, so naming
- * `old-notes.md` doesn't also name `notes.md`.
+ * Whether `written` (already folded) spells out `name` as a whole file name,
+ * so naming `old-notes.md` doesn't also name `notes.md`.
  */
 function writesName(written: string, name: string): boolean {
-  const wanted = name.normalize("NFKC").toLocaleLowerCase();
+  const wanted = fold(name.normalize("NFKC"));
   const escaped = wanted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(
     `(?<![\\p{L}\\p{N}_.-])${escaped}(?![\\p{L}\\p{N}_-])`,
@@ -135,11 +143,15 @@ function writesName(written: string, name: string): boolean {
 
 /**
  * Files the request names. The index scores only file text, so without this
- * "find Sample_Resume.pdf" finds nothing unless the resume's text says so. A
- * file is `named` when every word of its name (extension aside) is in the
- * request, and `partial` when its name shares a longer word with it.
- * `exact` holds the files whose full name, extension included, is written in
- * the request.
+ * "find Sample_Resume.pdf" finds nothing unless the resume's text says so.
+ * - `named`: every word of the name (extension aside) is in the request, and
+ *   the name is distinctive (two or more words with one longer than two
+ *   letters) or written out in full. These come before the index's results.
+ * - `partial`: other names that share a longer word with the request,
+ *   including single generic words like `notes.md` or `readme.md`, which
+ *   would otherwise push the index's results out. These come after them.
+ * - `exact`: files whose full name, extension included, the request writes.
+ * Matching folds case and accents, like the index ("nino" finds "Niño").
  */
 export function namedFiles(
   documents: DocumentRecord[],
@@ -150,8 +162,9 @@ export function namedFiles(
   exact: DocumentRecord[];
 } {
   const asked = new Set(lowerWords(request));
-  const written = request.normalize("NFKC").toLocaleLowerCase();
+  const written = fold(request.normalize("NFKC"));
   const named: SearchResult[] = [];
+  const exact: DocumentRecord[] = [];
   const partial: { result: SearchResult; matched: number }[] = [];
   for (const document of documents) {
     const stem = document.name.replace(/\.[^.]+$/, "");
@@ -164,7 +177,12 @@ export function namedFiles(
       method: "keyword",
       passages: [],
     };
-    if (matched.length === words.length) named.push(result);
+    const writtenOut = writesName(written, document.name);
+    if (writtenOut) exact.push(document);
+    const distinctive =
+      words.length >= 2 && words.some((word) => word.length > 2);
+    if (matched.length === words.length && (distinctive || writtenOut))
+      named.push(result);
     else if (matched.some((word) => word.length > 2))
       partial.push({ result, matched: matched.length });
   }
@@ -173,9 +191,7 @@ export function namedFiles(
   named.sort(byPath);
   return {
     named,
-    exact: named
-      .map(({ document }) => document)
-      .filter((document) => writesName(written, document.name)),
+    exact: exact.sort((a, b) => a.relativePath.localeCompare(b.relativePath)),
     partial: partial
       .sort((a, b) => b.matched - a.matched || byPath(a.result, b.result))
       .map(({ result }) => result),
