@@ -61,6 +61,15 @@ export function AssistantView({
   const root = workspace.workspace?.rootPath ?? "";
   const rootName = root.split(/[\\/]/).filter(Boolean).at(-1) ?? root;
 
+  // Keep the newest turn in view above the input, as a chat does: when a
+  // request is sent and again when its reply arrives.
+  const logEnd = useRef<HTMLDivElement | null>(null);
+  const turnCount = ask.turns.length;
+  const latestStatus = latest?.status;
+  useEffect(() => {
+    if (turnCount) logEnd.current?.scrollIntoView({ block: "end" });
+  }, [turnCount, latestStatus]);
+
   // Say when a request finishes; the result itself is on the page.
   useEffect(() => {
     if (!latest) return;
@@ -117,14 +126,18 @@ export function AssistantView({
     );
 
   const index = ask.index;
-  const send = (action: "find" | "ask") =>
-    action === "find" ? ask.find(request) : ask.ask(request);
-  const turns = [...ask.turns].reverse();
+  const canSend = Boolean(request.trim()) && !ask.busy;
+  const send = (action: "find" | "ask") => {
+    if (!canSend) return;
+    if (action === "find") ask.find(request);
+    else ask.ask(request);
+  };
+  const turns = ask.turns;
 
   return (
-    <div className="view">
+    <div className="view ask-view">
       <header className="page-header page-header-compact ask-header">
-        <OlioSprite state={ask.busy ? "thinking" : "idle"} size={130} />
+        <OlioSprite state={ask.busy ? "thinking" : "idle"} size={72} />
         <div>
           <h1 className="page-title">Ask &amp; Act</h1>
           <p className="page-tagline">
@@ -134,25 +147,121 @@ export function AssistantView({
         </div>
       </header>
 
-      <section className="ask-scope" aria-label="Search scope">
-        <label htmlFor="ask-scope" className="field-label">
-          Searching in
+      {/* Oldest first, newest last, like a chat: the reply lands just above
+          the input. */}
+      <section className="ask-log" aria-label="Olio's replies">
+        {turns.length === 0 ? (
+          <p className="muted ask-log-empty">
+            Your requests and Olio's replies appear here, newest at the bottom.
+          </p>
+        ) : (
+          <>
+            {!ask.busy && (
+              <Button variant="ghost" className="ask-clear" onClick={ask.clear}>
+                Clear replies
+              </Button>
+            )}
+            {turns.map((turn) => (
+              <article key={turn.id} className="ask-turn">
+                <p className="ask-bubble">
+                  <Badge>
+                    {turn.action === "find" ? "Find files" : "Ask Olio"}
+                  </Badge>{" "}
+                  <q className="ask-request">{turn.request}</q>
+                </p>
+                <div className="ask-reply">
+                  <TurnBody
+                    turn={turn}
+                    ask={ask}
+                    workspace={workspace}
+                    relations={relations}
+                    onOpen={onOpenFile}
+                    onRetry={() =>
+                      turn.action === "find"
+                        ? ask.find(turn.request)
+                        : ask.ask(turn.request, turn.chosen)
+                    }
+                    onNavigate={onNavigate}
+                    onPreviewChange={previewChange}
+                  />
+                </div>
+              </article>
+            ))}
+          </>
+        )}
+      </section>
+
+      <form
+        className="ask-composer"
+        onSubmit={(event) => {
+          event.preventDefault();
+          send("ask");
+        }}
+      >
+        <label htmlFor="instruction" className="visually-hidden">
+          Your request
         </label>
-        <select
-          id="ask-scope"
-          className="text-input"
-          value={ask.scope}
-          disabled={ask.busy}
-          onChange={(event) => ask.setScope(event.target.value)}
-        >
-          <option value="">All of {rootName}</option>
-          {folders.map((folder) => (
-            <option key={folder} value={folder}>
-              {rootName}/{folder}
-            </option>
-          ))}
-        </select>
-        <p className="muted ask-index">
+        <div className="ask-input">
+          <textarea
+            id="instruction"
+            className="ask-textarea"
+            rows={2}
+            value={request}
+            placeholder="Find my notes about interview methods"
+            aria-describedby="instruction-help"
+            onChange={(event) => drafts.setInstruction(event.target.value)}
+            onKeyDown={(event) => {
+              // Enter sends, Shift+Enter starts a new line; never mid-IME.
+              if (
+                event.key === "Enter" &&
+                !event.shiftKey &&
+                !event.nativeEvent.isComposing
+              ) {
+                event.preventDefault();
+                send("ask");
+              }
+            }}
+          />
+          <div className="ask-input-bar">
+            <div className="ask-scope" role="group" aria-label="Search scope">
+              <label htmlFor="ask-scope" className="visually-hidden">
+                Searching in
+              </label>
+              <select
+                id="ask-scope"
+                className="ask-chip-select"
+                value={ask.scope}
+                disabled={ask.busy}
+                title="Searching in"
+                onChange={(event) => ask.setScope(event.target.value)}
+              >
+                <option value="">All of {rootName}</option>
+                {folders.map((folder) => (
+                  <option key={folder} value={folder}>
+                    {rootName}/{folder}
+                  </option>
+                ))}
+              </select>
+              <Button
+                variant="ghost"
+                className="ask-chip"
+                disabled={ask.preparing || ask.busy}
+                onClick={ask.prepare}
+              >
+                {index ? "Prepare again" : "Prepare now"}
+              </Button>
+            </div>
+            <div className="ask-send">
+              <Button disabled={!canSend} onClick={() => send("find")}>
+                Find files
+              </Button>
+              <Button type="submit" variant="primary" disabled={!canSend}>
+                Ask Olio
+              </Button>
+            </div>
+          </div>
+        </div>
+        <p id="instruction-help" className="field-help ask-status">
           {ask.preparing
             ? "Preparing this folder for search…"
             : index
@@ -166,20 +275,10 @@ export function AssistantView({
                     : ""
                 }`
               : "Not prepared yet. Folio prepares the folder on your first request."}
-          {ask.scope && " Questions look across the whole folder."}
+          {ask.scope && " Questions look across the whole folder."} English,
+          Filipino or Taglish. Enter sends, Shift+Enter adds a line. Find files
+          works without a writing model.
         </p>
-        <Button disabled={ask.preparing || ask.busy} onClick={ask.prepare}>
-          {index ? "Prepare again" : "Prepare now"}
-        </Button>
-        {ask.indexError && (
-          <RecoveryNotice
-            error={ask.indexError}
-            actions={{
-              retry: ask.prepare,
-              openModelLab: () => onNavigate("modelLab"),
-            }}
-          />
-        )}
         {index?.skippedDocuments && index.skippedDocuments.length > 0 && (
           <details className="ask-skipped">
             <summary>Skipped files</summary>
@@ -192,83 +291,17 @@ export function AssistantView({
             </ul>
           </details>
         )}
-      </section>
-
-      <Panel title="Your request">
-        <form
-          className="assistant-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            send("ask");
-          }}
-        >
-          <label htmlFor="instruction" className="visually-hidden">
-            Your request
-          </label>
-          <textarea
-            id="instruction"
-            className="text-area"
-            rows={3}
-            value={request}
-            placeholder="Find my notes about interview methods"
-            aria-describedby="instruction-help"
-            onChange={(event) => drafts.setInstruction(event.target.value)}
+        {ask.indexError && (
+          <RecoveryNotice
+            error={ask.indexError}
+            actions={{
+              retry: ask.prepare,
+              openModelLab: () => onNavigate("modelLab"),
+            }}
           />
-          <p id="instruction-help" className="field-help">
-            English, Filipino or Taglish. Find files works without a writing
-            model.
-          </p>
-          <div className="form-actions ask-actions">
-            <Button
-              disabled={!request.trim() || ask.busy}
-              onClick={() => send("find")}
-            >
-              Find files
-            </Button>
-            <Button
-              type="submit"
-              variant="primary"
-              disabled={!request.trim() || ask.busy}
-            >
-              Ask Olio
-            </Button>
-          </div>
-        </form>
-      </Panel>
-
-      {turns.length > 0 && (
-        <section className="ask-turns" aria-label="Olio's replies">
-          {turns.map((turn) => (
-            <article key={turn.id} className="ask-turn">
-              <header className="ask-turn-head">
-                <Badge>
-                  {turn.action === "find" ? "Find files" : "Ask Olio"}
-                </Badge>
-                <q className="ask-request">{turn.request}</q>
-              </header>
-              <TurnBody
-                turn={turn}
-                ask={ask}
-                workspace={workspace}
-                relations={relations}
-                onOpen={onOpenFile}
-                onRetry={() =>
-                  turn.action === "find"
-                    ? ask.find(turn.request)
-                    : ask.ask(turn.request, turn.chosen)
-                }
-                onNavigate={onNavigate}
-                onPreviewChange={previewChange}
-              />
-            </article>
-          ))}
-          {!ask.busy && (
-            <Button variant="ghost" onClick={ask.clear}>
-              Clear replies
-            </Button>
-          )}
-        </section>
-      )}
+        )}
+      </form>
+      <div ref={logEnd} aria-hidden="true" />
       {changing && (
         <ChangeDialog
           proposal={changing}
