@@ -183,6 +183,14 @@ The reported "open button not working" in the real desktop app could not be repr
 
 `npm run check`, `npm test` (427 passed, 9 todo) and `npm run build` passed. The Tauri app wasn't opened against a real folder for this change.
 
+## Choosing a workspace folder could freeze the window (issue #86)
+
+Root cause: `choose_workspace` (`src-tauri/src/lib.rs`) called `app.dialog().file().blocking_pick_folder()` directly inside its `async fn` body, instead of going through the file's own `blocking()` helper (`tauri::async_runtime::spawn_blocking`, already used by `read_document` and `list_workspaces` for exactly this reason). `blocking_pick_folder` blocks its calling thread until the dialog closes; called unwrapped, that thread was one of the async runtime's own worker threads, so every other pending async command — including the IPC responses `workspace.busy`/`workspace.failure` depend on — queued behind it. A second folder pick (reselecting a different folder, as in onboarding step 2) made the odds of hitting a busy worker much worse, which fits "can't back or continue": `workspace.selectFolder`'s `busy` flag only clears in a `finally` once its matching IPC call actually returns, and the onboarding Back/Continue buttons are gated on their own `downloading`/`workspace.source` checks that read state the stuck call never got to update.
+
+Fix: wrapped the same `blocking_pick_folder()` call in the existing `blocking()` helper, so it runs on a dedicated blocking thread and leaves the async worker pool free. The "Change folder" control on Home (`src/views/WorkspaceSource.tsx`) already existed and was already reachable outside onboarding — it just inherited the same freeze whenever it called `selectFolder`, so no separate UI work was needed there once the native command was fixed.
+
+`cargo check`, `cargo fmt --check` (437 pre-existing diffs elsewhere in the crate, unrelated to this change and unchanged by it — not touched) and `cargo test --lib` (240 passed, 2 ignored, 0 failed) ran clean on real macOS hardware. The actual freeze under load (a real folder, a second pick, a local model running) was not reproduced live — the root cause was found by code inspection, matching this file's own established `blocking()` convention, not by catching it mid-freeze.
+
 ## A chosen file was ignored when asking a question (issue #88)
 
 Investigating #88 found the disambiguation half of the report was already correct, not broken: `chooseFile` (`src/app/askAct.ts`) already fires for `summarize` (an ambiguous target) and for a `change`/edit request (the native `needsFileSelection` status) — a plain conversational question deliberately never asks "which file", because `answer_question` answers from retrieval across the whole folder, which is the right behavior for open-ended questions.
