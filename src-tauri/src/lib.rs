@@ -281,15 +281,21 @@ async fn list_duplicates(
 
 #[tauri::command]
 async fn list_relationships(
+    app: AppHandle,
     state: State<'_, Folio>,
     workspace_id: String,
     space_fingerprint: Option<String>,
 ) -> Result<Vec<Relationship>, FolioError> {
     state.root(&workspace_id)?;
+    let active_space = active_relationship_space(
+        &app,
+        &*state.index()?,
+        space_fingerprint.as_deref(),
+    )?;
     index::list_relationships(
         &*state.index()?,
         &workspace_id,
-        space_fingerprint.as_deref(),
+        active_space.as_deref(),
     )
 }
 
@@ -298,31 +304,44 @@ async fn list_relationships(
 /// independently testable refresh seam and never starts an embedding producer.
 #[tauri::command]
 async fn refresh_ai_connections(
+    app: AppHandle,
     state: State<'_, Folio>,
     workspace_id: String,
-    space_fingerprint: String,
+    space_fingerprint: Option<String>,
 ) -> Result<AiRelationshipRefresh, FolioError> {
     state.root(&workspace_id)?;
-    if space_fingerprint.trim().is_empty() {
-        return Err(error(
-            ErrorCode::EmbeddingSpaceMismatch,
-            "Choose a registered embedding space before refreshing connections.",
-        ));
-    }
     let index_path = state.index_path.clone();
     let scanning = state.scanning.clone();
     let cancel = state.cancel_relationships.clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
-        let _scanning = scanning.lock().map_err(|_| unavailable_state())?;
+        // Reset before waiting for Local Sync's mutex. A Stop pressed while
+        // waiting must remain visible after the lock is acquired.
         cancel.store(false, Ordering::SeqCst);
+        let _scanning = scanning.lock().map_err(|_| unavailable_state())?;
+        if cancel.load(Ordering::SeqCst) {
+            return Err(error(ErrorCode::Cancelled, "Relationship refresh was stopped."));
+        }
+        let mut conn = db::open(&index_path)?;
+        let Some(active_space) = active_relationship_space(
+            &app,
+            &conn,
+            space_fingerprint.as_deref(),
+        )? else {
+            return Ok(AiRelationshipRefresh {
+                workspace_id,
+                space_fingerprint: None,
+                documents_compared: 0,
+                relationships_created: 0,
+                cancelled: false,
+            });
+        };
         let documents = {
-            let conn = db::open(&index_path)?;
-            index::relationship_documents(&conn, &workspace_id, &space_fingerprint)?
+            index::relationship_documents(&conn, &workspace_id, &active_space)?
         };
         let documents_compared = documents.len();
         let edges = folio_core::relationships::discover(
             &documents,
-            &space_fingerprint,
+            &active_space,
             Some(cancel.as_ref()),
         )
         .map_err(|failure| {
@@ -332,12 +351,11 @@ async fn refresh_ai_connections(
                 ai_boundary::core_failure(failure)
             }
         })?;
-        let mut conn = db::open(&index_path)?;
         let relationships_created =
-            index::replace_ai_relationships(&mut conn, &workspace_id, &space_fingerprint, &edges, index::now_ms())?;
+            index::replace_ai_relationships(&mut conn, &workspace_id, &active_space, &edges, index::now_ms())?;
         Ok(AiRelationshipRefresh {
             workspace_id,
-            space_fingerprint,
+            space_fingerprint: Some(active_space),
             documents_compared,
             relationships_created,
             cancelled: false,
@@ -393,10 +411,15 @@ async fn summarize_relationships(
         let relationships = {
             let _scanning = scanning.lock().map_err(|_| unavailable_state())?;
             let conn = db::open(&index_path)?;
+            let active_space = active_relationship_space(
+                &app,
+                &conn,
+                space_fingerprint.as_deref(),
+            )?;
             index::list_relationships(
                 &conn,
                 &workspace_id,
-                space_fingerprint.as_deref(),
+                active_space.as_deref(),
             )?
         };
         let mut selected = Vec::<(u8, u8, f32, Vec<CoreSourcePassage>)>::new();
@@ -938,6 +961,49 @@ fn app_data_dir(app: &AppHandle) -> Result<PathBuf, NativeProviderError> {
 
 fn model_store(app: &AppHandle) -> Result<ModelStore, NativeProviderError> {
     ModelStore::new(app_data_dir(app)?).map_err(native_error)
+}
+
+/// Selects the one persistent relationship space Folio is allowed to expose.
+/// The selected model must still be installed. The persistent preprocessing
+/// metadata is intentionally unresolved in this draft: #27's shared
+/// `stored_chunk_space` seam must supply it before this function can expose AI
+/// rows. Until then it returns `None`, deliberately leaving link rows only.
+/// An optional webview fingerprint is an assertion, never a selector.
+fn active_relationship_space(
+    app: &AppHandle,
+    conn: &Connection,
+    requested_space: Option<&str>,
+) -> Result<Option<String>, FolioError> {
+    let store = model_store(app)?;
+    let Some(model_id) = store.selected_model(ModelRole::Embedding)? else {
+        return Ok(None);
+    };
+    let descriptor = store.model(&model_id)?.clone();
+    if !matches!(descriptor.role, ModelRole::Embedding)
+        || !matches!(store.model_state(&model_id)?.status, ModelInstallStatus::Installed)
+    {
+        return Ok(None);
+    }
+    let selected = index::SelectedEmbeddingModel {
+        model_id: descriptor.id,
+        revision: descriptor.revision,
+    };
+    // The interim provider's space includes title/path context and is not the
+    // persistent stored-chunk space. Do not derive an active persistent space
+    // from it. #27 must supply the shared `stored_chunk_space` metadata here;
+    // until that integration seam lands, links are the only safe rows.
+    let active = index::resolve_active_space(conn, Some(&selected), None)?;
+    if let (Some(active), Some(requested)) = (active.as_deref(), requested_space) {
+        if active != requested {
+            return Err(error(
+                ErrorCode::EmbeddingSpaceMismatch,
+                "The requested relationship space is not the selected installed model's active space.",
+            )
+            .with_detail("requestedSpaceFingerprint", requested)
+            .with_detail("activeSpaceFingerprint", active));
+        }
+    }
+    Ok(active)
 }
 
 async fn run_blocking<T, E, F>(work: F) -> Result<T, E>

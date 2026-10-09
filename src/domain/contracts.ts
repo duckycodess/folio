@@ -321,7 +321,8 @@ export type Relationship =
 /** Result of a bounded refresh over vectors already persisted for one space. */
 export interface AiRelationshipRefresh {
   workspaceId: WorkspaceId;
-  spaceFingerprint: EmbeddingSpaceFingerprint;
+  /** Absent until the selected installed embedding model has a persistent space. */
+  spaceFingerprint?: EmbeddingSpaceFingerprint;
   documentsCompared: number;
   relationshipsCreated: number;
   cancelled: boolean;

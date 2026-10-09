@@ -68,7 +68,7 @@ export function answerQuestion(
 /** Runs discovery over vectors already persisted for this exact space. */
 export function refreshAiConnections(
   workspaceId: string,
-  spaceFingerprint: EmbeddingSpaceFingerprint,
+  spaceFingerprint?: EmbeddingSpaceFingerprint,
 ): Promise<AiRelationshipRefresh> {
   return call("refresh_ai_connections", { workspaceId, spaceFingerprint });
 }

@@ -130,7 +130,7 @@ pub enum Relationship {
 #[serde(rename_all = "camelCase")]
 pub struct AiRelationshipRefresh {
     pub workspace_id: String,
-    pub space_fingerprint: String,
+    pub space_fingerprint: Option<String>,
     pub documents_compared: usize,
     pub relationships_created: usize,
     pub cancelled: bool,
@@ -1153,6 +1153,53 @@ pub struct EmbeddingSpace {
     pub preprocessing_fingerprint: String,
 }
 
+/// The selected embedding model identity, kept separate from the persistent
+/// space metadata supplied by the embedding producer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectedEmbeddingModel {
+    pub model_id: String,
+    pub revision: String,
+}
+
+/// Resolves the active persistent space without allowing a webview-supplied
+/// fingerprint to choose one. Until the embedding producer exposes the
+/// persistent preprocessing metadata here, `persistent_space` is `None` and
+/// callers safely receive links only.
+pub fn resolve_active_space(
+    conn: &Connection,
+    selected_model: Option<&SelectedEmbeddingModel>,
+    persistent_space: Option<&EmbeddingSpace>,
+) -> NativeResult<Option<String>> {
+    let (Some(selected_model), Some(space)) = (selected_model, persistent_space) else {
+        return Ok(None);
+    };
+    if selected_model.model_id != space.model_id || selected_model.revision != space.revision {
+        return Ok(None);
+    }
+    let fingerprint = embedding_space_fingerprint(
+        &space.model_id,
+        &space.revision,
+        &space.quantization,
+        space.dimensions,
+        &space.preprocessing_fingerprint,
+    );
+    let registered: Option<String> = conn
+        .query_row(
+            "SELECT id FROM embedding_spaces WHERE id = ?1 AND model_id = ?2 AND revision = ?3 AND quantization = ?4 AND dimensions = ?5 AND preprocessing_fingerprint = ?6",
+            params![
+                fingerprint,
+                space.model_id,
+                space.revision,
+                space.quantization,
+                space.dimensions,
+                space.preprocessing_fingerprint,
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(registered)
+}
+
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ChunkVector {
@@ -1847,6 +1894,52 @@ pub mod tests {
         let mismatch = put_embeddings(&mut conn, &root.id, &old, &[ChunkVector { chunk_id: pending[0].chunk_id, content_hash: pending[0].content_hash.clone(), vector: vec![1.0; 4] }]).unwrap_err();
         assert_eq!(mismatch.code, ErrorCode::EmbeddingSpaceMismatch);
         assert_eq!(vector_candidates(&conn, &root.id, &old, &[1.0; 4], 3).unwrap_err().code, ErrorCode::EmbeddingSpaceMismatch);
+    }
+
+    #[test]
+    fn active_space_requires_selected_model_and_registered_persistent_preprocessing() {
+        let (_folder, conn, _root) = fixture_workspace();
+        let space = EmbeddingSpace {
+            model_id: "multilingual-e5-small".into(),
+            revision: "r1".into(),
+            quantization: "q8".into(),
+            dimensions: 3,
+            preprocessing_fingerprint: "passage-prefix-v1".into(),
+        };
+        let fingerprint = register_space(&conn, &space).unwrap();
+        let selected = SelectedEmbeddingModel {
+            model_id: space.model_id.clone(),
+            revision: space.revision.clone(),
+        };
+        assert_eq!(
+            resolve_active_space(&conn, Some(&selected), Some(&space)).unwrap(),
+            Some(fingerprint.clone())
+        );
+        assert_eq!(resolve_active_space(&conn, None, Some(&space)).unwrap(), None);
+        assert_eq!(
+            resolve_active_space(
+                &conn,
+                Some(&SelectedEmbeddingModel {
+                    model_id: selected.model_id.clone(),
+                    revision: "superseded".into(),
+                }),
+                Some(&space),
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            resolve_active_space(
+                &conn,
+                Some(&selected),
+                Some(&EmbeddingSpace {
+                    preprocessing_fingerprint: "pending-#27-wiring".into(),
+                    ..space
+                }),
+            )
+            .unwrap(),
+            None
+        );
     }
 
     #[test]
