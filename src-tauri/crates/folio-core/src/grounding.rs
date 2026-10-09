@@ -80,12 +80,11 @@ pub fn summary_passages(
 ) -> Vec<SourcePassage> {
     let mut passages = Vec::new();
     let mut paragraph_start = 0_usize;
-    let separators = content
-        .match_indices("\n\n")
-        .map(|(index, _)| index)
-        .chain(std::iter::once(content.len()))
+    let breaks = crate::chunking::blank_line_breaks(content)
+        .into_iter()
+        .chain(std::iter::once((content.len(), content.len())))
         .collect::<Vec<_>>();
-    for separator in separators {
+    for (separator, after) in breaks {
         if separator < paragraph_start {
             continue;
         }
@@ -108,7 +107,7 @@ pub fn summary_passages(
                 });
             }
         }
-        paragraph_start = (separator + 2).min(content.len());
+        paragraph_start = after;
     }
     passages
 }
@@ -951,6 +950,23 @@ mod tests {
             assert_eq!(passage.offset_unit, OffsetUnit::Utf8Byte);
         }
         assert_eq!(passages[1].start, "# Pamagat\n\n".len());
+    }
+
+    #[test]
+    fn crlf_documents_get_paragraph_summary_passages() {
+        let content = "# Title\r\n\r\nFirst fact.\r\nStill first.\r\n\r\nSecond fact.\r\n";
+        let passages = summary_passages("w:crlf.md", content, "sha256:00");
+        let texts = passages
+            .iter()
+            .map(|passage| passage.text.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            texts,
+            ["# Title", "First fact.\r\nStill first.", "Second fact."]
+        );
+        for passage in &passages {
+            assert_eq!(&content[passage.start..passage.end], passage.text);
+        }
     }
 
     #[test]

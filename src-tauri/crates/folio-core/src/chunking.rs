@@ -2,7 +2,7 @@ use crate::contracts::DocumentRecord;
 use crate::error::{CoreError, CoreResult};
 use sha2::{Digest, Sha256};
 
-pub const INTERIM_CHUNKER_VERSION: &str = "paragraph-800-utf8-v2";
+pub const INTERIM_CHUNKER_VERSION: &str = "paragraph-800-utf8-v3";
 pub const DEFAULT_MAX_CHUNK_BYTES: usize = 800;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -108,8 +108,7 @@ pub fn chunk_text(
     }
     let mut paragraphs = Vec::new();
     let mut start = 0;
-    for (separator, _) in content.match_indices("\n\n") {
-        let end = separator + 2;
+    for (_, end) in blank_line_breaks(content) {
         if start < end {
             paragraphs.extend(split_segment(content, start, end, max_chunk_bytes));
         }
@@ -172,6 +171,34 @@ fn split_segment(content: &str, start: usize, end: usize, max_bytes: usize) -> V
     pieces
 }
 
+/// Blank-line paragraph breaks as `(start, end)` byte ranges, for LF and CRLF
+/// text alike (`\n\n`, `\r\n\r\n`, `\n\r\n`).
+pub fn blank_line_breaks(content: &str) -> Vec<(usize, usize)> {
+    let bytes = content.as_bytes();
+    let mut breaks = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'\n' {
+            let mut next = index + 1;
+            if bytes.get(next) == Some(&b'\r') {
+                next += 1;
+            }
+            if bytes.get(next) == Some(&b'\n') {
+                let start = if index > 0 && bytes[index - 1] == b'\r' {
+                    index - 1
+                } else {
+                    index
+                };
+                breaks.push((start, next + 1));
+                index = next + 1;
+                continue;
+            }
+        }
+        index += 1;
+    }
+    breaks
+}
+
 pub fn content_hash(text: &str) -> String {
     format!("sha256:{}", hex::encode(Sha256::digest(text.as_bytes())))
 }
@@ -197,6 +224,17 @@ mod tests {
             content: None,
             content_hash: None,
         }
+    }
+
+    #[test]
+    fn crlf_and_lf_blank_lines_both_break_paragraphs() {
+        assert_eq!(blank_line_breaks("a\n\nb"), vec![(1, 3)]);
+        assert_eq!(blank_line_breaks("a\r\n\r\nb"), vec![(1, 5)]);
+        assert_eq!(blank_line_breaks("a\r\nb"), Vec::<(usize, usize)>::new());
+        let content = "first paragraph\r\n\r\nsecond paragraph";
+        let chunks = chunk_text("crlf.md", content, 20, &content_hash(content)).unwrap();
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[1].text, "second paragraph");
     }
 
     #[test]
