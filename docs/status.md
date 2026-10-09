@@ -8,6 +8,14 @@
 - File table and reader ([issue #17](https://github.com/duckycodess/folio/issues/17)): name, location, type, modified and size columns that drop to fit the space; the reader beside the table (or in place of it below 860px) shows the file's text as read-only, with its full path. The reader never shows a file the current list excludes. In the desktop app, Folio starts with an "Add folder" state (sample files on request); an added folder with no readable files offers "Choose another folder". The browser preview lists sample files and says so.
 - Relationships with evidence ([issue #21](https://github.com/duckycodess/folio/issues/21)): the document panel's Related tab and the Graph view list every connected file. Each entry has its type (link and direction, or exact duplicate), how Folio knows it, the file's original folder, and evidence excerpts that open the source with the passage highlighted. Files opened from Related keep a "Back to" link to the origin. With a folder open, links and duplicates come from the native index (`list_relationships`, `list_duplicates`) merged with links in opened files. If the folder hasn't been indexed, the UI says so; no UI runs the index scan yet. Exact duplicates are also found from content hashes Folio already has. Graph also draws the same connections as a concept map (below). Similarity and shared-fact connections have labels and tests, but no producer yet.
 - Shared error and recovery states ([issue #18](https://github.com/duckycodess/folio/issues/18)): every error code maps to one plain-language message and next step ([error-states.md](error-states.md)), shown through one recovery notice in every workflow. Drafts (the Ask & Act request, rename names per file) survive errors and view changes. Success after opening a folder is shown only once the native core reports it. Each view announces into its own live region. Modals keep Tab inside them. A browser-only practice mode (`?simulate=<code>`) triggers each state in its own flow.
+- Summary tab ([#20](https://github.com/duckycodess/folio/issues/20)), using #15's `summarize_document`.
+  - Each file's Summary tab offers **Summarize this file**. Nothing is generated until it's pressed.
+  - The summary runs in the background and can be cancelled. Only one runs at a time, and other files' tabs say so.
+  - Each point has numbered citations that open the passage highlighted in Details. Uncited points are marked "(no source)" and counted.
+  - The summary is labelled as a generated preview that's not saved or reviewed, with its model and revision. A partial summary says how much of the file it covered. "Not enough information" is shown instead of a summary, and a file that changed afterwards gets a warning.
+  - **Save as new document…** shows the exact Markdown first, then the native create plan, Approve, and the result with Undo. It never overwrites a file. The dialog stays open while the change applies, Done closes it, and focus returns to the button that opened it.
+  - Without a model, the shared recovery notice links to Model Lab. The browser preview says summaries need the desktop app, and sample files say a folder is needed.
+  - Summaries are kept for the session (up to 20 files) in one store that Ask & Act can also write to. Ask & Act doesn't request summaries yet (#36).
 - Graph entry points ([#40](https://github.com/duckycodess/folio/issues/40)): Graph starts from all files, one file, a folder (including connections that leave it) or a keyword topic. With a file open, it starts from that file, and opening a file from the list makes it the new start, with keyboard focus moved to the list's new title. A topic with no letters or digits matches nothing. Confirmed connections (links, identical copies) are listed apart from suggested ones (similarity, possible shared facts), which only appear when the index has them. A "Where these files are" panel counts the connected files per folder. That count isn't a written summary: the relationship summary needs a local model and isn't built. Arrow keys, Home and End move between the files in the list.
 - Home as the file browser ([#42](https://github.com/duckycodess/folio/issues/42), [#43](https://github.com/duckycodess/folio/issues/43), ADR 0010). The Files tab is gone. Home lists every file, sorted by path, with a count. Each row has a keyboard-accessible ⋯ menu (Open, Rename…, Move to folder…, Show related), and the document panel has the same menu. Rename and Move use the exact preview, Approve and Undo flow from #22, in a dialog. The search field is only on Home, centred, and ⌘K / Ctrl K from any page opens Home and focuses it. Rows take an optional `renderDetail` slot for #19's search evidence. With the sample files, Rename and Move explain that a folder is needed. In practice mode (`?simulate=<code>`), they show the simulated refusal instead.
 - Organize flow ([issue #22](https://github.com/duckycodess/folio/issues/22)), desktop only. Analyze re-indexes the open folder, with live progress and Stop, then lists exact duplicates (by content, never moved or deleted) and filename suggestions to tick. The exact preview shows every from → to path from the native plan. Approve echoes that plan's digest and applies it. The result is worded from the per-file outcomes, so a batch that stopped partway never says nothing changed. It shows what was recorded in history and offers a Preview Undo. A refused apply keeps the preview, with Preview again. The Rename form uses the same native plan with a folder open. With the sample files, Organize explains that a folder is needed. Virtual collections are still not available.
@@ -95,6 +103,29 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 8-GB measurement is claimed here.
 
 ## Verification
+
+### Summary tab (2026-10-10, issue #20)
+
+Checked on macOS with Node.js 26.10.0, on #48 with #15 (`FOLIO-4`) merged in:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 174 passed, 9 todo. New cases in `src/app/summaries.test.ts` cover:
+  - the store (one entry per file, the running file, a bound that never drops a running summary, subscribers);
+  - staleness by revision;
+  - partial coverage;
+  - saved-file names that never reuse an existing name;
+  - the saved Markdown (generated label, model, local date, numbered sources, "Partial summary").
+- Browser preview: "Summaries need the desktop app".
+- With a **mocked** native core in headless Chromium:
+  - Summarize then Cancel showed "Summary cancelled. Nothing was saved.";
+  - while one summary ran, another file's button was disabled with an explanation, and the result was there on returning;
+  - a citation opened Details with the passage highlighted;
+  - Save as new document showed the exact Markdown, previewed `Create | New file | school/plan summary.md`, saved, and the file was listed;
+  - with no model, the notice linked to Model Lab;
+  - a partial summary said "It covers about 8% of the file";
+  - nothing scrolls sideways at 700px.
+
+Not verified: a real model's summaries, which #15 still marks "Not reviewed"; cancellation against llama.cpp; Filipino and Taglish output; screen readers.
 
 ### Home filters, pins and recent files (2026-10-10, issue #33)
 
