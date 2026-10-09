@@ -1,4 +1,5 @@
 import { Folders, SearchX } from "lucide-react";
+import { useMemo, type Ref } from "react";
 import type { WorkspaceState } from "../app/useWorkspace";
 import type { DocumentRecord } from "../domain/contracts";
 import type { ViewId } from "../shell/navigation";
@@ -9,6 +10,8 @@ import { Olio } from "../ui/Olio";
 import { Panel } from "../ui/Panel";
 import { simulatedFailure } from "../adapters/simulate";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
+import type { RowMenuItem } from "../ui/RowMenu";
+import { SearchField } from "../ui/SearchField";
 import { FileList } from "./FileList";
 import { EmptyFolder, NoFolder } from "./NoFolder";
 import { WorkspaceSource } from "./WorkspaceSource";
@@ -16,11 +19,28 @@ import { WorkspaceSource } from "./WorkspaceSource";
 interface HomeViewProps {
   workspace: WorkspaceState;
   onNavigate: (view: ViewId) => void;
+  /** The search field, so ⌘K / Ctrl K can focus it from any page. */
+  searchRef: Ref<HTMLInputElement>;
+  searchShortcut: string;
+  onSearch: (query: string) => void;
+  /** Each file row's ⋯ menu. */
+  fileActions: (document: DocumentRecord) => RowMenuItem[];
 }
 
-export function HomeView({ workspace, onNavigate }: HomeViewProps) {
+/**
+ * Home is Folio's file browser: search, collections and every file, with each
+ * file's actions on its row (#42, #43).
+ */
+export function HomeView(props: HomeViewProps) {
+  const { workspace } = props;
   const searching = workspace.query.trim().length > 0;
-  const documents = workspace.results.map((result) => result.document);
+  // Every file while not searching; the ranked matches while searching.
+  const documents = useMemo(() => {
+    const listed = workspace.results.map((result) => result.document);
+    return searching
+      ? listed
+      : listed.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
+  }, [searching, workspace.results]);
   const noFolder = workspace.source === "none";
 
   return (
@@ -42,15 +62,24 @@ export function HomeView({ workspace, onNavigate }: HomeViewProps) {
         </div>
       </header>
 
+      {!noFolder && (
+        // Kept on screen in narrow windows while a document is open.
+        <div className="home-search" role="search">
+          <SearchField
+            ref={props.searchRef}
+            label="Search files"
+            value={workspace.query}
+            onChange={props.onSearch}
+            placeholder="Search files, ideas, or projects"
+            shortcut={props.searchShortcut}
+          />
+        </div>
+      )}
+
       {noFolder ? (
         <NoFolder workspace={workspace} />
       ) : (
-        <HomeContents
-          workspace={workspace}
-          onNavigate={onNavigate}
-          searching={searching}
-          documents={documents}
-        />
+        <HomeContents {...props} searching={searching} documents={documents} />
       )}
     </div>
   );
@@ -59,6 +88,7 @@ export function HomeView({ workspace, onNavigate }: HomeViewProps) {
 function HomeContents({
   workspace,
   onNavigate,
+  fileActions,
   searching,
   documents,
 }: HomeViewProps & { searching: boolean; documents: DocumentRecord[] }) {
@@ -91,7 +121,16 @@ function HomeContents({
       {searching && <SearchProblem onNavigate={onNavigate} />}
       <Panel
         title={searching ? "Search results" : "Files"}
-        actions={searching && <Badge>Keyword search</Badge>}
+        actions={
+          <>
+            {searching && <Badge>Keyword search</Badge>}
+            {documents.length > 0 && (
+              <Badge>
+                {documents.length} {documents.length === 1 ? "file" : "files"}
+              </Badge>
+            )}
+          </>
+        }
       >
         <p className="visually-hidden" role="status">
           {searching
@@ -104,6 +143,8 @@ function HomeContents({
             documents={documents}
             selectedId={workspace.selected?.id}
             onSelect={workspace.selectDocument}
+            actions={fileActions}
+            results={workspace.results}
           />
         ) : searching ? (
           <EmptyState icon={<SearchX size={24} />} title="No matching files">

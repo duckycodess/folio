@@ -27,6 +27,7 @@ import {
   organizeFlow,
   type OrganizeState,
 } from "./organizeFlow";
+import { relocateOperation } from "./fileActions";
 import type { WorkspaceState } from "./useWorkspace";
 
 export interface UndoState {
@@ -44,7 +45,11 @@ export interface OrganizeController {
   cancelAnalyze: () => void;
   toggle: (documentId: string) => void;
   previewChosen: () => void;
-  previewRename: (document: DocumentRecord, newName: string) => void;
+  /** Renames a file in place, or moves it to another folder, via an exact plan. */
+  previewRelocate: (
+    document: DocumentRecord,
+    change: { name: string } | { folder: string },
+  ) => void;
   /** Resends the operations last previewed, for a fresh native plan. */
   previewAgain: () => void;
   /** Approves exactly the plan on screen, then applies it. */
@@ -65,22 +70,6 @@ const NO_UNDO: UndoState = {
   busy: false,
   error: null,
 };
-
-/** A rename keeps the file in its folder; only the name changes. */
-export function renameOperation(
-  document: DocumentRecord & { contentHash: string },
-  newName: string,
-): FileOperation {
-  const folder = document.relativePath.split("/").slice(0, -1).join("/");
-  return {
-    kind: "rename",
-    documentId: document.id,
-    relativePath: document.relativePath,
-    expectedContentHash: document.contentHash,
-    destinationRelativePath: folder ? `${folder}/${newName}` : newName,
-    expectedDestination: "absent",
-  };
-}
 
 export function useOrganize(
   workspace: WorkspaceState,
@@ -151,7 +140,10 @@ export function useOrganize(
     }
   }
 
-  async function previewRename(document: DocumentRecord, newName: string) {
+  async function previewRelocate(
+    document: DocumentRecord,
+    change: { name: string } | { folder: string },
+  ) {
     if (!folderId) return;
     // The plan pins the exact revision; read it if the listing didn't.
     try {
@@ -160,7 +152,7 @@ export function useOrganize(
         : await readNativeDocument(folderId, document);
       if (!read.contentHash) throw folioError("internal", "No content hash.");
       await preview([
-        renameOperation({ ...read, contentHash: read.contentHash }, newName),
+        relocateOperation({ ...read, contentHash: read.contentHash }, change),
       ]);
     } catch (cause) {
       const request = ++next.current;
@@ -231,7 +223,8 @@ export function useOrganize(
         .map((item) => item.operation);
       if (operations.length) void preview(operations);
     },
-    previewRename: (document, newName) => void previewRename(document, newName),
+    previewRelocate: (document, change) =>
+      void previewRelocate(document, change),
     previewAgain: () => {
       if (state.operations.length) void preview(state.operations);
     },

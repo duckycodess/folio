@@ -6,7 +6,7 @@ import type { ViewId } from "./navigation";
  * (or, in narrow windows, takes its place). Organize is not one: its rename
  * form must stay visible next to the chosen file.
  */
-const DOCUMENT_VIEWS = new Set<ViewId>(["home", "files", "graph"]);
+const DOCUMENT_VIEWS = new Set<ViewId>(["home", "graph"]);
 
 /**
  * The chosen file, if the current search results include it. A search that

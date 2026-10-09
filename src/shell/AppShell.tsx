@@ -1,6 +1,5 @@
 import {
   FlaskConical,
-  Folder,
   Folders,
   House,
   Monitor,
@@ -25,13 +24,17 @@ import { simulatedCode } from "../adapters/simulate";
 import { useDrafts } from "../app/drafts";
 import { useOrganize } from "../app/useOrganize";
 import { RECOVERY } from "../app/recovery";
+import type { DocumentRecord } from "../domain/contracts";
 import { AnnouncerProvider } from "../ui/Announcer";
+import type { RowMenuItem } from "../ui/RowMenu";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
 import { Notice } from "../ui/Notice";
-import { SearchField } from "../ui/SearchField";
 import { AssistantView } from "../views/AssistantView";
 import { DocumentPanel } from "../views/DocumentPanel";
-import { FilesView } from "../views/FilesView";
+import {
+  FileActionDialog,
+  type FileActionKind,
+} from "../views/FileActionDialog";
 import { GraphView } from "../views/GraphView";
 import { HomeView } from "../views/HomeView";
 import { ModelLabView } from "../views/ModelLabView";
@@ -49,7 +52,6 @@ import { readerDocument } from "./reader";
 
 const ICONS: Record<ViewId, LucideIcon> = {
   home: House,
-  files: Folder,
   organize: Folders,
   graph: Waypoints,
   assistant: Sparkles,
@@ -70,7 +72,6 @@ const SOURCE_LABELS: Record<WorkspaceSourceKind, string> = {
 
 const TITLES: Record<ViewId, string> = {
   home: "Overview",
-  files: "Files",
   organize: "Organize",
   graph: "Graph",
   assistant: "Ask & Act",
@@ -91,6 +92,22 @@ export function AppShell() {
   const relations = useRelationships(workspace);
   // Above the views, so an apply in progress survives switching views.
   const organize = useOrganize(workspace, relations.refresh);
+  // Home's Rename and Move have their own plan, so they never show up in
+  // Organize (and the reverse).
+  const fileAction = useOrganize(workspace, relations.refresh);
+  const [actionDialog, setActionDialog] = useState<{
+    kind: FileActionKind;
+    document: DocumentRecord;
+  } | null>(null);
+  // "Show related" opens the document on its Related tab.
+  const [panelTab, setPanelTab] = useState<{
+    documentId: string;
+    tab: "Related";
+    /** Reopens the panel on that tab even if the file is already open. */
+    request: number;
+  } | null>(null);
+  // Set by ⌘K / Ctrl K on another page; Home focuses search once it shows.
+  const focusSearch = useRef(false);
   const [view, setView] = useState<ViewId>("home");
   const searchInput = useRef<HTMLInputElement>(null);
   const platform = useMemo(currentPlatform, []);
@@ -99,8 +116,70 @@ export function AppShell() {
   const showsDocument = reading !== undefined;
 
   // The listener is added once and reads the latest render through this ref.
-  const latest = useRef({ showsDocument, closeDocument });
-  latest.current = { showsDocument, closeDocument };
+  const latest = useRef({ showsDocument, closeDocument, openHome });
+  latest.current = { showsDocument, closeDocument, openHome };
+
+  function openHome() {
+    if (view === "home") focusHomeSearch();
+    else setView("home");
+  }
+
+  function focusHomeSearch() {
+    focusSearch.current = false;
+    searchInput.current?.focus();
+    searchInput.current?.select();
+  }
+
+  useEffect(() => {
+    if (view === "home" && focusSearch.current) focusHomeSearch();
+  }, [view]);
+
+  function fileActions(document: DocumentRecord): RowMenuItem[] {
+    return [
+      {
+        label: "Open",
+        onSelect: () => void workspace.selectDocument(document),
+      },
+      {
+        label: "Rename…",
+        onSelect: () => setActionDialog({ kind: "rename", document }),
+      },
+      {
+        label: "Move to folder…",
+        onSelect: () => setActionDialog({ kind: "move", document }),
+      },
+      {
+        label: "Show related",
+        onSelect: () => {
+          setPanelTab((current) => ({
+            documentId: document.id,
+            tab: "Related",
+            request: (current?.request ?? 0) + 1,
+          }));
+          void workspace.selectDocument(document);
+        },
+      },
+    ];
+  }
+
+  function closeActionDialog() {
+    const id = actionDialog?.document.id;
+    setActionDialog(null);
+    // Back to the row's ⋯ menu, or the list if the file was renamed away.
+    requestAnimationFrame(() => {
+      const row = id
+        ? document.querySelector<HTMLElement>(
+            `[data-row-id="${CSS.escape(id)}"] .row-menu-button`,
+          )
+        : null;
+      (
+        row ??
+        document.querySelector<HTMLElement>(
+          ".file-list .list-row[tabindex='0']",
+        )
+      )?.focus();
+    });
+  }
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -117,8 +196,9 @@ export function AppShell() {
       }
       if (!isSearchShortcut(event, platform)) return;
       event.preventDefault();
-      searchInput.current?.focus();
-      searchInput.current?.select();
+      // Search lives on Home (#43): go there, then focus it.
+      focusSearch.current = true;
+      latest.current.openHome();
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -138,6 +218,7 @@ export function AppShell() {
   function closeDocument() {
     const id = workspace.selected?.id;
     if (!id) return;
+    setPanelTab(null);
     workspace.clearSelection();
     requestAnimationFrame(() =>
       document
@@ -151,7 +232,6 @@ export function AppShell() {
     // In narrow windows the reader covers the list; show the results instead.
     if (window.matchMedia("(max-width: 860px)").matches)
       workspace.clearSelection();
-    if (view !== "home" && view !== "files") setView("home");
   }
 
   return (
@@ -213,14 +293,6 @@ export function AppShell() {
               <span aria-hidden="true">/</span>
               <span aria-current="page">{TITLES[view]}</span>
             </nav>
-            <SearchField
-              ref={searchInput}
-              label="Search files"
-              value={workspace.query}
-              onChange={onSearch}
-              placeholder="Search files, ideas, or projects"
-              shortcut={searchShortcutLabel(platform)}
-            />
           </header>
 
           <main id="main" className="main" tabIndex={-1}>
@@ -284,15 +356,17 @@ export function AppShell() {
                 never surface in another. */}
             <AnnouncerProvider key={view}>
               {view === "home" && (
-                <HomeView workspace={workspace} onNavigate={setView} />
-              )}
-              {view === "files" && <FilesView workspace={workspace} />}
-              {view === "organize" && (
-                <OrganizeView
+                <HomeView
                   workspace={workspace}
-                  drafts={drafts}
-                  organize={organize}
+                  onNavigate={setView}
+                  searchRef={searchInput}
+                  searchShortcut={searchShortcutLabel(platform)}
+                  onSearch={onSearch}
+                  fileActions={fileActions}
                 />
+              )}
+              {view === "organize" && (
+                <OrganizeView workspace={workspace} organize={organize} />
               )}
               {view === "graph" && (
                 <GraphView workspace={workspace} relations={relations} />
@@ -307,12 +381,32 @@ export function AppShell() {
 
         {reading && (
           <DocumentPanel
-            key={reading.id}
+            key={
+              panelTab?.documentId === reading.id
+                ? `${reading.id}#${panelTab.request}`
+                : reading.id
+            }
             document={reading}
             workspace={workspace}
             relations={relations}
+            initialTab={
+              panelTab?.documentId === reading.id ? panelTab.tab : undefined
+            }
+            actions={fileActions(reading).filter(
+              (item) => item.label !== "Open",
+            )}
             onClose={closeDocument}
             onNavigate={setView}
+          />
+        )}
+        {actionDialog && (
+          <FileActionDialog
+            kind={actionDialog.kind}
+            document={actionDialog.document}
+            workspace={workspace}
+            drafts={drafts}
+            action={fileAction}
+            onClose={closeActionDialog}
           />
         )}
       </div>

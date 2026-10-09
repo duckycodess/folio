@@ -1,7 +1,14 @@
-import { useState, type FocusEvent, type KeyboardEvent } from "react";
-import type { DocumentRecord } from "../domain/contracts";
+import {
+  useId,
+  useState,
+  type FocusEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
+import type { DocumentRecord, SearchResult } from "../domain/contracts";
 import { FileTypeIcon } from "../ui/FileTypeIcon";
 import { ListRow } from "../ui/ListRow";
+import { RowMenu, type RowMenuItem } from "../ui/RowMenu";
 import { fileKind, folderOf, formatBytes, formatDate } from "./format";
 
 interface FileListProps {
@@ -9,6 +16,18 @@ interface FileListProps {
   documents: DocumentRecord[];
   selectedId: string | undefined;
   onSelect: (document: DocumentRecord) => void;
+  /** Actions in each row's ⋯ menu. Without it, rows have no menu. */
+  actions?: (document: DocumentRecord) => RowMenuItem[];
+  /**
+   * Extra lines under a row's main line, such as search evidence. They are
+   * also the row button's accessible description.
+   */
+  renderDetail?: (
+    document: DocumentRecord,
+    result: SearchResult | undefined,
+  ) => ReactNode;
+  /** The search results behind `documents`, passed to `renderDetail`. */
+  results?: SearchResult[];
 }
 
 /**
@@ -17,24 +36,33 @@ interface FileListProps {
  * moves under the name.
  *
  * Arrow keys, Home and End move between rows; Enter or Space opens one. The
- * single Tab stop follows the focused row, so Tab and Shift+Tab come back to it.
+ * single Tab stop follows the focused row, so Tab and Shift+Tab come back to
+ * it; from there, Tab reaches that row's ⋯ menu.
  */
 export function FileList({
   label,
   documents,
   selectedId,
   onSelect,
+  actions,
+  renderDetail,
+  results,
 }: FileListProps) {
   const [focusedId, setFocusedId] = useState<string>();
+  const detailPrefix = useId();
+  const byId = new Map(results?.map((result) => [result.document.id, result]));
 
-  function onFocus(event: FocusEvent<HTMLDivElement>) {
-    const id = (event.target as HTMLElement).dataset.documentId;
-    if (id) setFocusedId(id);
+  function onFocus(event: FocusEvent<HTMLUListElement>) {
+    const row = (event.target as HTMLElement).closest<HTMLElement>(
+      "[data-row-id]",
+    );
+    if (row?.dataset.rowId) setFocusedId(row.dataset.rowId);
   }
 
-  function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+  function onKeyDown(event: KeyboardEvent<HTMLUListElement>) {
+    if (!(event.target as HTMLElement).classList.contains("list-row")) return;
     const rows = [
-      ...event.currentTarget.querySelectorAll<HTMLElement>('[role="option"]'),
+      ...event.currentTarget.querySelectorAll<HTMLElement>(".list-row"),
     ];
     const index = rows.indexOf(document.activeElement as HTMLElement);
     const next =
@@ -61,7 +89,7 @@ export function FileList({
       : documents[0]?.id;
 
   return (
-    <div className="file-table">
+    <div className={`file-table${actions ? " has-actions" : ""}`}>
       {/* Visual column headings; each row's spoken name carries the same facts. */}
       <div className="file-table-head" aria-hidden="true">
         <span className="file-col-name">Name</span>
@@ -70,14 +98,13 @@ export function FileList({
         <span className="file-col-modified">Modified</span>
         <span className="file-col-size">Size</span>
       </div>
-      <div
+      <ul
         className="file-list"
-        role="listbox"
         aria-label={label}
         onKeyDown={onKeyDown}
         onFocus={onFocus}
       >
-        {documents.map((document) => {
+        {documents.map((document, index) => {
           const location = folderOf(document.relativePath);
           const kind = fileKind(document);
           const size = formatBytes(document.sizeBytes);
@@ -85,40 +112,63 @@ export function FileList({
             document.modifiedAtMs === undefined
               ? undefined
               : formatDate(document.modifiedAtMs);
+          const detail = renderDetail?.(document, byId.get(document.id));
+          const detailId = detail ? `${detailPrefix}-${index}` : undefined;
+          const tabbable = document.id === tabStop;
           return (
-            <ListRow
+            <li
               key={document.id}
-              icon={<FileTypeIcon mediaType={document.mediaType} />}
-              title={document.name}
-              subtitle={location}
-              cells={
-                <>
-                  <span className="file-col-location">{location}</span>
-                  <span className="file-col-type">{kind}</span>
-                  <span className="file-col-modified tabular">
-                    {modified ?? "—"}
-                  </span>
-                  <span className="file-col-size tabular">{size}</span>
-                </>
-              }
-              label={[
-                document.name,
-                location,
-                kind,
-                modified ? `modified ${modified}` : undefined,
-                size,
-              ]
-                .filter(Boolean)
-                .join(", ")}
-              tooltip={document.relativePath}
-              selected={document.id === selectedId}
-              tabbable={document.id === tabStop}
-              dataId={document.id}
-              onSelect={() => onSelect(document)}
-            />
+              className="file-row"
+              data-row-id={document.id}
+            >
+              <div className="file-row-line">
+                <ListRow
+                  icon={<FileTypeIcon mediaType={document.mediaType} />}
+                  title={document.name}
+                  subtitle={location}
+                  cells={
+                    <>
+                      <span className="file-col-location">{location}</span>
+                      <span className="file-col-type">{kind}</span>
+                      <span className="file-col-modified tabular">
+                        {modified ?? "—"}
+                      </span>
+                      <span className="file-col-size tabular">{size}</span>
+                    </>
+                  }
+                  label={[
+                    document.name,
+                    location,
+                    kind,
+                    modified ? `modified ${modified}` : undefined,
+                    size,
+                  ]
+                    .filter(Boolean)
+                    .join(", ")}
+                  tooltip={document.relativePath}
+                  selected={document.id === selectedId}
+                  describedBy={detailId}
+                  tabbable={tabbable}
+                  dataId={document.id}
+                  onSelect={() => onSelect(document)}
+                />
+                {actions && (
+                  <RowMenu
+                    label={`Actions for ${document.name}`}
+                    items={actions(document)}
+                    tabbable={tabbable}
+                  />
+                )}
+              </div>
+              {detail && (
+                <div id={detailId} className="file-row-detail">
+                  {detail}
+                </div>
+              )}
+            </li>
           );
         })}
-      </div>
+      </ul>
     </div>
   );
 }
