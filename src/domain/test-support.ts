@@ -2,6 +2,7 @@ import type {
   ActionPlan,
   ContentHash,
   FileOperation,
+  FileOperationKind,
   HistoryEntry,
   RelativePath,
 } from "./contracts";
@@ -42,6 +43,18 @@ export async function renameOperation(
     expectedContentHash: await hashText(before),
     destinationRelativePath,
     expectedDestination: "absent",
+  };
+}
+
+export async function deleteOperation(
+  relativePath: RelativePath,
+  before: string,
+): Promise<FileOperation> {
+  return {
+    kind: "delete",
+    documentId: documentId(relativePath),
+    relativePath,
+    expectedContentHash: await hashText(before),
   };
 }
 
@@ -89,12 +102,14 @@ export async function historyEntry(input: {
   beforePath?: RelativePath;
   beforeContent?: string;
   recoverable?: boolean;
+  operationKind?: FileOperationKind;
 }): Promise<HistoryEntry> {
   const after: ContentHash = await hashText(input.appliedContent);
   const entry: HistoryEntry = {
     id: input.id,
     planId: input.planId,
     operationIndex: input.operationIndex,
+    operationKind: input.operationKind ?? "edit",
     appliedAt: 1_500,
     documentId: documentId(input.appliedPath),
     afterRelativePath: input.appliedPath,
@@ -106,4 +121,25 @@ export async function historyEntry(input: {
     entry.beforeContentHash = await hashText(input.beforeContent);
   }
   return entry;
+}
+
+/** A deletion's entry: no applied path and no after hash. */
+export async function deletionEntry(input: {
+  id: string;
+  planId: string;
+  path: RelativePath;
+  content: string;
+  recoverable?: boolean;
+}): Promise<HistoryEntry> {
+  return {
+    id: input.id,
+    planId: input.planId,
+    operationIndex: 0,
+    operationKind: "delete",
+    appliedAt: 1_500,
+    documentId: documentId(input.path),
+    beforeRelativePath: input.path,
+    beforeContentHash: await hashText(input.content),
+    recoverable: input.recoverable ?? true,
+  };
 }

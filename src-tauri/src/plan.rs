@@ -8,7 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use crate::contracts::{
-    ActionPlan, Approval, BatchResult, BatchStopReason, FileOperation, HistoryEntry,
+    ActionPlan, Approval, BatchResult, BatchStopReason, FileOperation, FileOperationKind,
+    HistoryEntry,
     ImpactCandidate, OperationOutcome, OperationStatus, RestoredPreview, UndoConflict,
     UndoConflictReason, UndoPreflight,
 };
@@ -85,6 +86,15 @@ pub fn canonical_plan_bytes(plan: &ActionPlan) -> Vec<u8> {
                 field(&mut out, relative_path);
                 field(&mut out, expected_content_hash);
                 field(&mut out, destination_relative_path);
+            }
+            FileOperation::Delete {
+                document_id,
+                relative_path,
+                expected_content_hash,
+            } => {
+                field(&mut out, document_id);
+                field(&mut out, relative_path);
+                field(&mut out, expected_content_hash);
             }
         }
     }
@@ -577,6 +587,12 @@ pub fn preflight_undo(root: &Path, plan_id: &str, entries: &[HistoryEntry]) -> U
         .collect();
     let mut conflicts = Vec::new();
     for entry in &pending {
+        if entry.operation_kind == FileOperationKind::Delete {
+            if let Some(conflict) = deleted_file_conflict(root, entry) {
+                conflicts.push(conflict);
+            }
+            continue;
+        }
         let applied_path = entry
             .after_relative_path
             .clone()
@@ -608,16 +624,16 @@ pub fn preflight_undo(root: &Path, plan_id: &str, entries: &[HistoryEntry]) -> U
                 history_entry_id: entry.id.clone(),
                 document_id: entry.document_id.clone(),
                 relative_path: applied_path,
-                expected_content_hash: Some(entry.after_content_hash.clone()),
+                expected_content_hash: entry.after_content_hash.clone(),
                 observed_content_hash: None,
                 reason: UndoConflictReason::Missing,
             }),
-            Some(observed) if observed != entry.after_content_hash => {
+            Some(observed) if Some(&observed) != entry.after_content_hash.as_ref() => {
                 conflicts.push(UndoConflict {
                     history_entry_id: entry.id.clone(),
                     document_id: entry.document_id.clone(),
                     relative_path: applied_path,
-                    expected_content_hash: Some(entry.after_content_hash.clone()),
+                    expected_content_hash: entry.after_content_hash.clone(),
                     observed_content_hash: Some(observed),
                     reason: UndoConflictReason::ExternallyModified,
                 });
@@ -644,6 +660,36 @@ pub fn preflight_undo(root: &Path, plan_id: &str, entries: &[HistoryEntry]) -> U
         undoable: conflicts.is_empty(),
         conflicts,
     }
+}
+
+/// What blocks re-creating a deleted file: its content is no longer kept, something
+/// else now uses its name, or the folder it was in is gone. Undo never replaces a file.
+fn deleted_file_conflict(root: &Path, entry: &HistoryEntry) -> Option<UndoConflict> {
+    let conflict = |relative_path: &str, observed_content_hash, reason| UndoConflict {
+        history_entry_id: entry.id.clone(),
+        document_id: entry.document_id.clone(),
+        relative_path: relative_path.to_string(),
+        expected_content_hash: None,
+        observed_content_hash,
+        reason,
+    };
+    let Some(restored) = entry.before_relative_path.as_deref() else {
+        return Some(conflict("", None, UndoConflictReason::NotRecoverable));
+    };
+    if !entry.recoverable {
+        return Some(conflict(restored, None, UndoConflictReason::NotRecoverable));
+    }
+    if path_exists(root, restored) {
+        return Some(conflict(
+            restored,
+            observed_hash(root, restored),
+            UndoConflictReason::DestinationOccupied,
+        ));
+    }
+    if resolve_destination(root, restored).is_err() {
+        return Some(conflict(restored, None, UndoConflictReason::Missing));
+    }
+    None
 }
 
 /// Refuse a whole-batch Undo when any entry conflicts, naming the blocker.
@@ -1439,12 +1485,13 @@ mod tests {
             id: id.into(),
             plan_id: "plan-three".into(),
             operation_index: 0,
+            operation_kind: FileOperationKind::Edit,
             applied_at: 2,
             document_id: None,
             before_relative_path: before_path.map(str::to_string),
             after_relative_path: Some(applied_path.into()),
             before_content_hash: None,
-            after_content_hash: content_hash(applied_content.as_bytes()),
+            after_content_hash: Some(content_hash(applied_content.as_bytes())),
             recoverable: true,
             undone_at: None,
         }
@@ -1589,6 +1636,88 @@ mod tests {
         let preflight = preflight_undo(&harness.path, "plan-three", &[first, second]);
         assert_eq!(preflight.entry_ids, vec!["h2"]);
         assert!(preflight.undoable);
+    }
+
+    fn deleted(id: &str, path: &str, content: &str) -> HistoryEntry {
+        HistoryEntry {
+            id: id.into(),
+            plan_id: "plan-delete".into(),
+            operation_index: 0,
+            operation_kind: FileOperationKind::Delete,
+            applied_at: 2,
+            document_id: None,
+            before_relative_path: Some(path.into()),
+            after_relative_path: None,
+            before_content_hash: Some(content_hash(content.as_bytes())),
+            after_content_hash: None,
+            recoverable: true,
+            undone_at: None,
+        }
+    }
+
+    #[test]
+    fn restores_a_deleted_file_only_while_its_name_is_free() {
+        let harness = harness();
+        fs::remove_file(harness.path.join("notes").join("paalala.md")).unwrap();
+        let entry = deleted("h5", "notes/paalala.md", "Paalala\n");
+        let preflight = preflight_undo(&harness.path, "plan-delete", &[entry.clone()]);
+        assert!(preflight.undoable, "nothing uses the name, so Undo can re-create it");
+        assert_eq!(preflight.entry_ids, vec!["h5"]);
+
+        fs::write(harness.path.join("notes").join("paalala.md"), "Bagong tala\n").unwrap();
+        let occupied = preflight_undo(&harness.path, "plan-delete", &[entry.clone()]);
+        assert!(!occupied.undoable);
+        assert_eq!(
+            occupied.conflicts[0].reason,
+            UndoConflictReason::DestinationOccupied
+        );
+        assert_eq!(occupied.conflicts[0].relative_path, "notes/paalala.md");
+        assert_eq!(
+            occupied.conflicts[0].observed_content_hash,
+            Some(content_hash(b"Bagong tala\n"))
+        );
+        fs::remove_file(harness.path.join("notes").join("paalala.md")).unwrap();
+
+        let mut pruned = entry.clone();
+        pruned.recoverable = false;
+        let preflight = preflight_undo(&harness.path, "plan-delete", &[pruned]);
+        assert_eq!(
+            preflight.conflicts[0].reason,
+            UndoConflictReason::NotRecoverable
+        );
+
+        fs::remove_dir(harness.path.join("notes")).unwrap();
+        let preflight = preflight_undo(&harness.path, "plan-delete", &[entry]);
+        assert_eq!(preflight.conflicts[0].reason, UndoConflictReason::Missing);
+        assert_eq!(preflight.conflicts[0].relative_path, "notes/paalala.md");
+    }
+
+    #[test]
+    fn refuses_to_delete_a_format_folio_only_reads() {
+        let mut harness = harness();
+        fs::write(harness.path.join("paper.pdf"), "%PDF").unwrap();
+        let operation = FileOperation::Delete {
+            document_id: format!("{}:paper.pdf", harness.workspace_id),
+            relative_path: "paper.pdf".into(),
+            expected_content_hash: content_hash(b"%PDF"),
+        };
+        let plan = harness
+            .registry
+            .prepare(
+                &harness.workspace_id.clone(),
+                vec![operation],
+                Vec::new(),
+                NOW,
+                300,
+            )
+            .unwrap();
+        assert_eq!(
+            preflight_plan(&harness.path, &plan, NOW + 1)
+                .unwrap_err()
+                .code,
+            ErrorCode::UnsupportedMediaType
+        );
+        assert!(harness.path.join("paper.pdf").is_file());
     }
 
     #[test]

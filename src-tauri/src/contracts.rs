@@ -123,16 +123,63 @@ pub enum FileOperation {
         #[serde(default)]
         expected_destination: DestinationState,
     },
+    /// Removes one TXT or Markdown file. Its bytes are kept in history first, so
+    /// Undo can re-create it while nothing else uses its name.
+    Delete {
+        document_id: String,
+        relative_path: String,
+        expected_content_hash: String,
+    },
+}
+
+/// The `kind` tag of a `FileOperation`, also recorded with each history entry.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum FileOperationKind {
+    Create,
+    Edit,
+    Rename,
+    Move,
+    Delete,
+}
+
+impl FileOperationKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FileOperationKind::Create => "create",
+            FileOperationKind::Edit => "edit",
+            FileOperationKind::Rename => "rename",
+            FileOperationKind::Move => "move",
+            FileOperationKind::Delete => "delete",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        [
+            FileOperationKind::Create,
+            FileOperationKind::Edit,
+            FileOperationKind::Rename,
+            FileOperationKind::Move,
+            FileOperationKind::Delete,
+        ]
+        .into_iter()
+        .find(|kind| kind.as_str() == value)
+    }
 }
 
 impl FileOperation {
-    pub fn kind(&self) -> &'static str {
+    pub fn operation_kind(&self) -> FileOperationKind {
         match self {
-            FileOperation::Create { .. } => "create",
-            FileOperation::Edit { .. } => "edit",
-            FileOperation::Rename { .. } => "rename",
-            FileOperation::Move { .. } => "move",
+            FileOperation::Create { .. } => FileOperationKind::Create,
+            FileOperation::Edit { .. } => FileOperationKind::Edit,
+            FileOperation::Rename { .. } => FileOperationKind::Rename,
+            FileOperation::Move { .. } => FileOperationKind::Move,
+            FileOperation::Delete { .. } => FileOperationKind::Delete,
         }
+    }
+
+    pub fn kind(&self) -> &'static str {
+        self.operation_kind().as_str()
     }
 
     /// The path the operation reads from, if any.
@@ -141,7 +188,8 @@ impl FileOperation {
             FileOperation::Create { .. } => None,
             FileOperation::Edit { relative_path, .. }
             | FileOperation::Rename { relative_path, .. }
-            | FileOperation::Move { relative_path, .. } => Some(relative_path),
+            | FileOperation::Move { relative_path, .. }
+            | FileOperation::Delete { relative_path, .. } => Some(relative_path),
         }
     }
 
@@ -160,7 +208,7 @@ impl FileOperation {
                 destination_relative_path,
                 ..
             } => Some(destination_relative_path),
-            FileOperation::Edit { .. } => None,
+            FileOperation::Edit { .. } | FileOperation::Delete { .. } => None,
         }
     }
 
@@ -176,6 +224,10 @@ impl FileOperation {
                 ..
             }
             | FileOperation::Move {
+                expected_content_hash,
+                ..
+            }
+            | FileOperation::Delete {
                 expected_content_hash,
                 ..
             } => Some(expected_content_hash),
@@ -254,6 +306,7 @@ pub struct HistoryEntry {
     pub id: String,
     pub plan_id: String,
     pub operation_index: usize,
+    pub operation_kind: FileOperationKind,
     pub applied_at: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub document_id: Option<String>,
@@ -263,7 +316,9 @@ pub struct HistoryEntry {
     pub after_relative_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub before_content_hash: Option<String>,
-    pub after_content_hash: String,
+    /// Absent when the operation removed a path.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after_content_hash: Option<String>,
     /// False when the previous content could not be retained; Undo is refused.
     pub recoverable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -334,6 +389,31 @@ mod tests {
         );
         assert_eq!(value["expectedDestination"], serde_json::json!("absent"));
         assert_eq!(value["expectedContentHash"], serde_json::json!("sha256:00"));
+    }
+
+    #[test]
+    fn a_deletion_names_its_target_and_has_no_destination() {
+        let operation = FileOperation::Delete {
+            document_id: "w:notes/paalala.md".into(),
+            relative_path: "notes/paalala.md".into(),
+            expected_content_hash: "sha256:00".into(),
+        };
+        let value = serde_json::to_value(&operation).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "kind": "delete",
+                "documentId": "w:notes/paalala.md",
+                "relativePath": "notes/paalala.md",
+                "expectedContentHash": "sha256:00",
+            })
+        );
+        assert_eq!(serde_json::from_value::<FileOperation>(value).unwrap(), operation);
+        assert_eq!(operation.destination_path(), None);
+        assert_eq!(
+            FileOperationKind::parse(operation.kind()),
+            Some(FileOperationKind::Delete)
+        );
     }
 
     #[test]

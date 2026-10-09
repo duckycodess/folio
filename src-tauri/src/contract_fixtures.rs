@@ -216,9 +216,11 @@ mod tests {
 
     #[test]
     fn agrees_on_canonical_plan_bytes_and_digests() {
+        let mut kinds = std::collections::BTreeSet::new();
         for entry in cases()["plans"].as_array().unwrap() {
             let plan: ActionPlan = serde_json::from_value(entry["plan"].clone())
                 .expect("the fixture plan deserializes into the native contract");
+            kinds.extend(plan.operations.iter().map(|operation| operation.kind()));
             let canonical = canonical_plan_bytes(&plan);
             assert_eq!(
                 String::from_utf8(canonical.clone()).unwrap(),
@@ -231,5 +233,10 @@ mod tests {
             assert_eq!(plan_digest(&plan), entry["digest"].as_str().unwrap());
             assert_eq!(plan.digest, entry["digest"].as_str().unwrap());
         }
+        assert_eq!(
+            kinds,
+            ["create", "delete", "edit", "rename"].into_iter().collect(),
+            "the fixtures cover every distinct canonical layout"
+        );
     }
 }

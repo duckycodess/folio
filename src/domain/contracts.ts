@@ -488,12 +488,15 @@ export interface ProviderIndexStatus {
 
 /* -------------------------------------------------------------- operations */
 
-export type FileOperationKind = "create" | "edit" | "rename" | "move";
+export type FileOperationKind =
+  "create" | "edit" | "rename" | "move" | "delete";
 
 /**
  * `expectedDestination: "absent"` is the explicit destination-absence check: a
  * rename or move is refused when something already occupies the destination,
- * rather than overwriting it.
+ * rather than overwriting it. A `delete` has no destination: the native core
+ * keeps the file's bytes in history before removing it, so Undo can re-create
+ * it while nothing else uses its name.
  */
 export type FileOperation =
   | {
@@ -519,6 +522,12 @@ export type FileOperation =
       expectedContentHash: ContentHash;
       destinationRelativePath: RelativePath;
       expectedDestination: "absent";
+    }
+  | {
+      kind: "delete";
+      documentId: DocumentId;
+      relativePath: RelativePath;
+      expectedContentHash: ContentHash;
     };
 
 /** A Folio Ripple review candidate. It is never written to. */
@@ -659,6 +668,7 @@ export interface HistoryEntry {
   id: string;
   planId: string;
   operationIndex: number;
+  operationKind: FileOperationKind;
   appliedAt: number;
   documentId?: DocumentId;
   /** Absent for `create`. */
@@ -667,8 +677,11 @@ export interface HistoryEntry {
   afterRelativePath?: RelativePath;
   /** Absent for `create`. */
   beforeContentHash?: ContentHash;
-  /** The state Undo expects to find before reversing this entry. */
-  afterContentHash: ContentHash;
+  /**
+   * The state Undo expects to find before reversing this entry. Absent when
+   * the operation removed a path.
+   */
+  afterContentHash?: ContentHash;
   /** False when the previous content could not be retained; Undo is then refused. */
   recoverable: boolean;
   undoneAt?: number;

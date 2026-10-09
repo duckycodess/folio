@@ -77,6 +77,26 @@ describe("exact preview rows", () => {
       { action: "Rename", from: "notes/c.md", to: "notes/2026-c.md" },
     ]);
   });
+
+  it("names a deleted file and calls the result a deletion", () => {
+    const deletion: ActionPlan = {
+      ...PLAN,
+      operations: [
+        {
+          kind: "delete",
+          documentId: "w:notes/a.md",
+          relativePath: "notes/a.md",
+          expectedContentHash: "a".repeat(64),
+        },
+      ],
+    };
+    expect(deletion.operations.map(planRow)).toEqual([
+      { action: "Delete", from: "notes/a.md" },
+    ]);
+    expect(summarizeApply(deletion, report(["succeeded"])).headline).toBe(
+      "Deleted 1 file.",
+    );
+  });
 });
 
 describe("what an applied plan reports", () => {

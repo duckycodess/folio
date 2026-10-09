@@ -7,6 +7,7 @@ import {
   preflightPlan,
   preflightUndo,
   settleBatch,
+  undoPaths,
   verifyPlanDigest,
   type AttemptOutcome,
 } from "./plan";
@@ -14,6 +15,8 @@ import { isFolioError } from "./errors";
 import { hashText } from "./hash";
 import {
   ABSENT,
+  deleteOperation,
+  deletionEntry,
   documentId,
   editOperation,
   historyEntry,
@@ -219,6 +222,29 @@ describe("plan preflight", () => {
     });
     expect(codeOf(() => preflightPlan(plan, {}, 1_500))).toBe(
       "unsupportedMediaType",
+    );
+  });
+
+  it("refuses to delete a format Folio only reads", async () => {
+    const plan = await makePlan({
+      id: "plan-pdf-delete",
+      operations: [await deleteOperation("research/paper.pdf", "%PDF")],
+    });
+    expect(codeOf(() => preflightPlan(plan, {}, 1_500))).toBe(
+      "unsupportedMediaType",
+    );
+  });
+
+  it("checks a deletion's target and nothing else", async () => {
+    const plan = await makePlan({
+      id: "plan-delete",
+      operations: [await deleteOperation("notes/paalala.md", "Paalala\n")],
+    });
+    const current = await observedPaths({ "notes/paalala.md": "Paalala\n" });
+    expect(codeOf(() => preflightPlan(plan, current, 1_500))).toBe("no-error");
+    const changed = await observedPaths({ "notes/paalala.md": "Binago\n" });
+    expect(codeOf(() => preflightPlan(plan, changed, 1_500))).toBe(
+      "targetChanged",
     );
   });
 
@@ -658,6 +684,56 @@ describe("whole-batch undo", () => {
     });
     expect(preflight.entryIds).toEqual(["h2"]);
     expect(preflight.undoable).toBe(true);
+  });
+});
+
+describe("undoing a deletion", () => {
+  async function deleted(recoverable = true) {
+    return deletionEntry({
+      id: "h5",
+      planId: "plan-delete",
+      path: "notes/paalala.md",
+      content: "Paalala\n",
+      recoverable,
+    });
+  }
+
+  it("observes the path the file would be restored to", async () => {
+    expect(undoPaths([await deleted()])).toEqual(["notes/paalala.md"]);
+  });
+
+  it("re-creates the file while nothing uses its name", async () => {
+    const preflight = preflightUndo({
+      planId: "plan-delete",
+      entries: [await deleted()],
+      observed: { "notes/paalala.md": ABSENT },
+    });
+    expect(preflight.undoable).toBe(true);
+    expect(preflight.entryIds).toEqual(["h5"]);
+  });
+
+  it("never restores it over a file that now uses the name", async () => {
+    const preflight = preflightUndo({
+      planId: "plan-delete",
+      entries: [await deleted()],
+      observed: await observedPaths({ "notes/paalala.md": "Bagong tala\n" }),
+    });
+    expect(preflight.undoable).toBe(false);
+    expect(preflight.conflicts[0].reason).toBe("destinationOccupied");
+    expect(preflight.conflicts[0].relativePath).toBe("notes/paalala.md");
+    expect(preflight.conflicts[0].observedContentHash).toBe(
+      await hashText("Bagong tala\n"),
+    );
+  });
+
+  it("is not recoverable once its contents are no longer kept", async () => {
+    const preflight = preflightUndo({
+      planId: "plan-delete",
+      entries: [await deleted(false)],
+      observed: { "notes/paalala.md": ABSENT },
+    });
+    expect(preflight.conflicts[0].reason).toBe("notRecoverable");
+    expect(preflight.conflicts[0].relativePath).toBe("notes/paalala.md");
   });
 });
 

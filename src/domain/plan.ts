@@ -46,20 +46,30 @@ export function canonicalPlanBytes(plan: ActionPlan): Uint8Array {
   text += field(String(plan.operations.length));
   for (const operation of plan.operations) {
     text += field(operation.kind);
-    if (operation.kind === "create") {
-      text += field(operation.destinationRelativePath);
-      text += field(operation.mediaType);
-      text += field(operation.content);
-    } else if (operation.kind === "edit") {
-      text += field(operation.documentId);
-      text += field(operation.relativePath);
-      text += field(operation.expectedContentHash);
-      text += field(operation.after);
-    } else {
-      text += field(operation.documentId);
-      text += field(operation.relativePath);
-      text += field(operation.expectedContentHash);
-      text += field(operation.destinationRelativePath);
+    switch (operation.kind) {
+      case "create":
+        text += field(operation.destinationRelativePath);
+        text += field(operation.mediaType);
+        text += field(operation.content);
+        break;
+      case "edit":
+        text += field(operation.documentId);
+        text += field(operation.relativePath);
+        text += field(operation.expectedContentHash);
+        text += field(operation.after);
+        break;
+      case "rename":
+      case "move":
+        text += field(operation.documentId);
+        text += field(operation.relativePath);
+        text += field(operation.expectedContentHash);
+        text += field(operation.destinationRelativePath);
+        break;
+      case "delete":
+        text += field(operation.documentId);
+        text += field(operation.relativePath);
+        text += field(operation.expectedContentHash);
+        break;
     }
   }
   return encoder.encode(text);
@@ -110,7 +120,7 @@ export function planPaths(plan: ActionPlan): RelativePath[] {
       continue;
     }
     paths.push(operation.relativePath);
-    if (operation.kind !== "edit")
+    if (operation.kind === "rename" || operation.kind === "move")
       paths.push(operation.destinationRelativePath);
   }
   return paths;
@@ -193,7 +203,7 @@ export function preflightPlan(
       source = normalizeRelativePath(operation.relativePath);
       assertEditable(source);
     }
-    if (operation.kind !== "edit") {
+    if (operation.kind !== "edit" && operation.kind !== "delete") {
       destination = assertPortableDestination(
         operation.destinationRelativePath,
       );
@@ -421,6 +431,31 @@ export function preflightUndo(input: {
   const conflicts: UndoConflict[] = [];
   const entries = input.entries.filter((entry) => entry.undoneAt === undefined);
   for (const entry of entries) {
+    if (entry.operationKind === "delete") {
+      // Undo re-creates a deleted file only where nothing uses its name now.
+      const restoredPath = entry.beforeRelativePath;
+      if (!restoredPath || !entry.recoverable) {
+        conflicts.push({
+          historyEntryId: entry.id,
+          documentId: entry.documentId,
+          relativePath: restoredPath ?? "",
+          observedContentHash: null,
+          reason: "notRecoverable",
+        });
+        continue;
+      }
+      const occupant = observe(input.observed, restoredPath);
+      if (occupant.exists) {
+        conflicts.push({
+          historyEntryId: entry.id,
+          documentId: entry.documentId,
+          relativePath: restoredPath,
+          observedContentHash: occupant.contentHash ?? null,
+          reason: "destinationOccupied",
+        });
+      }
+      continue;
+    }
     const appliedPath = entry.afterRelativePath ?? entry.beforeRelativePath;
     if (!appliedPath) {
       conflicts.push({
@@ -504,7 +539,10 @@ export function assertUndoable(preflight: UndoPreflight): void {
   );
 }
 
-/** Paths an Undo preflight needs to observe. */
+/**
+ * Paths an Undo preflight needs to observe. A deletion has no applied path, so
+ * it contributes the path it would be restored to.
+ */
 export function undoPaths(entries: HistoryEntry[]): RelativePath[] {
   const paths: RelativePath[] = [];
   for (const entry of entries) {

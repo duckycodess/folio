@@ -110,9 +110,18 @@
 - Edits and Undo keep the file's permissions (the Unix mode, or the Windows read-only attribute). A file Folio may not write, read-only or owned by someone else, is refused instead of replaced. Ownership, ACLs and extended attributes are not carried over; whether explicit Windows ACLs survive has not been checked.
 - A scan removes the writer's own temporary files (`.<name>.folio-<pid>-<n>.tmp`) older than 15 minutes, which only an interrupted save leaves behind. No other file is removed.
 - Undo is preview-then-confirm (ADR 0008): `preview_undo` returns the preflight, and `undo_plan` reverses only the exact entries the user confirmed, newest first. Conflicts change nothing; a partial Undo leaves the rest pending for a fresh preview.
-- History listing is bounded (default 100, at most 500 entries, one query). Edits keep previous content for the 100 most recent plans; renames, moves and creates need none and stay undoable. Stored plans keep a summary and the Ripple evidence, never file bodies.
+- History listing is bounded (default 100, at most 500 entries, one query). Edits and deletions keep the content Undo needs for the 100 most recent plans; renames, moves and creates need none and stay undoable. Stored plans keep a summary and the Ripple evidence, never file bodies.
 - Ripple (`ripple.rs`): documents linked to or from the target, or shared-fact candidates, that mention the replaced phrase are `evidence`; similarity relationships and byte-identical copies are `similarityOnly`; unrelated documents sharing the value are omitted. Whole-phrase matching includes English, abbreviated and Filipino month names. For a date in May, only a capitalised "May" counts, because lowercase Filipino _may_ means "there is"; a sentence that begins "May 20 …" still reads as the month. Candidates carry `relationshipType`/`provenance` and are capped at 25. The phrase comes from the edit's diff, or from `ripple_impacts` when a caller knows it.
 - `prepare_passage_edit` builds the frozen whole-file edit from an exact passage that occurs once; Organization Suggestions return verified duplicate groups and title-based filenames with their rename operations.
+
+## Native delete and deletion impacts (issue #44)
+
+- A `delete` operation (`documentId`, `relativePath`, `expectedContentHash`, no destination) is part of the frozen contract in both languages, with canonical plan bytes pinned by a golden fixture. `HistoryEntry` now has `operationKind`; a deletion's entry has no `afterRelativePath` or `afterContentHash`.
+- The writer reads the file (a file over 2 MiB is refused with `documentTooLarge`), checks its hash, stores the exact bytes in history and only then removes it (ADR 0010). If the bytes can't be stored, nothing is deleted. A file that changed after the preview, or while Folio was deleting it, is kept (`targetChanged`) and its staged history entry is dropped. PDFs are refused (`unsupportedMediaType`). The index forgets the document, its chunks and its relationships.
+- Undo re-creates the file with an exclusive create, never over another file (`destinationOccupied` in the preview, `destinationExists` if a file appears after it), and re-indexes it under the same document identity, so its links come back. The restored file does not get its old permissions or modification time back. Deleted content follows the edits' 100-plan retention; after that the deletion is listed as not recoverable.
+- Deletion impacts (`ripple::deletion_impacts`, used by `prepare_plan` when no impacts are supplied): files linking to the deleted file are `evidence` with their link passages; shared-fact candidates are `evidence` with their stored provenance; similarity relations and byte-identical copies are `similarityOnly`. A file the deleted one only links to is not listed. At most 25, and they never become operations.
+- Migration `005_delete_history.sql` rebuilds `history` so `operation_kind` allows `delete`, keeping existing rows.
+- No UI offers deletion yet: the Graph node actions are #45. The Organize preview names a deletion ("Delete", "Removed") and an all-delete result says "Deleted N files", but nothing builds a delete plan from the UI.
 
 ## Pending
 
@@ -148,6 +157,29 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 8-GB measurement is claimed here.
 
 ## Verification
+
+### Native delete and deletion impacts (2026-10-10, issue #44)
+
+Checked on Linux (x86-64 VM, 8 vCPUs, 7 GiB RAM) with Rust 1.99.0 and Node.js 24.15.0. This host has no WebKit/GTK development libraries, so the Tauri crate can't be built here. As for #28, the native suites ran in a scratch crate that compiles every module in `src-tauri/src` except `lib.rs`, with the same dependency versions from `Cargo.lock`:
+
+- Native tests: 168 passed, 2 ignored (157 passed, 2 ignored on `main` before this change). The new tests use real temporary folders and cover:
+  - no write before approval, and an apply without approval refused;
+  - a stale preview refused by the gate and again by the writer, with the newer file kept;
+  - the deleted file's exact bytes in history, `operationKind: "delete"` with no after path or hash, and the document, its chunks and its links gone from the index;
+  - Undo restoring identical bytes under the same document identity, with the same links back;
+  - Undo blocked by a file using the name (preview), and by a file that appears after the preview (exclusive create), leaving that file as it is;
+  - a deletion recoverable after 99 newer applied plans and not after 100, its bytes cleared;
+  - a file changed while being deleted, and a failed removal: file kept, no history entry left;
+  - a failed history insert (an injected trigger) deleting nothing;
+  - deletion impacts: four backlinks as `evidence` with located link passages, the identical copy as `similarityOnly` without a relationship type, inserted shared-fact (`model`) and similarity (`embedding`) relations keeping their provenance, no outgoing-only link, a cap of 25, and no write;
+  - a PDF refused at preflight and by the writer even when the gate is skipped;
+  - migration 005 on a version-4 database keeping edit and rename rows and accepting `delete`;
+  - the delete plan's canonical bytes and digest against the golden fixture.
+- `lib.rs` was not compiled on this host. It needed no change (`prepare_plan` already deserializes any `FileOperation` and computes impacts with `plan_impacts`), but the Tauri commands were not built or run. Nothing was tested on Windows or macOS; CI's jobs for this branch have not run yet.
+- Rebased onto `main` with #15 merged: native tests 168 passed, 2 ignored again. `identity.rs` now calls `folio_core::interpretation::is_windows_reserved_name`, and `folio-core`'s dependencies need OpenSSL headers this host lacks, so the scratch crate compiled a verbatim copy of that one function instead of the `folio-core` crate. `folio-core` itself was not built here.
+- [CI run 37963735130](https://github.com/duckycodess/folio/actions/runs/37963735130), for this branch after the rebase, passed all three jobs: frontend, `desktop-check (macos-latest)` with 178 native tests passed and 2 ignored, and `desktop-check (windows-latest)` with 169 passed and 2 ignored. Those jobs build the Tauri crate, including `lib.rs` and `folio-core`.
+- `npm run format:check`, `npm run check`, `npm test` (169 passed, 9 todo after the rebase; 165 before it) and `npm run build`: passed. The new cases cover the delete digest against the fixture, preflight of a delete (PDF refused, changed target refused), the Undo preflight for a deletion (free name, occupied name, not recoverable) and the paths it observes, and the Organize preview row and "Deleted 1 file." headline.
+- After review: deleting through a symbolic link (the file, or a folder on the way) and deleting a read-only file are refused, with the file kept, and Undo restores a deleted file's Unix permission bits (`before_mode`, stored by migration 005). Native tests: 182 passed, 2 ignored on Linux, including these three cases.
 
 ### Onboarding (2026-10-10, issue #14)
 
