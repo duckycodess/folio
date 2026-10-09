@@ -198,7 +198,9 @@ Tested on Linux (QEMU x86-64 user-mode emulation with `-cpu max`, because this V
 
 After merging `main` (at `d20bfae`; ADR renumbered to 0015 and the migration to `007_collections.sql`), the same QEMU host gave: `src-tauri` 251 passed, `folio-core` 179 passed, `npm test` 440 passed (9 todo), with `npm run check`, `npm run build` and `npm run check:bundle` passing. Playwright: 35 passed. The 4 `viewports` axe failures (`.olio-chat-greeting` outside a landmark) are the ones already recorded for `main` above.
 
-Not tested: real embedding or generation models (so grouping and naming quality are unmeasured), Windows and macOS builds, and native desktop interaction.
+[GitHub Actions run 37991417628](https://github.com/duckycodess/folio/actions/runs/37991417628) for PR #87 at `12877db` passed all three jobs: frontend (formatting, type checks, Vitest, build, bundle check, `folio-core` 179 passed, browser journeys 35 passed in the report-only step), macOS native (250 passed; Model Lab core 87 passed) and Windows native (238 passed; Model Lab core 86 passed). These compile and run the collection storage, writer and grouping tests on both platforms; they don't exercise real models or the desktop app.
+
+Not tested: real embedding or generation models (so grouping and naming quality are unmeasured), the Windows and macOS desktop apps themselves, and native desktop interaction.
 
 ### Names, folders, adding to a collection and PDF pages (issue #78, slices 2 and 3)
 
