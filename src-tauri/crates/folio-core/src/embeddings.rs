@@ -4,7 +4,7 @@ use crate::error::{CoreError, CoreResult};
 use ort::{session::Session, value::Tensor};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
@@ -107,7 +107,11 @@ pub trait EmbeddingProvider: Send {
 pub struct OrtE5Provider {
     space: EmbeddingSpace,
     tokenizer: Tokenizer,
+    /// Dropped by the idle reaper and reloaded on the next use, from the same
+    /// verified model path.
     session: Arc<Mutex<Option<Session>>>,
+    model_path: PathBuf,
+    threads: usize,
     batch_size: usize,
     active: Arc<AtomicBool>,
     last_used: Arc<Mutex<Instant>>,
@@ -177,12 +181,8 @@ impl OrtE5Provider {
                 ..Default::default()
             }))
             .map_err(|error| CoreError::Message(format!("Tokenizer setup failed: {error}")))?;
-        let session = Session::builder()
-            .map_err(|error| CoreError::Message(format!("ONNX session setup failed: {error}")))?
-            .with_intra_threads(threads.max(1).min(2))
-            .map_err(|error| CoreError::Message(format!("ONNX thread setup failed: {error}")))?
-            .commit_from_file(model_path.as_ref())
-            .map_err(|error| CoreError::Message(format!("ONNX model load failed: {error}")))?;
+        let model_path = model_path.as_ref().to_path_buf();
+        let session = load_session(&model_path, threads)?;
         let preprocessing_fingerprint = embedding_fingerprint(
             model_sha256,
             tokenizer_sha256,
@@ -195,7 +195,7 @@ impl OrtE5Provider {
         let active = Arc::new(AtomicBool::new(false));
         let last_used = Arc::new(Mutex::new(Instant::now()));
         let reaper_stop = Arc::new(AtomicBool::new(false));
-        let reaper = Some(spawn_embedding_reaper(
+        let reaper = Some(spawn_idle_reaper(
             session.clone(),
             active.clone(),
             last_used.clone(),
@@ -212,6 +212,8 @@ impl OrtE5Provider {
             },
             tokenizer,
             session,
+            model_path,
+            threads,
             batch_size,
             active,
             last_used,
@@ -263,9 +265,9 @@ impl OrtE5Provider {
             .session
             .lock()
             .map_err(|_| CoreError::Message("Embedding session is unavailable.".into()))?;
-        let session = session_guard
-            .as_mut()
-            .ok_or_else(|| CoreError::Message("Embedding provider is unloaded.".into()))?;
+        let session = ensure_loaded(&mut *session_guard, || {
+            load_session(&self.model_path, self.threads)
+        })?;
         let mut inputs = Vec::new();
         for input in session.inputs() {
             let name = input.name();
@@ -392,8 +394,28 @@ impl Drop for OrtE5Provider {
     }
 }
 
-fn spawn_embedding_reaper(
-    session: Arc<Mutex<Option<Session>>>,
+fn load_session(model_path: &Path, threads: usize) -> CoreResult<Session> {
+    Session::builder()
+        .map_err(|error| CoreError::Message(format!("ONNX session setup failed: {error}")))?
+        .with_intra_threads(threads.clamp(1, 2))
+        .map_err(|error| CoreError::Message(format!("ONNX thread setup failed: {error}")))?
+        .commit_from_file(model_path)
+        .map_err(|error| CoreError::Message(format!("ONNX model load failed: {error}")))
+}
+
+/// The loaded value, loading it first if the idle reaper dropped it.
+fn ensure_loaded<T>(
+    slot: &mut Option<T>,
+    load: impl FnOnce() -> CoreResult<T>,
+) -> CoreResult<&mut T> {
+    if slot.is_none() {
+        *slot = Some(load()?);
+    }
+    Ok(slot.as_mut().expect("loaded above"))
+}
+
+fn spawn_idle_reaper<T: Send + 'static>(
+    session: Arc<Mutex<Option<T>>>,
     active: Arc<AtomicBool>,
     last_used: Arc<Mutex<Instant>>,
     stop: Arc<AtomicBool>,
@@ -493,6 +515,47 @@ pub fn normalize_vector(values: &[f32]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_idle_unloaded_value_is_reloaded_on_the_next_use() {
+        let slot = Arc::new(Mutex::new(Some(1_u32)));
+        let active = Arc::new(AtomicBool::new(false));
+        let last_used = Arc::new(Mutex::new(Instant::now()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let reaper = spawn_idle_reaper(
+            slot.clone(),
+            active,
+            last_used,
+            stop.clone(),
+            Duration::from_millis(20),
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while slot.lock().unwrap().is_some() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        stop.store(true, Ordering::Release);
+        reaper.join().unwrap();
+        assert!(
+            slot.lock().unwrap().is_none(),
+            "the reaper unloaded the value"
+        );
+
+        let mut loads = 0;
+        let mut guard = slot.lock().unwrap();
+        let value = ensure_loaded(&mut *guard, || {
+            loads += 1;
+            Ok(7_u32)
+        })
+        .unwrap();
+        assert_eq!(*value, 7);
+        let value = ensure_loaded(&mut *guard, || {
+            loads += 1;
+            Ok(8_u32)
+        })
+        .unwrap();
+        assert_eq!(*value, 7, "a loaded value is reused, not reloaded");
+        assert_eq!(loads, 1);
+    }
 
     #[test]
     fn fingerprint_changes_for_model_inputs_and_chunker_revision() {
