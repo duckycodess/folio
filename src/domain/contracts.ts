@@ -318,6 +318,71 @@ export type Relationship =
       confidence?: number;
     });
 
+/** Result of a bounded refresh over vectors already persisted for one space. */
+export interface AiRelationshipRefresh {
+  workspaceId: WorkspaceId;
+  /** Absent until the selected installed embedding model has a persistent space. */
+  spaceFingerprint?: EmbeddingSpaceFingerprint;
+  documentsCompared: number;
+  relationshipsCreated: number;
+  cancelled: boolean;
+}
+
+/**
+ * How much of the folder Folio has compared for AI connections in the active
+ * search model's index. `complete` means every pair of currently embedded
+ * files was compared; it says nothing about how many connections exist.
+ */
+export type AiCoverageState =
+  "noActiveSpace" | "embeddingIncomplete" | "partial" | "complete";
+
+export interface AiRelationshipCoverage {
+  state: AiCoverageState;
+  spaceFingerprint?: EmbeddingSpaceFingerprint;
+  /** Indexed files with a vector for every passage in the active space. */
+  eligibleDocuments: number;
+  indexedDocuments: number;
+  pairsConsidered: number;
+  pairsRemaining: number;
+  /** Files whose stored candidate connections were truncated. */
+  overflowDocuments: number;
+}
+
+export type AiRefreshPhase = "embedding" | "admitting" | "relationships";
+
+export interface AiRefreshProgress {
+  workspaceId: WorkspaceId;
+  phase: AiRefreshPhase;
+  tiles: number;
+  pairsCompleted: number;
+}
+
+/** Why a discovery run stopped; completed work is kept in every case. */
+export type AiRefreshEnd =
+  "complete" | "budgetExhausted" | "cancelled" | "spaceChanged";
+
+/** What one discovery run did. Counts are this run's, not cumulative. */
+export interface AiDiscoveryProgress {
+  admitted: number;
+  tiles: number;
+  comparisons: number;
+  /** Comparisons plus clause-feature work: what the run budget counts. */
+  work: number;
+  pairsCompleted: number;
+  edgesStored: number;
+}
+
+export interface LocalAiRefresh {
+  workspaceId: WorkspaceId;
+  /** The embedding phase's summary; absent when it didn't run. */
+  embedding?: EmbeddingSyncSummary;
+  /** The discovery run's progress; absent when it didn't run. */
+  discovery?: AiDiscoveryProgress;
+  /** Absent when no search model is ready. */
+  ended?: AiRefreshEnd;
+  coverage: AiRelationshipCoverage;
+}
+
 /* ------------------------------------------------------------- embeddings */
 
 export interface EmbeddingSpace {
@@ -356,7 +421,12 @@ export interface GenerationRequest {
 }
 
 export type GroundedAnswerKind =
-  "fileSummary" | "partialSummary" | "answer" | "insufficientEvidence";
+  | "fileSummary"
+  | "partialSummary"
+  | "answer"
+  | "relationshipSummary"
+  | "impactExplanation"
+  | "insufficientEvidence";
 
 export interface GroundedSentence {
   text: string;
@@ -394,6 +464,18 @@ export interface GroundedResult extends GroundedAnswer {
   sentences: GroundedSentence[];
   coverageRanges: CoverageEntry[];
   uncitedSentenceCount: number;
+  /** Relationship summaries only: what the native core actually supplied. */
+  basis?: SummaryBasis;
+}
+
+/**
+ * The connections and files a relationship summary was given, counted by the
+ * native core. `incomplete` also covers unfinished AI review.
+ */
+export interface SummaryBasis {
+  connections: number;
+  files: number;
+  incomplete: boolean;
 }
 
 /** A model run either answers from evidence or reports that it has none. */

@@ -8,6 +8,9 @@ use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, Transact
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
+use folio_core::relationships::{
+    AiRelationshipKind, DiscoveredRelationship, MAX_STORED_CANDIDATES_PER_ENDPOINT,
+};
 use crate::contracts::{OffsetUnit, SourcePassage};
 use crate::db::NativeResult;
 use crate::error::{error, ErrorCode};
@@ -82,10 +85,69 @@ pub struct ExplicitReference {
     pub evidence: Vec<SourcePassage>,
 }
 
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SimilarityRelationship {
+    pub source_id: String,
+    pub target_id: String,
+    pub source_content_hash: String,
+    pub target_content_hash: String,
+    #[serde(rename = "type")]
+    pub relationship_type: &'static str,
+    pub provenance: &'static str,
+    pub space_fingerprint: String,
+    pub score: f32,
+    pub source_evidence: Vec<SourcePassage>,
+    pub target_evidence: Vec<SourcePassage>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct SharedFactCandidateRelationship {
+    pub source_id: String,
+    pub target_id: String,
+    pub source_content_hash: String,
+    pub target_content_hash: String,
+    #[serde(rename = "type")]
+    pub relationship_type: &'static str,
+    pub provenance: &'static str,
+    pub source_evidence: Vec<SourcePassage>,
+    pub target_evidence: Vec<SourcePassage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(untagged)]
+pub enum Relationship {
+    ExplicitReference(ExplicitReference),
+    Similarity(SimilarityRelationship),
+    SharedFactCandidate(SharedFactCandidateRelationship),
+}
+
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AiRelationshipRefresh {
+    pub workspace_id: String,
+    /// Absent (not `null`) until the selected model has a persistent space.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_fingerprint: Option<String>,
+    pub documents_compared: usize,
+    pub relationships_created: usize,
+    pub cancelled: bool,
+}
+
 #[derive(Serialize, Deserialize)]
 struct StoredReference {
     link: LinkTarget,
     evidence: Vec<SourcePassage>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredAiEvidence {
+    source_evidence: Vec<SourcePassage>,
+    target_evidence: Vec<SourcePassage>,
 }
 
 /// The frozen `SearchResult`. Keyword results carry no space fingerprint.
@@ -630,6 +692,11 @@ fn record_failure(tx: &Transaction<'_>, workspace_id: &str, file: &Found, prior:
 pub fn clear_derived(tx: &Transaction<'_>, document_id: &str) -> NativeResult<()> {
     tx.execute("DELETE FROM chunks WHERE document_id = ?1", [document_id])?;
     tx.execute("DELETE FROM relationships WHERE source_document_id = ?1 OR target_document_id = ?1", [document_id])?;
+    // Coverage of the old revision and any in-flight pair touching it. The
+    // admission counter is untouched, so the revision re-enters with a new,
+    // larger seq and its job compares it against every other admitted document.
+    tx.execute("DELETE FROM ai_pair_progress WHERE document_id = ?1 OR partner_id = ?1", [document_id])?;
+    tx.execute("DELETE FROM ai_relationship_coverage WHERE document_id = ?1", [document_id])?;
     tx.execute("DELETE FROM derived_cache WHERE document_id = ?1", [document_id])?;
     Ok(())
 }
@@ -818,16 +885,138 @@ pub fn rebuild_explicit_references(tx: &Transaction<'_>, workspace_id: &str) -> 
     Ok(edges.len())
 }
 
-pub fn list_relationships(conn: &Connection, workspace_id: &str) -> NativeResult<Vec<ExplicitReference>> {
-    let mut statement = conn.prepare(
-        "SELECT r.source_document_id, r.target_document_id, r.evidence_json, r.source_content_hash, r.target_content_hash FROM relationships r JOIN documents d ON d.id = r.source_document_id WHERE d.workspace_id = ?1 AND r.relationship_type = 'explicitReference' ORDER BY d.relative_path, r.target_document_id",
+/// The AI rows that may be shown or used: stored candidates in one space that
+/// rank within `MAX_AI_EDGES_PER_DOC` per document and kind at **either**
+/// endpoint, ranked by `(discovery cosine desc, other document id asc)`.
+/// Prefix a statement with this CTE (it binds `?2` as the space) and filter
+/// on `id IN (SELECT id FROM displayed)`. Display and Ripple share it, so they
+/// can never disagree about which edges exist.
+pub(crate) fn displayed_ai_cte() -> String {
+    format!(
+        "WITH endpoints AS (\
+           SELECT id, relationship_type AS kind, source_document_id AS doc, target_document_id AS other, COALESCE(discovery_cosine, score, 0.0) AS cosine FROM relationships WHERE space_fingerprint = ?2 AND relationship_type IN ('similarity', 'sharedFactCandidate') \
+           UNION ALL \
+           SELECT id, relationship_type, target_document_id, source_document_id, COALESCE(discovery_cosine, score, 0.0) FROM relationships WHERE space_fingerprint = ?2 AND relationship_type IN ('similarity', 'sharedFactCandidate') \
+         ), ranked AS (\
+           SELECT id, ROW_NUMBER() OVER (PARTITION BY kind, doc ORDER BY cosine DESC, other ASC) AS rank FROM endpoints \
+         ), displayed AS (SELECT DISTINCT id FROM ranked WHERE rank <= {}) ",
+        folio_core::relationships::MAX_AI_EDGES_PER_DOC
+    )
+}
+
+/// Lists explicit links plus the displayed AI rows (see `displayed_ai_cte`) of
+/// exactly the requested persistent embedding space. With no active space,
+/// only links are returned.
+pub fn list_relationships(
+    conn: &Connection,
+    workspace_id: &str,
+    active_space: Option<&str>,
+) -> NativeResult<Vec<Relationship>> {
+    let sql = format!(
+        "{}SELECT r.source_document_id, r.target_document_id, r.relationship_type, r.provenance, r.evidence_json, r.source_content_hash, r.target_content_hash, r.space_fingerprint, r.score, r.confidence FROM relationships r JOIN documents d ON d.id = r.source_document_id WHERE d.workspace_id = ?1 AND (r.relationship_type = 'explicitReference' OR (?2 != '' AND r.space_fingerprint = ?2 AND r.id IN (SELECT id FROM displayed))) ORDER BY d.relative_path, r.target_document_id, r.relationship_type",
+        displayed_ai_cte()
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let rows = statement.query_map(
+        params![workspace_id, active_space.unwrap_or("")],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<f32>>(8)?,
+                row.get::<_, Option<f32>>(9)?,
+            ))
+        },
     )?;
-    let rows = statement.query_map([workspace_id], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, String>(3)?, row.get::<_, String>(4)?)))?;
     let mut relationships = Vec::new();
     for row in rows {
-        let (source_id, target_id, json, source_content_hash, target_content_hash) = row?;
-        let stored: StoredReference = serde_json::from_str(&json)?;
-        relationships.push(ExplicitReference { source_id, target_id, source_content_hash, target_content_hash, relationship_type: "explicitReference", provenance: "documentLink", link: stored.link, evidence: stored.evidence });
+        let (
+            source_id,
+            target_id,
+            relationship_type,
+            provenance,
+            json,
+            source_content_hash,
+            target_content_hash,
+            space_fingerprint,
+            score,
+            confidence,
+        ) = row?;
+        match relationship_type.as_str() {
+            "explicitReference" => {
+                let stored: StoredReference = serde_json::from_str(&json)?;
+                relationships.push(Relationship::ExplicitReference(ExplicitReference {
+                    source_id,
+                    target_id,
+                    source_content_hash,
+                    target_content_hash,
+                    relationship_type: "explicitReference",
+                    provenance: "documentLink",
+                    link: stored.link,
+                    evidence: stored.evidence,
+                }));
+            }
+            "similarity" => {
+                let stored: StoredAiEvidence = serde_json::from_str(&json)?;
+                relationships.push(Relationship::Similarity(SimilarityRelationship {
+                    source_id,
+                    target_id,
+                    source_content_hash,
+                    target_content_hash,
+                    relationship_type: "similarity",
+                    provenance: "embedding",
+                    space_fingerprint: space_fingerprint.ok_or_else(|| {
+                        error(
+                            ErrorCode::EvidenceInvalid,
+                            "A similarity relationship has no embedding space.",
+                        )
+                    })?,
+                    score: score.ok_or_else(|| {
+                        error(ErrorCode::EvidenceInvalid, "A similarity relationship has no score.")
+                    })?,
+                    source_evidence: stored.source_evidence,
+                    target_evidence: stored.target_evidence,
+                }));
+            }
+            "sharedFactCandidate" => {
+                let stored: StoredAiEvidence = serde_json::from_str(&json)?;
+                let relationship_provenance = match provenance.as_str() {
+                    "embedding" => "embedding",
+                    "model" => "model",
+                    _ => {
+                        return Err(error(
+                            ErrorCode::EvidenceInvalid,
+                            "A shared-fact relationship has unknown provenance.",
+                        ))
+                    }
+                };
+                relationships.push(Relationship::SharedFactCandidate(
+                    SharedFactCandidateRelationship {
+                        source_id,
+                        target_id,
+                        source_content_hash,
+                        target_content_hash,
+                        relationship_type: "sharedFactCandidate",
+                        provenance: relationship_provenance,
+                        source_evidence: stored.source_evidence,
+                        target_evidence: stored.target_evidence,
+                        confidence,
+                    },
+                ));
+            }
+            _ => {
+                return Err(error(
+                    ErrorCode::EvidenceInvalid,
+                    "The index contains an unknown relationship type.",
+                ))
+            }
+        }
     }
     Ok(relationships)
 }
@@ -992,6 +1181,53 @@ pub struct EmbeddingSpace {
     pub preprocessing_fingerprint: String,
 }
 
+/// The selected embedding model identity, kept separate from the persistent
+/// space metadata supplied by the embedding producer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SelectedEmbeddingModel {
+    pub model_id: String,
+    pub revision: String,
+}
+
+/// Resolves the active persistent space without allowing a webview-supplied
+/// fingerprint to choose one. Until the embedding producer exposes the
+/// persistent preprocessing metadata here, `persistent_space` is `None` and
+/// callers safely receive links only.
+pub fn resolve_active_space(
+    conn: &Connection,
+    selected_model: Option<&SelectedEmbeddingModel>,
+    persistent_space: Option<&EmbeddingSpace>,
+) -> NativeResult<Option<String>> {
+    let (Some(selected_model), Some(space)) = (selected_model, persistent_space) else {
+        return Ok(None);
+    };
+    if selected_model.model_id != space.model_id || selected_model.revision != space.revision {
+        return Ok(None);
+    }
+    let fingerprint = embedding_space_fingerprint(
+        &space.model_id,
+        &space.revision,
+        &space.quantization,
+        space.dimensions,
+        &space.preprocessing_fingerprint,
+    );
+    let registered: Option<String> = conn
+        .query_row(
+            "SELECT id FROM embedding_spaces WHERE id = ?1 AND model_id = ?2 AND revision = ?3 AND quantization = ?4 AND dimensions = ?5 AND preprocessing_fingerprint = ?6",
+            params![
+                fingerprint,
+                space.model_id,
+                space.revision,
+                space.quantization,
+                space.dimensions,
+                space.preprocessing_fingerprint,
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(registered)
+}
+
 #[derive(Clone, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ChunkVector {
@@ -1036,14 +1272,14 @@ pub fn register_space(conn: &Connection, space: &EmbeddingSpace) -> NativeResult
     Ok(fingerprint)
 }
 
-fn space_dimensions(conn: &Connection, fingerprint: &str) -> NativeResult<usize> {
+pub(crate) fn space_dimensions(conn: &Connection, fingerprint: &str) -> NativeResult<usize> {
     conn.query_row("SELECT dimensions FROM embedding_spaces WHERE id = ?1", [fingerprint], |row| row.get::<_, i64>(0))
         .optional()?
         .map(|dimensions| dimensions as usize)
         .ok_or_else(|| error(ErrorCode::EmbeddingSpaceMismatch, "Unknown embedding space. Register it before storing or comparing vectors.").with_detail("spaceFingerprint", fingerprint))
 }
 
-fn check_vector(vector: &[f32], dimensions: usize) -> NativeResult<()> {
+pub(crate) fn check_vector(vector: &[f32], dimensions: usize) -> NativeResult<()> {
     if vector.len() != dimensions {
         return Err(error(ErrorCode::EmbeddingSpaceMismatch, format!("Expected a {dimensions}-dimension vector for this embedding space.")).with_detail("receivedDimensions", vector.len().to_string()));
     }
@@ -1107,6 +1343,213 @@ pub fn vector_candidates(conn: &Connection, workspace_id: &str, fingerprint: &st
     candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
     candidates.truncate(k.clamp(1, 100));
     Ok(candidates)
+}
+
+fn validate_relationship_passage(
+    passage: &folio_core::contracts::SourcePassage,
+    document_id: &str,
+    content_hash: &str,
+) -> NativeResult<()> {
+    if passage.document_id != document_id
+        || passage.document_content_hash != content_hash
+        || passage.offset_unit != folio_core::contracts::OffsetUnit::Utf8Byte
+        || passage.start >= passage.end
+        || passage.text.is_empty()
+    {
+        return Err(error(
+            ErrorCode::EvidenceInvalid,
+            "A discovered relationship contains evidence for the wrong document revision.",
+        )
+        .with_detail("documentId", document_id));
+    }
+    Ok(())
+}
+
+fn native_relationship_passage(
+    passage: &folio_core::contracts::SourcePassage,
+) -> SourcePassage {
+    SourcePassage {
+        document_id: passage.document_id.clone(),
+        document_content_hash: passage.document_content_hash.clone(),
+        offset_unit: OffsetUnit::Utf8Byte,
+        start: passage.start,
+        end: passage.end,
+        text: passage.text.clone(),
+        page: passage.page,
+    }
+}
+
+/// Stores candidate edges for one space, bounded per endpoint. Whenever an
+/// endpoint would hold more than `MAX_STORED_CANDIDATES_PER_ENDPOINT` of one
+/// kind, its weakest candidate (lowest discovery cosine, then largest other
+/// document id) is evicted and both documents of the evicted edge are flagged
+/// `candidate_overflow` in the space's coverage. Eviction is processing-order
+/// dependent, which is why it is flagged rather than hidden; what is
+/// displayed is decided at read time (`displayed_ai_cte`).
+pub fn insert_candidate_edges(
+    tx: &Transaction<'_>,
+    workspace_id: &str,
+    fingerprint: &str,
+    edges: &[DiscoveredRelationship],
+    now: u64,
+) -> NativeResult<()> {
+    space_dimensions(tx, fingerprint)?;
+    for edge in edges {
+        validate_candidate_edge(tx, workspace_id, fingerprint, edge)?;
+        let (relationship_type, provenance, score) = match edge.kind {
+            AiRelationshipKind::Similarity => ("similarity", "embedding", edge.score),
+            AiRelationshipKind::SharedFactCandidate => ("sharedFactCandidate", "embedding", None),
+        };
+        let id = content_hash(
+            format!(
+                "{relationship_type}\0{}\0{}\0{}\0{}\0{}",
+                edge.source_id, edge.target_id, fingerprint, edge.source_content_hash, edge.target_content_hash,
+            )
+            .as_bytes(),
+        );
+        let evidence = StoredAiEvidence {
+            source_evidence: edge.source_evidence.iter().map(native_relationship_passage).collect(),
+            target_evidence: edge.target_evidence.iter().map(native_relationship_passage).collect(),
+        };
+        tx.execute(
+            "INSERT OR REPLACE INTO relationships (id, source_document_id, target_document_id, relationship_type, evidence_json, provenance, confidence, source_content_hash, target_content_hash, created_at, space_fingerprint, score, discovery_cosine) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            params![
+                id,
+                edge.source_id,
+                edge.target_id,
+                relationship_type,
+                serde_json::to_string(&evidence)?,
+                provenance,
+                edge.confidence,
+                edge.source_content_hash,
+                edge.target_content_hash,
+                now.to_string(),
+                fingerprint,
+                score,
+                edge.discovery_cosine,
+            ],
+        )?;
+    }
+    let mut endpoints: Vec<(&str, &str)> = edges
+        .iter()
+        .flat_map(|edge| {
+            let kind = match edge.kind {
+                AiRelationshipKind::Similarity => "similarity",
+                AiRelationshipKind::SharedFactCandidate => "sharedFactCandidate",
+            };
+            [(kind, edge.source_id.as_str()), (kind, edge.target_id.as_str())]
+        })
+        .collect();
+    endpoints.sort_unstable();
+    endpoints.dedup();
+    for (kind, document_id) in endpoints {
+        evict_over_cap(tx, workspace_id, fingerprint, kind, document_id)?;
+    }
+    Ok(())
+}
+
+/// Refuses an edge for another space, another workspace, a changed document
+/// revision, missing evidence or an out-of-range score.
+fn validate_candidate_edge(
+    tx: &Transaction<'_>,
+    workspace_id: &str,
+    fingerprint: &str,
+    edge: &DiscoveredRelationship,
+) -> NativeResult<()> {
+    if edge.space_fingerprint != fingerprint || edge.source_id == edge.target_id {
+        return Err(error(
+            ErrorCode::EmbeddingSpaceMismatch,
+            "A discovered relationship belongs to a different embedding space.",
+        ));
+    }
+    let current = |id: &str, what: &str| -> NativeResult<String> {
+        tx.query_row(
+            "SELECT content_hash FROM documents WHERE id = ?1 AND workspace_id = ?2",
+            params![id, workspace_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| error(ErrorCode::EvidenceInvalid, format!("A relationship {what} is not in this workspace.")))
+    };
+    let source_hash = current(&edge.source_id, "source")?;
+    let target_hash = current(&edge.target_id, "target")?;
+    if source_hash != edge.source_content_hash || target_hash != edge.target_content_hash {
+        return Err(error(
+            ErrorCode::EvidenceInvalid,
+            "A discovered relationship is stale relative to the persistent index.",
+        )
+        .with_detail("reason", "documentChanged"));
+    }
+    for passage in &edge.source_evidence {
+        validate_relationship_passage(passage, &edge.source_id, &source_hash)?;
+    }
+    for passage in &edge.target_evidence {
+        validate_relationship_passage(passage, &edge.target_id, &target_hash)?;
+    }
+    if edge.source_evidence.is_empty() || edge.target_evidence.is_empty() {
+        return Err(error(
+            ErrorCode::EvidenceInvalid,
+            "A discovered relationship needs evidence in both documents.",
+        ));
+    }
+    for (value, what) in [(edge.score, "score"), (edge.confidence, "confidence")] {
+        if let Some(value) = value {
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                return Err(error(
+                    ErrorCode::EvidenceInvalid,
+                    format!("A relationship {what} must be between 0 and 1."),
+                ));
+            }
+        }
+    }
+    if !edge.discovery_cosine.is_finite() {
+        return Err(error(ErrorCode::EvidenceInvalid, "A relationship ranking cosine must be finite."));
+    }
+    Ok(())
+}
+
+/// How many candidates of one kind (`?2`) one document (`?3`) holds in a
+/// space (`?1`). One branch per endpoint column, so each seeks its own
+/// `(space, type, endpoint)` index instead of scanning every edge of the kind
+/// (an `OR` across the two columns cannot use either index).
+pub(crate) const ENDPOINT_CANDIDATE_COUNT: &str = "SELECT (SELECT count(*) FROM relationships WHERE space_fingerprint = ?1 AND relationship_type = ?2 AND source_document_id = ?3) \
+     + (SELECT count(*) FROM relationships WHERE space_fingerprint = ?1 AND relationship_type = ?2 AND target_document_id = ?3 AND source_document_id != ?3)";
+
+/// The weakest of those candidates: lowest discovery cosine, then largest
+/// other document id. Split per endpoint like the count.
+pub(crate) const ENDPOINT_WEAKEST_CANDIDATE: &str = "SELECT id, source_document_id, target_document_id FROM (\
+       SELECT id, source_document_id, target_document_id, COALESCE(discovery_cosine, score, 0.0) AS cosine, target_document_id AS other FROM relationships WHERE space_fingerprint = ?1 AND relationship_type = ?2 AND source_document_id = ?3 \
+       UNION ALL \
+       SELECT id, source_document_id, target_document_id, COALESCE(discovery_cosine, score, 0.0), source_document_id FROM relationships WHERE space_fingerprint = ?1 AND relationship_type = ?2 AND target_document_id = ?3 AND source_document_id != ?3\
+     ) ORDER BY cosine ASC, other DESC LIMIT 1";
+
+fn evict_over_cap(
+    tx: &Transaction<'_>,
+    workspace_id: &str,
+    fingerprint: &str,
+    kind: &str,
+    document_id: &str,
+) -> NativeResult<()> {
+    loop {
+        let stored: i64 = tx.query_row(
+            ENDPOINT_CANDIDATE_COUNT,
+            params![fingerprint, kind, document_id],
+            |row| row.get(0),
+        )?;
+        if stored as usize <= MAX_STORED_CANDIDATES_PER_ENDPOINT {
+            return Ok(());
+        }
+        let (weakest, source, target): (String, String, String) = tx.query_row(
+            ENDPOINT_WEAKEST_CANDIDATE,
+            params![fingerprint, kind, document_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        tx.execute("DELETE FROM relationships WHERE id = ?1", [&weakest])?;
+        tx.execute(
+            "UPDATE ai_relationship_coverage SET candidate_overflow = 1 WHERE workspace_id = ?1 AND space_id = ?2 AND document_id IN (?3, ?4)",
+            params![workspace_id, fingerprint, source, target],
+        )?;
+    }
 }
 
 #[cfg(test)]
@@ -1268,7 +1711,10 @@ pub mod tests {
         assert!(!paths(&search(&conn, &root.id, "volunteer", 10).unwrap()).contains(&"projects/project-plan.md"));
         assert_eq!(relationship_count(&conn, &plan_id), 0, "links removed from the edited file are dropped");
         assert_eq!(relationship_count(&conn, &notes_id), 1, "links into the edited file are rebuilt");
-        let into_plan = list_relationships(&conn, &root.id).unwrap().into_iter().find(|edge| edge.source_id == notes_id).unwrap();
+        let into_plan = list_relationships(&conn, &root.id, None).unwrap().into_iter().find_map(|edge| match edge {
+            Relationship::ExplicitReference(edge) if edge.source_id == notes_id => Some(edge),
+            _ => None,
+        }).unwrap();
         assert_eq!(into_plan.target_content_hash, content_hash(&fs::read(folder.path().join("projects/project-plan.md")).unwrap()), "evidence names the new revision");
         let cached: i64 = conn.query_row("SELECT count(*) FROM derived_cache WHERE document_id = ?1", [&plan_id], |row| row.get(0)).unwrap();
         assert_eq!(cached, 0, "cached summary invalidated");
@@ -1353,17 +1799,23 @@ pub mod tests {
     fn explicit_references_follow_the_frozen_relationship_shape() {
         let (folder, mut conn, root) = fixture_workspace();
         scan(&mut conn, &root);
-        let relationships = list_relationships(&conn, &root.id).unwrap();
+        let relationships = list_relationships(&conn, &root.id, None).unwrap();
         let plan = id_of(&root, "projects/project-plan.md");
         let notes = id_of(&root, "meetings/meeting-notes.md");
-        let edge = relationships.iter().find(|edge| edge.source_id == notes && edge.target_id == plan).unwrap();
+        let edge = relationships.iter().find_map(|edge| match edge {
+            Relationship::ExplicitReference(edge) if edge.source_id == notes && edge.target_id == plan => Some(edge),
+            _ => None,
+        }).unwrap();
         assert_eq!(edge.link, LinkTarget { raw_target: "../projects/project-plan.md".into(), resolved_relative_path: "projects/project-plan.md".into() });
         assert_eq!(edge.evidence[0].text, "[project plan](../projects/project-plan.md)");
         assert_located(folder.path(), "meetings/meeting-notes.md", &edge.evidence[0]);
         let value = serde_json::to_value(edge).unwrap();
         assert_eq!((value["type"].as_str(), value["provenance"].as_str()), (Some("explicitReference"), Some("documentLink")));
         let copy = id_of(&root, "archive/project-plan-copy.md");
-        let copy_targets: Vec<&String> = relationships.iter().filter(|edge| edge.source_id == copy).map(|edge| &edge.target_id).collect();
+        let copy_targets: Vec<&String> = relationships.iter().filter_map(|edge| match edge {
+            Relationship::ExplicitReference(edge) if edge.source_id == copy => Some(&edge.target_id),
+            _ => None,
+        }).collect();
         assert_eq!(copy_targets, vec![&notes], "the copy's broken checklist link is not invented");
     }
 
@@ -1429,6 +1881,82 @@ pub mod tests {
         let mismatch = put_embeddings(&mut conn, &root.id, &old, &[ChunkVector { chunk_id: pending[0].chunk_id, content_hash: pending[0].content_hash.clone(), vector: vec![1.0; 4] }]).unwrap_err();
         assert_eq!(mismatch.code, ErrorCode::EmbeddingSpaceMismatch);
         assert_eq!(vector_candidates(&conn, &root.id, &old, &[1.0; 4], 3).unwrap_err().code, ErrorCode::EmbeddingSpaceMismatch);
+    }
+
+    #[test]
+    fn active_space_requires_selected_model_and_registered_persistent_preprocessing() {
+        let (_folder, conn, _root) = fixture_workspace();
+        let space = EmbeddingSpace {
+            model_id: "multilingual-e5-small".into(),
+            revision: "r1".into(),
+            quantization: "q8".into(),
+            dimensions: 3,
+            preprocessing_fingerprint: "passage-prefix-v1".into(),
+        };
+        let fingerprint = register_space(&conn, &space).unwrap();
+        let selected = SelectedEmbeddingModel {
+            model_id: space.model_id.clone(),
+            revision: space.revision.clone(),
+        };
+        assert_eq!(
+            resolve_active_space(&conn, Some(&selected), Some(&space)).unwrap(),
+            Some(fingerprint.clone())
+        );
+        assert_eq!(resolve_active_space(&conn, None, Some(&space)).unwrap(), None);
+        assert_eq!(
+            resolve_active_space(
+                &conn,
+                Some(&SelectedEmbeddingModel {
+                    model_id: selected.model_id.clone(),
+                    revision: "superseded".into(),
+                }),
+                Some(&space),
+            )
+            .unwrap(),
+            None
+        );
+        assert_eq!(
+            resolve_active_space(
+                &conn,
+                Some(&selected),
+                Some(&EmbeddingSpace {
+                    preprocessing_fingerprint: "pending-#27-wiring".into(),
+                    ..space
+                }),
+            )
+            .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn an_edit_clears_that_documents_coverage_and_pair_progress_but_not_the_counter() {
+        let folder = tempfile::tempdir().unwrap();
+        for name in ["a.md", "b.md", "c.md"] {
+            fs::write(folder.path().join(name), format!("Distinct note {name}.")).unwrap();
+        }
+        let mut conn = db::open_in_memory().unwrap();
+        let root = authorize(&conn, folder.path());
+        scan(&mut conn, &root);
+        let space = register_space(&conn, &EmbeddingSpace { model_id: "m".into(), revision: "1".into(), quantization: "q".into(), dimensions: 2, preprocessing_fingerprint: "p".into() }).unwrap();
+        let (a, b, c) = (id_of(&root, "a.md"), id_of(&root, "b.md"), id_of(&root, "c.md"));
+        conn.execute("INSERT INTO ai_relationship_seq (workspace_id, space_id, next_seq) VALUES (?1, ?2, 4)", params![root.id, space]).unwrap();
+        for (seq, id) in [(1, &a), (2, &b), (3, &c)] {
+            let hash: String = conn.query_row("SELECT content_hash FROM documents WHERE id = ?1", [id], |row| row.get(0)).unwrap();
+            conn.execute("INSERT INTO ai_relationship_coverage (workspace_id, space_id, document_id, content_hash, seq, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, '0')", params![root.id, space, id, hash, seq]).unwrap();
+        }
+        conn.execute("INSERT INTO ai_pair_progress (workspace_id, space_id, document_id, partner_id, document_hash, partner_hash, partner_seq, next_left, next_right, accumulator_json) VALUES (?1, ?2, ?3, ?4, 'h', 'h', 1, 0, 0, '{}')", params![root.id, space, c, a]).unwrap();
+        conn.execute("INSERT INTO ai_pair_progress (workspace_id, space_id, document_id, partner_id, document_hash, partner_hash, partner_seq, next_left, next_right, accumulator_json) VALUES (?1, ?2, ?3, ?4, 'h', 'h', 2, 0, 0, '{}')", params![root.id, space, b, a]).unwrap();
+
+        fs::write(folder.path().join("a.md"), "Rewritten note with different content.").unwrap();
+        scan(&mut conn, &root);
+
+        let covered: Vec<String> = conn.prepare("SELECT document_id FROM ai_relationship_coverage ORDER BY seq").unwrap().query_map([], |row| row.get(0)).unwrap().collect::<Result<_, _>>().unwrap();
+        assert_eq!(covered, vec![b, c], "only the edited revision lost its coverage");
+        let progress: i64 = conn.query_row("SELECT count(*) FROM ai_pair_progress", [], |row| row.get(0)).unwrap();
+        assert_eq!(progress, 0, "in-flight pairs naming the edited document are gone, on either side");
+        let next: i64 = conn.query_row("SELECT next_seq FROM ai_relationship_seq", [], |row| row.get(0)).unwrap();
+        assert_eq!(next, 4, "seqs are never reused");
     }
 
     #[test]
@@ -1841,5 +2369,20 @@ pub mod tests {
             let documents = list_documents(&conn, &root.id).unwrap().len();
             println!("{documents} documents, 30 of them {label}; mean of {RUNS} rescans: read every scan {every_scan:?}, with backoff {with_backoff:?}");
         }
+    }
+
+    #[test]
+    fn an_ai_refresh_without_a_space_omits_the_fingerprint() {
+        let refresh = AiRelationshipRefresh {
+            workspace_id: "w".into(),
+            space_fingerprint: None,
+            documents_compared: 0,
+            relationships_created: 0,
+            cancelled: false,
+        };
+        let json = serde_json::to_value(&refresh).unwrap();
+        assert!(json.get("spaceFingerprint").is_none(), "{json}");
+        let with_space = AiRelationshipRefresh { space_fingerprint: Some("s".into()), ..refresh };
+        assert_eq!(serde_json::to_value(&with_space).unwrap()["spaceFingerprint"], "s");
     }
 }

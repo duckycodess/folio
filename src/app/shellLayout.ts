@@ -7,7 +7,7 @@
  */
 
 /** docs/design.md's "Layout" table. */
-export const SIDEBAR_FULL_WIDTH = 240;
+export const SIDEBAR_FULL_WIDTH = 222;
 export const SIDEBAR_RAIL_WIDTH = 64;
 export const MAIN_MIN_WIDTH = 480;
 

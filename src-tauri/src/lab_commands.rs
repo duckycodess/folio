@@ -953,7 +953,62 @@ mod tests {
         let lab = LabState::default();
         let cancel = begin_lab_exclusive(&generation, &lab).unwrap();
         assert!(!cancel.load(Ordering::Acquire));
+        // #93: unload must not free the slot out from under the run — it
+        // signals cancellation and waits for the run to actually release it
+        // through finish_lab, the same handshake every holder uses. Nothing
+        // calls finish_lab here yet, so an immediate check finds the slot
+        // still held...
+        let before = Instant::now();
+        let cancel_for_run = cancel.clone();
+        let (generation_for_run, lab_for_run) = (generation.clone(), lab.clone());
+        let releaser = std::thread::spawn(move || {
+            // Stand in for the lab run noticing cancellation and finishing.
+            std::thread::sleep(Duration::from_millis(80));
+            finish_lab(&generation_for_run, &lab_for_run, &cancel_for_run).unwrap();
+        });
         crate::unload_generation_now(&generation).unwrap();
+        releaser.join().unwrap();
+        // ...and unload_generation_now blocked until the run released it,
+        // observed the cancellation it set, and only then returned.
+        assert!(before.elapsed() >= Duration::from_millis(80));
         assert!(cancel.load(Ordering::Acquire));
+        assert!(generation.lock().unwrap().active_cancel.is_none());
+        assert!(lab.lock().unwrap().is_none());
+    }
+
+    #[test]
+    fn unloading_generation_reports_busy_if_the_holder_never_releases() {
+        let generation = GenerationState::default();
+        let lab = LabState::default();
+        let cancel = begin_lab_exclusive(&generation, &lab).unwrap();
+        // Nothing ever calls finish_lab, so the slot never actually frees;
+        // unload must give up and report busy rather than unload a server
+        // the (stuck) run might still be using.
+        let result = crate::unload_generation_now_with_limit(&generation, Duration::from_millis(60));
+        assert!(result.is_err());
+        assert!(cancel.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn a_new_request_stays_busy_until_an_unloaded_lab_run_finishes() {
+        let generation = GenerationState::default();
+        let lab = LabState::default();
+        let cancel = begin_lab_exclusive(&generation, &lab).unwrap();
+        let generation_for_unload = generation.clone();
+        let unloader =
+            std::thread::spawn(move || crate::unload_generation_now(&generation_for_unload));
+        // Wait until unload has signalled the run, then ask for the slot as a
+        // new request would. The run hasn't called finish_lab yet.
+        while !cancel.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let busy = crate::claim_free_slot(&generation).err().unwrap();
+        assert_eq!(
+            busy.code,
+            folio_core::contracts::ProviderErrorCode::GenerationBusy
+        );
+        finish_lab(&generation, &lab, &cancel).unwrap();
+        unloader.join().unwrap().unwrap();
+        assert!(crate::claim_free_slot(&generation).is_ok());
     }
 }

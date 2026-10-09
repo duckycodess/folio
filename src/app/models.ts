@@ -87,6 +87,26 @@ export function modelGroups(
     .filter((group) => group.rows.length > 0);
 }
 
+/** Whether the selected writing model and its host runtime can serve a request. */
+export function isGenerationReady(
+  groups: ModelGroup[],
+  setup: ModelSetup | null,
+  runtime: RuntimeStatus | null,
+): boolean {
+  const selected = setup?.selectedGeneration;
+  if (!selected || runtime?.installed !== true) return false;
+  return groups.some(
+    (group) =>
+      group.role === "generation" &&
+      group.rows.some(
+        (row) =>
+          row.descriptor.id === selected &&
+          row.selected &&
+          row.state?.status === "installed",
+      ),
+  );
+}
+
 export type InstallStep = "runtime" | "model";
 
 /**
@@ -203,42 +223,9 @@ export function progressPercent(
 
 /* -------------------------------------------------------------- Model Lab */
 
-export const BENCHMARK_TASKS: BenchmarkResult["task"][] = [
-  "retrieval",
-  "interpretation",
-  "summary",
-  "edit",
-];
-
 export const TASK_LABELS: Record<BenchmarkResult["task"], string> = {
   retrieval: "Finding files",
   interpretation: "Reading requests",
   summary: "Summaries",
   edit: "Edits",
 };
-
-/**
- * Results kept per task, never combined into one score. Every task appears,
- * so a task with no recorded runs shows as such instead of disappearing.
- */
-export function resultsByTask(results: BenchmarkResult[]) {
-  return BENCHMARK_TASKS.map((task) => ({
-    task,
-    results: results.filter((result) => result.task === task),
-  }));
-}
-
-export function correctnessLabel(result: BenchmarkResult): string {
-  return result.correctness === null
-    ? "Not graded"
-    : result.correctness
-      ? "Correct"
-      : "Incorrect";
-}
-
-/** Peak RAM of the measured process. It is never the whole device's RAM. */
-export function ramLabel(result: BenchmarkResult): string {
-  return result.peakProcessRamBytes === null
-    ? "Not measured"
-    : `${exactSize(result.peakProcessRamBytes).split(" (")[0]} peak (Folio's model process)`;
-}

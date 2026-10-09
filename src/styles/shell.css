@@ -69,13 +69,27 @@
 .sidebar :focus-visible {
   outline-color: var(--sidebar-focus);
 }
-.wordmark {
-  padding: 0 var(--space-3);
-  font: 800 2rem/1 var(--font-heading);
-  letter-spacing: -0.04em;
+/* Brandkit: 178px gold wordmark, motto centred 9px below it. */
+.brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  align-self: center;
+  width: 178px;
+  max-width: 100%;
 }
-.wordmark-short {
-  display: none;
+.wordmark {
+  display: block;
+  width: 100%;
+  height: auto;
+  user-select: none;
+}
+.brand-motto {
+  margin-top: 9px;
+  color: var(--sidebar-text-muted);
+  font: 400 0.625rem/1.5 var(--font-sans);
+  letter-spacing: 0.1px;
+  white-space: nowrap;
 }
 .nav-list {
   display: flex;
@@ -169,9 +183,10 @@
   display: flex;
   align-items: center;
   gap: var(--space-6);
-  padding: var(--space-3) var(--space-8);
+  min-height: var(--topbar-height);
+  padding: var(--space-3) var(--page-gutter);
   border-bottom: 1px solid var(--color-border);
-  background: var(--color-bg);
+  background: var(--color-surface);
 }
 .breadcrumb {
   display: flex;
@@ -187,7 +202,7 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: var(--space-6) var(--space-8) var(--space-8);
+  padding: var(--space-6) var(--page-gutter) var(--space-8);
 }
 .main:focus {
   outline: none;
@@ -563,15 +578,13 @@
   padding-inline: var(--space-2);
   align-items: center;
 }
-.app.sidebar-rail .wordmark {
-  padding: 0;
-  font-size: 1.5rem;
+/* The rail keeps the whole wordmark at 48px and drops the motto, as the
+   brandkit's narrow sidebar does. */
+.app.sidebar-rail .brand {
+  width: 48px;
 }
-.app.sidebar-rail .wordmark-full {
+.app.sidebar-rail .brand-motto {
   display: none;
-}
-.app.sidebar-rail .wordmark-short {
-  display: inline;
 }
 .app.sidebar-rail .nav-item {
   justify-content: center;
@@ -935,6 +948,105 @@
   border-bottom: 1px solid var(--color-border);
   text-align: left;
   vertical-align: top;
+}
+
+.lab-compare {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.lab-choice {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.lab-legend {
+  margin-bottom: var(--space-2);
+  padding: 0;
+  font-weight: 600;
+}
+.lab-models {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.lab-model {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+.lab-model input {
+  flex: none;
+  margin-top: 0.3em;
+}
+.lab-model-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  min-width: 0;
+}
+.lab-start {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+.filter.lab-run .select,
+.lab-choice .select {
+  max-width: 100%;
+}
+.lab-candidates {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.lab-candidate {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.lab-candidate p {
+  margin: 0;
+}
+.lab-output {
+  margin: 0;
+  padding: var(--space-3);
+  border-left: 3px solid var(--color-border-strong);
+  white-space: pre-wrap;
+}
+.lab-passages ol {
+  margin: var(--space-2) 0 0;
+  padding-left: var(--space-5);
+  font: var(--text-small);
+}
+.lab-review-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+.lab-conditions {
+  display: grid;
+  gap: var(--space-1);
+  margin: var(--space-3) 0 0;
+  font: var(--text-small);
+}
+.lab-conditions div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+.lab-conditions dt {
+  font-weight: 600;
+}
+.lab-conditions dd {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 /* Home filters, pinned folders and recent files (#33) */
