@@ -29,3 +29,4 @@ Thumbs.db
 
 # Design source sheets (not committed until decided; see docs/design.md)
 /olio-asset-pack*
+__pycache__/

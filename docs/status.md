@@ -1,5 +1,24 @@
 # Implementation status
 
+## PR #68 merge resolution
+
+Merged `main` at `7efb4b5` into the Model Lab branch. The native dependency
+resolution keeps Windows filesystem and device-information support from
+onboarding together with Model Lab's process-memory support. The shared Unix
+`libc` dependency also covers the macOS memory reader.
+
+Static checks passed: `git diff --check`, no remaining conflict markers, and
+locked, offline Cargo metadata parsing with both Windows feature sets present.
+[GitHub Actions run 37973557484](https://github.com/duckycodess/folio/actions/runs/37973557484)
+at resolution commit `fe42122` passed all three jobs: frontend formatting,
+type checks, 342 Vitest tests and build; Linux `folio-core` (156 unit tests and
+one integration test passed); macOS native (205 passed) and Model Lab core
+(77 passed); Windows native (193 passed) and Model Lab core (76 passed).
+The real-model tests remain ignored. Later changes through `95bb703` are
+documentation only. No local build, test, or model inference was run for this
+resolution, and these CI results do not verify desktop interaction, packaging,
+real-model quality, or target-device resource use.
+
 ## Implemented starter pieces
 
 - Golden Daylight app shell ([issue #16](https://github.com/duckycodess/folio/issues/16)): design tokens with light and proposed dark themes, locally bundled Inter and Lucide icons, sidebar navigation (Home, Files, Organize, Graph, Ask & Act, Model Lab), a global search field with a platform-aware ⌘K / Ctrl K shortcut, a document panel with Summary, Details and Related tabs, and shared button, badge, panel, list row, empty state, notice, modal and progress components. The starter `App.tsx` presentation and `src/styles.css` are retired. Summaries, Ask & Act, collections, renames and Model Lab show honest "not available yet" states; nothing is presented as AI output or a saved change.
@@ -126,7 +145,7 @@
 
 ## Pending
 
-Model-generated Ripple explanations and similarity/shared-fact discovery (issues #4 and #8), creating folders during moves, UI use of the native index and actions (the current UI still searches loaded content), live file watching, multi-folder workspaces, native packaging, and real Model Lab results remain pending. Issue #4 on `FOLIO-4` carries multilingual embedding, semantic search, local generation, grounded summaries/answers, model/runtime setup and proposal-only interpretation through its own interim in-memory chunking and vector index; it does not yet read #3's persistent index, and its proposals are not yet connected to #5's native plan/apply path.
+Model-generated Ripple explanations and similarity/shared-fact discovery (issues #4 and #8), creating folders during moves, UI use of the native index and actions (the current UI still searches loaded content), live file watching, multi-folder workspaces, native packaging, and real Model Lab results (the harness exists; no real run has been recorded, see Model Lab below) remain pending. Issue #4 on `FOLIO-4` carries multilingual embedding, semantic search, local generation, grounded summaries/answers, model/runtime setup and proposal-only interpretation through its own interim in-memory chunking and vector index; it does not yet read #3's persistent index, and its proposals are not yet connected to #5's native plan/apply path.
 
 Two `llama-server` hardening items from the #15 review remain open:
 
@@ -136,6 +155,44 @@ Two `llama-server` hardening items from the #15 review remain open:
 Provider cases are listed as pending, not mocked, in `src/domain/pending.test.ts`. Writer tests use real temporary folders; they are not evidence about the desktop window, installers or a real user's folders.
 
 No AI or save completion should be presented without the corresponding native/provider evidence. Model sizes, installed size, memory targets, and platform support remain subject to measurements.
+
+## Model Lab (issue #8)
+
+**What exists.** A sequential Model Lab harness in `folio-core::lab`, its SQLite persistence and native commands, a typed adapter and a manual measurement workflow. Nothing here is a measurement yet: **no real-model run has been dispatched**, so there are no recorded model results, and no result in this repository should be read as one.
+
+- `BenchmarkRecord` extends the frozen `BenchmarkResult` ([contracts](contracts.md), proposal for TJ). Retrieval, interpretation, summary and edit-proposal outcomes are separate records; there is no aggregate or self-graded score. Outcomes come from deterministic label checks; a summary keeps `correctness: null` and `reviews: []` (Not reviewed) until a person appends a review bound to the output hash.
+- The runner measures one embedding model, then each requested generation model strictly one at a time, on a fresh disposable copy of the bundled corpus (marker-guarded, hash-checked, reset per model; user folders are never touched). Per case the server is restarted, the first request is recorded as `cold` and an immediate repeat as warm; startup time is separate, prompt reuse is off for lab requests only, the OS file cache is not controlled, and one pair per case is an initial observation, not a stable estimate. An actual apply is `notRun`; Ripple candidates are `notRun`.
+- Each record names the exact model revision, quantization and files, the runtime version, OS/CPU/installed RAM (capacity, not usage), context and output budgets, the suite, corpus and prompt hashes, and the process whose peak memory was read with its method and span (process lifetime peak, or `null` with a reason). `modelFileBytes` is the model's own files, not installed size. For llama.cpp rows the runtime id, platform and `--list-devices` output are kept as observed, with `gpuOffload: disabled`, the flags passed (`--n-gpu-layers 0 --device none`) and what the server printed about its backend.
+- Results are stored as versioned JSON in the existing `benchmark_results` table (no new migration) and outlive removal of the model.
+- Commands: `lab_models`, `run_model_lab` (holds the generation slot, so user generation gets `providerBusy`), `cancel_model_lab`, `list_lab_runs`, `list_lab_results`, `record_lab_review`; adapter `src/adapters/modelLab.ts` rejects in the browser preview. Louise's UI is a separate track.
+- `.github/workflows/model-lab.yml` is `workflow_dispatch` only (Windows default, macOS opt-in; smallest pair by default). The user waived the download byte cap, so the workflow validates the requested ids against the pinned manifest and the free disk, prints the manifest byte totals for information, and does not substitute models. Model task failures are recorded as data, not job failures. GitHub rejected the first version (the `runner` context is not allowed in job-level `env`); after the fix a push no longer creates a failed validation run, but the workflow has not been dispatched.
+
+**Verified (GitHub Actions only; no local build, test or inference was run).** [Run 37972963956](https://github.com/duckycodess/folio/actions/runs/37972963956) at `db0d20a` (code through the candidate catalog, native candidate commands, adapter, CPU-only option and backend record) passed all three jobs: frontend (20 Vitest files passed, 1 skipped; `folio-core` 153 passed, 2 ignored on Linux), macOS native (189 passed, 2 ignored; 77 `folio-core` lab/provider tests passed) and Windows native (180 passed, 2 ignored; 76 `folio-core` lab/provider tests passed). Later commits changed code and the contract too; see "After review" below for the current state. The `folio-core` step on Windows and macOS covers the platform memory readers (the test process's own peak is measured on both), host information, the disposable workspaces and the runner with scripted providers. The SQLite writer is tested on a temporary database created by the real migrations, closed and reopened. An earlier Windows-only failure (a line-ending test that doubled `\r` on a CRLF checkout) was a test bug and is fixed.
+
+**Not verified.**
+
+- Real inference through Model Lab, on any platform (product models or candidates): the llama.cpp provider has still not run on Windows or macOS since the #4 review fixes, and no pinned model has passed every #4 acceptance phase. A first dispatch may surface #4 defects; those are reported, not fixed here.
+- The native commands through the desktop window, the adapter against the real core, and the Windows `PeakWorkingSetSize` / macOS `ri_lifetime_max_phys_footprint` readings of a real `llama-server`.
+- Any 8 GB-device, CPU-only or installed-size claim. Hosted runners are not the target device.
+- The suite is the six-case development suite and is not frozen; it is not a held-out acceptance suite.
+
+**Evaluation-only candidates.** `model-evaluation-candidates.json` adds three pinned Q4_K_M GGUF candidates (Qwen3.5-0.8B, Qwen3.5-2B, Gemma-SEA-LION-v4.5-E2B; see [model candidates](model-candidates.md)). Their commits, sizes and SHA-256 were checked against the Hugging Face API without downloading weights. They install only through Model Lab into an isolated store, are not in the product manifest, `list_models`, `select_model` or onboarding, and every record is labelled `evaluationOnly`. **None has been downloaded or run, so nothing is known about their quality, speed or RAM, and none is supported or recommended.** Whether b11524 loads the `qwen35` and `gemma4` architectures is unverified; a model that cannot start is recorded as a startup failure rather than hidden. The SEA-LION license metadata conflicts (MIT tag, Gemma 4 license link) and is unsettled; nothing is redistributed.
+
+**CPU-only measurement.** The target is CPU inference on 8 GB of shared device RAM. The lab now launches every llama-server with `--n-gpu-layers 0 --device none` through an additive, lab-only provider option (the product launch arguments and ordinary requests are unchanged and still carry no offload flag), captures the server's output, and records per generation record the requested setting, the device listing and the backend and offload lines the server printed. A contradiction (a GPU layer count above zero despite the request) is kept as data. Whether these flags are accepted and honoured by b11524 on Windows and macOS is unverified until a real run.
+
+**After review (TJ, PR #68).**
+
+- `folio-core` didn't compile at `2171ab0` (`GpuOffload` not imported in `runner.rs`), and two tests contradicted the CPU-only record. Both are fixed, along with a scripted test server that died between a summary's two requests.
+- A summary stopped part way returned its notes as a partial summary, and was recorded as a valid measurement. Such a case now ends the run as cancelled.
+- The retrieval check cut at five entries, but search keeps a byte-identical copy next to its original. With `archive/project-plan-copy.md` ranked, only four distinct files were graded. The check now counts five distinct contents, as search does.
+- llama.cpp's "offloading N repeating layers to GPU" line, printed before the count by builds that can offload, counted as a GPU being named, so `cpuOnlyVerified` could never be `true`. It is now read as part of the offload report. A CPU-only build prints no offload line, so its verdict stays `null` ("can't tell"). The parser still has to be checked against a real b11524 log on each platform.
+- macOS memory is `ri_lifetime_max_phys_footprint`, which leaves out the memory-mapped model file. The recorded method now says so: macOS peaks can't be compared with the Windows and Linux peaks, which include the touched pages of the model file.
+- A run left `running` by an earlier session is marked interrupted at startup, not only when the next run starts. Listing runs or results leaves out a row this version can't read (and logs it) instead of failing every call. Reviewing that row is still refused.
+- Quitting during a run cancels it and waits up to 10 seconds for it to end, which stops its llama-server. Before, macOS and Linux could leave the server running.
+- The Model Lab workspace marker is written before the copy, so a failed copy can be replaced.
+- The TypeScript test guard refuses what `BenchmarkRecord::validate` refuses.
+- Not changed: `unload_generation` during a run still frees the generation slot before the lab thread ends. No UI calls it, and the fix belongs with #4's slot handling.
+- Checked on Linux (WSL, Node.js 24.15.0): `folio-core` 167 passed and 2 ignored, the native library 211 passed and 2 ignored (an existing test needed `LabHold` to implement `Debug`), and `npm run format:check`, `check`, `test` (344 passed, 9 todo) and `build` passed. No real model was run.
 
 ## Remote CI verification after conflict resolution
 

@@ -38,3 +38,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Test Model Lab core on this platform
+        run: >
+          cargo test --manifest-path src-tauri/crates/folio-core/Cargo.toml --lib
+          -- lab:: prompt_caching_is_untouched a_provider_that_has_not_started
