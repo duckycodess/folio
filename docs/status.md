@@ -9,8 +9,15 @@ onboarding together with Model Lab's process-memory support. The shared Unix
 
 Static checks passed: `git diff --check`, no remaining conflict markers, and
 locked, offline Cargo metadata parsing with both Windows feature sets present.
-Frontend and native test verification is pending GitHub Actions. No local
-build, test, or model inference was run for this resolution.
+[GitHub Actions run 37973557484](https://github.com/duckycodess/folio/actions/runs/37973557484)
+at resolution commit `fe42122` passed all three jobs: frontend formatting,
+type checks, 342 Vitest tests and build; Linux `folio-core` (156 unit tests and
+one integration test passed); macOS native (205 passed) and Model Lab core
+(77 passed); Windows native (193 passed) and Model Lab core (76 passed).
+The real-model tests remain ignored. Later changes through `95bb703` are
+documentation only. No local build, test, or model inference was run for this
+resolution, and these CI results do not verify desktop interaction, packaging,
+real-model quality, or target-device resource use.
 
 ## Implemented starter pieces
 
