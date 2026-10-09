@@ -63,6 +63,9 @@ import {
   FileActionDialog,
   type FileActionKind,
 } from "../views/FileActionDialog";
+import { DeleteDialog } from "../views/DeleteDialog";
+import { EditTextDialog } from "../views/actions/EditTextDialog";
+import type { GraphActionKind } from "../app/graphActions";
 import { FloatingOlioChat } from "../views/FloatingOlioChat";
 import { GraphView } from "../views/GraphView";
 import { HomeView } from "../views/HomeView";
@@ -145,6 +148,13 @@ export function AppShell() {
   // Home's Rename and Move have their own plan, so they never show up in
   // Organize (and the reverse).
   const fileAction = useOrganize(workspace, "home", filesChanged);
+  // Graph's node actions have their own plan flow, so Activity says they
+  // came from Graph and they never mix with Home's or Organize's.
+  const graphAction = useOrganize(workspace, "graph", filesChanged);
+  const [graphDialog, setGraphDialog] = useState<{
+    kind: GraphActionKind;
+    document: DocumentRecord;
+  } | null>(null);
   const [actionDialog, setActionDialog] = useState<{
     kind: FileActionKind;
     document: DocumentRecord;
@@ -277,6 +287,28 @@ export function AppShell() {
         },
       },
     ];
+  }
+
+  /**
+   * Back to the map: the file's node if it is still there, or the map itself
+   * after a delete, never a node that no longer exists.
+   */
+  function closeGraphDialog(deleted = false) {
+    const id = graphDialog?.document.id;
+    setGraphDialog(null);
+    requestAnimationFrame(() => {
+      const node =
+        id && !deleted
+          ? document.querySelector<HTMLElement>(
+              `.graph-svg [data-node-id="${CSS.escape(id)}"]`,
+            )
+          : null;
+      (
+        node ??
+        document.querySelector<HTMLElement>(".graph-svg [tabindex='0']") ??
+        document.querySelector<HTMLElement>(".graph-svg")
+      )?.focus();
+    });
   }
 
   function closeActionDialog() {
@@ -556,7 +588,13 @@ export function AppShell() {
                 <OrganizeView workspace={workspace} organize={organize} />
               )}
               {view === "graph" && (
-                <GraphView workspace={workspace} relations={relations} />
+                <GraphView
+                  workspace={workspace}
+                  relations={relations}
+                  onFileAction={(kind, document) =>
+                    setGraphDialog({ kind, document })
+                  }
+                />
               )}
               {view === "assistant" && (
                 <AssistantView
@@ -611,6 +649,35 @@ export function AppShell() {
             drafts={drafts}
             action={fileAction}
             onClose={closeActionDialog}
+          />
+        )}
+        {graphDialog &&
+          (graphDialog.kind === "rename" || graphDialog.kind === "move") && (
+            <FileActionDialog
+              kind={graphDialog.kind}
+              document={graphDialog.document}
+              workspace={workspace}
+              drafts={drafts}
+              action={graphAction}
+              onClose={() => closeGraphDialog()}
+            />
+          )}
+        {graphDialog?.kind === "edit" && (
+          <EditTextDialog
+            open
+            document={graphDialog.document}
+            workspace={workspace}
+            source="graph"
+            onFilesChanged={filesChanged}
+            onClose={() => closeGraphDialog()}
+          />
+        )}
+        {graphDialog?.kind === "delete" && (
+          <DeleteDialog
+            document={graphDialog.document}
+            workspace={workspace}
+            action={graphAction}
+            onClose={closeGraphDialog}
           />
         )}
         {/* Its own live region: independent of whichever view is showing. */}

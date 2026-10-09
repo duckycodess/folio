@@ -196,7 +196,8 @@ export function useOrganize(
 
   async function approveAndApply() {
     const plan = state.plan;
-    if (!folderId || !plan) return;
+    // Only from a preview on screen, once: never twice, or after a refusal.
+    if (!folderId || !plan || state.stage !== "preview" || state.error) return;
     const request = ++next.current;
     dispatch({ type: "applyStarted", request });
     try {

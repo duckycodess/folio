@@ -8,6 +8,8 @@ import {
 } from "react";
 import { hasUndoableChange } from "../app/planAction";
 import {
+  deletionImpactNote,
+  impactBadge,
   impactGroups,
   impactProvenance,
   planRow,
@@ -189,36 +191,53 @@ const IMPACT_HEADINGS: Record<ImpactKind, string> = {
   other: "Other related files",
 };
 
+/** For a deletion: what stops working, and what stays. */
+const DELETION_HEADINGS: Record<ImpactKind, string> = {
+  links: "Links that will stop working",
+  copies: "Identical copies, which stay",
+  inferred: "Related files the local AI found",
+  other: "Other related files",
+};
+
 /**
  * Folio Ripple: related passages that may need a look. They are review
  * candidates only; this list never says a file was or will be updated.
  */
-export function ImpactList({ impacts }: { impacts: ImpactCandidate[] }) {
+export function ImpactList({
+  impacts,
+  deletion = false,
+}: {
+  impacts: ImpactCandidate[];
+  /** The plan deletes a file: say which links break and what stays. */
+  deletion?: boolean;
+}) {
   const groups = impactGroups(impacts);
   const headingId = useId();
+  const headings = deletion ? DELETION_HEADINGS : IMPACT_HEADINGS;
   return (
     <section className="impact-review" aria-labelledby={headingId}>
       <h3 id={headingId} className="subsection-title">
-        Related passages to review
+        {deletion ? "What this deletion affects" : "Related passages to review"}
       </h3>
-      {impacts.length === 0 ? (
-        <p className="muted">
-          Folio didn't find related files that mention what you changed. That
-          doesn't guarantee nothing else needs a look.
-        </p>
-      ) : (
-        <p className="muted">
-          Folio won't change these files. Check them yourself after saving.
-        </p>
-      )}
-      {(Object.keys(IMPACT_HEADINGS) as ImpactKind[]).map(
+      <p className="muted">
+        {deletion
+          ? deletionImpactNote(groups)
+          : impacts.length === 0
+            ? "Folio didn't find related files that mention what you changed. That doesn't guarantee nothing else needs a look."
+            : "Folio won't change these files. Check them yourself after saving."}
+      </p>
+      {(Object.keys(headings) as ImpactKind[]).map(
         (kind) =>
           groups[kind].length > 0 && (
             <div key={kind} className="impact-group">
-              <h4 className="impact-group-title">{IMPACT_HEADINGS[kind]}</h4>
+              <h4 className="impact-group-title">{headings[kind]}</h4>
               <ul className="impact-list">
                 {groups[kind].map((impact) => (
-                  <ImpactItem key={impact.documentId} impact={impact} />
+                  <ImpactItem
+                    key={impact.documentId}
+                    impact={impact}
+                    badge={impactBadge(impact, deletion)}
+                  />
                 ))}
               </ul>
             </div>
@@ -234,12 +253,18 @@ export function ImpactList({ impacts }: { impacts: ImpactCandidate[] }) {
   );
 }
 
-function ImpactItem({ impact }: { impact: ImpactCandidate }) {
+function ImpactItem({
+  impact,
+  badge,
+}: {
+  impact: ImpactCandidate;
+  badge: string | null;
+}) {
   const provenance = impactProvenance(impact);
   return (
     <li className="impact">
       <div className="impact-head">
-        <Badge>Needs review</Badge>
+        {badge && <Badge>{badge}</Badge>}
         {provenance.ai && <Badge>AI</Badge>}
         <span className="plan-path">{impact.relativePath}</span>
       </div>
