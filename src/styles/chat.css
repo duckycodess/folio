@@ -120,8 +120,37 @@
   padding: var(--space-3);
   overflow-y: auto;
 }
-.olio-chat-empty {
+.olio-chat-welcome {
+  padding: var(--space-2) 0;
+}
+.olio-chat-welcome-title {
+  margin: var(--space-3) 0 var(--space-2);
+  font: var(--text-title);
+}
+.olio-chat-welcome > p {
+  margin: 0 0 var(--space-3);
+  line-height: 1.6;
+}
+.olio-chat-welcome-action {
+  display: block;
+  width: 100%;
+  margin: var(--space-2) 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: none;
+  text-align: left;
+  font: var(--text-label);
+  cursor: pointer;
+}
+.olio-chat-welcome-action:hover {
+  background: var(--color-surface-muted);
+}
+.olio-chat-note {
   margin: 0;
+  padding: 0 var(--space-3) var(--space-2);
+  text-align: center;
+  font: var(--text-small);
 }
 .olio-chat-turn {
   display: flex;
