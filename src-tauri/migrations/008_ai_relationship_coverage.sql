@@ -54,4 +54,8 @@ CREATE TABLE ai_relationship_schedule (
 
 -- Internal ranking cosine for retained candidates; not on the wire.
 ALTER TABLE relationships ADD COLUMN discovery_cosine REAL;
-CREATE INDEX relationships_space_type_idx ON relationships(space_fingerprint, relationship_type);
+-- Per-endpoint candidate lookups (cap eviction, a document's reset) seek one
+-- index per endpoint column; their (space, type) prefix also serves the
+-- whole-space reads of the displayed set.
+CREATE INDEX relationships_space_type_source_idx ON relationships(space_fingerprint, relationship_type, source_document_id);
+CREATE INDEX relationships_space_type_target_idx ON relationships(space_fingerprint, relationship_type, target_document_id);

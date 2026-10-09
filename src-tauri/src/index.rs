@@ -129,6 +129,8 @@ pub enum Relationship {
 #[serde(rename_all = "camelCase")]
 pub struct AiRelationshipRefresh {
     pub workspace_id: String,
+    /// Absent (not `null`) until the selected model has a persistent space.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub space_fingerprint: Option<String>,
     pub documents_compared: usize,
     pub relationships_created: usize,
@@ -1506,6 +1508,21 @@ fn validate_candidate_edge(
     Ok(())
 }
 
+/// How many candidates of one kind (`?2`) one document (`?3`) holds in a
+/// space (`?1`). One branch per endpoint column, so each seeks its own
+/// `(space, type, endpoint)` index instead of scanning every edge of the kind
+/// (an `OR` across the two columns cannot use either index).
+pub(crate) const ENDPOINT_CANDIDATE_COUNT: &str = "SELECT (SELECT count(*) FROM relationships WHERE space_fingerprint = ?1 AND relationship_type = ?2 AND source_document_id = ?3) \
+     + (SELECT count(*) FROM relationships WHERE space_fingerprint = ?1 AND relationship_type = ?2 AND target_document_id = ?3 AND source_document_id != ?3)";
+
+/// The weakest of those candidates: lowest discovery cosine, then largest
+/// other document id. Split per endpoint like the count.
+pub(crate) const ENDPOINT_WEAKEST_CANDIDATE: &str = "SELECT id, source_document_id, target_document_id FROM (\
+       SELECT id, source_document_id, target_document_id, COALESCE(discovery_cosine, score, 0.0) AS cosine, target_document_id AS other FROM relationships WHERE space_fingerprint = ?1 AND relationship_type = ?2 AND source_document_id = ?3 \
+       UNION ALL \
+       SELECT id, source_document_id, target_document_id, COALESCE(discovery_cosine, score, 0.0), source_document_id FROM relationships WHERE space_fingerprint = ?1 AND relationship_type = ?2 AND target_document_id = ?3 AND source_document_id != ?3\
+     ) ORDER BY cosine ASC, other DESC LIMIT 1";
+
 fn evict_over_cap(
     tx: &Transaction<'_>,
     workspace_id: &str,
@@ -1515,7 +1532,7 @@ fn evict_over_cap(
 ) -> NativeResult<()> {
     loop {
         let stored: i64 = tx.query_row(
-            "SELECT count(*) FROM relationships WHERE space_fingerprint = ?1 AND relationship_type = ?2 AND (source_document_id = ?3 OR target_document_id = ?3)",
+            ENDPOINT_CANDIDATE_COUNT,
             params![fingerprint, kind, document_id],
             |row| row.get(0),
         )?;
@@ -1523,7 +1540,7 @@ fn evict_over_cap(
             return Ok(());
         }
         let (weakest, source, target): (String, String, String) = tx.query_row(
-            "SELECT id, source_document_id, target_document_id FROM relationships WHERE space_fingerprint = ?1 AND relationship_type = ?2 AND (source_document_id = ?3 OR target_document_id = ?3) ORDER BY COALESCE(discovery_cosine, score, 0.0) ASC, CASE WHEN source_document_id = ?3 THEN target_document_id ELSE source_document_id END DESC LIMIT 1",
+            ENDPOINT_WEAKEST_CANDIDATE,
             params![fingerprint, kind, document_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
@@ -2352,5 +2369,20 @@ pub mod tests {
             let documents = list_documents(&conn, &root.id).unwrap().len();
             println!("{documents} documents, 30 of them {label}; mean of {RUNS} rescans: read every scan {every_scan:?}, with backoff {with_backoff:?}");
         }
+    }
+
+    #[test]
+    fn an_ai_refresh_without_a_space_omits_the_fingerprint() {
+        let refresh = AiRelationshipRefresh {
+            workspace_id: "w".into(),
+            space_fingerprint: None,
+            documents_compared: 0,
+            relationships_created: 0,
+            cancelled: false,
+        };
+        let json = serde_json::to_value(&refresh).unwrap();
+        assert!(json.get("spaceFingerprint").is_none(), "{json}");
+        let with_space = AiRelationshipRefresh { space_fingerprint: Some("s".into()), ..refresh };
+        assert_eq!(serde_json::to_value(&with_space).unwrap()["spaceFingerprint"], "s");
     }
 }

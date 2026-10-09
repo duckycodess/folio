@@ -33,12 +33,28 @@ use crate::db::NativeResult;
 use crate::error::{error, ErrorCode};
 use crate::index::{self, check_vector, space_dimensions};
 
-/// Chunks that make an indexed document *eligible* in a space: it has at least
-/// one chunk and every chunk has a vector there. Binds `?1` workspace and `?2`
+/// The statuses whose stored revision discovery compares. A `stale` document
+/// is one Local Sync could not re-read: it keeps its last good hash, chunks and
+/// vectors, and search keeps showing that version, so discovery compares it
+/// (and keeps its comparisons) exactly like an `indexed` one. Admission,
+/// the tile re-check and coverage all use this one rule.
+macro_rules! comparable_status {
+    () => {
+        "d.status IN ('indexed', 'stale')"
+    };
+}
+const COMPARABLE_STATUS: &str = comparable_status!();
+
+/// What makes a document *eligible* in a space: a comparable status, at least
+/// one chunk and a vector there for every chunk. Binds `?1` workspace and `?2`
 /// space.
-const ELIGIBLE_DOCUMENT: &str = "d.workspace_id = ?1 AND d.status = 'indexed' AND d.content_hash != '' \
+const ELIGIBLE_DOCUMENT: &str = concat!(
+    "d.workspace_id = ?1 AND ",
+    comparable_status!(),
+    " AND d.content_hash != '' \
      AND EXISTS (SELECT 1 FROM chunks c WHERE c.document_id = d.id) \
-     AND NOT EXISTS (SELECT 1 FROM chunks c WHERE c.document_id = d.id AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.chunk_id = c.chunk_id AND e.space_id = ?2))";
+     AND NOT EXISTS (SELECT 1 FROM chunks c WHERE c.document_id = d.id AND NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.chunk_id = c.chunk_id AND e.space_id = ?2))"
+);
 
 #[derive(Clone, Copy, Debug)]
 pub struct DiscoveryLimits {
@@ -127,8 +143,11 @@ struct Job {
 }
 
 /// Admits eligible revisions that have no coverage row, in document-id order,
-/// and drops coverage whose revision no longer matches the document. Returns
-/// how many revisions were admitted.
+/// and drops coverage whose revision no longer matches the document or is no
+/// longer eligible (it lost a vector, say). So after admission every coverage
+/// row is an eligible revision, and a revision that becomes eligible again is
+/// re-admitted with a fresh seq instead of being passed over by cursors that
+/// moved on without it. Returns how many revisions were admitted.
 pub fn admit_eligible(
     conn: &mut Connection,
     workspace_id: &str,
@@ -141,11 +160,13 @@ pub fn admit_eligible(
         "INSERT OR IGNORE INTO ai_relationship_seq (workspace_id, space_id, next_seq) VALUES (?1, ?2, 1)",
         params![workspace_id, space],
     )?;
-    let stale: Vec<String> = tx
-        .prepare("SELECT r.document_id FROM ai_relationship_coverage r JOIN documents d ON d.id = r.document_id WHERE r.workspace_id = ?1 AND r.space_id = ?2 AND r.content_hash != d.content_hash")?
+    let outdated: Vec<String> = tx
+        .prepare(&format!(
+            "SELECT r.document_id FROM ai_relationship_coverage r JOIN documents d ON d.id = r.document_id WHERE r.workspace_id = ?1 AND r.space_id = ?2 AND (r.content_hash != d.content_hash OR NOT ({ELIGIBLE_DOCUMENT}))"
+        ))?
         .query_map(params![workspace_id, space], |row| row.get(0))?
         .collect::<Result<_, _>>()?;
-    for document_id in stale {
+    for document_id in outdated {
         reset_document(&tx, workspace_id, space, &document_id)?;
     }
     let new: Vec<(String, String)> = tx
@@ -207,6 +228,14 @@ pub fn purge_other_spaces(
     Ok(removed)
 }
 
+/// Deletes every AI candidate of one document (`?2`) in one space (`?1`), one
+/// branch per endpoint so each seeks its `(space, type, endpoint)` index.
+pub(crate) const DOCUMENT_CANDIDATES_DELETE: &str = "DELETE FROM relationships WHERE id IN (\
+       SELECT id FROM relationships WHERE space_fingerprint = ?1 AND relationship_type IN ('similarity', 'sharedFactCandidate') AND source_document_id = ?2 \
+       UNION ALL \
+       SELECT id FROM relationships WHERE space_fingerprint = ?1 AND relationship_type IN ('similarity', 'sharedFactCandidate') AND target_document_id = ?2\
+     )";
+
 /// Forgets one document's discovery state in one space. The counter is not
 /// touched, so the revision is re-admitted with a larger seq.
 fn reset_document(
@@ -216,7 +245,7 @@ fn reset_document(
     document_id: &str,
 ) -> NativeResult<()> {
     tx.execute(
-        "DELETE FROM relationships WHERE space_fingerprint = ?1 AND relationship_type IN ('similarity', 'sharedFactCandidate') AND (source_document_id = ?2 OR target_document_id = ?2)",
+        DOCUMENT_CANDIDATES_DELETE,
         params![space, document_id],
     )?;
     tx.execute(
@@ -254,7 +283,9 @@ fn set_schedule_pointer(
     Ok(())
 }
 
-/// The next runnable job at or after `from_seq`, wrapping to the start.
+/// The next runnable job at or after `from_seq`, wrapping to the start. The
+/// jobs skipped this run are excluded in SQL, so no number of them can hide a
+/// runnable job behind them.
 fn next_job(
     conn: &Connection,
     workspace_id: &str,
@@ -262,28 +293,26 @@ fn next_job(
     from_seq: i64,
     skipped: &HashSet<String>,
 ) -> NativeResult<Option<Job>> {
+    let skipped = serde_json::to_string(skipped)?;
     let runnable = |from: i64| -> NativeResult<Option<Job>> {
-        let mut statement = conn.prepare(
-            "SELECT r.document_id, r.content_hash, r.seq FROM ai_relationship_coverage r JOIN documents d ON d.id = r.document_id AND d.content_hash = r.content_hash \
-             WHERE r.workspace_id = ?1 AND r.space_id = ?2 AND r.seq >= ?3 \
-               AND (EXISTS (SELECT 1 FROM ai_pair_progress g WHERE g.workspace_id = r.workspace_id AND g.space_id = r.space_id AND g.document_id = r.document_id) \
-                 OR EXISTS (SELECT 1 FROM ai_relationship_coverage p WHERE p.workspace_id = r.workspace_id AND p.space_id = r.space_id AND p.seq > r.partner_cursor_seq AND p.seq < r.seq)) \
-             ORDER BY r.seq LIMIT 64",
-        )?;
-        let rows = statement.query_map(params![workspace_id, space, from], |row| {
-            Ok(Job {
-                document_id: row.get(0)?,
-                content_hash: row.get(1)?,
-                seq: row.get(2)?,
-            })
-        })?;
-        for row in rows {
-            let job = row?;
-            if !skipped.contains(&job.document_id) {
-                return Ok(Some(job));
-            }
-        }
-        Ok(None)
+        Ok(conn
+            .query_row(
+                "SELECT r.document_id, r.content_hash, r.seq FROM ai_relationship_coverage r JOIN documents d ON d.id = r.document_id AND d.content_hash = r.content_hash \
+                 WHERE r.workspace_id = ?1 AND r.space_id = ?2 AND r.seq >= ?3 \
+                   AND r.document_id NOT IN (SELECT value FROM json_each(?4)) \
+                   AND (EXISTS (SELECT 1 FROM ai_pair_progress g WHERE g.workspace_id = r.workspace_id AND g.space_id = r.space_id AND g.document_id = r.document_id) \
+                     OR EXISTS (SELECT 1 FROM ai_relationship_coverage p WHERE p.workspace_id = r.workspace_id AND p.space_id = r.space_id AND p.seq > r.partner_cursor_seq AND p.seq < r.seq)) \
+                 ORDER BY r.seq LIMIT 1",
+                params![workspace_id, space, from, skipped],
+                |row| {
+                    Ok(Job {
+                        document_id: row.get(0)?,
+                        content_hash: row.get(1)?,
+                        seq: row.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
     };
     match runnable(from_seq)? {
         Some(job) => Ok(Some(job)),
@@ -628,7 +657,7 @@ fn tile_is_current(
     let admitted_at = |document_id: &str, hash: &str| -> NativeResult<Option<i64>> {
         Ok(tx
             .query_row(
-                "SELECT r.seq FROM ai_relationship_coverage r JOIN documents d ON d.id = r.document_id WHERE r.workspace_id = ?1 AND r.space_id = ?2 AND r.document_id = ?3 AND r.content_hash = ?4 AND d.content_hash = ?4 AND d.status = 'indexed'",
+                &format!("SELECT r.seq FROM ai_relationship_coverage r JOIN documents d ON d.id = r.document_id WHERE r.workspace_id = ?1 AND r.space_id = ?2 AND r.document_id = ?3 AND r.content_hash = ?4 AND d.content_hash = ?4 AND {COMPARABLE_STATUS}"),
                 params![workspace, space, document_id, hash],
                 |row| row.get(0),
             )
@@ -815,17 +844,21 @@ pub struct RelationshipCoverage {
 /// What Folio has compared in the active space, proven from the admission
 /// order (see the module comment) and never from time or run counts.
 ///
+/// Only *current* rows count: coverage rows of an eligible document at its
+/// current hash. A row whose document left the space (or changed) is dropped
+/// at the next admission, so it neither counts as admitted nor as a partner.
 /// `complete` holds iff every indexed document is eligible, every eligible
-/// revision is admitted at its current hash, and no admitted job has a
-/// partner left or an in-flight pair. By the ownership rule that means every
-/// pair of currently eligible revisions was fully compared.
+/// revision has a current row, and no current job has a current partner left
+/// (an in-flight pair's partner is past the job's cursor, so it is counted
+/// too). By the ownership rule that means every pair of currently eligible
+/// revisions was fully compared.
 pub fn coverage(
     conn: &Connection,
     workspace_id: &str,
     space: Option<&str>,
 ) -> NativeResult<RelationshipCoverage> {
     let indexed: i64 = conn.query_row(
-        "SELECT count(*) FROM documents d WHERE d.workspace_id = ?1 AND d.status = 'indexed' AND d.content_hash != '' AND EXISTS (SELECT 1 FROM chunks c WHERE c.document_id = d.id)",
+        &format!("SELECT count(*) FROM documents d WHERE d.workspace_id = ?1 AND {COMPARABLE_STATUS} AND d.content_hash != '' AND EXISTS (SELECT 1 FROM chunks c WHERE c.document_id = d.id)"),
         [workspace_id],
         |row| row.get(0),
     )?;
@@ -840,35 +873,46 @@ pub fn coverage(
             overflow_documents: 0,
         });
     };
-    let eligible: i64 = conn.query_row(
-        &format!("SELECT count(*) FROM documents d WHERE {ELIGIBLE_DOCUMENT}"),
+    // Eligible documents with no current row: never compared at this revision.
+    let unadmitted: i64 = conn.query_row(
+        &format!("SELECT count(*) FROM documents d WHERE {ELIGIBLE_DOCUMENT} AND NOT EXISTS (SELECT 1 FROM ai_relationship_coverage r WHERE r.workspace_id = ?1 AND r.space_id = ?2 AND r.document_id = d.id AND r.content_hash = d.content_hash)"),
         params![workspace_id, space],
         |row| row.get(0),
     )?;
-    // Admitted at the document's current revision.
-    let admitted: i64 = conn.query_row(
-        "SELECT count(*) FROM ai_relationship_coverage r JOIN documents d ON d.id = r.document_id AND d.content_hash = r.content_hash WHERE r.workspace_id = ?1 AND r.space_id = ?2",
+    // One pass over the current rows. A job's partners left are the current
+    // rows with `cursor < seq < job.seq`, which is (current rows before the
+    // job) - (current rows with seq <= its cursor), since a cursor is always
+    // below its job's seq. Summed over jobs, the first term is n(n-1)/2; the
+    // second is a running count of row seqs taken at each cursor, in one
+    // ordered scan of seqs and cursors together (a seq equal to a cursor sorts
+    // first, so it counts as finished).
+    let (admitted, finished, overflow): (i64, i64, i64) = conn.query_row(
+        &format!(
+            "WITH current AS (\
+               SELECT r.seq, r.partner_cursor_seq, r.candidate_overflow FROM ai_relationship_coverage r JOIN documents d ON d.id = r.document_id AND d.content_hash = r.content_hash \
+               WHERE r.workspace_id = ?1 AND r.space_id = ?2 AND {ELIGIBLE_DOCUMENT} \
+             ), marks AS (\
+               SELECT seq AS at, 0 AS is_cursor FROM current \
+               UNION ALL \
+               SELECT partner_cursor_seq, 1 FROM current \
+             ), counted AS (\
+               SELECT is_cursor, SUM(1 - is_cursor) OVER (ORDER BY at, is_cursor ROWS UNBOUNDED PRECEDING) AS rows_at_or_before FROM marks \
+             ) \
+             SELECT (SELECT count(*) FROM current), \
+                    (SELECT COALESCE(SUM(rows_at_or_before), 0) FROM counted WHERE is_cursor = 1), \
+                    (SELECT count(*) FROM current WHERE candidate_overflow = 1)"
+        ),
         params![workspace_id, space],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
-    let unadmitted = (eligible - admitted).max(0);
-    let partners_left: i64 = conn.query_row(
-        "SELECT COALESCE(SUM((SELECT count(*) FROM ai_relationship_coverage p JOIN documents pd ON pd.id = p.document_id AND pd.content_hash = p.content_hash WHERE p.workspace_id = r.workspace_id AND p.space_id = r.space_id AND p.seq > r.partner_cursor_seq AND p.seq < r.seq)), 0) \
-         FROM ai_relationship_coverage r JOIN documents d ON d.id = r.document_id AND d.content_hash = r.content_hash WHERE r.workspace_id = ?1 AND r.space_id = ?2",
-        params![workspace_id, space],
-        |row| row.get(0),
-    )?;
+    let eligible = admitted + unadmitted;
     let (admitted, unadmitted) = (admitted as u64, unadmitted as u64);
     let total_admitted_pairs = admitted * admitted.saturating_sub(1) / 2;
-    let remaining = (partners_left as u64).min(total_admitted_pairs)
+    let partners_left = total_admitted_pairs.saturating_sub(finished as u64);
+    let remaining = partners_left
         + unadmitted * admitted
         + unadmitted * unadmitted.saturating_sub(1) / 2;
-    let considered = total_admitted_pairs - (partners_left as u64).min(total_admitted_pairs);
-    let overflow: i64 = conn.query_row(
-        "SELECT count(*) FROM ai_relationship_coverage r JOIN documents d ON d.id = r.document_id AND d.content_hash = r.content_hash WHERE r.workspace_id = ?1 AND r.space_id = ?2 AND r.candidate_overflow = 1",
-        params![workspace_id, space],
-        |row| row.get(0),
-    )?;
+    let considered = total_admitted_pairs - partners_left;
     let state = if indexed > eligible {
         CoverageState::EmbeddingIncomplete
     } else if remaining > 0 {

@@ -492,3 +492,34 @@ fn add_documents_from(conn: &Connection, first: usize, count: usize) {
         .unwrap();
     }
 }
+
+/// The plan SQLite chooses for a statement, one detail line per step.
+fn query_plan(conn: &Connection, sql: &str, bound: &[&str]) -> String {
+    let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+    let rows = statement
+        .query_map(rusqlite::params_from_iter(bound.iter()), |row| row.get::<_, String>(3))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    rows.join("\n")
+}
+
+#[test]
+fn per_endpoint_candidate_queries_seek_both_endpoint_indexes() {
+    let conn = workspace();
+    let space = space(&conn, "r1");
+    for (sql, bound) in [
+        (index::ENDPOINT_CANDIDATE_COUNT, vec![space.as_str(), "similarity", "doc-001"]),
+        (index::ENDPOINT_WEAKEST_CANDIDATE, vec![space.as_str(), "similarity", "doc-001"]),
+        (crate::ai_discovery::DOCUMENT_CANDIDATES_DELETE, vec![space.as_str(), "doc-001"]),
+    ] {
+        let plan = query_plan(&conn, sql, &bound);
+        for index in [
+            "relationships_space_type_source_idx",
+            "relationships_space_type_target_idx",
+        ] {
+            assert!(plan.contains(index), "{sql}\n{plan}");
+        }
+        assert!(!plan.contains("SCAN relationships"), "{sql}\n{plan}");
+    }
+}

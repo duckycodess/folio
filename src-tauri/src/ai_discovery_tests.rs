@@ -692,6 +692,287 @@ fn multi_chunk_documents_with_document_level_offsets_are_read_correctly() {
     assert!(!stored.is_empty());
 }
 
+impl Fixture {
+    fn set_status(&self, name: &str, status: &str) {
+        self.conn
+            .execute(
+                "UPDATE documents SET status = ?2 WHERE id = ?1",
+                params![name, status],
+            )
+            .unwrap();
+    }
+
+    /// What Local Sync does to a document with no usable prior index: its
+    /// chunks go, its recorded hash may stay.
+    fn fail(&mut self, name: &str) {
+        let tx = self.conn.transaction().unwrap();
+        index::clear_derived(&tx, name).unwrap();
+        tx.execute(
+            "UPDATE documents SET status = 'failed' WHERE id = ?1",
+            [name],
+        )
+        .unwrap();
+        tx.commit().unwrap();
+    }
+
+    /// One chunk of a document loses its vector in the space; nothing else changes.
+    fn drop_vector(&self, name: &str) {
+        self.conn
+            .execute(
+                "DELETE FROM embeddings WHERE space_id = ?2 AND chunk_id = (SELECT min(chunk_id) FROM chunks WHERE document_id = ?1)",
+                params![name, self.space],
+            )
+            .unwrap();
+    }
+
+    fn cursor(&self, name: &str) -> i64 {
+        self.conn
+            .query_row(
+                "SELECT partner_cursor_seq FROM ai_relationship_coverage WHERE document_id = ?1 AND space_id = ?2",
+                params![name, self.space],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    /// Coverage counted the slow, obvious way: every pair of currently
+    /// eligible revisions, minus the pairs some admitted job has finished.
+    fn brute_force_remaining(&self) -> (u64, u64) {
+        let eligible: Vec<String> = self
+            .conn
+            .prepare(
+                "SELECT d.id FROM documents d WHERE d.workspace_id = ?1 AND d.status IN ('indexed', 'stale') AND d.content_hash != '' \
+                 AND (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) > 0 \
+                 AND (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) = (SELECT count(*) FROM chunks c JOIN embeddings e ON e.chunk_id = c.chunk_id AND e.space_id = ?2 WHERE c.document_id = d.id)",
+            )
+            .unwrap()
+            .query_map(params![WORKSPACE, self.space], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let admitted: Vec<(String, i64, i64)> = self
+            .conn
+            .prepare("SELECT r.document_id, r.seq, r.partner_cursor_seq FROM ai_relationship_coverage r JOIN documents d ON d.id = r.document_id AND d.content_hash = r.content_hash WHERE r.space_id = ?1")
+            .unwrap()
+            .query_map([&self.space], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .into_iter()
+            .filter(|row: &(String, i64, i64)| eligible.contains(&row.0))
+            .collect();
+        let mut remaining = 0u64;
+        let mut considered = 0u64;
+        for (left_index, left) in eligible.iter().enumerate() {
+            for right in &eligible[left_index + 1..] {
+                let job = |name: &String| admitted.iter().find(|row| &row.0 == name);
+                let done = match (job(left), job(right)) {
+                    (Some(x), Some(y)) => {
+                        let (earlier, later) = if x.1 < y.1 { (x, y) } else { (y, x) };
+                        later.2 >= earlier.1
+                    }
+                    _ => false,
+                };
+                if done {
+                    considered += 1;
+                } else {
+                    remaining += 1;
+                }
+            }
+        }
+        (considered, remaining)
+    }
+}
+
+#[test]
+fn coverage_counts_a_new_document_while_another_lost_a_vector_at_the_same_hash() {
+    let mut fixture = Fixture::new();
+    fixture.put("a", &chunks(2, "a", 0.00), true);
+    fixture.put("b", &chunks(2, "b", 0.02), true);
+    fixture.put("c", &chunks(2, "c", 0.04), true);
+    fixture.run_to_complete(DiscoveryLimits::default());
+    assert_eq!(fixture.coverage().state, CoverageState::Complete);
+
+    // `a` loses a vector but keeps its hash and coverage row; `z` arrives.
+    fixture.drop_vector("a");
+    fixture.put("z", &chunks(2, "z", 0.06), true);
+    let partial = fixture.coverage();
+    assert_eq!(
+        (
+            partial.state,
+            partial.eligible_documents,
+            partial.pairs_considered,
+            partial.pairs_remaining
+        ),
+        (CoverageState::EmbeddingIncomplete, 3, 1, 2),
+        "z was never compared with b or c"
+    );
+
+    let runs = fixture.run_to_complete(DiscoveryLimits::default());
+    assert_eq!(pairs(&runs), 2, "z against b and c");
+    assert!(
+        fixture
+            .rows(&fixture.space)
+            .iter()
+            .all(|row| row.0 != "a" && row.1 != "a"),
+        "a revision that left the space keeps no AI rows"
+    );
+    let waiting = fixture.coverage();
+    assert_eq!(
+        (waiting.state, waiting.pairs_considered, waiting.pairs_remaining),
+        (CoverageState::EmbeddingIncomplete, 3, 0)
+    );
+
+    // Once embedded again, a is re-admitted and compared with everyone.
+    fixture.embed_pending("a", &chunks(2, "a", 0.00));
+    let runs = fixture.run_to_complete(DiscoveryLimits::default());
+    assert_eq!(pairs(&runs), 3, "a against b, c and z");
+    let done = fixture.coverage();
+    assert_eq!(
+        (done.state, done.pairs_considered, done.pairs_remaining),
+        (CoverageState::Complete, 6, 0)
+    );
+}
+
+#[test]
+fn a_stale_document_stays_comparable_with_its_last_good_chunks() {
+    let mut fixture = Fixture::new();
+    fixture.put("a", &chunks(2, "a", 0.00), true);
+    fixture.put("b", &chunks(2, "b", 0.02), true);
+    fixture.put("c", &chunks(2, "c", 0.04), true);
+    fixture.run_to_complete(DiscoveryLimits::default());
+    let before = fixture.rows(&fixture.space);
+
+    // A failed re-read keeps a's hash and chunks and marks it stale.
+    fixture.set_status("a", "stale");
+    let still = fixture.coverage();
+    assert_eq!(
+        (still.state, still.eligible_documents, still.indexed_documents),
+        (CoverageState::Complete, 3, 3),
+        "a stale file keeps its previous version, and its comparisons"
+    );
+    assert_eq!(fixture.run(DiscoveryLimits::default()).progress.tiles, 0);
+    assert_eq!(fixture.rows(&fixture.space), before, "nothing was reset");
+
+    fixture.put("z", &chunks(2, "z", 0.06), true);
+    let partial = fixture.coverage();
+    assert_eq!(
+        (partial.state, partial.eligible_documents, partial.pairs_remaining),
+        (CoverageState::Partial, 4, 3)
+    );
+    let runs = fixture.run_to_complete(DiscoveryLimits::default());
+    assert_eq!(runs.len(), 1);
+    assert_eq!(pairs(&runs), 3, "z against the stale a as well as b and c");
+    let done = fixture.coverage();
+    assert_eq!(
+        (done.state, done.pairs_considered),
+        (CoverageState::Complete, 6)
+    );
+}
+
+#[test]
+fn more_than_a_page_of_skipped_jobs_never_hides_a_runnable_one() {
+    let mut fixture = Fixture::new();
+    let one = |name: &str| chunks(1, name, 0.0);
+    fixture.put("a", &one("a"), true);
+    let skipped: Vec<String> = (0..65).map(|index| format!("j{index:03}")).collect();
+    for name in &skipped {
+        fixture.put(name, &one(name), true);
+    }
+    fixture.put("k", &one("k"), true);
+    admit_eligible(&mut fixture.conn, WORKSPACE, &fixture.space.clone(), 1).unwrap();
+    // k already compared a; every j still needs a first. Serve k first.
+    fixture
+        .conn
+        .execute(
+            "UPDATE ai_relationship_coverage SET partner_cursor_seq = ?1 WHERE document_id = 'k'",
+            [fixture.seq("a")],
+        )
+        .unwrap();
+    fixture
+        .conn
+        .execute(
+            "INSERT INTO ai_relationship_schedule (workspace_id, space_id, next_job_seq) VALUES (?1, ?2, ?3)",
+            params![WORKSPACE, fixture.space, fixture.seq("k")],
+        )
+        .unwrap();
+
+    // After admission, a loses a vector: every j job aborts for this run.
+    let dropped = std::cell::Cell::new(false);
+    let still_active = |conn: &Connection| -> crate::db::NativeResult<bool> {
+        if !dropped.replace(true) {
+            conn.execute(
+                "DELETE FROM embeddings WHERE chunk_id IN (SELECT chunk_id FROM chunks WHERE document_id = 'a')",
+                [],
+            )
+            .unwrap();
+        }
+        Ok(true)
+    };
+    let summary = fixture.run_with(
+        DiscoveryLimits {
+            max_run_work: 1_000_000,
+            tiles_per_job_per_turn: 1,
+            ..DiscoveryLimits::default()
+        },
+        &AtomicBool::new(false),
+        &still_active,
+        &mut |_| {},
+    );
+    assert_eq!(summary.end, RunEnd::Complete);
+    assert_eq!(
+        summary.progress.pairs_completed, 65,
+        "k finished every partner although 65 skipped jobs come before it"
+    );
+    assert_eq!(fixture.cursor("k"), fixture.seq("j064"));
+}
+
+#[test]
+fn coverage_counts_match_a_brute_force_count_at_every_step() {
+    let mut fixture = Fixture::new();
+    for (index, name) in ["a", "b", "c", "d", "e"].iter().enumerate() {
+        fixture.put(name, &chunks(index + 1, name, index as f32 * 0.02), true);
+    }
+    let check = |fixture: &Fixture, when: &str| {
+        let coverage = fixture.coverage();
+        assert_eq!(
+            (coverage.pairs_considered, coverage.pairs_remaining),
+            fixture.brute_force_remaining(),
+            "{when}"
+        );
+    };
+    check(&fixture, "before any run");
+    for step in 0..6 {
+        fixture.run(small_tiles());
+        check(&fixture, &format!("after run {step}"));
+    }
+    fixture.put("b", &chunks(2, "b-edited", 0.03), true);
+    check(&fixture, "after an edit");
+    fixture.put("f", &chunks(3, "f", 0.07), false);
+    fixture.set_status("c", "stale");
+    check(&fixture, "with f unembedded and c stale");
+    fixture.embed_pending("f", &chunks(3, "f", 0.07));
+    fixture.fail("d");
+    fixture.drop_vector("e");
+    check(&fixture, "with d failed and e missing a vector");
+    fixture.run(small_tiles());
+    check(&fixture, "after e left the space");
+    fixture.embed_pending("e", &chunks(5, "e", 0.08));
+    check(&fixture, "with e embedded again");
+    for step in 0..200 {
+        let summary = fixture.run(small_tiles());
+        check(&fixture, &format!("after late run {step}"));
+        if summary.end == RunEnd::Complete {
+            break;
+        }
+    }
+    let done = fixture.coverage();
+    assert_eq!(
+        (done.state, done.eligible_documents, done.pairs_remaining),
+        (CoverageState::Complete, 5, 0)
+    );
+}
+
 // ------------------------------------------------- the #27 integration gate
 
 mod integration_with_embedding_sync {
