@@ -10,5 +10,8 @@ pub mod chunking;
 pub mod contracts;
 pub mod embeddings;
 pub mod error;
+pub mod generation;
+pub mod grounding;
+pub mod interpretation;
 pub mod models;
 pub mod retrieval;

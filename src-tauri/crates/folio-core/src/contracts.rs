@@ -216,19 +216,28 @@ pub enum InterpretationResult {
     Proposal {
         proposal: OperationProposal,
         request_language: Language,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        exact_duplicate_paths: Vec<String>,
     },
     NeedsFileSelection {
         candidates: Vec<SearchResult>,
         pending_intent: String,
     },
-    NeedsClarification { question: String, reason: String },
+    NeedsClarification {
+        question: String,
+        reason: String,
+    },
     NonMutating {
         intent: NonMutatingIntent,
         #[serde(skip_serializing_if = "Option::is_none")]
         target_query: Option<String>,
     },
-    Unsupported { reason: String },
-    InvalidModelOutput { raw_output_digest: String },
+    Unsupported {
+        reason: String,
+    },
+    InvalidModelOutput {
+        raw_output_digest: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -247,10 +256,9 @@ mod contract_tests {
 
     fn round_trip(name: &str, value: serde_json::Value) {
         let path = format!("{GOLDEN_ROOT}/{name}.json");
-        let expected: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(path).expect("golden file exists"),
-        )
-        .expect("golden JSON is valid");
+        let expected: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("golden file exists"))
+                .expect("golden JSON is valid");
         assert_eq!(value, expected);
     }
 
