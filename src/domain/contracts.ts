@@ -361,8 +361,23 @@ export interface AiRefreshProgress {
 export type AiRefreshEnd =
   "complete" | "budgetExhausted" | "cancelled" | "spaceChanged";
 
+/** What one discovery run did. Counts are this run's, not cumulative. */
+export interface AiDiscoveryProgress {
+  admitted: number;
+  tiles: number;
+  comparisons: number;
+  /** Comparisons plus clause-feature work: what the run budget counts. */
+  work: number;
+  pairsCompleted: number;
+  edgesStored: number;
+}
+
 export interface LocalAiRefresh {
   workspaceId: WorkspaceId;
+  /** The embedding phase's summary; absent when it didn't run. */
+  embedding?: EmbeddingSyncSummary;
+  /** The discovery run's progress; absent when it didn't run. */
+  discovery?: AiDiscoveryProgress;
   /** Absent when no search model is ready. */
   ended?: AiRefreshEnd;
   coverage: AiRelationshipCoverage;

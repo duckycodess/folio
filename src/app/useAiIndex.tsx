@@ -114,6 +114,9 @@ export function useAiIndex(
     setFailure(null);
     setPairsCompleted(0);
     let unlisten: (() => void) | undefined;
+    // The refresh can settle before the listener is attached (a quick refusal);
+    // then the listener is removed as soon as it arrives.
+    let done = false;
     onAiRefreshProgress((progress) => {
       if (progress.workspaceId !== folder || generation.current !== mine)
         return;
@@ -121,7 +124,8 @@ export function useAiIndex(
       setPairsCompleted(progress.pairsCompleted);
     })
       .then((stop) => {
-        unlisten = stop;
+        if (done) stop();
+        else unlisten = stop;
       })
       .catch(() => {
         // Progress is a nicety; the result is what counts.
@@ -136,16 +140,21 @@ export function useAiIndex(
         if (
           generation.current === mine &&
           error.code !== "modelNotInstalled" &&
+          error.code !== "providerBusy" &&
           error.code !== "cancelled"
         )
           setFailure(error);
       })
       .finally(() => {
+        done = true;
         unlisten?.();
         running.current = false;
+        // Only one refresh runs at a time, so its end always clears the
+        // in-progress state, even after a folder or model change; what it
+        // found applies only to the folder and model it ran for.
+        setRefreshing(false);
+        setPhase(null);
         if (generation.current === mine) {
-          setRefreshing(false);
-          setPhase(null);
           changed();
           // Read what is true now, including after a Stop or a model change.
           relationshipCoverage(folder)

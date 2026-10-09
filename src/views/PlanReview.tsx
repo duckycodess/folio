@@ -8,9 +8,8 @@ import {
   type RefObject,
 } from "react";
 import { explainImpact } from "../adapters/ai";
-import { isGenerationReady } from "../app/models";
+import { useGenerationReady } from "../app/generationReady";
 import { hasUndoableChange } from "../app/planAction";
-import { useModels } from "../app/useModels";
 import { useAiIndexState } from "../app/useAiIndex";
 import { rippleWarning } from "../domain/aiCoverage";
 import {
@@ -524,10 +523,7 @@ export function PlanReview({
   onOpenPassage?: (passage: SourcePassage) => void;
 }) {
   const { state } = action;
-  const models = useModels();
-  const generationReady =
-    models.load === "ready" &&
-    isGenerationReady(models.groups, models.setup, models.runtime);
+  const generationReady = useGenerationReady();
   const heading = useRef<HTMLHeadingElement>(null);
   const previewAgain = onPreviewAgain ?? action.previewAgain;
   const reviewing = state.stage === "preview" || state.stage === "applying";

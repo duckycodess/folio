@@ -14,14 +14,12 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import { summarizeRelationships } from "../adapters/ai";
+import { isAvailable, summarizeRelationships } from "../adapters/ai";
 import { folderChoices } from "../app/fileActions";
-import { isGenerationReady } from "../app/models";
+import { useGenerationReady } from "../app/generationReady";
 import type { RelationshipsState } from "../app/useRelationships";
-import { useModels } from "../app/useModels";
 import { useAiIndexState } from "../app/useAiIndex";
 import { mayClaimNoConnections, summaryBasisLine } from "../domain/aiCoverage";
-import { AiCoverageNotice } from "../ui/AiCoverageNotice";
 import type { WorkspaceState } from "../app/useWorkspace";
 import { describeConnection } from "../domain/connections";
 import { hasSearchWords } from "../domain/discovery";
@@ -200,11 +198,8 @@ export function GraphView({
   relations: RelationshipsState;
 }) {
   const { request } = relations;
-  const models = useModels();
   const aiIndex = useAiIndexState();
-  const generationReady =
-    models.load === "ready" &&
-    isGenerationReady(models.groups, models.setup, models.runtime);
+  const generationReady = useGenerationReady();
   useEffect(request, [request]);
   const ids = useId();
   const documents = useMemo(
@@ -501,14 +496,14 @@ export function GraphView({
             title={
               start.kind === "topic" && !hasSearchWords(start.term)
                 ? "Type a topic to start"
-                : mayClaimNoConnections(aiIndex.coverage) || !aiIndex.coverage
+                : // Unknown coverage claims nothing on desktop: "so far".
+                  mayClaimNoConnections(aiIndex.coverage) || !isAvailable()
                   ? "No connections found"
                   : "No connections found so far"
             }
           >
             Folio connects files through links written inside them and identical
             copies.
-            <AiCoverageNotice />
           </EmptyState>
         )}
       </Panel>
