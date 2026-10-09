@@ -8,7 +8,7 @@
 use crate::chunking::Chunk;
 use crate::contracts::{
     CoverageEntry, CoverageRange, GroundedAnswer, GroundedAnswerKind, GroundedSentence, Language,
-    SourcePassage,
+    OffsetUnit, SourcePassage,
 };
 use crate::error::{CoreError, CoreResult, NativeProviderErrorError};
 use crate::generation::{
@@ -52,6 +52,8 @@ pub fn passages_from_chunks(chunks: &[Chunk]) -> Vec<SourcePassage> {
         .iter()
         .map(|chunk| SourcePassage {
             document_id: chunk.document_id.clone(),
+            document_content_hash: chunk.content_hash.clone(),
+            offset_unit: OffsetUnit::Utf8Byte,
             start: chunk.start,
             end: chunk.end,
             text: chunk.text.clone(),
@@ -443,10 +445,13 @@ fn coverage_for_with_complete(
     passages: &[SourcePassage],
     coverage_complete: bool,
 ) -> Vec<CoverageEntry> {
-    let mut grouped: BTreeMap<String, Vec<CoverageRange>> = BTreeMap::new();
+    let mut grouped: BTreeMap<(String, String), Vec<CoverageRange>> = BTreeMap::new();
     for passage in passages {
         grouped
-            .entry(passage.document_id.clone())
+            .entry((
+                passage.document_id.clone(),
+                passage.document_content_hash.clone(),
+            ))
             .or_default()
             .push(CoverageRange {
                 start: passage.start,
@@ -455,7 +460,7 @@ fn coverage_for_with_complete(
     }
     grouped
         .into_iter()
-        .map(|(document_id, mut ranges)| {
+        .map(|((document_id, document_content_hash), mut ranges)| {
             ranges.sort_by_key(|range| range.start);
             let mut merged: Vec<CoverageRange> = Vec::new();
             for range in ranges {
@@ -469,6 +474,8 @@ fn coverage_for_with_complete(
             }
             CoverageEntry {
                 document_id,
+                document_content_hash,
+                offset_unit: OffsetUnit::Utf8Byte,
                 ranges: merged,
                 complete: coverage_complete,
             }
@@ -520,7 +527,10 @@ fn cancelled_error() -> CoreError {
 }
 
 fn same_passage(left: &SourcePassage, right: &SourcePassage) -> bool {
-    left.document_id == right.document_id && left.start == right.start && left.end == right.end
+    left.document_id == right.document_id
+        && left.document_content_hash == right.document_content_hash
+        && left.start == right.start
+        && left.end == right.end
 }
 
 fn language_name(language: &Language) -> &'static str {
@@ -665,11 +675,13 @@ mod tests {
         }
     }
 
-    fn passage(start: u32, text: &str) -> SourcePassage {
+    fn passage(start: usize, text: &str) -> SourcePassage {
         SourcePassage {
             document_id: "notes.md".into(),
+            document_content_hash: crate::chunking::content_hash(text),
+            offset_unit: OffsetUnit::Utf8Byte,
             start,
-            end: start + text.encode_utf16().count() as u32,
+            end: start + text.len(),
             text: text.into(),
             page: None,
         }

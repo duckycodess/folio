@@ -33,7 +33,9 @@ describe("native contract goldens", () => {
     const answer = groundedAnswer as GroundedAnswer;
     const result = interpretationResult as InterpretationResult;
     expect(answer.kind).toBe("fileSummary");
-    expect(answer.sources[0].documentId).toBe("projects/project-plan.md");
+    expect(answer.sources[0].documentId).toBe(
+      "fixtures:projects/project-plan.md",
+    );
     expect(result.status).toBe("needsClarification");
     expect(hasOnlyCamelCaseKeys(answer)).toBe(true);
     expect(hasOnlyCamelCaseKeys(result)).toBe(true);

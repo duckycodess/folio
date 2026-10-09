@@ -2,6 +2,13 @@ use serde::{Deserialize, Serialize};
 
 pub type DocumentId = String;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OffsetUnit {
+    #[default]
+    Utf8Byte,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
@@ -14,10 +21,12 @@ pub enum Language {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourcePassage {
-    /// UTF-16 code-unit offsets into the extracted document text.
     pub document_id: DocumentId,
-    pub start: u32,
-    pub end: u32,
+    pub document_content_hash: String,
+    pub offset_unit: OffsetUnit,
+    /// UTF-8 byte offsets into the decoded document text.
+    pub start: usize,
+    pub end: usize,
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub page: Option<u32>,
@@ -77,14 +86,16 @@ pub struct GroundedSentence {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoverageRange {
-    pub start: u32,
-    pub end: u32,
+    pub start: usize,
+    pub end: usize,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CoverageEntry {
     pub document_id: DocumentId,
+    pub document_content_hash: String,
+    pub offset_unit: OffsetUnit,
     pub ranges: Vec<CoverageRange>,
     pub complete: bool,
 }
@@ -302,9 +313,12 @@ mod contract_tests {
     #[test]
     fn grounded_answer_round_trips() {
         let passage = SourcePassage {
-            document_id: "projects/project-plan.md".into(),
-            start: 4,
-            end: 18,
+            document_id: "fixtures:projects/project-plan.md".into(),
+            document_content_hash:
+                "sha256:8a1cd1bb4f42b6836f0b671648dd3ef81e28a5b08e5d96c72e7e094ea75786ef".into(),
+            offset_unit: OffsetUnit::Utf8Byte,
+            start: 84,
+            end: 94,
             text: "October 20".into(),
             page: None,
         };
@@ -319,8 +333,12 @@ mod contract_tests {
                     citations: vec![passage],
                 }],
                 coverage: vec![CoverageEntry {
-                    document_id: "projects/project-plan.md".into(),
-                    ranges: vec![CoverageRange { start: 0, end: 20 }],
+                    document_id: "fixtures:projects/project-plan.md".into(),
+                    document_content_hash:
+                        "sha256:8a1cd1bb4f42b6836f0b671648dd3ef81e28a5b08e5d96c72e7e094ea75786ef"
+                            .into(),
+                    offset_unit: OffsetUnit::Utf8Byte,
+                    ranges: vec![CoverageRange { start: 0, end: 390 }],
                     complete: true,
                 }],
                 uncited_sentence_count: 0,

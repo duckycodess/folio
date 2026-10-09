@@ -281,6 +281,8 @@ impl HybridRetriever {
             if entry.1.len() < self.max_passages {
                 entry.1.push(SourcePassage {
                     document_id: chunk.document_id.clone(),
+                    document_content_hash: chunk.content_hash.clone(),
+                    offset_unit: crate::contracts::OffsetUnit::Utf8Byte,
                     start: chunk.start,
                     end: chunk.end,
                     text: chunk.text.clone(),
@@ -374,7 +376,7 @@ pub fn embedding_space_id(space: &EmbeddingSpace) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chunking::{sha256, ChunkSource, InterimTextChunker, TextDocument};
+    use crate::chunking::{content_hash, ChunkSource, InterimTextChunker, TextDocument};
     use crate::contracts::{DocumentRecord, Language};
 
     fn document(id: &str, content: &str) -> TextDocument {
@@ -521,6 +523,6 @@ mod tests {
                 ..space("a")
             })
         );
-        assert_eq!(sha256("deadline").len(), 64);
+        assert!(content_hash("deadline").starts_with("sha256:"));
     }
 }

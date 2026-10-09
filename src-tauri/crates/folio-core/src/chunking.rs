@@ -2,8 +2,8 @@ use crate::contracts::DocumentRecord;
 use crate::error::{CoreError, CoreResult};
 use sha2::{Digest, Sha256};
 
-pub const INTERIM_CHUNKER_VERSION: &str = "paragraph-800-utf16-v1";
-pub const DEFAULT_MAX_CHUNK_UTF16: usize = 800;
+pub const INTERIM_CHUNKER_VERSION: &str = "paragraph-800-utf8-v2";
+pub const DEFAULT_MAX_CHUNK_BYTES: usize = 800;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Chunk {
@@ -24,7 +24,9 @@ pub struct TextDocument {
 impl TextDocument {
     pub fn new(mut record: DocumentRecord, content: impl Into<String>) -> Self {
         let content = content.into();
-        record.content_hash = Some(sha256(&content));
+        if record.content_hash.is_none() {
+            record.content_hash = Some(content_hash(&content));
+        }
         record.size_bytes = content.len() as u64;
         Self { record, content }
     }
@@ -39,22 +41,22 @@ pub trait ChunkSource {
 #[derive(Clone, Debug)]
 pub struct InterimTextChunker {
     documents: Vec<TextDocument>,
-    max_chunk_utf16: usize,
+    max_chunk_bytes: usize,
 }
 
 impl InterimTextChunker {
     pub fn new(documents: Vec<TextDocument>) -> Self {
         Self {
             documents,
-            max_chunk_utf16: DEFAULT_MAX_CHUNK_UTF16,
+            max_chunk_bytes: DEFAULT_MAX_CHUNK_BYTES,
         }
     }
 
-    pub fn with_max_chunk_utf16(mut self, max_chunk_utf16: usize) -> CoreResult<Self> {
-        if max_chunk_utf16 == 0 {
+    pub fn with_max_chunk_bytes(mut self, max_chunk_bytes: usize) -> CoreResult<Self> {
+        if max_chunk_bytes == 0 {
             return Err(CoreError::Message("Chunk size must be positive.".into()));
         }
-        self.max_chunk_utf16 = max_chunk_utf16;
+        self.max_chunk_bytes = max_chunk_bytes;
         Ok(self)
     }
 
@@ -85,7 +87,7 @@ impl ChunkSource for InterimTextChunker {
         chunk_text(
             document_id,
             &document.content,
-            self.max_chunk_utf16,
+            self.max_chunk_bytes,
             document.record.content_hash.as_deref().unwrap_or_default(),
         )
     }
@@ -94,10 +96,10 @@ impl ChunkSource for InterimTextChunker {
 pub fn chunk_text(
     document_id: &str,
     content: &str,
-    max_chunk_utf16: usize,
+    max_chunk_bytes: usize,
     content_hash: &str,
 ) -> CoreResult<Vec<Chunk>> {
-    if max_chunk_utf16 == 0 {
+    if max_chunk_bytes == 0 {
         return Err(CoreError::Message("Chunk size must be positive.".into()));
     }
     if content.is_empty() {
@@ -108,7 +110,7 @@ pub fn chunk_text(
     for (separator, _) in content.match_indices("\n\n") {
         let end = separator + 2;
         if start < end {
-            paragraphs.extend(split_segment(content, start, end, max_chunk_utf16));
+            paragraphs.extend(split_segment(content, start, end, max_chunk_bytes));
         }
         start = end;
     }
@@ -117,14 +119,14 @@ pub fn chunk_text(
             content,
             start,
             content.len(),
-            max_chunk_utf16,
+            max_chunk_bytes,
         ));
     }
 
     let mut merged: Vec<(usize, usize)> = Vec::new();
     for (start, end) in paragraphs {
         if let Some((previous_start, previous_end)) = merged.last_mut() {
-            if utf16_len(&content[*previous_start..end]) <= max_chunk_utf16 {
+            if content[*previous_start..end].len() <= max_chunk_bytes {
                 *previous_end = end;
                 continue;
             }
@@ -139,24 +141,24 @@ pub fn chunk_text(
             document_id: document_id.into(),
             ordinal,
             text: content[start..end].to_owned(),
-            start: byte_to_utf16(content, start),
-            end: byte_to_utf16(content, end),
+            start,
+            end,
             content_hash: content_hash.into(),
         })
         .collect())
 }
 
-fn split_segment(content: &str, start: usize, end: usize, max_utf16: usize) -> Vec<(usize, usize)> {
-    if utf16_len(&content[start..end]) <= max_utf16 {
+fn split_segment(content: &str, start: usize, end: usize, max_bytes: usize) -> Vec<(usize, usize)> {
+    if content[start..end].len() <= max_bytes {
         return vec![(start, end)];
     }
     let mut pieces = Vec::new();
     let mut piece_start = start;
-    let mut piece_len = 0;
+    let mut piece_len = 0_usize;
     for (relative, character) in content[start..end].char_indices() {
         let absolute = start + relative;
-        let character_len = character.len_utf16();
-        if piece_len > 0 && piece_len + character_len > max_utf16 {
+        let character_len = character.len_utf8();
+        if piece_len > 0 && piece_len + character_len > max_bytes {
             pieces.push((piece_start, absolute));
             piece_start = absolute;
             piece_len = 0;
@@ -169,45 +171,16 @@ fn split_segment(content: &str, start: usize, end: usize, max_utf16: usize) -> V
     pieces
 }
 
-pub fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
-}
-
-pub fn byte_to_utf16(text: &str, byte_offset: usize) -> u32 {
-    text[..byte_offset].encode_utf16().count() as u32
-}
-
-pub fn utf16_slice(text: &str, start: u32, end: u32) -> Option<String> {
-    let mut byte_start = None;
-    let mut byte_end = None;
-    let mut units = 0_u32;
-    for (byte, character) in text.char_indices() {
-        if units == start {
-            byte_start = Some(byte);
-        }
-        units += character.len_utf16() as u32;
-        if units == end {
-            byte_end = Some(byte + character.len_utf8());
-            break;
-        }
-    }
-    if start == end {
-        return (utf16_len(text) as u32 >= start).then_some(String::new());
-    }
-    match (byte_start, byte_end) {
-        (Some(start), Some(end)) => Some(text[start..end].into()),
-        _ => None,
-    }
-}
-
-pub fn sha256(text: &str) -> String {
-    hex::encode(Sha256::digest(text.as_bytes()))
+pub fn content_hash(text: &str) -> String {
+    format!("sha256:{}", hex::encode(Sha256::digest(text.as_bytes())))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::contracts::{DocumentRecord, Language};
+    use serde_json::Value;
+    use std::path::PathBuf;
 
     fn record(id: &str) -> DocumentRecord {
         DocumentRecord {
@@ -223,16 +196,14 @@ mod tests {
     }
 
     #[test]
-    fn utf16_offsets_slice_non_ascii_text_exactly() {
+    fn utf8_offsets_slice_non_ascii_text_exactly() {
         let content = "Pagsasanay — ñ … 📄 deadline";
-        let chunks = chunk_text("notes.md", content, 800, &sha256(content)).unwrap();
+        let chunks = chunk_text("notes.md", content, 800, &content_hash(content)).unwrap();
         assert_eq!(chunks.len(), 1);
-        assert_eq!(
-            utf16_slice(content, chunks[0].start, chunks[0].end).unwrap(),
-            content
-        );
+        assert_eq!(&content[chunks[0].start..chunks[0].end], content);
         assert_eq!(chunks[0].start, 0);
-        assert_eq!(chunks[0].end as usize, utf16_len(content));
+        assert_eq!(chunks[0].end, content.len());
+        assert_eq!(chunks[0].content_hash, content_hash(content));
     }
 
     #[test]
@@ -249,5 +220,51 @@ mod tests {
         let first = TextDocument::new(record("notes.md"), "first");
         let second = TextDocument::new(record("notes.md"), "second");
         assert_ne!(first.record.content_hash, second.record.content_hash);
+        assert!(first
+            .record
+            .content_hash
+            .as_deref()
+            .is_some_and(|hash| hash.starts_with("sha256:")));
+    }
+
+    #[test]
+    fn contract_fixture_offsets_and_hashes_use_utf8_bytes() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fixtures/contracts/contract-cases.json");
+        let cases: Value =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("contract fixture exists"))
+                .expect("contract fixture is valid JSON");
+
+        for case in cases["offsets"]["cases"].as_array().unwrap() {
+            let text = case["text"].as_str().unwrap();
+            let start = case["passage"]["start"].as_u64().unwrap() as usize;
+            let end = case["passage"]["end"].as_u64().unwrap() as usize;
+            let expected_hash = case["contentHash"].as_str().unwrap();
+            assert_eq!(content_hash(text), expected_hash);
+            assert!(text.is_char_boundary(start));
+            assert!(text.is_char_boundary(end));
+            assert_eq!(&text[start..end], case["passage"]["text"].as_str().unwrap());
+
+            let chunks = chunk_text("fixture:case", &text[start..end], usize::MAX, expected_hash)
+                .expect("fixture passage chunks");
+            assert_eq!(chunks.len(), 1);
+            assert_eq!(chunks[0].start, 0);
+            assert_eq!(chunks[0].end, end - start);
+            assert_eq!(chunks[0].text, case["passage"]["text"].as_str().unwrap());
+            assert_eq!(chunks[0].content_hash, expected_hash);
+            let passage = crate::grounding::passages_from_chunks(&chunks)
+                .into_iter()
+                .next()
+                .unwrap();
+            assert_eq!(passage.document_content_hash, expected_hash);
+            assert_eq!(passage.offset_unit, crate::contracts::OffsetUnit::Utf8Byte);
+        }
+
+        for hash in cases["hashes"].as_array().unwrap() {
+            assert_eq!(
+                content_hash(hash["text"].as_str().unwrap()),
+                hash["expected"].as_str().unwrap()
+            );
+        }
     }
 }

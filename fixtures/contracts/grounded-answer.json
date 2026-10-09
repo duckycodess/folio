@@ -2,9 +2,11 @@
   "text": "Ang deadline ay October 20.",
   "sources": [
     {
-      "documentId": "projects/project-plan.md",
-      "start": 4,
-      "end": 18,
+      "documentId": "fixtures:projects/project-plan.md",
+      "documentContentHash": "sha256:8a1cd1bb4f42b6836f0b671648dd3ef81e28a5b08e5d96c72e7e094ea75786ef",
+      "offsetUnit": "utf8Byte",
+      "start": 84,
+      "end": 94,
       "text": "October 20"
     }
   ],
@@ -24,11 +26,13 @@
   ],
   "coverage": [
     {
-      "documentId": "projects/project-plan.md",
+          "documentId": "fixtures:projects/project-plan.md",
+          "documentContentHash": "sha256:8a1cd1bb4f42b6836f0b671648dd3ef81e28a5b08e5d96c72e7e094ea75786ef",
+          "offsetUnit": "utf8Byte",
       "ranges": [
         {
           "start": 0,
-          "end": 20
+              "end": 390
         }
       ],
       "complete": true

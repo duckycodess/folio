@@ -6,7 +6,9 @@ mod identity;
 mod plan;
 mod workspace;
 
-use folio_core::chunking::{sha256, Chunk, ChunkSource, InterimTextChunker, TextDocument};
+use contracts::{ActionPlan, Approval, FileOperation, ImpactCandidate};
+use error::{error, ErrorCode, FolioError};
+use folio_core::chunking::{content_hash, Chunk, ChunkSource, InterimTextChunker, TextDocument};
 use folio_core::contracts::{
     DocumentRecord, EmbeddingSpace, GroundedAnswer, InterpretationResult, Language,
     ModelDescriptor, ModelInstallState, ModelRole, NativeProviderError, SearchResult,
@@ -18,6 +20,7 @@ use folio_core::grounding;
 use folio_core::interpretation;
 use folio_core::models::{DownloadProgress, ModelStore, RuntimeStatus};
 use folio_core::retrieval::HybridRetriever;
+use plan::PlanRegistry;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -26,9 +29,6 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
-use contracts::{ActionPlan, Approval, FileOperation, ImpactCandidate};
-use error::{error, ErrorCode, FolioError};
-use plan::PlanRegistry;
 use workspace::{DocumentListing, DocumentText, ScopedRoot, WorkspaceInfo, WorkspaceRegistry};
 
 type WorkspaceState = Arc<Mutex<Option<ScopedRoot>>>;
@@ -245,9 +245,7 @@ async fn choose_workspace(
         let workspaces = state.workspaces.lock().map_err(|_| unavailable_state())?;
         workspaces.resolve(&info.id)?
     };
-    *provider_workspace
-        .lock()
-        .map_err(|_| unavailable_state())? = Some(root);
+    *provider_workspace.lock().map_err(|_| unavailable_state())? = Some(root);
     Ok(Some(info))
 }
 
@@ -531,7 +529,7 @@ fn load_corpus(
             language: Language::Unknown,
             size_bytes: row.size_bytes,
             content: Some(content.clone()),
-            content_hash: Some(sha256(&content)),
+            content_hash: Some(content_hash(&content)),
         };
         contents.insert(record.id.clone(), content.clone());
         text_documents.push(TextDocument::new(record.clone(), content));
@@ -577,9 +575,10 @@ where
         }
         return Ok(None);
     }
-    if guard.as_ref().is_none_or(|slot| {
-        slot.model_id != descriptor.id || slot.revision != descriptor.revision
-    }) {
+    if guard
+        .as_ref()
+        .is_none_or(|slot| slot.model_id != descriptor.id || slot.revision != descriptor.revision)
+    {
         if let Some(slot) = guard.take() {
             slot.provider.unload().map_err(native_error)?;
         }
@@ -984,7 +983,7 @@ async fn summarize_document(
             language: grounding::detect_language(&content),
             size_bytes: content.len() as u64,
             content: Some(content.clone()),
-            content_hash: Some(sha256(&content)),
+            content_hash: Some(content_hash(&content)),
         };
         let chunks = InterimTextChunker::new(vec![TextDocument::new(record, content.clone())])
             .chunks(&document_id)
@@ -1079,7 +1078,12 @@ fn search_snapshot(
     if snapshot.embedding_space.is_none() {
         return Ok(snapshot
             .retriever
-            .keyword(&snapshot.documents, &snapshot.chunks, query, snapshot.chunks.len())
+            .keyword(
+                &snapshot.documents,
+                &snapshot.chunks,
+                query,
+                snapshot.chunks.len(),
+            )
             .into_iter()
             .filter(|result| document_id.is_none_or(|id| result.document.id == id))
             .take(limit)

@@ -4,10 +4,10 @@
 //! not see document text. All target selection and exact-content checks happen
 //! here, after generation, in deterministic Rust code.
 
-use crate::chunking::{byte_to_utf16, sha256, Chunk};
+use crate::chunking::{content_hash, Chunk};
 use crate::contracts::{
-    DocumentRecord, InterpretationResult, Language, NonMutatingIntent, OperationProposal,
-    SearchMethod, SearchResult, SourcePassage,
+    DocumentRecord, InterpretationResult, Language, NonMutatingIntent, OffsetUnit,
+    OperationProposal, SearchMethod, SearchResult, SourcePassage,
 };
 use crate::error::{CoreError, CoreResult};
 use crate::generation::{ChatMessage, GenerationBudget, GenerationProvider};
@@ -318,12 +318,12 @@ fn resolve_edit(
     let evidence = chunks
         .iter()
         .find(|chunk| {
-            chunk.document_id == document.id
-                && chunk.start <= byte_to_utf16(content, byte_start)
-                && chunk.end >= byte_to_utf16(content, byte_end)
+            chunk.document_id == document.id && chunk.start <= byte_start && chunk.end >= byte_end
         })
         .map(|chunk| SourcePassage {
             document_id: chunk.document_id.clone(),
+            document_content_hash: chunk.content_hash.clone(),
+            offset_unit: OffsetUnit::Utf8Byte,
             start: chunk.start,
             end: chunk.end,
             text: chunk.text.clone(),
@@ -331,8 +331,13 @@ fn resolve_edit(
         })
         .unwrap_or_else(|| SourcePassage {
             document_id: document.id.clone(),
-            start: byte_to_utf16(content, byte_start),
-            end: byte_to_utf16(content, byte_end),
+            document_content_hash: document
+                .content_hash
+                .clone()
+                .unwrap_or_else(|| content_hash(content)),
+            offset_unit: OffsetUnit::Utf8Byte,
+            start: byte_start,
+            end: byte_end,
             text: matched.into(),
             page: None,
         });
@@ -403,6 +408,8 @@ fn candidate_results(
                 .take(3)
                 .map(|chunk| SourcePassage {
                     document_id: chunk.document_id.clone(),
+                    document_content_hash: chunk.content_hash.clone(),
+                    offset_unit: OffsetUnit::Utf8Byte,
                     start: chunk.start,
                     end: chunk.end,
                     text: chunk.text.clone(),
@@ -438,10 +445,11 @@ fn duplicate_paths(
     documents: &[DocumentRecord],
     contents: &HashMap<String, String>,
 ) -> Vec<String> {
-    let target_hash = target
-        .content_hash
-        .clone()
-        .or_else(|| contents.get(&target.id).map(|content| sha256(content)));
+    let target_hash = target.content_hash.clone().or_else(|| {
+        contents
+            .get(&target.id)
+            .map(|content| content_hash(content))
+    });
     let Some(target_hash) = target_hash else {
         return Vec::new();
     };
@@ -452,7 +460,11 @@ fn duplicate_paths(
             document
                 .content_hash
                 .clone()
-                .or_else(|| contents.get(&document.id).map(|content| sha256(content)))
+                .or_else(|| {
+                    contents
+                        .get(&document.id)
+                        .map(|content| content_hash(content))
+                })
                 .as_deref()
                 == Some(target_hash.as_str())
         })
@@ -560,7 +572,7 @@ mod tests {
             language: Language::Mixed,
             size_bytes: content.len() as u64,
             content: Some(content.into()),
-            content_hash: Some(sha256(content)),
+            content_hash: Some(content_hash(content)),
         };
         let source = TextDocument::new(record.clone(), content);
         let chunks = crate::chunking::ChunkSource::chunks(
@@ -636,7 +648,7 @@ mod tests {
             "The deadline is October 20.",
         );
         duplicate.content_hash = target.content_hash.clone();
-        target.content_hash = Some(sha256("The deadline is October 20."));
+        target.content_hash = Some(content_hash("The deadline is October 20."));
         let documents = vec![target.clone(), duplicate.clone()];
         let chunks = target_chunks
             .into_iter()
