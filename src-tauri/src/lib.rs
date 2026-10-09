@@ -87,6 +87,8 @@ struct Folio {
     /// provider lock across the whole run.
     embedding_sync: Arc<Mutex<()>>,
     cancel_embedding_sync: Arc<AtomicBool>,
+    /// One local AI refresh (embedding sync, then relationship discovery) at a time.
+    ai_refresh: Arc<Mutex<()>>,
 }
 
 impl Folio {
@@ -102,6 +104,7 @@ impl Folio {
             cancel_apply: Arc::new(AtomicBool::new(false)),
             embedding_sync: Arc::new(Mutex::new(())),
             cancel_embedding_sync: Arc::new(AtomicBool::new(false)),
+            ai_refresh: Arc::new(Mutex::new(())),
         })
     }
 
@@ -860,62 +863,251 @@ async fn sync_embeddings(
     let embedding_state = embedding_state.inner().clone();
     let lab_state = lab_state.inner().clone();
     Ok(run_blocking(move || {
-        refuse_during_lab(&lab_state)?;
-        let _sync_guard = match sync_lock.try_lock() {
-            Ok(guard) => guard,
-            Err(std::sync::TryLockError::WouldBlock) => {
-                return Err(error(
-                    ErrorCode::ProviderBusy,
-                    "Another embedding sync is already running.",
-                ))
-            }
-            Err(std::sync::TryLockError::Poisoned(_)) => return Err(unavailable_state()),
-        };
-        cancel.store(false, Ordering::Release);
-
-        let provider_space = with_embedding_provider_guarded(
-            &app,
-            &embedding_state,
-            || refuse_during_lab(&lab_state),
-            |provider| Ok(provider.space().clone()),
-        )?
-        .ok_or_else(|| {
-            error(
-                ErrorCode::ModelNotInstalled,
-                "Select a verified local embedding model first.",
-            )
-            .with_detail("component", "embedding")
-        })?;
-        let stored_space = embedding_sync::stored_index_space(&provider_space)?;
-
-        let conn = db::open(&index_path)?;
-        let space_fingerprint = index::register_space(&conn, &stored_space)?;
-        let mut store = embedding_sync::IndexChunkStore::new(
-            conn,
-            workspace_id.clone(),
-            space_fingerprint.clone(),
-        );
-        let mut embedder = NativePassageEmbedder {
+        run_embedding_sync(
             app,
+            index_path,
+            &sync_lock,
+            &cancel,
             embedding_state,
             lab_state,
-        };
-        embedding_sync::sync_embeddings(
-            &mut store,
-            &mut embedder,
-            &provider_space,
-            &space_fingerprint,
             workspace_id,
-            &cancel,
-            embedding_sync::SyncLimits::default(),
         )
     })
     .await?)
 }
 
+/// #27's persistent fill: load the selected provider's space, register the
+/// stored-chunk space it produces, then embed pending chunks. Shared by the
+/// `sync_embeddings` command and the combined local AI refresh.
+fn run_embedding_sync(
+    app: AppHandle,
+    index_path: PathBuf,
+    sync_lock: &Mutex<()>,
+    cancel: &AtomicBool,
+    embedding_state: EmbeddingState,
+    lab_state: lab_commands::LabState,
+    workspace_id: String,
+) -> Result<embedding_sync::EmbeddingSyncSummary, FolioError> {
+    refuse_during_lab(&lab_state)?;
+    let _sync_guard = match sync_lock.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::WouldBlock) => {
+            return Err(error(
+                ErrorCode::ProviderBusy,
+                "Another embedding sync is already running.",
+            ))
+        }
+        Err(std::sync::TryLockError::Poisoned(_)) => return Err(unavailable_state()),
+    };
+    cancel.store(false, Ordering::Release);
+
+    let provider_space = with_embedding_provider_guarded(
+        &app,
+        &embedding_state,
+        || refuse_during_lab(&lab_state),
+        |provider| Ok(provider.space().clone()),
+    )?
+    .ok_or_else(|| {
+        error(
+            ErrorCode::ModelNotInstalled,
+            "Select a verified local embedding model first.",
+        )
+        .with_detail("component", "embedding")
+    })?;
+    let stored_space = embedding_sync::stored_index_space(&provider_space)?;
+
+    let conn = db::open(&index_path)?;
+    let space_fingerprint = index::register_space(&conn, &stored_space)?;
+    let mut store = embedding_sync::IndexChunkStore::new(
+        conn,
+        workspace_id.clone(),
+        space_fingerprint.clone(),
+    );
+    let mut embedder = NativePassageEmbedder {
+        app,
+        embedding_state,
+        lab_state,
+    };
+    embedding_sync::sync_embeddings(
+        &mut store,
+        &mut embedder,
+        &provider_space,
+        &space_fingerprint,
+        workspace_id,
+        cancel,
+        embedding_sync::SyncLimits::default(),
+    )
+}
+
 #[tauri::command]
 fn cancel_embedding_sync(state: State<'_, Folio>) {
     state.cancel_embedding_sync.store(true, Ordering::Release);
+}
+
+const AI_REFRESH_PROGRESS_EVENT: &str = "folio://ai-refresh-progress";
+/// Discovery runs one refresh may take before returning; the coverage in the
+/// result says honestly whether anything is left.
+const MAX_DISCOVERY_RUNS_PER_REFRESH: usize = 4;
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AiRefreshProgress {
+    workspace_id: String,
+    /// `embedding`, `admitting` or `relationships`.
+    phase: &'static str,
+    tiles: usize,
+    pairs_completed: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalAiRefresh {
+    workspace_id: String,
+    embedding: Option<embedding_sync::EmbeddingSyncSummary>,
+    discovery: Option<ai_discovery::DiscoveryProgress>,
+    /// Why discovery stopped, when it did: `complete`, `budgetExhausted`,
+    /// `cancelled` or `spaceChanged`. Absent when no search model is ready.
+    ended: Option<ai_discovery::RunEnd>,
+    coverage: ai_discovery::RelationshipCoverage,
+}
+
+/// Refreshes Folio's local AI index for a folder: #27's embedding sync, then
+/// progressive relationship discovery in the resulting active space. One
+/// refresh at a time and one Stop (`cancel_local_ai_refresh`) for both phases.
+/// Completed work always stays, so an interrupted refresh resumes.
+#[tauri::command]
+async fn refresh_local_ai_index(
+    app: AppHandle,
+    state: State<'_, Folio>,
+    embedding_state: State<'_, EmbeddingState>,
+    lab_state: State<'_, lab_commands::LabState>,
+    workspace_id: String,
+) -> Result<LocalAiRefresh, FolioError> {
+    refuse_during_lab(lab_state.inner())?;
+    state.root(&workspace_id)?;
+    let index_path = state.index_path.clone();
+    let refresh_lock = state.ai_refresh.clone();
+    let sync_lock = state.embedding_sync.clone();
+    let cancel_sync = state.cancel_embedding_sync.clone();
+    let cancel = state.cancel_relationships.clone();
+    let embedding_state = embedding_state.inner().clone();
+    let lab_state = lab_state.inner().clone();
+    Ok(run_blocking::<_, FolioError, _>(move || {
+        let _refresh = match refresh_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(std::sync::TryLockError::WouldBlock) => {
+                return Err(error(
+                    ErrorCode::ProviderBusy,
+                    "Folio is already refreshing its local AI index.",
+                ))
+            }
+            Err(std::sync::TryLockError::Poisoned(_)) => return Err(unavailable_state()),
+        };
+        cancel.store(false, Ordering::SeqCst);
+        cancel_sync.store(false, Ordering::SeqCst);
+        let emit = |phase: &'static str, tiles: usize, pairs_completed: usize| {
+            let _ = app.emit(
+                AI_REFRESH_PROGRESS_EVENT,
+                AiRefreshProgress { workspace_id: workspace_id.clone(), phase, tiles, pairs_completed },
+            );
+        };
+
+        emit("embedding", 0, 0);
+        let embedding = match run_embedding_sync(
+            app.clone(),
+            index_path.clone(),
+            &sync_lock,
+            &cancel_sync,
+            embedding_state,
+            lab_state,
+            workspace_id.clone(),
+        ) {
+            Ok(summary) => Some(summary),
+            // No selected, installed search model: browsing and links keep
+            // working, and coverage says there is no active space.
+            Err(failure) if failure.code == ErrorCode::ModelNotInstalled => None,
+            Err(failure) => return Err(failure),
+        };
+        let mut conn = db::open(&index_path)?;
+        let stopped_early = embedding.as_ref().is_some_and(|summary| summary.cancelled);
+        let Some(active_space) = active_relationship_space(&app, &conn, None)? else {
+            let coverage = ai_discovery::coverage(&conn, &workspace_id, None)?;
+            return Ok(LocalAiRefresh { workspace_id, embedding, discovery: None, ended: None, coverage });
+        };
+        if stopped_early {
+            let coverage = ai_discovery::coverage(&conn, &workspace_id, Some(&active_space))?;
+            return Ok(LocalAiRefresh {
+                workspace_id,
+                embedding,
+                discovery: None,
+                ended: Some(ai_discovery::RunEnd::Cancelled),
+                coverage,
+            });
+        }
+
+        emit("admitting", 0, 0);
+        ai_discovery::purge_other_spaces(&mut conn, &workspace_id, &active_space)?;
+        let still_active = |conn: &Connection| -> Result<bool, FolioError> {
+            Ok(active_relationship_space(&app, conn, None)?.as_deref() == Some(active_space.as_str()))
+        };
+        let mut total = ai_discovery::DiscoveryProgress::default();
+        let mut ended = ai_discovery::RunEnd::Complete;
+        for _ in 0..MAX_DISCOVERY_RUNS_PER_REFRESH {
+            let before = total.clone();
+            let run = ai_discovery::run_discovery(
+                &mut conn,
+                &ai_discovery::RunContext {
+                    workspace_id: &workspace_id,
+                    space: &active_space,
+                    limits: ai_discovery::DiscoveryLimits::default(),
+                    cancel: cancel.as_ref(),
+                    still_active: &still_active,
+                },
+                &mut |progress| emit("relationships", before.tiles + progress.tiles, before.pairs_completed + progress.pairs_completed),
+            )?;
+            total.admitted += run.progress.admitted;
+            total.tiles += run.progress.tiles;
+            total.comparisons += run.progress.comparisons;
+            total.work += run.progress.work;
+            total.pairs_completed += run.progress.pairs_completed;
+            total.edges_stored += run.progress.edges_stored;
+            ended = run.end;
+            if ended != ai_discovery::RunEnd::BudgetExhausted {
+                break;
+            }
+        }
+        let coverage = ai_discovery::coverage(&conn, &workspace_id, Some(&active_space))?;
+        Ok(LocalAiRefresh {
+            workspace_id,
+            embedding,
+            discovery: Some(total),
+            ended: Some(ended),
+            coverage,
+        })
+    })
+    .await?)
+}
+
+/// One Stop for both phases of `refresh_local_ai_index`.
+#[tauri::command]
+fn cancel_local_ai_refresh(state: State<'_, Folio>) {
+    state.cancel_embedding_sync.store(true, Ordering::Release);
+    state.cancel_relationships.store(true, Ordering::SeqCst);
+}
+
+/// What Folio has compared for AI connections in the active search model's
+/// index. Reads only; never starts work.
+#[tauri::command]
+async fn relationship_coverage(
+    app: AppHandle,
+    state: State<'_, Folio>,
+    workspace_id: String,
+) -> Result<ai_discovery::RelationshipCoverage, FolioError> {
+    state.root(&workspace_id)?;
+    let selected = selected_embedding_descriptor(&app)?;
+    let index = state.index()?;
+    let active = active_space::resolve_installed_descriptor(&index, selected.as_ref())?;
+    ai_discovery::coverage(&index, &workspace_id, active.as_deref())
 }
 
 #[tauri::command]
@@ -2550,6 +2742,9 @@ pub fn run() {
             vector_candidates,
             sync_embeddings,
             cancel_embedding_sync,
+            refresh_local_ai_index,
+            cancel_local_ai_refresh,
+            relationship_coverage,
             prepare_plan,
             approve_plan,
             apply_plan,

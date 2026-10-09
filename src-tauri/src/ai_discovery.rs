@@ -177,6 +177,35 @@ pub fn admit_eligible(
     Ok(new.len())
 }
 
+/// Drops discovery state and AI rows of every space but the active one for a
+/// workspace: they are never shown or used, so keeping them only costs space.
+/// Link rows and vectors are untouched (vectors belong to the embedding
+/// store, not to discovery).
+pub fn purge_other_spaces(
+    conn: &mut Connection,
+    workspace_id: &str,
+    active_space: &str,
+) -> NativeResult<usize> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let removed = tx.execute(
+        "DELETE FROM relationships WHERE relationship_type IN ('similarity', 'sharedFactCandidate') AND space_fingerprint IS NOT NULL AND space_fingerprint != ?2 AND source_document_id IN (SELECT id FROM documents WHERE workspace_id = ?1)",
+        params![workspace_id, active_space],
+    )?;
+    for table in [
+        "ai_pair_progress",
+        "ai_relationship_coverage",
+        "ai_relationship_schedule",
+        "ai_relationship_seq",
+    ] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE workspace_id = ?1 AND space_id != ?2"),
+            params![workspace_id, active_space],
+        )?;
+    }
+    tx.commit()?;
+    Ok(removed)
+}
+
 /// Forgets one document's discovery state in one space. The counter is not
 /// touched, so the revision is re-admitted with a larger seq.
 fn reset_document(

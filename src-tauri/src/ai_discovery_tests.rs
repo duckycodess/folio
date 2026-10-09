@@ -966,3 +966,42 @@ fn shared_fact_candidates_are_stored_only_for_a_corroborated_fact() {
         "identical vectors still make all three documents similar"
     );
 }
+
+#[test]
+fn starting_in_a_new_space_purges_the_old_spaces_rows_but_keeps_links_and_vectors() {
+    let mut fixture = Fixture::new();
+    fixture.put("a", &chunks(2, "a", 0.00), true);
+    fixture.put("b", &chunks(2, "b", 0.02), true);
+    fixture.run_to_complete(DiscoveryLimits::default());
+    let old_space = fixture.space.clone();
+    assert!(!fixture.rows(&old_space).is_empty());
+    fixture
+        .conn
+        .execute(
+            "INSERT INTO relationships (id, source_document_id, target_document_id, relationship_type, evidence_json, provenance, confidence, source_content_hash, target_content_hash, created_at) VALUES ('link', 'a', 'b', 'explicitReference', '{}', 'documentLink', NULL, 'h', 'h', '0')",
+            [],
+        )
+        .unwrap();
+    let new_space = register(&fixture.conn, "r2");
+    crate::ai_discovery::purge_other_spaces(&mut fixture.conn, WORKSPACE, &new_space).unwrap();
+    assert!(fixture.rows(&old_space).is_empty());
+    let count = |table: &str| -> i64 {
+        fixture
+            .conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                row.get(0)
+            })
+            .unwrap()
+    };
+    assert_eq!(count("ai_relationship_coverage"), 0);
+    assert_eq!(count("ai_relationship_seq"), 0);
+    assert_eq!(
+        count("relationships WHERE relationship_type = 'explicitReference'"),
+        1,
+        "links are never purged"
+    );
+    assert!(
+        count("embeddings") > 0,
+        "vectors belong to the embedding store"
+    );
+}
