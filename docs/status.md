@@ -315,6 +315,13 @@ After Gab's review of #64 (2026-10-10, Windows, Node.js 20; in a follow-up PR, s
 - Fixed (#24): a running model download is kept outside Model Lab, so leaving the page and coming back still shows its progress and Cancel. If a download started on an earlier visit ends while Model Lab is open, the model list is read again.
 - Rebased onto `main` after #65 (onboarding now shares the same download store): `npm run check`, `npm test` (326 passed, 9 todo) and `npm run build` passed. The download fix was checked by type check and code reading only, not in a browser.
 
+PR #70 download-feedback follow-up (2026-10-10, Linux, Node.js 24.15.0):
+
+- The shared download store also keeps its final error or cancellation notice. Leaving Model Lab and returning during a download, or after it ends, retains that feedback. Cancellation is informational, not an error. Dismissal, retrying an error, and starting another model operation clear the appropriate feedback.
+- A temporary headless Chromium harness exercised the actual `useModels()` hook with controlled model-adapter promises and progress. All 11 cases passed: successful installation/selection after navigation; cancellation without navigation; cancellation and failure after remount; cancellation and failure while the view is closed; dismissing either outcome and remounting; retry clearing a failure; and a new download clearing either outcome. No browser exceptions occurred.
+- `npm run check`, `npm test` (326 passed, 9 todo), and `npm run build` passed. Formatting was checked separately. No dependencies or native code changed.
+- These browser checks verify hook state with controlled adapters. Real downloads, the Tauri window, screen readers, and installers remain unverified by this follow-up.
+
 ### Ask & Act workspace (2026-10-10, issue #36)
 
 Checked on macOS with Node.js 26.10.0, on #20's branch (#48 with #15 merged in):
