@@ -83,7 +83,33 @@ struct ServerState {
     running: Option<RunningServer>,
 }
 
+/// Settings only Model Lab uses. A provider built without them behaves exactly
+/// as before: no extra arguments and no captured output.
+#[derive(Clone, Debug, Default)]
+pub struct LabServerOptions {
+    /// `Some(0)` keeps every layer on the CPU (`--n-gpu-layers 0`). `None`
+    /// leaves the runtime to decide.
+    pub gpu_layers: Option<u32>,
+    /// Where the server's stdout and stderr go, so the backend it chose can be
+    /// read back. The file is replaced each time the server starts.
+    pub log_path: Option<PathBuf>,
+}
+
+impl LabServerOptions {
+    /// The extra arguments these options add to the fixed launch arguments.
+    pub fn extra_args(&self) -> Vec<String> {
+        match self.gpu_layers {
+            Some(layers) => vec!["--n-gpu-layers".into(), layers.to_string()],
+            None => Vec::new(),
+        }
+    }
+}
+
+/// The most of a server log that is read back.
+const MAX_LAB_LOG_BYTES: u64 = 1024 * 1024;
+
 pub struct LlamaServerProvider {
+    lab: LabServerOptions,
     executable: PathBuf,
     model: VerifiedModelFile,
     threads: usize,
@@ -134,6 +160,7 @@ impl LlamaServerProvider {
             idle_unload,
         ));
         Ok(Self {
+            lab: LabServerOptions::default(),
             executable,
             model,
             threads: threads.max(1),
@@ -144,6 +171,26 @@ impl LlamaServerProvider {
             reaper_stop,
             reaper,
         })
+    }
+
+    /// Applies Model Lab's options. Product code never calls this.
+    pub fn with_lab_options(mut self, options: LabServerOptions) -> Self {
+        self.lab = options;
+        self
+    }
+
+    /// The captured server output, if the lab asked for it and the server has
+    /// written any. Bounded; `None` when there is no log.
+    pub fn lab_log(&self) -> Option<String> {
+        use std::io::Read;
+        let path = self.lab.log_path.as_ref()?;
+        let mut text = String::new();
+        fs::File::open(path)
+            .ok()?
+            .take(MAX_LAB_LOG_BYTES)
+            .read_to_string(&mut text)
+            .ok()?;
+        Some(text)
     }
 
     /// Fixed launch arguments. The per-process key is passed as a file (not
@@ -203,6 +250,11 @@ impl LlamaServerProvider {
         }
         let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
         let api_key = Uuid::new_v4().simple().to_string();
+        // Open the lab's log first, so a failure leaves no key file behind.
+        let lab_log = match self.lab.log_path.as_ref() {
+            Some(path) => Some(fs::File::create(path)?),
+            None => None,
+        };
         let key_file = write_api_key_file(&api_key)?;
         let args = Self::build_server_args(
             &self.executable,
@@ -214,9 +266,21 @@ impl LlamaServerProvider {
         let mut command = Command::new(&self.executable);
         command
             .args(args.iter().skip(1))
+            .args(self.lab.extra_args())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
+        if let Some(log) = lab_log {
+            match log.try_clone() {
+                Ok(second) => {
+                    command.stdout(Stdio::from(log)).stderr(Stdio::from(second));
+                }
+                Err(error) => {
+                    let _ = fs::remove_file(&key_file);
+                    return Err(error.into());
+                }
+            }
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -718,6 +782,72 @@ mod tests {
         let mut without = payload.clone();
         without.as_object_mut().unwrap().remove("cache_prompt");
         assert_eq!(without, default);
+    }
+
+    #[test]
+    fn lab_options_add_only_the_cpu_only_argument_and_default_to_nothing() {
+        assert!(LabServerOptions::default().extra_args().is_empty());
+        let cpu_only = LabServerOptions {
+            gpu_layers: Some(0),
+            log_path: None,
+        };
+        assert_eq!(cpu_only.extra_args(), vec!["--n-gpu-layers", "0"]);
+        // The fixed product arguments are unchanged and carry no offload setting.
+        let args = LlamaServerProvider::build_server_args(
+            Path::new("/opt/llama-server"),
+            Path::new("/data/models/qwen.gguf"),
+            43210,
+            Path::new("/tmp/folio-llama-key-test"),
+            3,
+        );
+        assert!(!args
+            .iter()
+            .any(|arg| arg.contains("gpu-layers") || arg == "-ngl"));
+    }
+
+    #[test]
+    fn a_lab_log_is_read_back_bounded_and_absent_without_a_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("llama-server");
+        let model_path = dir.path().join("model.gguf");
+        fs::write(&executable, b"x").unwrap();
+        fs::write(&model_path, b"x").unwrap();
+        let build = |options: LabServerOptions| {
+            LlamaServerProvider::from_verified_model(
+                &executable,
+                VerifiedModelFile {
+                    descriptor: ModelDescriptor {
+                        id: "m".into(),
+                        role: ModelRole::Generation,
+                        repo: "r".into(),
+                        revision: "r".into(),
+                        files: vec![],
+                        quantization: "q".into(),
+                        license: "l".into(),
+                        runtime: "llama.cpp".into(),
+                        optional_pack: false,
+                    },
+                    path: model_path.clone(),
+                },
+                1,
+            )
+            .unwrap()
+            .with_lab_options(options)
+        };
+        assert_eq!(build(LabServerOptions::default()).lab_log(), None);
+
+        let log_path = dir.path().join("server.log");
+        let provider = build(LabServerOptions {
+            gpu_layers: Some(0),
+            log_path: Some(log_path.clone()),
+        });
+        assert_eq!(
+            provider.lab_log(),
+            None,
+            "no log until the server has written one"
+        );
+        fs::write(&log_path, vec![b'a'; (MAX_LAB_LOG_BYTES as usize) + 10]).unwrap();
+        assert_eq!(provider.lab_log().unwrap().len() as u64, MAX_LAB_LOG_BYTES);
     }
 
     #[test]
