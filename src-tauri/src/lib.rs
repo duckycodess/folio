@@ -7,6 +7,7 @@ mod error;
 mod extract;
 mod identity;
 mod index;
+mod lab_store;
 mod organize;
 mod plan;
 mod ripple;
