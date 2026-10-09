@@ -286,6 +286,8 @@ The twelve poses in the table below are cleaned and sliced into `src/assets/olio
 - Each pose is exported at 96, 192 and 320px: 2× of the 48, 96 and 160px display sizes. There is no separate 1× set, because the source poses are only about 300px and browsers downscale the 2× files well. Every file is under 100 KB.
 - Use them only through the `<Olio pose size>` component (`src/ui/Olio.tsx`). A test fails if a pose is missing at any size.
 
+**The app icon** (desktop window/dock/taskbar and the browser tab) is the brandkit's `folio-app-icon-1024.png`: Olio's face on the folder badge, on a charcoal square. `src-tauri/icons/` holds the generated set (`npx tauri icon docs/assets/Folio-Brandkit/assets/folio-app-icon-1024.png -o src-tauri/icons`, pruned to `icon.png`, `icon.ico` and `icon.icns` — this desktop-only app doesn't need the command's Android/iOS/Windows Store sizes) plus `source.png`, the 1024px original. `public/favicon.png` is a 64px export of the same art for the browser preview. It replaces the starter template's generic green "F" placeholder.
+
 Still to produce: **the wordmark.** Export the folio wordmark as `src/assets/brand/folio-wordmark.svg`, in a charcoal version for light surfaces and an ivory version for the sidebar. Until then the sidebar shows an interim Inter 800 wordmark.
 
 ### Poses and where they appear
