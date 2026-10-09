@@ -20,7 +20,7 @@ import { isGenerationReady } from "../app/models";
 import type { RelationshipsState } from "../app/useRelationships";
 import { useModels } from "../app/useModels";
 import { useAiIndexState } from "../app/useAiIndex";
-import { mayClaimNoConnections } from "../domain/aiCoverage";
+import { mayClaimNoConnections, summaryBasisLine } from "../domain/aiCoverage";
 import { AiCoverageNotice } from "../ui/AiCoverageNotice";
 import type { WorkspaceState } from "../app/useWorkspace";
 import { describeConnection } from "../domain/connections";
@@ -276,10 +276,16 @@ export function GraphView({
     setSummary(null);
     setSummaryError(null);
     setSummaryBusy(false);
+    // A summary describes the connections and coverage it was written from;
+    // when either changes (a refresh, a new model), it is dropped.
   }, [
     summaryScopeKey,
     summaryScope.totalDocuments,
     start.kind === "file" ? start.documentId : "",
+    aiIndex.coverage?.state,
+    aiIndex.coverage?.pairsConsidered,
+    aiIndex.coverage?.spaceFingerprint,
+    relations.relationships,
   ]);
   async function writeRelationshipSummary() {
     const folderId = workspace.workspace?.id;
@@ -568,6 +574,9 @@ export function GraphView({
                 {summary.revision.slice(0, 12)}). Not reviewed for accuracy:
                 each point links to its evidence.
               </p>
+              {summary.basis && (
+                <p className="muted">{summaryBasisLine(summary.basis)}</p>
+              )}
               <CitedSentences result={summary} onOpen={relations.openPassage} />
             </div>
           )}

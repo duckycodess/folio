@@ -624,6 +624,7 @@ fn build_answer(
         sentences,
         coverage_ranges,
         uncited_sentence_count,
+        basis: None,
     }
 }
 
@@ -642,6 +643,7 @@ fn insufficient_answer(
         sentences: Vec::new(),
         coverage_ranges,
         uncited_sentence_count: 0,
+        basis: None,
     }
 }
 

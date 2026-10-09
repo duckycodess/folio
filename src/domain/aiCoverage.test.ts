@@ -5,6 +5,7 @@ import {
   RIPPLE_INCOMPLETE_WARNING,
   rippleWarning,
   shouldAutoRefresh,
+  summaryBasisLine,
 } from "./aiCoverage";
 import type { AiRelationshipCoverage } from "./contracts";
 
@@ -82,5 +83,16 @@ describe("AI coverage wording", () => {
     );
     expect(shouldAutoRefresh({ ...ready, refreshing: true })).toBe(false);
     expect(shouldAutoRefresh({ ...ready, folderOpen: false })).toBe(false);
+  });
+
+  it("states the connections and files a summary was given, and when that is incomplete", () => {
+    expect(
+      summaryBasisLine({ connections: 3, files: 4, incomplete: false }),
+    ).toBe("Based on 3 connections across 4 files.");
+    expect(
+      summaryBasisLine({ connections: 1, files: 2, incomplete: true }),
+    ).toBe(
+      "Based on 1 connection across 2 files. Incomplete: AI review wasn't finished or some connections were left out.",
+    );
   });
 });

@@ -1,4 +1,4 @@
-import type { AiRelationshipCoverage } from "./contracts";
+import type { AiRelationshipCoverage, SummaryBasis } from "./contracts";
 
 /**
  * Shown in Plan Review when AI review isn't finished. It says nothing about
@@ -83,4 +83,18 @@ export function shouldAutoRefresh(input: {
   folderOpen: boolean;
 }): boolean {
   return input.searchModelReady && input.folderOpen && !input.refreshing;
+}
+
+/**
+ * What a relationship summary was based on, as counted natively, plus an
+ * incomplete notice. A summary never reads as covering more than it was given.
+ */
+export function summaryBasisLine(basis: SummaryBasis): string {
+  const connections = `${basis.connections} connection${basis.connections === 1 ? "" : "s"}`;
+  const files = `${basis.files} file${basis.files === 1 ? "" : "s"}`;
+  return `Based on ${connections} across ${files}.${
+    basis.incomplete
+      ? " Incomplete: AI review wasn't finished or some connections were left out."
+      : ""
+  }`;
 }

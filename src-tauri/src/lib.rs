@@ -565,6 +565,10 @@ async fn summarize_relationships(
                 .then_with(|| left.source_id.cmp(&right.source_id))
                 .then_with(|| left.target_id.cmp(&right.target_id))
         });
+        let coverage = {
+            let conn = db::open(&index_path)?;
+            ai_discovery::coverage(&conn, &workspace_id, active_space.as_deref())?
+        };
         let mut current_documents = HashMap::<String, Option<DocumentText>>::new();
         for relationship in &mut selected {
             relationship.passages.retain(|passage| {
@@ -577,6 +581,7 @@ async fn summarize_relationships(
             });
         }
         selected.retain(|relationship| !relationship.passages.is_empty());
+        let available_connections = selected.len();
         let mut seen = HashSet::new();
         let mut passages = Vec::new();
         for relationship in &selected {
@@ -647,6 +652,21 @@ async fn summarize_relationships(
                 &AtomicBool::new(false),
             )?);
         }
+        // What the model is actually given, counted here and not by the UI:
+        // incomplete when AI review wasn't finished or connections were left
+        // out to fit the prompt's passage cap.
+        let files = entries
+            .iter()
+            .flat_map(|entry| [entry.source_id.as_str(), entry.target_id.as_str()])
+            .collect::<HashSet<_>>()
+            .len();
+        let basis = folio_core::contracts::SummaryBasis {
+            connections: entries.len() as u32,
+            files: files as u32,
+            incomplete: coverage.state != ai_discovery::CoverageState::Complete
+                || coverage.overflow_documents > 0
+                || entries.len() < available_connections,
+        };
         let (provider, cancel) = acquire_generation(&app, &generation_state)?;
         let result = grounding::relationship_summary(
             provider.as_ref(),
@@ -655,7 +675,11 @@ async fn summarize_relationships(
             cancel.as_ref(),
         );
         finish_generation(&generation_state, &cancel)?;
-        Ok(result?)
+        let mut result = result?;
+        if result.kind == folio_core::contracts::GroundedAnswerKind::RelationshipSummary {
+            result.basis = Some(basis);
+        }
+        Ok(result)
     })
     .await?)
 }

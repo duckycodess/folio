@@ -449,6 +449,18 @@ export interface GroundedResult extends GroundedAnswer {
   sentences: GroundedSentence[];
   coverageRanges: CoverageEntry[];
   uncitedSentenceCount: number;
+  /** Relationship summaries only: what the native core actually supplied. */
+  basis?: SummaryBasis;
+}
+
+/**
+ * The connections and files a relationship summary was given, counted by the
+ * native core. `incomplete` also covers unfinished AI review.
+ */
+export interface SummaryBasis {
+  connections: number;
+  files: number;
+  incomplete: boolean;
 }
 
 /** A model run either answers from evidence or reports that it has none. */
