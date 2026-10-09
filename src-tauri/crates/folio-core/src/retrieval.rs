@@ -22,6 +22,19 @@ pub const MIN_KEYWORD_SCORE: f32 = 0.5;
 /// (for example a distractor that repeats the query words in a negated
 /// sentence). This is a design bound, not a value fitted to any query.
 pub const KEYWORD_TIEBREAK_WEIGHT: f32 = 0.01;
+/// Query-level evidence gate. Multilingual E5 cosines for unrelated text sit
+/// in the same narrow high band as related text, so a per-chunk cosine floor
+/// cannot say "no evidence" on its own. The gate therefore also requires the
+/// best chunk to stand out from the median of the whole indexed space.
+///
+/// PROVISIONAL, UNCALIBRATED: both values are placeholders that leave
+/// behaviour unchanged until they are set from the development calibration
+/// queries (`tests/dev_calibration.json`), never from the acceptance cases.
+pub const GATE_MIN_TOP_COSINE: f32 = MIN_SEMANTIC_SCORE;
+pub const GATE_MIN_MARGIN: f32 = 0.0;
+/// Below this many indexed chunks a median says little, so only the floor
+/// applies.
+pub const GATE_MIN_CHUNKS_FOR_MARGIN: usize = 5;
 const BM25_K1: f32 = 1.2;
 const BM25_B: f32 = 0.75;
 
@@ -149,7 +162,60 @@ pub struct ChunkScore {
     pub fused: f32,
 }
 
+/// Query-level semantic evidence statistics over the whole indexed space.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvidenceGate {
+    pub top_cosine: f32,
+    pub median_cosine: f32,
+    pub margin: f32,
+    pub chunk_count: usize,
+    pub min_top_cosine: f32,
+    pub min_margin: f32,
+    pub passed: bool,
+}
+
+impl EvidenceGate {
+    fn from_scores(mut cosines: Vec<f32>) -> Self {
+        cosines.sort_by(|a, b| b.total_cmp(a));
+        let chunk_count = cosines.len();
+        let top_cosine = cosines.first().copied().unwrap_or(0.0);
+        let median_cosine = if chunk_count == 0 {
+            0.0
+        } else if chunk_count % 2 == 1 {
+            cosines[chunk_count / 2]
+        } else {
+            (cosines[chunk_count / 2 - 1] + cosines[chunk_count / 2]) / 2.0
+        };
+        let margin = top_cosine - median_cosine;
+        let margin_applies = chunk_count >= GATE_MIN_CHUNKS_FOR_MARGIN;
+        let passed = chunk_count > 0
+            && top_cosine >= GATE_MIN_TOP_COSINE
+            && (!margin_applies || margin >= GATE_MIN_MARGIN);
+        Self {
+            top_cosine,
+            median_cosine,
+            margin,
+            chunk_count,
+            min_top_cosine: GATE_MIN_TOP_COSINE,
+            min_margin: GATE_MIN_MARGIN,
+            passed,
+        }
+    }
+}
+
 impl HybridRetriever {
+    /// Whether the query has semantic evidence anywhere in the indexed space.
+    pub fn evidence_gate(&self, query_embedding: &QueryEmbedding) -> CoreResult<EvidenceGate> {
+        let cosines = self
+            .vector_index
+            .search(query_embedding, usize::MAX)?
+            .into_iter()
+            .map(|(_, cosine)| cosine)
+            .collect();
+        Ok(EvidenceGate::from_scores(cosines))
+    }
+
     /// Keyword-only retrieval with BM25 scores normalized to the query's
     /// IDF-weighted maximum. Labelled `keyword`, never `semantic`.
     pub fn keyword(
@@ -241,8 +307,9 @@ impl HybridRetriever {
 
     /// Semantic-primary hybrid retrieval. Every chunk in scope is scored by
     /// cosine; BM25 keyword evidence adds at most `KEYWORD_TIEBREAK_WEIGHT`.
-    /// A chunk is a candidate when it passes the semantic floor or carries
-    /// strong keyword evidence on its own.
+    /// A chunk is a candidate when the query passes the evidence gate and the
+    /// chunk passes the semantic floor, or when it carries strong keyword
+    /// evidence on its own.
     pub fn search_scoped(
         &self,
         documents: &[DocumentRecord],
@@ -255,11 +322,13 @@ impl HybridRetriever {
         let Some(query_embedding) = semantic else {
             return Ok(self.keyword_scoped(documents, chunks, query, document_id, limit));
         };
+        let gate = self.evidence_gate(query_embedding)?;
         let scores = self.score_chunks(chunks, query, query_embedding, document_id)?;
         let combined = scores
             .iter()
             .filter(|(_, score)| {
-                score.cosine >= MIN_SEMANTIC_SCORE || score.keyword >= MIN_KEYWORD_SCORE
+                (gate.passed && score.cosine >= MIN_SEMANTIC_SCORE)
+                    || score.keyword >= MIN_KEYWORD_SCORE
             })
             .map(|(chunk, score)| (chunk, score.cosine, score.fused))
             .collect::<Vec<_>>();
@@ -680,6 +749,18 @@ mod tests {
             )
             .unwrap();
         assert_eq!(results[0].document.id, "semantic.md");
+    }
+
+    #[test]
+    fn evidence_gate_uses_the_median_only_with_enough_chunks() {
+        let flat = EvidenceGate::from_scores(vec![0.80, 0.79, 0.79, 0.78, 0.78, 0.77]);
+        assert!((flat.margin - 0.015).abs() < 1e-6);
+        assert_eq!(flat.chunk_count, 6);
+        let small = EvidenceGate::from_scores(vec![0.9]);
+        assert_eq!(small.margin, 0.0);
+        assert_eq!(small.passed, small.top_cosine >= GATE_MIN_TOP_COSINE);
+        let empty = EvidenceGate::from_scores(Vec::new());
+        assert!(!empty.passed);
     }
 
     #[test]
