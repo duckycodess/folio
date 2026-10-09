@@ -6,6 +6,7 @@
 pub mod checks;
 pub mod host;
 pub mod memory;
+pub mod native;
 pub mod record;
 pub mod runner;
 pub mod sink;

@@ -4,26 +4,22 @@
 //! holds the generation slot for the whole run so user generation is refused
 //! with `providerBusy` instead of competing for memory.
 
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use folio_core::contracts::{
     ModelDescriptor, ModelInstallStatus, ModelRole, NativeProviderError, ProviderErrorCode,
 };
-use folio_core::embeddings::{OrtE5Provider, DEFAULT_BATCH_SIZE, DEFAULT_MAX_TOKENS};
-use folio_core::error::CoreResult;
-use folio_core::generation::{GenerationProvider, LlamaServerProvider};
+use folio_core::generation::GenerationProvider;
 use folio_core::lab::host::{host_info, llama_server_version, onnxruntime_version};
+use folio_core::lab::native::{model_ref, open_embedding, StoreGeneratorFactory};
 use folio_core::lab::runner::{
-    system_clock_ms, EmbeddingSubject, GeneratorFactory, GeneratorHandle, LabProgress, LabRunner,
-    OsMemoryProbe, RunEnd,
+    system_clock_ms, EmbeddingSubject, LabProgress, LabRunner, OsMemoryProbe, RunEnd,
 };
 use folio_core::lab::suite::{Corpus, Suite};
 use folio_core::lab::workspace::LabWorkspaces;
 use folio_core::lab::{
-    BenchmarkRecord, BenchmarkTask, ModelFileRef, ModelRef, ReviewStatus, RunSummary,
-    RuntimeDetail, RuntimeName,
+    BenchmarkRecord, BenchmarkTask, ReviewStatus, RunSummary, RuntimeDetail, RuntimeName,
 };
 use folio_core::models::ModelStore;
 use serde::{Deserialize, Serialize};
@@ -208,84 +204,6 @@ fn finish_lab(
     Ok(())
 }
 
-fn model_ref(descriptor: &ModelDescriptor) -> ModelRef {
-    ModelRef {
-        id: descriptor.id.clone(),
-        role: descriptor.role.clone(),
-        repo: descriptor.repo.clone(),
-        revision: descriptor.revision.clone(),
-        quantization: descriptor.quantization.clone(),
-        files: descriptor
-            .files
-            .iter()
-            .map(|file| ModelFileRef {
-                path: file.path.clone(),
-                sha256: file.sha256.clone(),
-                bytes: file.bytes,
-            })
-            .collect(),
-    }
-}
-
-/// Opens one verified generation model at a time against the verified runtime.
-struct NativeGeneratorFactory {
-    data_dir: PathBuf,
-    executable: PathBuf,
-    runtime: RuntimeDetail,
-    threads: usize,
-}
-
-impl GeneratorFactory for NativeGeneratorFactory {
-    fn open(&self, model_id: &str) -> CoreResult<GeneratorHandle> {
-        let store = ModelStore::new(&self.data_dir)?;
-        let verified = store.verified_model_file(model_id)?;
-        let model = model_ref(&verified.descriptor);
-        let provider =
-            LlamaServerProvider::from_verified_model(&self.executable, verified, self.threads)?;
-        Ok(GeneratorHandle {
-            model,
-            runtime: self.runtime.clone(),
-            generator: Box::new(provider),
-        })
-    }
-}
-
-fn open_embedding(
-    store: &ModelStore,
-    descriptor: &ModelDescriptor,
-) -> Result<OrtE5Provider, FolioError> {
-    let missing = |what: &str| NativeProviderError {
-        code: ProviderErrorCode::ModelCorrupt,
-        message: format!("The embedding model has no {what}."),
-        detail: Some(descriptor.id.clone()),
-    };
-    let model_file = descriptor
-        .files
-        .iter()
-        .find(|file| file.path.ends_with(".onnx"))
-        .ok_or_else(|| missing("ONNX file"))?;
-    let tokenizer_file = descriptor
-        .files
-        .iter()
-        .find(|file| file.path.ends_with("tokenizer.json"))
-        .ok_or_else(|| missing("tokenizer file"))?;
-    let model_path = store.verified_file_path(&descriptor.id, &model_file.path)?;
-    let tokenizer_path = store.verified_file_path(&descriptor.id, &tokenizer_file.path)?;
-    Ok(OrtE5Provider::from_files(
-        model_path,
-        tokenizer_path,
-        descriptor.id.clone(),
-        descriptor.revision.clone(),
-        descriptor.quantization.clone(),
-        384,
-        &model_file.sha256,
-        &tokenizer_file.sha256,
-        DEFAULT_MAX_TOKENS,
-        DEFAULT_BATCH_SIZE,
-        2,
-    )?)
-}
-
 fn execute_lab(
     app: &AppHandle,
     index_path: &std::path::Path,
@@ -312,7 +230,7 @@ fn execute_lab(
     let workspaces = LabWorkspaces::new(&data_dir);
     let suite = Suite::embedded()?;
     let corpus = Corpus::embedded();
-    let factory = NativeGeneratorFactory {
+    let factory = StoreGeneratorFactory {
         data_dir: data_dir.clone(),
         executable,
         runtime: RuntimeDetail {
