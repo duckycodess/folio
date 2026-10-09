@@ -203,7 +203,10 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
         if (meaning.intent === "question")
           return {
             type: "answer",
-            result: await answerQuestion(folder, request),
+            // The chosen/attached file, if any, scopes retrieval to it —
+            // otherwise the whole folder's passages compete for the answer,
+            // and a file's own passages can be outranked by others' (#88).
+            result: await answerQuestion(folder, request, chosen?.id),
           };
         const results = await search(folder, query);
         if (meaning.intent === "search")
