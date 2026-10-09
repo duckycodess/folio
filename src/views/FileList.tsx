@@ -42,7 +42,8 @@ interface FileListProps {
  * A row's spoken name is the text it shows, column by column, rather than a
  * sentence of its own: the columns change with the table's width, and a name
  * that does not contain the visible text is one a voice-control user cannot
- * say. The column each value belongs to is in the heading row above.
+ * say. The heading row is hidden from assistive tech, so the date says
+ * "modified" in hidden words.
  */
 export function FileList({
   label,
@@ -135,8 +136,23 @@ export function FileList({
                     <>
                       <span className="file-col-location">{location}</span>
                       <span className="file-col-type">{kind}</span>
+                      {/* The heading row is hidden from assistive tech, so a
+                          date carries its column in words that are spoken,
+                          not shown. */}
                       <span className="file-col-modified tabular">
-                        {modified ?? "—"}
+                        {modified ? (
+                          <>
+                            <span className="visually-hidden">modified </span>
+                            {modified}
+                          </>
+                        ) : (
+                          <>
+                            <span aria-hidden="true">—</span>
+                            <span className="visually-hidden">
+                              no modified date
+                            </span>
+                          </>
+                        )}
                       </span>
                       <span className="file-col-size tabular">{size}</span>
                     </>

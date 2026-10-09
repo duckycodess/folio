@@ -47,6 +47,12 @@ test.describe("Keyboard and announcements", () => {
     await folio.keyboard.press("End");
     await expect(folio.locator(".file-list .list-row").last()).toBeFocused();
 
+    // The column headings are hidden from assistive tech, so the row says
+    // which value is the date in its own spoken name.
+    await expect(fileRow(folio, PLAN)).toHaveAccessibleName(
+      /project-plan\.md .*(modified \S|no modified date)/,
+    );
+
     await fileRow(folio, PLAN).focus();
     await folio.keyboard.press("Enter");
     await expect(reader(folio, "project-plan.md")).toBeVisible();
