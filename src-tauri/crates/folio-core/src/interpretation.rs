@@ -588,7 +588,7 @@ fn is_invalid_output(error: &CoreError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chunking::{sha256, TextDocument};
+    use crate::chunking::TextDocument;
     use crate::contracts::Language;
     use serde_json::{json, Value};
 
