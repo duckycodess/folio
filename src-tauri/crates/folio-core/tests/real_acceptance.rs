@@ -1,7 +1,7 @@
 use folio_core::chunking::{Chunk, ChunkSource, InterimTextChunker, TextDocument};
 use folio_core::contracts::{
     DocumentRecord, GroundedAnswerKind, InterpretationResult, Language, ModelDescriptor, ModelFile,
-    ModelRole, OperationProposal, ProviderErrorCode, SearchResult,
+    OperationProposal, ProviderErrorCode, SearchResult,
 };
 use folio_core::embeddings::{EmbeddingKind, EmbeddingProvider, OrtE5Provider};
 use folio_core::error::{CoreError, CoreResult};
@@ -12,10 +12,14 @@ use folio_core::grounding;
 use folio_core::interpretation;
 use folio_core::retrieval::HybridRetriever;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::Read;
+use std::ops::Deref;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -38,21 +42,132 @@ const FIXTURE_PATHS: &[&str] = &[
 ];
 
 const E5_MODEL_ID: &str = "multilingual-e5-small-int8";
-const E5_REVISION: &str = "761b726dd34fb83930e26aab4e9ac3899aa1fa78";
 const QWEN_MODEL_ID: &str = "qwen3-0.6b-q4-k-m";
-const QWEN_REVISION: &str = "50968a4468ef4233ed78cd7c3de230dd1d61a56b";
-const QWEN_MODEL_SHA256: &str = "ac2d97712095a558e31573f62f466a3f9d93990898b0ec79d7c974c1780d524a";
-const QWEN_MODEL_BYTES: u64 = 396_705_472;
+const R8_IGNORE: &str = "requires verified local E5 and llama.cpp model files";
 
 fn fixture_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/documents")
+}
+
+fn manifest_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../resources/model-manifest.json")
+}
+
+fn manifest() -> Value {
+    serde_json::from_str(
+        &fs::read_to_string(manifest_path()).expect("model manifest exists for R8"),
+    )
+    .expect("model manifest is valid JSON")
+}
+
+fn manifest_model(manifest: &Value, id: &str) -> ModelDescriptor {
+    let model = manifest["models"]
+        .as_array()
+        .and_then(|models| models.iter().find(|model| model["id"].as_str() == Some(id)))
+        .cloned()
+        .unwrap_or_else(|| panic!("model {id} is present in the manifest"));
+    serde_json::from_value(model).expect("manifest model has the native descriptor shape")
+}
+
+fn manifest_file(descriptor: &ModelDescriptor, path: &str) -> ModelFile {
+    descriptor
+        .files
+        .iter()
+        .find(|file| file.path == path)
+        .cloned()
+        .unwrap_or_else(|| panic!("{path} is present in model {}", descriptor.id))
+}
+
+fn sha256_file(path: &Path) -> String {
+    let mut file =
+        File::open(path).unwrap_or_else(|error| panic!("open {}: {error}", path.display()));
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    hex::encode(hasher.finalize())
+}
+
+fn verify_model_file(label: &str, path: &Path, expected: &ModelFile) {
+    let bytes = fs::metadata(path)
+        .unwrap_or_else(|error| panic!("{label} metadata at {}: {error}", path.display()))
+        .len();
+    assert_eq!(
+        bytes, expected.bytes,
+        "{label} byte size differs from manifest"
+    );
+    assert_eq!(
+        sha256_file(path),
+        expected.sha256,
+        "{label} SHA-256 differs from manifest"
+    );
+}
+
+struct VerifiedInputs {
+    embedding: ModelDescriptor,
+    generation: ModelDescriptor,
+    e5_model: PathBuf,
+    e5_tokenizer: PathBuf,
+    qwen_model: PathBuf,
+    llama_server: PathBuf,
+    e5_model_file: ModelFile,
+    e5_tokenizer_file: ModelFile,
+    qwen_model_file: ModelFile,
+}
+
+fn required_env_hash(name: &str, expected: &str) {
+    let actual = std::env::var(name).unwrap_or_else(|_| panic!("{name}"));
+    assert_eq!(actual, expected, "{name} differs from the pinned manifest");
+}
+
+fn verified_inputs() -> VerifiedInputs {
+    let manifest = manifest();
+    let embedding = manifest_model(&manifest, E5_MODEL_ID);
+    let generation = manifest_model(&manifest, QWEN_MODEL_ID);
+    let e5_model_file = manifest_file(&embedding, "onnx/model_quantized.onnx");
+    let e5_tokenizer_file = manifest_file(&embedding, "tokenizer.json");
+    let qwen_model_file = manifest_file(&generation, "Qwen3-0.6B-Q4_K_M.gguf");
+    let e5_model = PathBuf::from(std::env::var("FOLIO_E5_MODEL").expect("FOLIO_E5_MODEL"));
+    let e5_tokenizer =
+        PathBuf::from(std::env::var("FOLIO_E5_TOKENIZER").expect("FOLIO_E5_TOKENIZER"));
+    let qwen_model = PathBuf::from(std::env::var("FOLIO_QWEN_MODEL").expect("FOLIO_QWEN_MODEL"));
+    let llama_server =
+        PathBuf::from(std::env::var("FOLIO_LLAMA_SERVER").expect("FOLIO_LLAMA_SERVER"));
+    required_env_hash("FOLIO_E5_MODEL_SHA256", &e5_model_file.sha256);
+    required_env_hash("FOLIO_E5_TOKENIZER_SHA256", &e5_tokenizer_file.sha256);
+    required_env_hash("FOLIO_QWEN_MODEL_SHA256", &qwen_model_file.sha256);
+    verify_model_file("E5 model", &e5_model, &e5_model_file);
+    verify_model_file("E5 tokenizer", &e5_tokenizer, &e5_tokenizer_file);
+    verify_model_file("Qwen model", &qwen_model, &qwen_model_file);
+    assert!(
+        llama_server.is_file(),
+        "FOLIO_LLAMA_SERVER points to a missing executable"
+    );
+    VerifiedInputs {
+        embedding,
+        generation,
+        e5_model,
+        e5_tokenizer,
+        qwen_model,
+        llama_server,
+        e5_model_file,
+        e5_tokenizer_file,
+        qwen_model_file,
+    }
 }
 
 fn fixture_corpus() -> (Vec<DocumentRecord>, HashMap<String, String>, Vec<Chunk>) {
     let mut sources = Vec::with_capacity(FIXTURE_PATHS.len());
     let mut contents = HashMap::with_capacity(FIXTURE_PATHS.len());
     for relative_path in FIXTURE_PATHS {
-        let content = std::fs::read_to_string(fixture_root().join(relative_path))
+        let content = fs::read_to_string(fixture_root().join(relative_path))
             .unwrap_or_else(|error| panic!("read fixture {relative_path}: {error}"));
         let name = Path::new(relative_path)
             .file_name()
@@ -80,27 +195,16 @@ fn fixture_corpus() -> (Vec<DocumentRecord>, HashMap<String, String>, Vec<Chunk>
     (documents, contents, chunks)
 }
 
-fn embedding_provider() -> OrtE5Provider {
-    let model_path = std::env::var("FOLIO_E5_MODEL").expect("FOLIO_E5_MODEL");
-    let tokenizer_path = std::env::var("FOLIO_E5_TOKENIZER").expect("FOLIO_E5_TOKENIZER");
-    let model_sha256 = std::env::var("FOLIO_E5_MODEL_SHA256").expect("FOLIO_E5_MODEL_SHA256");
-    let tokenizer_sha256 =
-        std::env::var("FOLIO_E5_TOKENIZER_SHA256").expect("FOLIO_E5_TOKENIZER_SHA256");
-    assert_eq!(model_sha256.len(), 64, "the E5 model hash must be supplied");
-    assert_eq!(
-        tokenizer_sha256.len(),
-        64,
-        "the E5 tokenizer hash must be supplied"
-    );
+fn embedding_provider(inputs: &VerifiedInputs) -> OrtE5Provider {
     OrtE5Provider::from_files(
-        model_path,
-        tokenizer_path,
-        E5_MODEL_ID,
-        E5_REVISION,
-        "int8",
+        &inputs.e5_model,
+        &inputs.e5_tokenizer,
+        inputs.embedding.id.clone(),
+        inputs.embedding.revision.clone(),
+        inputs.embedding.quantization.clone(),
         384,
-        &model_sha256,
-        &tokenizer_sha256,
+        &inputs.e5_model_file.sha256,
+        &inputs.e5_tokenizer_file.sha256,
         folio_core::embeddings::DEFAULT_MAX_TOKENS,
         folio_core::embeddings::DEFAULT_BATCH_SIZE,
         2,
@@ -108,86 +212,160 @@ fn embedding_provider() -> OrtE5Provider {
     .expect("local multilingual E5 provider loads")
 }
 
-fn generation_provider() -> LlamaServerProvider {
-    let executable = std::env::var("FOLIO_LLAMA_SERVER").expect("FOLIO_LLAMA_SERVER");
-    let model_path = std::env::var("FOLIO_QWEN_MODEL").expect("FOLIO_QWEN_MODEL");
-    let model_path = PathBuf::from(model_path);
-    let model_hash = std::env::var("FOLIO_QWEN_MODEL_SHA256").expect("FOLIO_QWEN_MODEL_SHA256");
-    let model_bytes = std::fs::metadata(&model_path)
-        .expect("Qwen model metadata")
-        .len();
-    assert_eq!(model_hash, QWEN_MODEL_SHA256);
-    assert_eq!(model_bytes, QWEN_MODEL_BYTES);
-    let descriptor = ModelDescriptor {
-        id: QWEN_MODEL_ID.into(),
-        role: ModelRole::Generation,
-        repo: "unsloth/Qwen3-0.6B-GGUF".into(),
-        revision: QWEN_REVISION.into(),
-        files: vec![ModelFile {
-            path: model_path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .expect("Qwen model has a UTF-8 file name")
-                .into(),
-            sha256: model_hash,
-            bytes: model_bytes,
-            download_url: None,
-        }],
-        quantization: "Q4_K_M".into(),
-        license: "apache-2.0".into(),
-        runtime: "llama.cpp".into(),
-        optional_pack: false,
-    };
+fn generation_provider(inputs: &VerifiedInputs) -> LlamaServerProvider {
     LlamaServerProvider::from_verified_model(
-        executable,
+        inputs.llama_server.clone(),
         folio_core::models::VerifiedModelFile {
-            descriptor,
-            path: model_path,
+            descriptor: inputs.generation.clone(),
+            path: inputs.qwen_model.clone(),
         },
         2,
     )
     .expect("local llama provider loads")
 }
 
-fn search_fixture(
-    provider: &OrtE5Provider,
-    retriever: &HybridRetriever,
-    documents: &[DocumentRecord],
-    chunks: &[Chunk],
-    query: &str,
-    limit: usize,
-) -> Vec<SearchResult> {
-    let query_embedding = provider
-        .embed_query(query, None)
-        .unwrap_or_else(|error| panic!("embed query {query:?}: {error}"));
-    retriever
-        .search(documents, chunks, query, Some(&query_embedding), limit)
-        .unwrap_or_else(|error| panic!("retrieve query {query:?}: {error}"))
+struct GenerationGuard {
+    provider: Arc<LlamaServerProvider>,
 }
 
-fn print_retrieval(label: &str, query: &str, results: &[SearchResult]) {
-    let rendered = results
+impl GenerationGuard {
+    fn new(inputs: &VerifiedInputs) -> Self {
+        Self {
+            provider: Arc::new(generation_provider(inputs)),
+        }
+    }
+}
+
+impl Deref for GenerationGuard {
+    type Target = LlamaServerProvider;
+
+    fn deref(&self) -> &Self::Target {
+        &self.provider
+    }
+}
+
+impl Drop for GenerationGuard {
+    fn drop(&mut self) {
+        let _ = self.provider.unload();
+    }
+}
+
+struct PreparedAcceptance {
+    inputs: VerifiedInputs,
+    documents: Vec<DocumentRecord>,
+    contents: HashMap<String, String>,
+    chunks: Vec<Chunk>,
+    embeddings: Mutex<OrtE5Provider>,
+    retriever: HybridRetriever,
+}
+
+static PREPARED: OnceLock<PreparedAcceptance> = OnceLock::new();
+
+fn prepared() -> &'static PreparedAcceptance {
+    PREPARED.get_or_init(|| {
+        let inputs = verified_inputs();
+        let (documents, contents, chunks) = fixture_corpus();
+        let embeddings = embedding_provider(&inputs);
+        let passage_texts = chunks
+            .iter()
+            .map(|chunk| chunk.text.clone())
+            .collect::<Vec<_>>();
+        let vectors = embeddings
+            .embed(&passage_texts, EmbeddingKind::Passage, None)
+            .expect("real E5 passage embeddings");
+        println!(
+            "R8 ort crate=2.0.0-rc.13 api_minor={} build_info={}",
+            ort::MINOR_VERSION,
+            ort::info()
+        );
+        let mut retriever = HybridRetriever::default();
+        retriever
+            .vector_index
+            .replace(embeddings.space().clone(), chunks.clone(), vectors)
+            .expect("fixture vectors fit the E5 space");
+        PreparedAcceptance {
+            inputs,
+            documents,
+            contents,
+            chunks,
+            embeddings: Mutex::new(embeddings),
+            retriever,
+        }
+    })
+}
+
+fn retrieve(
+    prepared: &PreparedAcceptance,
+    query: &str,
+    limit: usize,
+) -> (Vec<SearchResult>, Vec<Value>) {
+    let embeddings = prepared
+        .embeddings
+        .lock()
+        .expect("embedding provider lock is available");
+    let query_embedding = embeddings
+        .embed_query(query, None)
+        .unwrap_or_else(|error| panic!("embed query {query:?}: {error}"));
+    let cosine_scores = prepared
+        .retriever
+        .vector_index
+        .search(&query_embedding, limit)
+        .unwrap_or_else(|error| panic!("score query {query:?}: {error}"))
+        .into_iter()
+        .map(|(chunk, score)| {
+            json!({
+                "documentId": chunk.document_id,
+                "start": chunk.start,
+                "end": chunk.end,
+                "score": score,
+            })
+        })
+        .collect();
+    let results = prepared
+        .retriever
+        .search(
+            &prepared.documents,
+            &prepared.chunks,
+            query,
+            Some(&query_embedding),
+            limit,
+        )
+        .unwrap_or_else(|error| panic!("retrieve query {query:?}: {error}"));
+    (results, cosine_scores)
+}
+
+fn retrieval_evidence(results: &[SearchResult]) -> Vec<Value> {
+    results
         .iter()
         .map(|result| {
             json!({
                 "path": result.document.relative_path,
                 "score": result.score,
-                "method": result.method,
-                "passages": result.passages.iter().map(|passage| &passage.text).collect::<Vec<_>>(),
+                "method": &result.method,
+                "passages": &result.passages,
             })
         })
-        .collect::<Vec<_>>();
-    println!(
-        "R8 retrieval {label} query={query:?}: {}",
-        serde_json::to_string(&rendered).expect("retrieval output serializes")
-    );
+        .collect()
 }
 
-fn assert_edit_proposal(result: &InterpretationResult, request: &str) {
-    println!(
-        "R8 interpretation request={request:?}: {}",
-        serde_json::to_string(result).expect("interpretation output serializes")
-    );
+fn output_dir() -> PathBuf {
+    PathBuf::from(
+        std::env::var("FOLIO_R8_OUTPUT_DIR").expect("FOLIO_R8_OUTPUT_DIR is set by the workflow"),
+    )
+}
+
+fn write_evidence(phase: &str, evidence: Value) {
+    let directory = output_dir();
+    fs::create_dir_all(&directory).expect("R8 evidence directory is writable");
+    let path = directory.join(format!("{phase}.json"));
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&evidence).expect("R8 evidence serializes"),
+    )
+    .unwrap_or_else(|error| panic!("write {}: {error}", path.display()));
+}
+
+fn assert_edit_proposal(result: &InterpretationResult) {
     match result {
         InterpretationResult::Proposal {
             proposal:
@@ -248,36 +426,68 @@ fn provider_error_code(error: &CoreError) -> Option<ProviderErrorCode> {
     }
 }
 
-#[test]
-#[ignore = "requires verified local E5 and llama.cpp model files"]
-fn real_folio_acceptance_cases_use_local_providers() {
-    let (documents, contents, chunks) = fixture_corpus();
-    let embeddings = embedding_provider();
-    let passage_texts = chunks
-        .iter()
-        .map(|chunk| chunk.text.clone())
-        .collect::<Vec<_>>();
-    let vectors = embeddings
-        .embed(&passage_texts, EmbeddingKind::Passage, None)
-        .expect("real E5 passage embeddings");
-    let mut retriever = HybridRetriever::default();
-    retriever
-        .vector_index
-        .replace(embeddings.space().clone(), chunks.clone(), vectors)
-        .expect("fixture vectors fit the E5 space");
+fn result_evidence(result: &CoreResult<Value>) -> Value {
+    match result {
+        Ok(value) => json!({ "ok": value }),
+        Err(error) => json!({
+            "error": error.to_string(),
+            "providerCode": provider_error_code(error).map(|code| format!("{code:?}")),
+        }),
+    }
+}
 
-    let english = search_fixture(
-        &embeddings,
-        &retriever,
-        &documents,
-        &chunks,
-        "Community Learning Project submission deadline",
-        5,
-    );
-    print_retrieval(
-        "EN-to-FIL",
-        "Community Learning Project submission deadline",
-        &english,
+fn assert_citations_within(
+    summary: &folio_core::contracts::GroundedResult,
+    supplied: &[folio_core::contracts::SourcePassage],
+) {
+    assert!(summary
+        .sentences
+        .iter()
+        .all(|sentence| !sentence.citations.is_empty()));
+    for sentence in &summary.sentences {
+        for citation in &sentence.citations {
+            assert!(
+                supplied.iter().any(|passage| passage == citation),
+                "summary citation is outside the supplied passages"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = R8_IGNORE]
+fn r8_retrieval_cross_language() {
+    let prepared = prepared();
+    let english_query = "Community Learning Project submission deadline";
+    let filipino_query = "Hanapin ang plano at huling araw ng pagpasa ng proyekto";
+    let taglish_query = "Saan yung notes about consent ng interview participants?";
+    let (english, english_scores) = retrieve(prepared, english_query, 5);
+    let (filipino, filipino_scores) = retrieve(prepared, filipino_query, 5);
+    let (taglish, taglish_scores) = retrieve(prepared, taglish_query, 5);
+    write_evidence(
+        "r8_retrieval_cross_language",
+        json!({
+            "inputs": {
+                "englishToFilipino": english_query,
+                "filipinoToEnglish": filipino_query,
+                "taglish": taglish_query,
+                "corpus": FIXTURE_PATHS,
+            },
+            "results": {
+                "englishToFilipino": {
+                    "rankedDocuments": retrieval_evidence(&english),
+                    "topKCosineScores": english_scores,
+                },
+                "filipinoToEnglish": {
+                    "rankedDocuments": retrieval_evidence(&filipino),
+                    "topKCosineScores": filipino_scores,
+                },
+                "taglish": {
+                    "rankedDocuments": retrieval_evidence(&taglish),
+                    "topKCosineScores": taglish_scores,
+                },
+            },
+        }),
     );
     assert!(english
         .iter()
@@ -285,37 +495,9 @@ fn real_folio_acceptance_cases_use_local_providers() {
     assert!(!english
         .iter()
         .any(|result| result.document.relative_path == "personal/grocery-list.md"));
-
-    let filipino = search_fixture(
-        &embeddings,
-        &retriever,
-        &documents,
-        &chunks,
-        "Hanapin ang plano at huling araw ng pagpasa ng proyekto",
-        5,
-    );
-    print_retrieval(
-        "FIL-to-EN",
-        "Hanapin ang plano at huling araw ng pagpasa ng proyekto",
-        &filipino,
-    );
     assert!(filipino
         .iter()
         .any(|result| result.document.relative_path == "projects/project-plan.md"));
-
-    let taglish = search_fixture(
-        &embeddings,
-        &retriever,
-        &documents,
-        &chunks,
-        "Saan yung notes about consent ng interview participants?",
-        5,
-    );
-    print_retrieval(
-        "Taglish-consent",
-        "Saan yung notes about consent ng interview participants?",
-        &taglish,
-    );
     for expected in [
         "research/methodology-notes.md",
         "research/tala-sa-pamamaraan.md",
@@ -328,71 +510,120 @@ fn real_folio_acceptance_cases_use_local_providers() {
             "Taglish consent retrieval omitted {expected}"
         );
     }
+}
 
-    let generation = Arc::new(generation_provider());
+#[test]
+#[ignore = R8_IGNORE]
+fn r8_interpretation_deadline() {
+    let prepared = prepared();
+    let generation = GenerationGuard::new(&prepared.inputs);
     let cancel = AtomicBool::new(false);
     let benchmark_request = "Palitan sa project plan ang deadline na October 20 to October 23.";
+    let workflow_request =
+        "Hanapin yung project plan at palitan ang deadline na October 20 to October 23.";
     let benchmark_result = interpretation::interpret_request(
-        generation.as_ref(),
+        generation.provider.as_ref(),
         benchmark_request,
-        &documents,
-        &contents,
-        &chunks,
+        &prepared.documents,
+        &prepared.contents,
+        &prepared.chunks,
         &cancel,
     )
     .expect("real benchmark interpretation");
-    assert_edit_proposal(&benchmark_result, benchmark_request);
-
-    let workflow_request =
-        "Hanapin yung project plan at palitan ang deadline na October 20 to October 23.";
     let workflow_result = interpretation::interpret_request(
-        generation.as_ref(),
+        generation.provider.as_ref(),
         workflow_request,
-        &documents,
-        &contents,
-        &chunks,
+        &prepared.documents,
+        &prepared.contents,
+        &prepared.chunks,
         &cancel,
     )
     .expect("real workflow interpretation");
-    assert_edit_proposal(&workflow_result, workflow_request);
+    write_evidence(
+        "r8_interpretation_deadline",
+        json!({
+            "inputs": [benchmark_request, workflow_request],
+            "results": {
+                "benchmark": &benchmark_result,
+                "workflow": &workflow_result,
+            },
+        }),
+    );
+    assert_edit_proposal(&benchmark_result);
+    assert_edit_proposal(&workflow_result);
+}
 
-    let ambiguous_request = "Rename the notes to archived-notes.md.";
-    let ambiguous_result = interpretation::interpret_request(
-        generation.as_ref(),
-        ambiguous_request,
-        &documents,
-        &contents,
-        &chunks,
+#[test]
+#[ignore = R8_IGNORE]
+fn r8_interpretation_ambiguity() {
+    let prepared = prepared();
+    let generation = GenerationGuard::new(&prepared.inputs);
+    let cancel = AtomicBool::new(false);
+    let request = "Rename the notes to archived-notes.md.";
+    let result = interpretation::interpret_request(
+        generation.provider.as_ref(),
+        request,
+        &prepared.documents,
+        &prepared.contents,
+        &prepared.chunks,
         &cancel,
     )
     .expect("real ambiguous interpretation");
-    println!(
-        "R8 interpretation request={ambiguous_request:?}: {}",
-        serde_json::to_string(&ambiguous_result).expect("ambiguous output serializes")
+    write_evidence(
+        "r8_interpretation_ambiguity",
+        json!({"input": request, "result": &result}),
     );
     assert!(matches!(
-        ambiguous_result,
+        result,
         InterpretationResult::NeedsFileSelection { .. }
     ));
+}
 
-    let unrelated_query = "What is the recipe for a chocolate cake and the bus schedule?";
-    let unrelated = search_fixture(
-        &embeddings,
-        &retriever,
-        &documents,
-        &chunks,
-        unrelated_query,
-        8,
-    );
-    print_retrieval("unrelated", unrelated_query, &unrelated);
-    assert!(
-        unrelated.is_empty(),
-        "unrelated query passed the evidence gate"
-    );
+#[test]
+#[ignore = R8_IGNORE]
+fn r8_evidence_gate() {
+    let prepared = prepared();
+    let queries = [
+        (
+            "englishToFilipino",
+            "Community Learning Project submission deadline",
+        ),
+        (
+            "filipinoToEnglish",
+            "Hanapin ang plano at huling araw ng pagpasa ng proyekto",
+        ),
+        (
+            "taglish",
+            "Saan yung notes about consent ng interview participants?",
+        ),
+        (
+            "unrelated",
+            "What is the recipe for a chocolate cake and the bus schedule?",
+        ),
+    ];
+    let mut query_evidence = serde_json::Map::new();
+    let mut unrelated = Vec::new();
+    for (label, query) in queries {
+        let (results, scores) = retrieve(prepared, query, 8);
+        if label == "unrelated" {
+            unrelated = results.clone();
+        }
+        query_evidence.insert(
+            label.into(),
+            json!({
+                "query": query,
+                "rankedDocuments": retrieval_evidence(&results),
+                "topKCosineScores": scores,
+            }),
+        );
+    }
+    let generation = GenerationGuard::new(&prepared.inputs);
+    let cancel = AtomicBool::new(false);
     let counting = CountingProvider {
-        inner: generation.as_ref(),
+        inner: generation.provider.as_ref(),
         calls: AtomicUsize::new(0),
     };
+    let unrelated_query = queries[3].1;
     let answer = grounding::answer_question(
         Some(&counting),
         unrelated_query,
@@ -401,54 +632,84 @@ fn real_folio_acceptance_cases_use_local_providers() {
         &cancel,
     )
     .expect("empty evidence returns an honest answer");
-    assert_eq!(answer.kind, GroundedAnswerKind::InsufficientEvidence);
-    assert_eq!(counting.calls.load(Ordering::Relaxed), 0);
-    println!(
-        "R8 unrelated answer: {}",
-        serde_json::to_string(&answer).expect("unrelated answer serializes")
+    let generator_calls = counting.calls.load(Ordering::Relaxed);
+    write_evidence(
+        "r8_evidence_gate",
+        json!({
+            "queries": query_evidence,
+            "unrelatedResultCount": unrelated.len(),
+            "answer": &answer,
+            "generatorCalls": generator_calls,
+        }),
     );
+    assert!(
+        unrelated.is_empty(),
+        "unrelated query passed the evidence gate"
+    );
+    assert_eq!(&answer.kind, &GroundedAnswerKind::InsufficientEvidence);
+    assert_eq!(generator_calls, 0);
+}
 
-    let project_plan_chunks = chunks
+#[test]
+#[ignore = R8_IGNORE]
+fn r8_summary_cited_output() {
+    let prepared = prepared();
+    let generation = GenerationGuard::new(&prepared.inputs);
+    let cancel = AtomicBool::new(false);
+    let project_plan_chunks = prepared
+        .chunks
         .iter()
         .filter(|chunk| chunk.document_id == "projects/project-plan.md")
         .cloned()
         .collect::<Vec<_>>();
+    let supplied = grounding::passages_from_chunks(&project_plan_chunks);
     let summary = grounding::summarize_document(
-        generation.as_ref(),
-        grounding::passages_from_chunks(&project_plan_chunks),
+        generation.provider.as_ref(),
+        supplied.clone(),
         Language::Fil,
         &cancel,
     )
     .expect("real project-plan summary");
+    let summary_text = summary.text.to_lowercase();
+    let required_facts = [
+        json!({
+            "label": "October 20 deadline",
+            "stringMatch": summary_text.contains("october 20"),
+            "factualReview": "notReviewed",
+        }),
+        json!({
+            "label": "12 volunteer students",
+            "stringMatch": summary_text.contains("12 volunteer students"),
+            "factualReview": "notReviewed",
+        }),
+        json!({
+            "label": "October 24 presentation",
+            "stringMatch": summary_text.contains("october 24"),
+            "factualReview": "notReviewed",
+        }),
+    ];
+    write_evidence(
+        "r8_summary_cited_output",
+        json!({
+            "input": "projects/project-plan.md",
+            "language": "fil",
+            "result": &summary,
+            "requiredFacts": &required_facts,
+            "factualReview": "notReviewed",
+        }),
+    );
     assert!(
         !summary.sentences.is_empty(),
         "summary returned no sentences"
     );
-    assert!(summary
-        .sentences
-        .iter()
-        .all(|sentence| !sentence.citations.is_empty()));
-    let summary_text = summary.text.to_lowercase();
-    let required_fact_checks = [
-        ("October 20 deadline", summary_text.contains("october 20")),
-        (
-            "12 volunteer students",
-            summary_text.contains("12 volunteer students"),
-        ),
-        (
-            "October 24 presentation",
-            summary_text.contains("october 24"),
-        ),
-    ];
-    println!(
-        "R8 summary required-fact checks (TJ factual review required): {}",
-        serde_json::to_string(&required_fact_checks).expect("fact checks serialize")
-    );
-    println!(
-        "R8 summary output (TJ factual review required): {}",
-        serde_json::to_string(&summary).expect("summary serializes")
-    );
+    assert_citations_within(&summary, &supplied);
+}
 
+#[test]
+#[ignore = R8_IGNORE]
+fn r8_cancellation_and_recovery() {
+    let prepared = prepared();
+    let generation = GenerationGuard::new(&prepared.inputs);
     let cancellation_schema = json!({
         "type": "object",
         "additionalProperties": false,
@@ -476,7 +737,7 @@ fn real_folio_acceptance_cases_use_local_providers() {
     };
     let cancellation_flag = Arc::new(AtomicBool::new(false));
     let (sender, receiver) = mpsc::channel();
-    let cancellation_provider = Arc::clone(&generation);
+    let cancellation_provider = Arc::clone(&generation.provider);
     let cancellation_flag_for_thread = Arc::clone(&cancellation_flag);
     let cancellation_started = Instant::now();
     let cancellation_thread = thread::spawn(move || {
@@ -493,21 +754,54 @@ fn real_folio_acceptance_cases_use_local_providers() {
     generation
         .cancel_active()
         .expect("cancel active local generation");
-    let cancellation_result = receiver
-        .recv_timeout(Duration::from_secs(5))
-        .expect("local generation cancellation completed promptly");
+    let cancellation_result = receiver.recv_timeout(Duration::from_secs(5));
     cancellation_thread
         .join()
         .expect("cancellation thread joins");
     let cancellation_elapsed = cancellation_started.elapsed();
-    println!(
-        "R8 cancellation elapsed_ms={} result_code={:?}",
-        cancellation_elapsed.as_millis(),
-        cancellation_result
-            .as_ref()
-            .err()
-            .and_then(provider_error_code)
+    let follow_up = generation.generate_json(
+        &json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": { "answer": { "type": "string" } },
+            "required": ["answer"]
+        }),
+        &[ChatMessage {
+            role: "user".into(),
+            content: "Return JSON with answer equal to exactly ok.".into(),
+        }],
+        &GenerationBudget {
+            max_output_tokens: 32,
+            temperature: 0.0,
+            seed: 7,
+        },
+        &AtomicBool::new(false),
     );
+    let cancellation_status = match &cancellation_result {
+        Ok(result) => result_evidence(result),
+        Err(error) => json!({"error": error.to_string()}),
+    };
+    write_evidence(
+        "r8_cancellation_and_recovery",
+        json!({
+            "cancellation": {
+                "elapsedMs": cancellation_elapsed.as_millis(),
+                "result": cancellation_status,
+                "resultCode": cancellation_result
+                    .as_ref()
+                    .ok()
+                    .and_then(|result| result.as_ref().err())
+                    .and_then(provider_error_code)
+                    .map(|code| format!("{code:?}")),
+            },
+            "followUp": result_evidence(&follow_up),
+        }),
+    );
+    assert!(
+        cancellation_result.is_ok(),
+        "local generation cancellation did not finish within five seconds"
+    );
+    let cancellation_result = cancellation_result.expect("checked above");
     assert_eq!(
         cancellation_result
             .as_ref()
@@ -516,34 +810,6 @@ fn real_folio_acceptance_cases_use_local_providers() {
         Some(ProviderErrorCode::Cancelled)
     );
     assert!(cancellation_elapsed < Duration::from_secs(5));
-
-    let follow_up = generation
-        .generate_json(
-            &json!({
-                "type": "object",
-                "additionalProperties": false,
-                "properties": { "answer": { "type": "string" } },
-                "required": ["answer"]
-            }),
-            &[ChatMessage {
-                role: "user".into(),
-                content: "Return JSON with answer equal to exactly ok.".into(),
-            }],
-            &GenerationBudget {
-                max_output_tokens: 32,
-                temperature: 0.0,
-                seed: 7,
-            },
-            &AtomicBool::new(false),
-        )
-        .expect("next generation succeeds after cancellation");
-    println!(
-        "R8 post-cancellation generation: {}",
-        serde_json::to_string(&follow_up).expect("follow-up output serializes")
-    );
+    let follow_up = follow_up.expect("next generation succeeds after cancellation");
     assert!(follow_up.get("answer").and_then(Value::as_str).is_some());
-
-    generation
-        .unload()
-        .expect("unload local generation provider");
 }
