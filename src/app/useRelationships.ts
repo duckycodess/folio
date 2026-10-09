@@ -127,6 +127,12 @@ export function useRelationships(
     dispatch({ type: "selectionChanged", id: selectedId });
   }, [selectedId]);
 
+  const connectionsOf = useCallback(
+    (documentId: DocumentId) =>
+      connectionsFor(documentId, relationships, duplicates),
+    [relationships, duplicates],
+  );
+
   const request = useCallback(() => setWanted(true), []);
   const refresh = useCallback(() => setGeneration((value) => value + 1), []);
 
@@ -146,8 +152,7 @@ export function useRelationships(
     failure: current?.failure ?? null,
     relationships,
     duplicates,
-    connectionsOf: (documentId) =>
-      connectionsFor(documentId, relationships, duplicates),
+    connectionsOf,
     request,
     refresh,
     focus: navigation.focus,

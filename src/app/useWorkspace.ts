@@ -15,7 +15,9 @@ import type {
 } from "../domain/contracts";
 import { discoverExplicitReferences, keywordSearch } from "../domain/discovery";
 import { toFolioError, type FolioError } from "../domain/errors";
+import { mergeFolderResults } from "../domain/searchEvidence";
 import { actionReducer, IDLE, type ActionState } from "./actionState";
+import { useFolderSearch, type FolderSearch } from "./useFolderSearch";
 
 /** A failure on screen, with the step that can be retried. */
 export interface Failure {
@@ -47,7 +49,13 @@ export interface WorkspaceState {
   loading: boolean;
   query: string;
   setQuery: (query: string) => void;
+  /**
+   * Matches for the query. In an indexed folder: the index's text matches,
+   * then name matches; otherwise, names and the text of files already read.
+   */
   results: SearchResult[];
+  /** The open folder's index and text search. */
+  search: FolderSearch;
   relationships: Relationship[];
   selected: DocumentRecord | undefined;
   busy: boolean;
@@ -108,10 +116,12 @@ export function useWorkspace(): WorkspaceState {
   }, [samplesRequested]);
 
   const selected = documents.find((document) => document.id === selectedId);
-  const results = useMemo(
-    () => keywordSearch(documents, query),
-    [documents, query],
-  );
+  const search = useFolderSearch(workspace?.id, query);
+  const results = useMemo(() => {
+    const local = keywordSearch(documents, query);
+    if (!workspace || !query.trim() || search.index !== "ready") return local;
+    return mergeFolderResults(documents, search.results, local);
+  }, [documents, query, workspace, search.index, search.results]);
   const relationships = useMemo(
     () => discoverExplicitReferences(documents),
     [documents],
@@ -218,6 +228,7 @@ export function useWorkspace(): WorkspaceState {
     query,
     setQuery,
     results,
+    search,
     relationships,
     selected,
     busy,

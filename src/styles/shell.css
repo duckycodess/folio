@@ -134,10 +134,6 @@
   border-bottom: 1px solid var(--color-border);
   background: var(--color-bg);
 }
-.topbar .search-field {
-  max-width: 560px;
-  margin-left: auto;
-}
 .breadcrumb {
   display: flex;
   gap: var(--space-2);
@@ -532,7 +528,7 @@
   }
   /* The list gives way to the reader, but the view's <h1> stays for screen
      readers so the page keeps its main heading. */
-  .app.has-document .main > .view > :not(.page-header) {
+  .app.has-document .main > .view > :not(.page-header, .home-search) {
     display: none;
   }
   .app.has-document .main > .view > .page-header {
@@ -563,10 +559,6 @@
   .topbar {
     flex-wrap: wrap;
     gap: var(--space-2);
-  }
-  .topbar .search-field {
-    max-width: none;
-    margin-left: 0;
   }
   .topbar,
   .main {
@@ -721,4 +713,66 @@
   display: block;
   font: var(--text-small);
   color: var(--color-text-secondary);
+}
+
+/* Home's search (#43): centred under the header, full width when narrow. */
+.home-search {
+  display: flex;
+  justify-content: center;
+}
+.home-search .search-field {
+  max-width: 640px;
+}
+
+/* Graph: where to start, and confirmed vs suggested connections. */
+.graph-start {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.choice-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.choice {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font: var(--text-body);
+}
+.graph-start-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-width: 32rem;
+}
+.graph-lists {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.graph-list-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font: var(--text-label);
+}
+.folder-spread {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  list-style: none;
+}
+.folder-spread li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
 }

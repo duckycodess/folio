@@ -175,16 +175,17 @@ The phone frame in the brandbook is a future direction. Phone packaging is outsi
 
 The brandbook sidebar shows Home · Files · Collections · Graph · Assistant. Folio must keep **Search**, **Organize** and **Summarize** directly reachable without the assistant. Mapping:
 
-| Nav item           | Contains                                                  | SOS role                      |
-| ------------------ | --------------------------------------------------------- | ----------------------------- |
-| Home               | Global search, collections overview, recent files         | Search (journey A entry)      |
-| Files              | Folder tree and full file table                           | Search / browse               |
-| Organize           | Collections, analyze, suggestions, duplicates (journey B) | Organize                      |
-| Graph              | Relationships view                                        | Explore related files         |
-| Assistant          | Ask & Act (journey C)                                     | Supporting route, not the app |
-| Model Lab (bottom) | Model setup and comparisons                               | Settings                      |
+| Nav item           | Contains                                                       | SOS role                            |
+| ------------------ | -------------------------------------------------------------- | ----------------------------------- |
+| Home               | The file browser: search, collections, every file, row actions | Search and browse (journey A entry) |
+| Organize           | Collections, analyze, suggestions, duplicates (journey B)      | Organize                            |
+| Graph              | Relationships view                                             | Explore related files               |
+| Assistant          | Ask & Act (journey C)                                          | Supporting route, not the app       |
+| Model Lab (bottom) | Model setup and comparisons                                    | Settings                            |
 
-Summarize lives where documents are: the **Summarize** row action and the detail panel's Summary tab. Global search is always in the main header.
+There is no separate Files page (#42, ADR 0010). Home is the file browser, like a phone's Files app: every file, each with a ⋯ menu (Open, Rename…, Move to folder…, Show related). The document panel's header has the same menu. Rename and Move use the same exact preview, Approve and Undo as Organize; nothing changes in one click.
+
+Summarize lives in each file's **Summary** tab, with a "Summarize this file" button there, or from Ask & Act (#20). It isn't a row action. Search is only on Home (#43).
 
 The brandbook labels this item "Collections". Folio uses **Organize** so the nav names the SOS capabilities (`docs/product.md`); "Collections" is the section heading inside the Organize page.
 
@@ -201,8 +202,9 @@ Active item: `--sidebar-item-active` background, 3px gold bar on the left edge, 
 
 **Search field**
 
-- Full width in the main header, search icon left, placeholder "Search files, ideas, or projects", shortcut hint right.
-- The shortcut is platform-aware: **⌘K** on macOS, **Ctrl K** on Windows.
+- Only on Home: horizontally centred under the page header, at most 640px wide, and full width in narrow windows. Search icon on the left, placeholder "Search files, ideas, or projects", shortcut hint on the right. Other pages have no search field, and the query filters only Home's list.
+- The shortcut is platform-aware: **⌘K** on macOS, **Ctrl K** on Windows. From any page it opens Home and focuses the field.
+- In a narrow window with a document open, the field stays above the reader.
 - Opens results inline; results follow #19 (excerpt, path, page, match method).
 
 **Collection cards**

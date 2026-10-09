@@ -18,12 +18,10 @@ describe("reader document", () => {
 
   it("shows the chosen file while the list includes it", () => {
     expect(readerDocument("home", plan, listed(plan, notes))).toBe(plan);
-    expect(readerDocument("files", plan, listed(plan))).toBe(plan);
   });
 
   it("hides a chosen file that the current search excludes", () => {
     expect(readerDocument("home", plan, listed(notes))).toBe(undefined);
-    expect(readerDocument("files", plan, [])).toBe(undefined);
   });
 
   it("shows files opened from Graph, which lists links rather than results", () => {
