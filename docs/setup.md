@@ -8,7 +8,7 @@ The browser preview reads only synthetic fixtures. It does not grant local-folde
 
 ## Desktop
 
-Install [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS, including the Rust stable toolchain. Windows needs the documented C++ build tools and WebView2 prerequisites; macOS needs the documented Xcode command-line tools. Run `npm run tauri dev`. Select a folder through the native folder picker. The current backend lists supported files and reads TXT/Markdown within that authorized root; PDF extraction is pending.
+Install [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your OS, including the Rust stable toolchain. Windows needs the documented C++ build tools and WebView2 prerequisites; macOS needs the documented Xcode command-line tools. Run `npm run tauri dev`. Select a folder through the native folder picker. The backend indexes TXT, Markdown and text-based PDFs in that folder into `folio.sqlite` in the OS application-data directory, with SQLite FTS5 keyword search. Folders chosen in the picker can be reopened in later sessions without the dialog. Changes made outside Folio are picked up on the next scan; there is no live file watcher.
 
 Use `npm run tauri build` on the intended target OS to compile. Native code and installers need actual target-platform verification. The initial bundle configuration is disabled until runtime/model packaging and platform installer assets are integrated; CI native checks compile/test the shell but do not publish a consumer installer. Source SVG and PNG/ICO window icons are included.
 

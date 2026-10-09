@@ -1,7 +1,7 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type {
   GroundedResult,
-  IndexStatus,
+  ProviderIndexStatus,
   InterpretationResult,
   SearchResult,
 } from "../domain/contracts";
@@ -29,11 +29,13 @@ async function call<T>(
   }
 }
 
-export function rebuildIndex(workspaceId: string): Promise<IndexStatus> {
+export function rebuildIndex(
+  workspaceId: string,
+): Promise<ProviderIndexStatus> {
   return call("rebuild_index", { workspaceId });
 }
 
-export function indexStatus(): Promise<IndexStatus> {
+export function indexStatus(): Promise<ProviderIndexStatus> {
   return call("index_status");
 }
 

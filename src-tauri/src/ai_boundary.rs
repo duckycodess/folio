@@ -175,12 +175,12 @@ fn digest_text(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workspace::WorkspaceRegistry;
     use std::fs;
 
     #[test]
     fn unknown_workspace_is_rejected_by_the_native_registry() {
-        let state = Folio::new();
+        let data = tempfile::tempdir().unwrap();
+        let state = Folio::open(data.path().join("folio.sqlite")).unwrap();
         let error = resolve_workspace(&state, "made-up-workspace").unwrap_err();
         assert_eq!(error.code, crate::error::ErrorCode::WorkspaceNotAuthorized);
     }
@@ -189,12 +189,14 @@ mod tests {
     fn authorized_workspace_resolves_to_the_registry_root() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("notes.md"), "notes").unwrap();
-        let mut registry = WorkspaceRegistry::new();
-        let info = registry.authorize(root.path()).unwrap();
-        let state = Folio {
-            workspaces: std::sync::Mutex::new(registry),
-            plans: std::sync::Mutex::new(crate::plan::PlanRegistry::new()),
-        };
+        let data = tempfile::tempdir().unwrap();
+        let state = Folio::open(data.path().join("folio.sqlite")).unwrap();
+        let info = state
+            .workspaces
+            .lock()
+            .unwrap()
+            .authorize(root.path())
+            .unwrap();
 
         let resolved = resolve_workspace(&state, &info.id).unwrap();
         assert_eq!(resolved.id, info.id);

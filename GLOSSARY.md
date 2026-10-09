@@ -7,7 +7,7 @@ Folio is a private file workspace for finding, organizing, and understanding loc
 **SOS**: Folio's three primary capabilities: Search, Organize, and Summarize.
 _Avoid_: A replacement name for the assistant or the shared AI pipeline.
 
-**Workspace**: The set of local folders the user has authorized Folio to access.
+**Workspace**: The set of local folders the user has authorized Folio to access. In the MVP, a workspace is one active authorized folder at a time.
 _Avoid_: Entire device, cloud drive.
 
 **Document**: An original file in an authorized folder that Folio can identify and inspect.
@@ -66,6 +66,9 @@ _Avoid_: Overwriting unrelated external edits.
 
 **Local Sync**: Refreshing Folio's local understanding after files change.
 _Avoid_: Cross-device or cloud synchronization.
+
+**Stale Document**: A document that changed but could not be re-read, so Folio still shows what it knew from the previous version.
+_Avoid_: A current search result, a deleted document.
 
 **Model Lab**: The settings area for choosing local models and inspecting actual task measurements.
 _Avoid_: Fabricated benchmarks or the main product identity.

@@ -22,6 +22,7 @@ Read `GLOSSARY.md`, `docs/product.md`, `docs/workflows.md`, `docs/architecture.m
 - One generative request at a time initially. Bound context, caches, histories, model copies, and indexing batches.
 - Do not label keyword filtering as semantic search, fixture connections as model inference, preview state as a saved file, or process RAM as whole-device RAM.
 - Models, native binaries, databases, backups, and user files are ignored by Git. Do not commit them or credentials.
+- Commit messages must not include `Co-Authored-By` or other AI-attribution trailers.
 
 ## Verification
 
