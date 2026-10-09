@@ -186,8 +186,6 @@ Not verified: real models (interpretation accuracy and Taglish requests are stil
 
 ### Summary tab (2026-10-10, issue #20)
 
-### Model setup and Model Lab (2026-10-10, issue #24)
-
 Checked on macOS with Node.js 26.10.0, on #48 with #15 (`FOLIO-4`) merged in:
 
 - `npm run format:check`, `npm run check` and `npm run build`: passed.
@@ -208,6 +206,12 @@ Checked on macOS with Node.js 26.10.0, on #48 with #15 (`FOLIO-4`) merged in:
   - nothing scrolls sideways at 700px.
 
 Not verified: a real model's summaries, which #15 still marks "Not reviewed"; cancellation against llama.cpp; Filipino and Taglish output; screen readers.
+
+### Model setup and Model Lab (2026-10-10, issue #24)
+
+Checked on macOS with Node.js 26.10.0, on #48 with #15 (`FOLIO-4`) merged in:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
 - `npm test`: 174 passed, 9 todo. New cases in `src/app/models.test.ts` cover:
   - exact sizes with byte counts;
   - model names;
