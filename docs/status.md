@@ -16,8 +16,9 @@
   - **Save as new document…** shows the exact Markdown first, then the native create plan, Approve, and the result with Undo. It never overwrites a file.
   - Without a model, the shared recovery notice links to Model Lab. The browser preview says summaries need the desktop app, and sample files say a folder is needed.
   - Summaries are kept for the session (up to 20 files) in one store that Ask & Act can also write to. Ask & Act doesn't request summaries yet (#36).
-- Home as the file browser ([#42](https://github.com/duckycodess/folio/issues/42), [#43](https://github.com/duckycodess/folio/issues/43), ADR 0010). The Files tab is gone. Home lists every file, sorted by path, with a count. Each row has a keyboard-accessible ⋯ menu (Open, Rename…, Move to folder…, Show related), and the document panel has the same menu. Rename and Move use the exact preview, Approve and Undo flow from #22, in a dialog. The search field is only on Home, centred, and ⌘K / Ctrl K from any page opens Home and focuses it. Rows take an optional `renderDetail` slot for #19's search evidence. With the sample files, Rename and Move explain that a folder is needed.
+- Home as the file browser ([#42](https://github.com/duckycodess/folio/issues/42), [#43](https://github.com/duckycodess/folio/issues/43), ADR 0010). The Files tab is gone. Home lists every file, sorted by path, with a count. Each row has a keyboard-accessible ⋯ menu (Open, Rename…, Move to folder…, Show related), and the document panel has the same menu. Rename and Move use the exact preview, Approve and Undo flow from #22, in a dialog. The search field is only on Home, centred, and ⌘K / Ctrl K from any page opens Home and focuses it. Rows take an optional `renderDetail` slot for #19's search evidence. With the sample files, Rename and Move explain that a folder is needed. In practice mode (`?simulate=<code>`), they show the simulated refusal instead.
 - Organize flow ([issue #22](https://github.com/duckycodess/folio/issues/22)), desktop only. Analyze re-indexes the open folder, with live progress and Stop, then lists exact duplicates (by content, never moved or deleted) and filename suggestions to tick. The exact preview shows every from → to path from the native plan. Approve echoes that plan's digest and applies it. The result is worded from the per-file outcomes, so a batch that stopped partway never says nothing changed. It shows what was recorded in history and offers a Preview Undo. A refused apply keeps the preview, with Preview again. The Rename form uses the same native plan with a folder open. With the sample files, Organize explains that a folder is needed. Virtual collections are still not available.
+- Search evidence ([issue #19](https://github.com/duckycodess/folio/issues/19)): each Home search result shows how it matched (words in the text or in the name; "Similar meaning" only for semantic results) and up to two excerpts with the query words highlighted, case- and accent-insensitive, plus page labels for PDFs. Selecting an excerpt opens the reader at that highlighted passage. In an open folder, text search uses the persistent index (FTS5 keyword search), merged with file-name matches. An unindexed folder says that only names are searched and offers **Index this folder**, with progress and Stop. A file kept open outside the results is labelled, and a note says that finding files by meaning needs a local AI model.
 - Keyword filtering (explicitly labelled), actual Markdown-link discovery in fixture text, source content views, and a list of those explicit links with their evidence (Graph view).
 - Tauri folder picker and scoped native listing/TXT/Markdown reading commands.
 - [Frozen cross-track contracts](contracts.md) declared in both `src/domain/contracts.ts` and `src-tauri/src/contracts.rs`: typed failures, stable workspace/document identity, UTF-8 source offsets bound to a document revision, typed relationship evidence, embedding-space fingerprints, provider error/cancellation codes, plans, approvals, per-operation outcomes, history and undo shapes.
@@ -111,6 +112,31 @@ Checked on macOS with Node.js 26.10.0, on #48 with #15 (`FOLIO-4`) merged in:
   - nothing scrolls sideways at 700px.
 
 Not verified: a real model's summaries, which #15 still marks "Not reviewed"; cancellation against llama.cpp; Filipino and Taglish output; screen readers.
+### Search evidence (2026-10-10, issue #19)
+
+Checked on macOS with Node.js 26.10.0:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 170 passed, 9 todo. The new cases:
+  - index text matches come before name-only matches, without repeats, and a result for a file no longer listed is dropped;
+  - match labels never call keyword matching semantic;
+  - highlighting marks whole words, case- and accent-insensitive ("nino" marks "Niño"), and keeps the excerpt's exact text.
+- Browser preview, sample files, headless Chrome at 1280×850:
+  - "deadline" shows four results, each with "Words in the text" and a highlighted excerpt;
+  - the row's spoken description includes the label and the excerpt;
+  - the live region says "4 files match your search.";
+  - selecting an excerpt opens the reader with that passage highlighted and focused;
+  - an open file the search leaves out is labelled with "Clear search";
+  - a query with no matches shows "No matching files".
+- Folder mode, with the desktop app's commands stood in for by a browser mock (`choose_workspace`, `list_documents`, `list_indexed_documents`, `search_index`, `scan_workspace` with progress events, `read_document`):
+  - before indexing, only names are searched, and the "Index this folder" note appears;
+  - indexing shows its phase and progress;
+  - afterwards, "panayam" lists both files that contain it, with highlights;
+  - an excerpt opens the read file with the passage highlighted;
+  - a PDF result shows "Page 3";
+  - there's no horizontal scroll at 700px.
+
+Not verified: the real native index (this used a mock), semantic or hybrid results (there's no embedding model yet), opening a PDF at its page (the reader can't show PDF text yet; see #47), cross-language matches (which need semantic search), screen readers, and the Tauri webview.
 
 ### Home as the file browser (2026-10-10, issues #42 and #43)
 
@@ -136,6 +162,25 @@ Checked on macOS with Node.js 26.10.0, on top of #22:
   - Move offers only folders inside the open folder and previews `school/copy of plan.md → copy of plan.md`.
 
 Not verified: the real native core in the Tauri app, screen readers, and Windows.
+
+After review (2026-10-10):
+
+- Fixed: **Done** in the dialog's result closes the dialog. It used to reset the flow and reopen the form for the file's old path.
+- Fixed: the dialog can't be dismissed while a change is being applied, because Escape and Close are disabled. Before, closing it then left that flow's preview, result and Undo to show up in the next file's dialog.
+- Fixed: Show related applies to that one opening. Once another file (or none) is shown, opening the file again starts on Details.
+- Back from the preview returns focus to the name or folder field. In Move, "Choose another name" focuses the folder field.
+- A rename that only changes capital letters is refused before a plan is asked for, as the native plan would refuse it.
+- Practice mode works in the dialog again: `?simulate=<code>` shows that refusal on the sample files.
+- Menu items have an `id`, so the document panel drops Open by id rather than by label.
+- `npm run format:check`, `npm run check` and `npm run build`: passed. `npm test`: 162 passed, 9 todo, with case-only renames added to the name checks.
+- Headless Chrome with a scratch mocked native core, not committed:
+  - Done closes the dialog and focus returns to the list;
+  - during a 1.5s apply, Escape leaves the dialog open with Close disabled, and the result appears in that dialog;
+  - the next dialog, "Move notes.md", opens on its own form;
+  - Back focuses the name field;
+  - Show related → another file → reopening shows Details.
+- Practice mode, checked on the sample files: `?simulate=destinationExists` shows "A file with that name already exists" in Move, and "Choose another name" focuses the folder field.
+- The mocked core itself is still not committed.
 
 ### Organize flow (2026-10-09, issue #22)
 
