@@ -21,7 +21,6 @@
   opacity: 0.45;
 }
 .button-primary {
-  min-height: 40px;
   background: var(--brand-gold);
   color: var(--color-text-on-gold);
 }
@@ -151,6 +150,7 @@
 }
 .panel-title {
   font: var(--text-heading);
+  letter-spacing: -0.01em;
 }
 .panel-actions {
   display: flex;

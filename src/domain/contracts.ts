@@ -1263,3 +1263,72 @@ export interface OrganizationSuggestions {
   duplicateGroups: DuplicateGroup[];
   filenames: OrganizationSuggestion[];
 }
+
+/* -------------------------------------------- virtual collections (#78, ADR 0016) */
+
+/** One file of a suggested collection, with the revision the analysis read. */
+export interface SuggestedMember {
+  documentId: DocumentId;
+  relativePath: RelativePath;
+  title: string;
+  contentHash: ContentHash;
+  /** The member's passage closest to what the group has in common. */
+  passage: SourcePassage;
+  /** Similarity to the group's centre, in [0, 1]. */
+  similarity: number;
+}
+
+/** A name the local model wrote, citing the passages it was based on. */
+export interface GeneratedCollectionName {
+  text: string;
+  citations: SourcePassage[];
+  modelId: string;
+  revision: string;
+}
+
+/** Files grouped by meaning within one embedding space. Nothing is kept until the user keeps it. */
+export interface SuggestedCollection {
+  id: string;
+  members: SuggestedMember[];
+  cohesion: number;
+  provenance: "embedding";
+  spaceFingerprint: string;
+  name?: GeneratedCollectionName;
+}
+
+export type CollectionNaming =
+  "named" | "cancelled" | "generationModelMissing" | "failed" | "notNeeded";
+
+export interface CollectionSuggestions {
+  status: "grouped" | "embeddingModelMissing";
+  spaceFingerprint?: string;
+  analyzedDocumentCount: number;
+  /** More files than one analysis compares; the rest were not analyzed. */
+  truncated: boolean;
+  naming: CollectionNaming;
+  namingError?: FolioErrorPayload;
+  groups: SuggestedCollection[];
+}
+
+export interface CollectionMember {
+  documentId: DocumentId;
+  relativePath: RelativePath;
+  /** Renamed, moved or deleted outside Folio; never re-found by guessing. */
+  missing: boolean;
+}
+
+/** A named group of document references. Its files stay where they are. */
+export interface VirtualCollection {
+  id: string;
+  workspaceId: WorkspaceId;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  members: CollectionMember[];
+}
+
+/** A member to keep, with the revision the analysis read. */
+export interface KeptMember {
+  documentId: DocumentId;
+  expectedContentHash: ContentHash;
+}

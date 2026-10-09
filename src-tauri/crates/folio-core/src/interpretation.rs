@@ -258,6 +258,14 @@ pub fn resolve_model_intent(
         };
     };
     let (document, exact_duplicate_paths) = target;
+    if intent.intent == IntentKind::Edit && !is_text_media_type(&document.media_type) {
+        return InterpretationResult::Unsupported {
+            reason: format!(
+                "{} is read-only: Folio can rename or move it, but changes text only in TXT and Markdown files.",
+                document.name
+            ),
+        };
+    }
 
     match intent.intent {
         IntentKind::Edit => resolve_edit(
@@ -275,8 +283,10 @@ pub fn resolve_model_intent(
                     "A rename or move request needs a destination.",
                 );
             };
-            if let Err(reason) = validate_destination(destination, Some(&document.name)) {
-                return clarification(reason, "The destination must stay a TXT/Markdown path.");
+            let destination =
+                relocation_destination(&intent.intent, destination, &document.relative_path);
+            if let Err(reason) = validate_destination(&destination, Some(&document.name)) {
+                return clarification(reason, "The destination is not a safe path for this file.");
             }
             let Some(current_content_hash) = observed_content_hash(&document, contents) else {
                 return clarification(
@@ -289,14 +299,14 @@ pub fn resolve_model_intent(
                     document_id: document.id,
                     relative_path: document.relative_path,
                     observed_content_hash: current_content_hash,
-                    destination_relative_path: destination.replace('\\', "/"),
+                    destination_relative_path: destination.clone(),
                 }
             } else {
                 OperationProposal::Move {
                     document_id: document.id,
                     relative_path: document.relative_path,
                     observed_content_hash: current_content_hash,
-                    destination_relative_path: destination.replace('\\', "/"),
+                    destination_relative_path: destination,
                 }
             };
             InterpretationResult::Proposal {
@@ -488,6 +498,32 @@ fn candidate_results(
             space_fingerprint: None,
         })
         .collect::<Vec<_>>();
+    // The words of a file's name count too: a PDF Folio can only rename has no
+    // text here, and "the resume" should find VILAR_Resume.pdf.
+    let wanted = normalize_stem(target_description);
+    let wanted = wanted.split(' ').filter(|word| !word.is_empty()).collect::<Vec<_>>();
+    if !wanted.is_empty() {
+        for document in documents {
+            let stem = normalize_stem(&document.name);
+            let words = stem.split(' ').collect::<Vec<_>>();
+            let matched = wanted.iter().filter(|word| words.contains(word)).count();
+            let score = matched as f32 / wanted.len() as f32;
+            if score < 0.5
+                || candidates
+                    .iter()
+                    .any(|candidate| candidate.document.id == document.id)
+            {
+                continue;
+            }
+            candidates.push(SearchResult {
+                document: document.clone(),
+                passages: Vec::new(),
+                score,
+                method: SearchMethod::Keyword,
+                space_fingerprint: None,
+            });
+        }
+    }
     for result in
         HybridRetriever::default().keyword_term_overlap(documents, chunks, target_description, 5)
     {
@@ -603,18 +639,69 @@ fn validate_destination(destination: &str, source_name: Option<&str>) -> Result<
         .last()
         .and_then(|name| name.rsplit_once('.'))
         .map(|(_, extension)| extension.to_ascii_lowercase());
-    if !matches!(extension.as_deref(), Some("md") | Some("txt")) {
-        return Err("Folio proposals support only .md and .txt destinations.".into());
-    }
-    if let Some(source_name) = source_name {
-        let source_extension = source_name
-            .rsplit_once('.')
-            .map(|(_, extension)| extension.to_ascii_lowercase());
-        if extension != source_extension {
-            return Err("Rename and move proposals must preserve the source extension.".into());
+    let Some(source_name) = source_name else {
+        if !matches!(extension.as_deref(), Some("md") | Some("txt")) {
+            return Err("Folio creates only .md and .txt files.".into());
         }
+        return Ok(());
+    };
+    let source_extension = source_name
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase());
+    if !matches!(
+        source_extension.as_deref(),
+        Some("md") | Some("markdown") | Some("txt") | Some("pdf")
+    ) {
+        return Err("Folio renames and moves only TXT, Markdown and PDF files.".into());
+    }
+    if extension != source_extension {
+        return Err(format!(
+            "The new name must keep the .{} extension.",
+            source_extension.unwrap_or_default()
+        ));
     }
     Ok(())
+}
+
+fn is_text_media_type(media_type: &str) -> bool {
+    matches!(media_type, "text/markdown" | "text/plain")
+}
+
+/// The extension Folio would recognise on a destination's last segment.
+fn known_extension(segment: &str) -> Option<String> {
+    segment
+        .rsplit_once('.')
+        .map(|(_, extension)| extension.to_ascii_lowercase())
+        .filter(|extension| matches!(extension.as_str(), "md" | "markdown" | "txt" | "pdf"))
+}
+
+/// What the user meant by a rename or move destination, in full. A rename
+/// names only the file, so it stays in the file's own folder ("rename notes to
+/// plan" doesn't move it to the top). A name without the file's extension gets
+/// it ("to Police Clearance" keeps `.pdf`); a different known extension is
+/// left for `validate_destination` to refuse. A move to a bare folder name
+/// ("move it to Archive") puts the file inside that folder.
+fn relocation_destination(kind: &IntentKind, destination: &str, source_path: &str) -> String {
+    let destination = destination.trim().replace('\\', "/");
+    let destination = destination.trim_end_matches('/').to_string();
+    let (source_folder, source_name) = source_path
+        .rsplit_once('/')
+        .map_or(("", source_path), |(folder, name)| (folder, name));
+    let source_extension = source_name.rsplit_once('.').map(|(_, extension)| extension);
+    let last = destination.rsplit('/').next().unwrap_or(&destination).to_string();
+    if *kind == IntentKind::Move && known_extension(&last).is_none() {
+        return format!("{destination}/{source_name}");
+    }
+    let mut destination = destination;
+    if *kind == IntentKind::Rename && !destination.contains('/') && !source_folder.is_empty() {
+        destination = format!("{source_folder}/{destination}");
+    }
+    if known_extension(&last).is_none() {
+        if let Some(extension) = source_extension {
+            destination = format!("{destination}.{extension}");
+        }
+    }
+    destination
 }
 
 fn normalize_stem(value: &str) -> String {
@@ -809,6 +896,122 @@ mod tests {
         assert!(!prompt.contains(
             "Hanapin yung project plan at palitan ang deadline na October 20 to October 23."
         ));
+    }
+
+    fn pdf(relative_path: &str) -> DocumentRecord {
+        let name = relative_path.rsplit('/').next().unwrap();
+        DocumentRecord {
+            id: relative_path.into(),
+            workspace_id: "test-workspace".into(),
+            relative_path: relative_path.into(),
+            name: name.into(),
+            title: name.into(),
+            language: Language::Unknown,
+            media_type: "application/pdf".into(),
+            size_bytes: 4,
+            modified_at_ms: None,
+            content: None,
+            content_hash: Some(content_hash("%PDF")),
+        }
+    }
+
+    fn rename_of(target: &str, destination: &str, documents: &[DocumentRecord]) -> InterpretationResult {
+        let mut model_intent = intent(IntentKind::Rename);
+        model_intent.target_description = Some(target.into());
+        model_intent.destination = Some(destination.into());
+        resolve_model_intent(&model_intent, Language::En, documents, &HashMap::new(), &[])
+    }
+
+    #[test]
+    fn renames_a_pdf_in_its_own_folder_keeping_its_extension() {
+        let documents = vec![pdf("ids/201_Barangay Clearance.pdf")];
+        let result = rename_of("201_Barangay Clearance", "Police Clearance", &documents);
+        let InterpretationResult::Proposal {
+            proposal: OperationProposal::Rename { relative_path, destination_relative_path, observed_content_hash, .. },
+            ..
+        } = result
+        else {
+            panic!("expected a rename proposal, got {result:?}");
+        };
+        assert_eq!(relative_path, "ids/201_Barangay Clearance.pdf");
+        assert_eq!(destination_relative_path, "ids/Police Clearance.pdf");
+        assert_eq!(observed_content_hash, content_hash("%PDF"));
+    }
+
+    #[test]
+    fn renames_a_pdf_named_with_its_extension() {
+        let documents = vec![pdf("VILAR_Resume.pdf")];
+        let result = rename_of("VILAR_Resume.pdf", "Larvi.pdf", &documents);
+        assert!(matches!(
+            result,
+            InterpretationResult::Proposal { proposal: OperationProposal::Rename { ref destination_relative_path, .. }, .. }
+                if destination_relative_path == "Larvi.pdf"
+        ), "{result:?}");
+    }
+
+    #[test]
+    fn finds_a_rename_target_by_the_words_of_its_name() {
+        let documents = vec![pdf("VILAR_Resume.pdf"), pdf("cover-letter.pdf")];
+        let result = rename_of("my resume", "Larvi", &documents);
+        assert!(matches!(
+            result,
+            InterpretationResult::Proposal { proposal: OperationProposal::Rename { ref relative_path, .. }, .. }
+                if relative_path == "VILAR_Resume.pdf"
+        ), "{result:?}");
+    }
+
+    #[test]
+    fn refuses_to_change_a_files_type_by_renaming() {
+        let documents = vec![pdf("VILAR_Resume.pdf")];
+        assert!(matches!(
+            rename_of("VILAR_Resume.pdf", "resume.md", &documents),
+            InterpretationResult::NeedsClarification { .. }
+        ));
+    }
+
+    #[test]
+    fn a_pdf_without_a_known_revision_is_not_proposed() {
+        let mut unhashed = pdf("VILAR_Resume.pdf");
+        unhashed.content_hash = None;
+        assert!(matches!(
+            rename_of("VILAR_Resume.pdf", "Larvi.pdf", &[unhashed]),
+            InterpretationResult::NeedsClarification { .. }
+        ));
+    }
+
+    #[test]
+    fn says_a_pdf_is_read_only_when_asked_to_edit_it() {
+        let mut model_intent = intent(IntentKind::Edit);
+        model_intent.target_description = Some("VILAR_Resume.pdf".into());
+        model_intent.find = Some("2024".into());
+        model_intent.replace = Some("2025".into());
+        let result = resolve_model_intent(
+            &model_intent,
+            Language::En,
+            &[pdf("VILAR_Resume.pdf")],
+            &HashMap::new(),
+            &[],
+        );
+        assert!(matches!(
+            result,
+            InterpretationResult::Unsupported { ref reason } if reason.contains("read-only")
+        ), "{result:?}");
+    }
+
+    #[test]
+    fn a_move_to_a_folder_name_moves_the_file_into_it() {
+        assert_eq!(
+            relocation_destination(&IntentKind::Move, "Archive", "notes/plan.md"),
+            "Archive/plan.md"
+        );
+        assert_eq!(
+            relocation_destination(&IntentKind::Move, "Archive/old-plan.md", "notes/plan.md"),
+            "Archive/old-plan.md"
+        );
+        assert_eq!(
+            relocation_destination(&IntentKind::Rename, "plan v2.0", "notes/plan.md"),
+            "notes/plan v2.0.md"
+        );
     }
 
     #[test]

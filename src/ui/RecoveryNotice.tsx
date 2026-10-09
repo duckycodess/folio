@@ -8,7 +8,7 @@ import { Button } from "./Button";
 import { Notice } from "./Notice";
 
 interface RecoveryNoticeProps {
-  error: Pick<FolioError, "code">;
+  error: Pick<FolioError, "code"> & Partial<Pick<FolioError, "details">>;
   /** For change-related errors: refused before any write (the default), during apply, or a partial Undo. */
   stage?: RecoveryStage;
   /** The next steps this screen can carry out; others aren't offered. */
@@ -24,16 +24,20 @@ export function RecoveryNotice({
   onDismiss,
 }: RecoveryNoticeProps) {
   const recovery = recoveryFor(error, stage);
-  const run = recovery.action && actions[recovery.action.kind];
+  let action = recovery.action;
+  // A screen that can't stop other work still offers its plain retry.
+  if (action?.kind === "stopAndRetry" && !actions.stopAndRetry && actions.retry)
+    action = { kind: "retry", label: "Try again" };
+  const run = action && actions[action.kind];
   return (
     <Notice
       tone={recovery.tone}
       action={
         (run || onDismiss) && (
           <div className="notice-actions">
-            {run && recovery.action && (
+            {run && action && (
               <Button variant="secondary" onClick={run}>
-                {recovery.action.label}
+                {action.label}
               </Button>
             )}
             {onDismiss && (

@@ -88,7 +88,13 @@ pub(crate) fn provider_failure(failure: NativeProviderError) -> FolioError {
         ProviderErrorCode::RuntimeStartFailed => {
             error(ErrorCode::ModelLoadFailed, message).with_detail("reason", "runtimeStartFailed")
         }
-        ProviderErrorCode::GenerationBusy => error(ErrorCode::ProviderBusy, message),
+        ProviderErrorCode::GenerationBusy => {
+            let mut result = error(ErrorCode::ProviderBusy, message);
+            if let Some(holder) = detail {
+                result = result.with_detail("holder", holder);
+            }
+            result
+        }
         ProviderErrorCode::Cancelled => error(ErrorCode::Cancelled, message),
         ProviderErrorCode::ContextLimit => error(ErrorCode::ContextOverflow, message),
         ProviderErrorCode::EmbeddingSpaceMismatch => {
