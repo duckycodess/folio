@@ -570,3 +570,89 @@ export interface BenchmarkResult {
   peakProcessRamBytes: number | null;
   modelDiskBytes: number;
 }
+
+/* -------------------------------------------------------- persistent index */
+
+/**
+ * `indexed`: current content is searchable. `unsupported`: readable but not
+ * indexable (e.g. a scanned PDF without a text layer). `failed`: never indexed
+ * successfully. `stale`: the file changed but could not be re-read; search
+ * shows the previous version, whose hash is `contentHash`.
+ */
+export type IndexStatus = "indexed" | "unsupported" | "failed" | "stale";
+
+/** A document as recorded by the native index. */
+export interface IndexedDocument extends DocumentRecord {
+  contentHash: ContentHash;
+  status: IndexStatus;
+  statusMessage?: string;
+  indexedAtMs?: number;
+}
+
+/** A folder chosen in an earlier session; restoring it revalidates access. */
+export interface KnownWorkspace {
+  id: WorkspaceId;
+  rootPath: string;
+  authorizedAt: number;
+  lastOpenedAt: number | null;
+  /** False when the folder is gone or no longer readable. */
+  available: boolean;
+}
+
+export interface IndexProgress {
+  workspaceId: WorkspaceId;
+  phase: "discovering" | "indexing" | "linking" | "done" | "cancelled";
+  processed: number;
+  total: number;
+  currentPath?: RelativePath;
+}
+
+/** Counts describe one scan; `unchanged` documents were not re-extracted. */
+export interface ScanSummary {
+  workspaceId: WorkspaceId;
+  total: number;
+  added: number;
+  updated: number;
+  unchanged: number;
+  removed: number;
+  unsupported: number;
+  failed: number;
+  stale: number;
+  /** Entries that could not be read or identified. */
+  skipped: number;
+  cancelled: boolean;
+  durationMs: number;
+}
+
+/** Documents whose bytes were re-read and found identical; not a similarity judgement. */
+export interface DuplicateGroup {
+  contentHash: ContentHash;
+  sizeBytes: number;
+  documents: IndexedDocument[];
+}
+
+export type ExplicitReference = Extract<
+  Relationship,
+  { type: "explicitReference" }
+>;
+
+/**
+ * A chunk without a vector in the given embedding space. Echo `contentHash`
+ * when storing its vector: chunk ids can be reused after a rescan, and a vector
+ * for text the chunk no longer holds is refused (`evidenceInvalid`,
+ * `details.reason` = `chunkChanged`).
+ */
+export interface PendingChunk {
+  chunkId: number;
+  documentId: DocumentId;
+  text: string;
+  contentHash: ContentHash;
+}
+
+/** Exact cosine match within a single embedding space. */
+export interface VectorCandidate {
+  chunkId: number;
+  score: number;
+  spaceFingerprint: EmbeddingSpaceFingerprint;
+  passage: SourcePassage;
+}
