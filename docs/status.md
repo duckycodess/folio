@@ -1535,6 +1535,14 @@ Likely cause: `build_interpretation_messages`'s few-shot examples were all mutat
 
 **Not verified:** whether this prompt change actually changes qwen3-0.6b-q4-k-m's real output for the reported request. A matching real-model test, `issue_88_plain_find_request_is_search_not_clarification`, was added next to the existing `r8_interpretation_ambiguity` acceptance test, but like its siblings it's `#[ignore]`d — this sandbox has no verified local E5/llama.cpp model files to run it against. Someone with those files needs to run `cargo test --manifest-path src-tauri/Cargo.toml -p folio-core --test real_acceptance -- --ignored issue_88_plain_find_request_is_search_not_clarification` and confirm it passes before this is considered closed. Issue #88's second hypothesis (whether a file's actual text reaches the model during generation, for `question`/`summarize` requests) was not investigated here; this fix only addresses the classification/clarification dead-end actually reported.
 
+### Ask & Act finds files by name (2026-10-10)
+
+"Sample_Resume.pdf find files" found nothing in a folder holding that file: Ask & Act's search (`search` in `src/app/useAskAct.ts`, used by Find and by the interpreter's search and summarize intents) sent the request to the index, which scores only file text, never file names. Home search already merged a local name match; Ask & Act did not.
+
+**Fix:** `namedFiles` (`src/app/askAct.ts`) matches the request's words against file names. A file whose every name word (extension aside) is in the request is listed first, then the index's results, then files sharing a longer word with the request. Name matches are labelled keyword matches with no passages, never semantic. If the index can't answer (not prepared, no embedding model) but a name matches, the name matches are shown instead of the error. A summarize request whose text writes out exactly one file's full name now uses that file instead of asking the user to choose.
+
+**Verified:** `npm run check`, `npm test` (unit tests for `namedFiles` and `summaryTarget`, including the reported request), `npm run build`. **Not verified:** in the desktop app against a real folder; whether that PDF's text is extractable (a scanned PDF still has no passages, though it is now found by name).
+
 ### Model selection no longer re-hashes every model (2026-10-10)
 
 Selecting a model was slow, and other installed models often showed "Checking…" with no "Use this model" button. The `verify_model` command called the store's uncached `verify_model`, which cleared the per-session hash cache and re-hashed every file. The shell, onboarding and Model Lab each call it for every model when they mount, in parallel, and again for a model whenever one is selected or removed; `select_model` then had to hash the GGUF again because the cache had just been cleared.
