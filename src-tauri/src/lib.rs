@@ -1570,7 +1570,7 @@ async fn semantic_search(
 fn acquire_generation(
     app: &AppHandle,
     generation_state: &GenerationState,
-) -> Result<(Arc<LlamaServerProvider>, Arc<AtomicBool>), NativeProviderError> {
+) -> Result<(Arc<LlamaServerProvider>, GenerationClaim), NativeProviderError> {
     let store = model_store(app)?;
     let model_id = store
         .selected_model(ModelRole::Generation)
@@ -1585,32 +1585,15 @@ fn acquire_generation(
     let executable = store
         .verified_runtime_executable(runtime_id_for_host())
         .map_err(native_error)?;
-    let mut guard = generation_state.lock().map_err(|_| NativeProviderError {
-        code: folio_core::contracts::ProviderErrorCode::IoError,
-        message: "The local generation state is unavailable.".into(),
-        detail: None,
-    })?;
-    if guard.active_cancel.is_some() {
-        return Err(NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
-            message: "Another local generation request is active.".into(),
-            detail: None,
-        });
-    }
-    if guard.runtime_installing {
-        return Err(NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
-            message: "The local AI runtime is being installed. Try again when it finishes.".into(),
-            detail: None,
-        });
-    }
-    let cancel = Arc::new(AtomicBool::new(false));
+    let mut guard = lock_generation(generation_state)?;
+    ensure_generation_idle(&guard)?;
     if let Some(slot) = guard.slot.as_ref() {
         if slot.model_id == verified.descriptor.id && slot.revision == verified.descriptor.revision
         {
             let provider = slot.provider.clone();
-            guard.active_cancel = Some(cancel.clone());
-            return Ok((provider, cancel));
+            let claim = claim_locked(&mut guard, generation_state);
+            drop(guard);
+            return Ok((provider, claim));
         }
     }
     if let Some(slot) = guard.slot.take() {
@@ -1628,8 +1611,94 @@ fn acquire_generation(
         revision: provider.revision().into(),
         provider: provider.clone(),
     });
+    let claim = claim_locked(&mut guard, generation_state);
+    drop(guard);
+    Ok((provider, claim))
+}
+
+fn lock_generation(
+    generation_state: &GenerationState,
+) -> Result<std::sync::MutexGuard<'_, GenerationStateInner>, NativeProviderError> {
+    generation_state.lock().map_err(|_| NativeProviderError {
+        code: folio_core::contracts::ProviderErrorCode::IoError,
+        message: "The local generation state is unavailable.".into(),
+        detail: None,
+    })
+}
+
+fn ensure_generation_idle(guard: &GenerationStateInner) -> Result<(), NativeProviderError> {
+    if guard.active_cancel.is_some() {
+        return Err(NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
+            message: "Another local generation request is active.".into(),
+            detail: None,
+        });
+    }
+    if guard.runtime_installing {
+        return Err(NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
+            message: "The local AI runtime is being installed. Try again when it finishes.".into(),
+            detail: None,
+        });
+    }
+    Ok(())
+}
+
+/// Marks the slot held. Callers must drop their `MutexGuard` before the claim
+/// can be dropped, because the claim's release locks the same mutex.
+fn claim_locked(
+    guard: &mut GenerationStateInner,
+    generation_state: &GenerationState,
+) -> GenerationClaim {
+    let cancel = Arc::new(AtomicBool::new(false));
     guard.active_cancel = Some(cancel.clone());
-    Ok((provider, cancel))
+    GenerationClaim {
+        state: generation_state.clone(),
+        cancel,
+    }
+}
+
+/// Takes the generation slot without selecting or starting a model. The seam
+/// tests use for the claim's lifecycle.
+#[cfg(test)]
+fn try_claim_generation(
+    generation_state: &GenerationState,
+) -> Result<GenerationClaim, NativeProviderError> {
+    let mut guard = lock_generation(generation_state)?;
+    ensure_generation_idle(&guard)?;
+    let claim = claim_locked(&mut guard, generation_state);
+    drop(guard);
+    Ok(claim)
+}
+
+/// Holds the generation slot until it is dropped, including when the holder
+/// returns an error or panics, so a failed request cannot leave Folio busy.
+#[must_use]
+struct GenerationClaim {
+    state: GenerationState,
+    cancel: Arc<AtomicBool>,
+}
+
+impl GenerationClaim {
+    fn cancel(&self) -> &AtomicBool {
+        self.cancel.as_ref()
+    }
+}
+
+impl Drop for GenerationClaim {
+    fn drop(&mut self) {
+        let mut guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if guard
+            .active_cancel
+            .as_ref()
+            .is_some_and(|active| Arc::ptr_eq(active, &self.cancel))
+        {
+            guard.active_cancel = None;
+        }
+    }
 }
 
 fn finish_generation(
@@ -1683,14 +1752,13 @@ async fn summarize_document(
         let content = document_text.content.clone();
         let passages =
             grounding::summary_passages(&document_id, &content, &document_text.content_hash);
-        let (provider, cancel) = acquire_generation(&app, &generation_state)?;
+        let (provider, claim) = acquire_generation(&app, &generation_state)?;
         let result = grounding::summarize_document(
             provider.as_ref(),
             passages,
             grounding::detect_language(&content),
-            cancel.as_ref(),
+            claim.cancel(),
         );
-        finish_generation(&generation_state, &cancel)?;
         Ok(result?)
     })
     .await?)
@@ -1740,15 +1808,14 @@ async fn answer_question(
                 &AtomicBool::new(false),
             )?);
         }
-        let (provider, cancel) = acquire_generation(&app, &generation_state)?;
+        let (provider, claim) = acquire_generation(&app, &generation_state)?;
         let result = grounding::answer_question(
             Some(provider.as_ref()),
             &question,
             passages,
             grounding::detect_language(&question),
-            cancel.as_ref(),
+            claim.cancel(),
         );
-        finish_generation(&generation_state, &cancel)?;
         Ok(result?)
     })
     .await?)
@@ -1815,16 +1882,15 @@ async fn interpret_request(
     let generation_state = generation_state.inner().clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
         let (documents, contents, chunks, _skipped_documents) = load_corpus(&root)?;
-        let (provider, cancel) = acquire_generation(&app, &generation_state)?;
+        let (provider, claim) = acquire_generation(&app, &generation_state)?;
         let result = interpretation::interpret_request(
             provider.as_ref(),
             &text,
             &documents,
             &contents,
             &chunks,
-            cancel.as_ref(),
+            claim.cancel(),
         );
-        finish_generation(&generation_state, &cancel)?;
         Ok(result?)
     })
     .await?)
@@ -1849,6 +1915,57 @@ fn unload_generation_now(generation_state: &GenerationState) -> Result<(), Nativ
 mod tests {
     use super::*;
     use std::fs;
+
+    fn is_busy(result: &Result<GenerationClaim, NativeProviderError>) -> bool {
+        matches!(
+            result,
+            Err(error) if error.code == folio_core::contracts::ProviderErrorCode::GenerationBusy
+        )
+    }
+
+    #[test]
+    fn a_second_claim_is_busy_until_the_first_is_dropped() {
+        let state = GenerationState::default();
+        let first = try_claim_generation(&state).unwrap();
+        assert!(is_busy(&try_claim_generation(&state)));
+        drop(first);
+        assert!(try_claim_generation(&state).is_ok());
+    }
+
+    #[test]
+    fn a_claim_is_released_when_its_holder_returns_an_error() {
+        let state = GenerationState::default();
+        let holder = |state: &GenerationState| -> Result<(), String> {
+            let _claim = try_claim_generation(state).map_err(|error| error.message)?;
+            Err("provider failed".into())
+        };
+        assert!(holder(&state).is_err());
+        assert!(try_claim_generation(&state).is_ok());
+    }
+
+    #[test]
+    fn a_claim_is_released_when_its_holder_panics() {
+        let state = GenerationState::default();
+        let held = state.clone();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            let _claim = try_claim_generation(&held).unwrap();
+            panic!("grounding panicked");
+        }));
+        assert!(outcome.is_err());
+        assert!(try_claim_generation(&state).is_ok());
+    }
+
+    #[test]
+    fn a_stale_claim_never_releases_a_newer_holder() {
+        let state = GenerationState::default();
+        let stale = try_claim_generation(&state).unwrap();
+        state.lock().unwrap().active_cancel = None;
+        let newer = try_claim_generation(&state).unwrap();
+        drop(stale);
+        assert!(is_busy(&try_claim_generation(&state)));
+        drop(newer);
+        assert!(try_claim_generation(&state).is_ok());
+    }
 
     #[test]
     fn corpus_loading_skips_and_reports_unreadable_text() {
