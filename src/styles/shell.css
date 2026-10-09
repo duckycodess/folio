@@ -722,3 +722,156 @@
   font: var(--text-small);
   color: var(--color-text-secondary);
 }
+
+/* Exact text diff: +/− markers and spoken labels carry the meaning; the
+   background only reinforces it. */
+.diff {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  overflow-x: auto;
+}
+.diff-table {
+  width: 100%;
+  border-collapse: collapse;
+  font: var(--text-body);
+}
+.diff-table th {
+  padding: var(--space-1) var(--space-2);
+  font: var(--text-small);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  background: var(--color-surface-muted);
+  text-align: left;
+}
+.diff-table td {
+  padding: 2px var(--space-2);
+  vertical-align: top;
+}
+.diff-number {
+  width: 1%;
+  color: var(--color-text-secondary);
+  font: var(--text-small);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.diff-marker {
+  width: 1%;
+  font-weight: 700;
+  text-align: center;
+}
+.diff-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.diff-removed {
+  background: var(--color-danger-bg);
+}
+.diff-removed .diff-marker {
+  color: var(--color-danger);
+}
+.diff-added {
+  background: var(--color-surface-muted);
+  box-shadow: inset 3px 0 0 var(--color-success);
+}
+.diff-added .diff-marker {
+  color: var(--color-success);
+}
+.diff-gap td {
+  padding: var(--space-1) var(--space-2);
+  color: var(--color-text-secondary);
+  font: var(--text-small);
+  text-align: center;
+}
+.diff-note {
+  color: var(--color-text-secondary);
+  font: var(--text-small);
+}
+.diff-full {
+  max-height: 24rem;
+  overflow: auto;
+}
+
+/* Folio Ripple candidates: review only, never "updated". */
+.impact-review,
+.impact-group,
+.impact-list,
+.undo-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.impact-group-title {
+  margin: 0;
+  font: var(--text-label);
+}
+.impact-list,
+.impact-passages {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.impact {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.impact-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.impact-provenance {
+  font: var(--text-small);
+  color: var(--color-text-secondary);
+}
+.impact-passage {
+  margin: var(--space-1) 0 0;
+  padding: var(--space-1) var(--space-3);
+  border-left: 3px solid var(--color-border-strong);
+  background: var(--color-surface-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.undo-confirm .badge {
+  align-self: flex-start;
+}
+.undo-confirm {
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+
+/* File action dialogs are wider than a confirmation, for diffs and paths. */
+.modal.modal-wide {
+  width: min(760px, calc(100vw - 32px));
+}
+.modal-wide .modal-body {
+  max-height: calc(100vh - 160px);
+  overflow-y: auto;
+}
+.edit-text {
+  min-height: 16rem;
+  font: var(--text-body);
+  white-space: pre-wrap;
+}
+.move-folders {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.move-folder {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  overflow-wrap: anywhere;
+}

@@ -1,24 +1,17 @@
 import { ArrowRight, Copy, FolderOpen } from "lucide-react";
 import { useEffect, useRef, type RefObject } from "react";
 import type { OrganizeStage } from "../app/organizeFlow";
-import {
-  planRow,
-  summarizeApply,
-  summarizeUndo,
-  undoBlockers,
-  type PlanRow,
-} from "../app/planReview";
+import { planRow, summarizeApply, summarizeUndo } from "../app/planReview";
 import type { OrganizeController } from "../app/useOrganize";
 import type { WorkspaceState } from "../app/useWorkspace";
 import type { IndexProgress } from "../domain/contracts";
-import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
-import { Modal } from "../ui/Modal";
 import { Notice } from "../ui/Notice";
 import { Panel } from "../ui/Panel";
 import { Progress } from "../ui/Progress";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
+import { PlanTable, UndoDialog } from "./PlanReview";
 
 const STEPS: { label: string; stages: OrganizeStage[] }[] = [
   { label: "Analyze", stages: ["idle", "analyzing"] },
@@ -72,55 +65,6 @@ function Steps({ stage }: { stage: OrganizeStage }) {
     </ol>
   );
 }
-
-function PlanTable({
-  rows,
-  caption,
-}: {
-  rows: (PlanRow & { status?: string; reason?: string })[];
-  caption: string;
-}) {
-  const withStatus = rows.some((row) => row.status);
-  return (
-    <div className="plan-table-wrap">
-      <table className="plan-table">
-        <caption className="visually-hidden">{caption}</caption>
-        <thead>
-          <tr>
-            <th scope="col">Change</th>
-            <th scope="col">From</th>
-            <th scope="col">To</th>
-            {withStatus && <th scope="col">Outcome</th>}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, index) => (
-            <tr key={`${row.from}-${row.to}-${index}`}>
-              <td>{row.action}</td>
-              <td className="plan-path">{row.from ?? "New file"}</td>
-              <td className="plan-path">{row.to}</td>
-              {withStatus && (
-                <td>
-                  {OUTCOME_LABELS[row.status ?? "notStarted"]}
-                  {row.reason && (
-                    <span className="plan-reason">{row.reason}</span>
-                  )}
-                </td>
-              )}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-const OUTCOME_LABELS: Record<string, string> = {
-  succeeded: "Saved",
-  failed: "Not saved",
-  cancelled: "Stopped",
-  notStarted: "Not started",
-};
 
 /** Journey B: analyze a folder, then apply only the exact plan approved. */
 export function OrganizeFlowPanel({
@@ -363,7 +307,6 @@ function ResultStep({
   const { state, undo, history } = organize;
   const summary = summarizeApply(state.plan!, state.report!);
   const undoResult = undo.report && summarizeUndo(undo.report);
-  const blockers = undo.preview ? undoBlockers(undo.preview) : [];
 
   return (
     <div className="flow-step">
@@ -412,44 +355,12 @@ function ResultStep({
         </Button>
       </div>
 
-      <Modal
-        open={undo.preview !== null}
-        title="Undo these changes?"
+      <UndoDialog
+        preflight={undo.preview}
+        busy={undo.busy}
+        onConfirm={organize.confirmUndo}
         onClose={organize.closeUndo}
-        footer={
-          <>
-            <Button variant="ghost" onClick={organize.closeUndo}>
-              Keep the changes
-            </Button>
-            <Button
-              variant="primary"
-              disabled={!undo.preview?.undoable || undo.busy}
-              onClick={organize.confirmUndo}
-            >
-              Undo {undo.preview?.entryIds.length ?? 0}{" "}
-              {undo.preview?.entryIds.length === 1 ? "change" : "changes"}
-            </Button>
-          </>
-        }
-      >
-        {blockers.length ? (
-          <>
-            <p>Folio can't undo safely, so nothing will be changed:</p>
-            <ul>
-              {blockers.map((line) => (
-                <li key={line}>{line}</li>
-              ))}
-            </ul>
-          </>
-        ) : (
-          <p>
-            Folio will put{" "}
-            {undo.preview?.entryIds.length === 1 ? "this file" : "these files"}{" "}
-            back the way they were before you approved.
-          </p>
-        )}
-        {undo.preview && <Badge>Nothing changes until you confirm</Badge>}
-      </Modal>
+      />
     </div>
   );
 }
