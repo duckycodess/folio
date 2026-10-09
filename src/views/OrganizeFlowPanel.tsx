@@ -272,6 +272,8 @@ export function PreviewStep({
   cancelLabel,
   details,
   cancelRef,
+  onCancel,
+  previewAgain,
 }: {
   organize: OrganizeController;
   heading: RefObject<HTMLHeadingElement | null>;
@@ -280,6 +282,10 @@ export function PreviewStep({
   details?: ReactNode;
   /** Lets a caller make Cancel the default, as Delete does. */
   cancelRef?: Ref<HTMLButtonElement>;
+  /** Instead of going back to the suggestions, as a dialog closes. */
+  onCancel?: () => void;
+  /** Instead of resending the same operations, as Delete re-reads the file. */
+  previewAgain?: () => void;
 }) {
   const { state } = organize;
   if (!state.plan) return null;
@@ -296,14 +302,14 @@ export function PreviewStep({
       {state.plan.impacts.length > 0 && (
         <Notice tone="info">
           {state.plan.impacts.length} related{" "}
-          {state.plan.impacts.length === 1 ? "passage" : "passages"} may need a
-          look afterwards. They won't be changed.
+          {state.plan.impacts.length === 1 ? "file" : "files"} may need a look.
+          Folio won't change them.
         </Notice>
       )}
       {state.error && (
         <RecoveryNotice
           error={state.error}
-          actions={{ previewAgain: organize.previewAgain }}
+          actions={{ previewAgain: previewAgain ?? organize.previewAgain }}
           onDismiss={organize.dismissError}
         />
       )}
@@ -324,7 +330,7 @@ export function PreviewStep({
           <Button
             ref={cancelRef}
             variant="ghost"
-            onClick={organize.backToSuggestions}
+            onClick={onCancel ?? organize.backToSuggestions}
           >
             {cancelLabel}
           </Button>

@@ -1,10 +1,10 @@
 import { useEffect, useRef } from "react";
 import { readNativeDocument } from "../adapters/workspace";
-import { deleteOperation } from "../app/graphActions";
+import { fileActionAvailability } from "../app/fileActions";
+import { deleteStep, prepareDelete } from "../app/graphActions";
 import type { OrganizeController } from "../app/useOrganize";
 import type { WorkspaceState } from "../app/useWorkspace";
 import type { DocumentRecord } from "../domain/contracts";
-import { folioError } from "../domain/errors";
 import { Modal } from "../ui/Modal";
 import { Progress } from "../ui/Progress";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
@@ -33,35 +33,34 @@ export function DeleteDialog({
   const { state } = action;
   const heading = useRef<HTMLHeadingElement>(null);
   const cancel = useRef<HTMLButtonElement>(null);
-  const changeable = workspace.source === "folder" && workspace.nativeAvailable;
+  const availability = fileActionAvailability(workspace, document);
+  const started = useRef(false);
+  const step = deleteStep(state, {
+    available: availability.available,
+    started: started.current,
+  });
 
-  function prepare() {
-    action.previewFrom(async (folderId) => {
-      // The plan pins the exact revision; read it if the listing didn't.
-      const read = document.contentHash
-        ? document
-        : await readNativeDocument(folderId, document);
-      if (!read.contentHash)
-        throw folioError("internal", "Folio couldn't read this file's hash.");
-      return [deleteOperation({ ...read, contentHash: read.contentHash })];
-    });
+  /** `fresh` reads the file again, so a stale preview isn't repeated. */
+  function prepare(fresh: boolean) {
+    started.current = true;
+    action.previewFrom((folderId) =>
+      prepareDelete(document, fresh, (listed) =>
+        readNativeDocument(folderId, listed),
+      ),
+    );
   }
 
   useEffect(() => {
-    if (changeable) prepare();
+    if (availability.available) prepare(false);
     // Prepared once, when the dialog opens.
   }, []);
 
   // Cancel is the default in the preview; the result's heading is announced.
-  // Leaving the preview without a result (Cancel) closes the dialog.
-  const lastStage = useRef(state.stage);
   useEffect(() => {
-    const previous = lastStage.current;
-    lastStage.current = state.stage;
-    if (state.stage === "preview") cancel.current?.focus();
-    else if (state.stage === "result") heading.current?.focus();
-    else if (previous === "preview" && state.stage !== "applying") close();
-  }, [state.stage]);
+    if (step === "preview") cancel.current?.focus();
+    else if (step === "result") heading.current?.focus();
+    else if (step === "closed") close();
+  }, [step]);
 
   function close() {
     const deleted =
@@ -80,12 +79,12 @@ export function DeleteDialog({
       dismissible={state.stage !== "applying"}
       onClose={close}
     >
-      {!changeable ? (
+      {step === "unavailable" ? (
         <p>
-          Deleting works on a folder you add in the desktop app. Sample files
-          can't be changed, so nothing was deleted.
+          {availability.available ? null : availability.reason} Nothing was
+          deleted.
         </p>
-      ) : state.stage === "result" ? (
+      ) : step === "result" ? (
         <>
           <ResultStep organize={action} heading={heading} onDone={close} />
           <p className="muted">
@@ -93,7 +92,7 @@ export function DeleteDialog({
             contents.
           </p>
         </>
-      ) : state.stage === "preview" || state.stage === "applying" ? (
+      ) : step === "preview" ? (
         <>
           <p>
             Folio keeps this file's exact contents, so you can undo the deletion
@@ -104,6 +103,8 @@ export function DeleteDialog({
             heading={heading}
             cancelLabel="Cancel"
             cancelRef={cancel}
+            onCancel={close}
+            previewAgain={() => prepare(true)}
             details={
               state.plan ? (
                 <ImpactList impacts={state.plan.impacts} deletion />
@@ -111,10 +112,13 @@ export function DeleteDialog({
             }
           />
         </>
-      ) : state.error ? (
+      ) : step === "error" && state.error ? (
         <RecoveryNotice
           error={state.error}
-          actions={{ retry: prepare, previewAgain: prepare }}
+          actions={{
+            retry: () => prepare(true),
+            previewAgain: () => prepare(true),
+          }}
           onDismiss={close}
         />
       ) : (

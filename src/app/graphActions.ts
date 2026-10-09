@@ -1,5 +1,7 @@
 import type { DocumentRecord, FileOperation } from "../domain/contracts";
+import { folioError } from "../domain/errors";
 import { fileActionAvailability } from "./fileActions";
+import type { OrganizeState } from "./organizeFlow";
 import type { WorkspaceState } from "./useWorkspace";
 
 /** What a file on the Graph map can do besides opening in the reader. */
@@ -51,4 +53,58 @@ export function deleteOperation(
     relativePath: document.relativePath,
     expectedContentHash: document.contentHash,
   };
+}
+
+/**
+ * The delete operation for a file, pinned to its current revision. The
+ * listing's hash is used when it has one; `fresh` (Preview again, Retry)
+ * always reads the file again, so a refused stale preview can't repeat.
+ */
+export async function prepareDelete(
+  document: DocumentRecord,
+  fresh: boolean,
+  read: (document: DocumentRecord) => Promise<DocumentRecord>,
+): Promise<FileOperation[]> {
+  const current =
+    !fresh && document.contentHash ? document : await read(document);
+  if (!current.contentHash)
+    throw folioError("internal", "Folio couldn't read this file's hash.");
+  return [deleteOperation({ ...current, contentHash: current.contentHash })];
+}
+
+/** What the Delete dialog shows, from the plan flow it drives. */
+export type DeleteStep =
+  | "unavailable"
+  | "preparing"
+  | "preview"
+  | "result"
+  | "error"
+  /** Left without a result: Cancel, or the folder changed underneath. */
+  | "closed";
+
+export function deleteStep(
+  state: Pick<OrganizeState, "stage" | "error">,
+  {
+    available,
+    started,
+  }: {
+    available: boolean;
+    /** The dialog has asked for its preview (until then the flow is idle). */
+    started: boolean;
+  },
+): DeleteStep {
+  if (!available) return "unavailable";
+  switch (state.stage) {
+    case "result":
+      return "result";
+    case "preview":
+    case "applying":
+      return "preview";
+    case "idle":
+    case "suggestions":
+      // A preview that failed to build rests here with its error.
+      return state.error ? "error" : started ? "closed" : "preparing";
+    default:
+      return "preparing";
+  }
 }

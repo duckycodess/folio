@@ -301,6 +301,10 @@ export function GraphCanvas({
     }
   }
 
+  // Some browsers follow Shift+F10 or the context-menu key with a
+  // `contextmenu` event too; the key already asked for the actions once.
+  const actionsFromKey = useRef(false);
+
   function onKeyDown(event: KeyboardEvent<SVGSVGElement>) {
     if (event.altKey || event.ctrlKey || event.metaKey || !viewport || !size)
       return;
@@ -308,6 +312,7 @@ export function GraphCanvas({
       const id = nav.focusedId ?? nav.selectedId;
       if (!id || !onActions) return;
       event.preventDefault();
+      actionsFromKey.current = true;
       onActions(id);
       return;
     }
@@ -342,6 +347,8 @@ export function GraphCanvas({
   }
 
   function onPointerDown(event: PointerEvent<SVGSVGElement>) {
+    // A right-click's `contextmenu` comes after this, so it always counts.
+    actionsFromKey.current = false;
     if (!viewport || (event.pointerType === "mouse" && event.button !== 0))
       return;
     const point = local(event);
@@ -483,6 +490,11 @@ export function GraphCanvas({
             onPointerCancel={onPointerUp}
             onClick={onClick}
             onContextMenu={(event) => {
+              if (actionsFromKey.current) {
+                actionsFromKey.current = false;
+                event.preventDefault();
+                return;
+              }
               const id = (event.target as Element)
                 .closest("[data-node-id]")
                 ?.getAttribute("data-node-id");

@@ -8,6 +8,8 @@ import {
 } from "react";
 import { hasUndoableChange } from "../app/planAction";
 import {
+  deletionImpactNote,
+  impactBadge,
   impactGroups,
   impactProvenance,
   planRow,
@@ -217,19 +219,13 @@ export function ImpactList({
       <h3 id={headingId} className="subsection-title">
         {deletion ? "What this deletion affects" : "Related passages to review"}
       </h3>
-      {impacts.length === 0 ? (
-        <p className="muted">
-          {deletion
-            ? "Folio found no file that links to this one and no identical copy. That doesn't guarantee nothing else refers to it."
-            : "Folio didn't find related files that mention what you changed. That doesn't guarantee nothing else needs a look."}
-        </p>
-      ) : (
-        <p className="muted">
-          {deletion
-            ? "Folio won't change these files. Links to the deleted file will stop working until you fix them or undo the deletion."
+      <p className="muted">
+        {deletion
+          ? deletionImpactNote(groups)
+          : impacts.length === 0
+            ? "Folio didn't find related files that mention what you changed. That doesn't guarantee nothing else needs a look."
             : "Folio won't change these files. Check them yourself after saving."}
-        </p>
-      )}
+      </p>
       {(Object.keys(headings) as ImpactKind[]).map(
         (kind) =>
           groups[kind].length > 0 && (
@@ -237,7 +233,11 @@ export function ImpactList({
               <h4 className="impact-group-title">{headings[kind]}</h4>
               <ul className="impact-list">
                 {groups[kind].map((impact) => (
-                  <ImpactItem key={impact.documentId} impact={impact} />
+                  <ImpactItem
+                    key={impact.documentId}
+                    impact={impact}
+                    badge={impactBadge(impact, deletion)}
+                  />
                 ))}
               </ul>
             </div>
@@ -253,12 +253,18 @@ export function ImpactList({
   );
 }
 
-function ImpactItem({ impact }: { impact: ImpactCandidate }) {
+function ImpactItem({
+  impact,
+  badge,
+}: {
+  impact: ImpactCandidate;
+  badge: string | null;
+}) {
   const provenance = impactProvenance(impact);
   return (
     <li className="impact">
       <div className="impact-head">
-        <Badge>Needs review</Badge>
+        {badge && <Badge>{badge}</Badge>}
         {provenance.ai && <Badge>AI</Badge>}
         <span className="plan-path">{impact.relativePath}</span>
       </div>

@@ -189,7 +189,7 @@ export function GraphView({
   workspace: WorkspaceState;
   relations: RelationshipsState;
   /** Rename, move, edit or delete a file from the map, through its preview. */
-  onFileAction?: (kind: GraphActionKind, document: DocumentRecord) => void;
+  onFileAction: (kind: GraphActionKind, document: DocumentRecord) => void;
 }) {
   const { request } = relations;
   useEffect(request, [request]);

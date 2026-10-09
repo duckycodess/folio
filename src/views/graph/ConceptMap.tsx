@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { graphActions, type GraphActionKind } from "../../app/graphActions";
 import type { RelationshipsState } from "../../app/useRelationships";
 import type { WorkspaceState } from "../../app/useWorkspace";
@@ -35,12 +35,13 @@ export function ConceptMap({
   workspace: WorkspaceState;
   relations: RelationshipsState;
   pairs: GraphPair[];
-  onFileAction?: (kind: GraphActionKind, document: DocumentRecord) => void;
+  onFileAction: (kind: GraphActionKind, document: DocumentRecord) => void;
 }) {
   const announce = useAnnounce();
   const frame = useRef<HTMLDivElement>(null);
   // Shift+F10 or a right-click on a node asks for its actions menu.
-  // `pending` until the menu has opened, so it never reopens later.
+  // `pending` until the menu has opened, or the file it asked for turns out
+  // not to be the one open, so it never reopens later.
   const [actionsRequest, setActionsRequest] = useState({
     id: "",
     count: 0,
@@ -120,6 +121,15 @@ export function ConceptMap({
         relations.duplicates,
       ).filter((connection) => byId.has(connection.otherId))
     : [];
+  // The request only answers the file it was made for. If that file didn't
+  // become the open one on the map (its read failed, or it's filtered off),
+  // drop it rather than open the menu when the file is selected later.
+  const pendingFor = actionsRequest.pending ? actionsRequest.id : null;
+  useEffect(() => {
+    if (pendingFor !== null && selectedOnMap?.id !== pendingFor)
+      setActionsRequest((current) => ({ ...current, pending: false }));
+  }, [pendingFor, selectedOnMap?.id]);
+
   const summary = `${plural(shown.nodes.length, "file", "files")}, ${plural(
     shown.edges.length,
     "connection",
@@ -146,7 +156,7 @@ export function ConceptMap({
         label={`Concept map: ${summary}`}
         onOpen={open}
         onClose={close}
-        onActions={onFileAction ? requestActions : undefined}
+        onActions={requestActions}
       />
       <GraphLegend counts={counts} hidden={hidden} onToggle={toggle} />
       {selectedOnMap && (
@@ -159,31 +169,28 @@ export function ConceptMap({
               {selectedOnMap.name}:{" "}
               {plural(connections.length, "connection", "connections")}
             </h3>
-            {onFileAction && (
-              <RowMenu
-                label={`Actions for ${selectedOnMap.name}`}
-                tabbable
-                items={graphActions(workspace, selectedOnMap).map((action) => ({
-                  id: action.kind,
-                  label: action.label,
-                  disabledReason: action.disabledReason,
-                  onSelect: () => onFileAction(action.kind, selectedOnMap),
-                }))}
-                openRequest={
-                  actionsRequest.pending &&
-                  actionsRequest.id === selectedOnMap.id
-                    ? actionsRequest.count
-                    : 0
-                }
-                onRequestOpened={() =>
-                  setActionsRequest((current) => ({
-                    ...current,
-                    pending: false,
-                  }))
-                }
-                onRequestedClose={() => focusNode(selectedOnMap.id)}
-              />
-            )}
+            <RowMenu
+              label={`Actions for ${selectedOnMap.name}`}
+              tabbable
+              items={graphActions(workspace, selectedOnMap).map((action) => ({
+                id: action.kind,
+                label: action.label,
+                disabledReason: action.disabledReason,
+                onSelect: () => onFileAction(action.kind, selectedOnMap),
+              }))}
+              openRequest={
+                actionsRequest.pending && actionsRequest.id === selectedOnMap.id
+                  ? actionsRequest.count
+                  : 0
+              }
+              onRequestOpened={() =>
+                setActionsRequest((current) => ({
+                  ...current,
+                  pending: false,
+                }))
+              }
+              restoreFocus={() => focusNode(selectedOnMap.id)}
+            />
           </div>
           {connections.length ? (
             <ul className="related-list">

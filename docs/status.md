@@ -144,6 +144,14 @@
 - Headless Edge, browser preview with sample files: Shift+F10 on a focused node opens the menu with all four actions disabled and the reason; Enter on a disabled item opens nothing; Escape returns focus to the node and a second Escape deselects; a right-click on a node that wasn't open opens its menu; reopening the file doesn't reopen the menu; Home's ⋯ menu is unchanged. No page errors.
 - **Not checked:** an actual delete, rename, move or edit from the map against the real native core (only sample files in the browser preview), screen readers, and the Tauri app. Writes only after approval, stale previews being refused and Undo of a deletion are covered by #44's native tests; this PR reuses that plan flow.
 
+PR #73 review follow-up (2026-10-10, Linux, Node.js 24.15.0):
+
+- Delete recovers from a stale preview: a refused apply keeps the preview, and Preview again (or Retry after a failed preview) reads the file again, so the old hash is never resent. The dialog closes only on Cancel, Escape, Done or a folder change, not when the preview is being rebuilt. Delete uses `fileActionAvailability`, so it also refuses PDFs itself. `useOrganize` approves only from a preview on screen with no refusal.
+- Deletion wording follows what is actually affected: "Links … will stop working" only when a file links to the deleted one, copies "stay where they are", and related files are left to the user. Only broken links get a badge ("Link will break"); "Needs review" stays for edits. The preview's notice counts related files, not passages.
+- The actions menu: Escape always returns focus to the map node, however the menu was opened, so a second Escape deselects. A menu closed with Tab or a click outside no longer remembers how it was opened. A Shift+F10 request that didn't open the menu (the file's read failed, or it isn't on the map) is dropped instead of opening it later. A `contextmenu` that follows Shift+F10 doesn't ask twice.
+- Checked: `npm run check`, `npm test` (350 passed, 9 todo) and `npm run build`. New tests: the delete preparation reads the file again for Preview again; the Delete dialog's steps through a stale refusal, Preview again, a failed preview and a reset (`src/app/graphActions.test.ts`); deletion notes and badges (`src/app/planReview.test.ts`).
+- **Not checked:** none of this in a browser or the Tauri app; there is no DOM test setup, so the dialog, menu and map are covered through their extracted logic only. "Nothing is written before approval" still rests on #44's native tests and the approval guard above, not on a test of this dialog.
+
 PR #72 review follow-up (2026-10-10, Linux, Node.js 24.15.0):
 
 - Activity counts `historyRequired` after-write failures as changed without Undo, including the first operation and partial batches. Missing legacy outcomes stay unknown rather than being labelled "Nothing changed". Reversing the recoverable entries does not label an unrecoverable write undone.

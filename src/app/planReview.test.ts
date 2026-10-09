@@ -8,6 +8,8 @@ import type {
   UndoReport,
 } from "../domain/contracts";
 import {
+  deletionImpactNote,
+  impactBadge,
   impactGroups,
   impactKind,
   impactProvenance,
@@ -328,5 +330,39 @@ describe("Ripple candidates", () => {
   it("doesn't call a candidate a copy unless it's similarity-only and names no relationship", () => {
     expect(impactKind(UNSAID)).toBe("other");
     expect(impactProvenance(UNSAID).ai).toBe(false);
+  });
+
+  describe("for a deletion", () => {
+    it("says links break only when a file links to the deleted one", () => {
+      expect(deletionImpactNote(impactGroups([LINK]))).toMatch(
+        /Links to the deleted file will stop working/,
+      );
+      for (const only of [[COPY], [SIMILAR], [UNSAID]])
+        expect(deletionImpactNote(impactGroups(only))).not.toMatch(/Links/);
+    });
+
+    it("says identical copies stay, and leaves related files to the user", () => {
+      expect(deletionImpactNote(impactGroups([COPY]))).toMatch(
+        /Identical copies stay/,
+      );
+      expect(deletionImpactNote(impactGroups([SIMILAR]))).toMatch(
+        /Check the related files yourself/,
+      );
+    });
+
+    it("doesn't promise nothing refers to a file with no impacts", () => {
+      expect(deletionImpactNote(impactGroups([]))).toMatch(
+        /nothing related\. That doesn't guarantee/,
+      );
+    });
+
+    it("marks only broken links, never a copy, as needing attention", () => {
+      expect(impactBadge(LINK, true)).toBe("Link will break");
+      expect(impactBadge(COPY, true)).toBeNull();
+      expect(impactBadge(SIMILAR, true)).toBeNull();
+      // An edit's candidates all need review.
+      for (const candidate of [LINK, COPY, SIMILAR, SHARED_FACT])
+        expect(impactBadge(candidate, false)).toBe("Needs review");
+    });
   });
 });

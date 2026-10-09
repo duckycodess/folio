@@ -23,7 +23,7 @@ export function RowMenu({
   tabbable,
   openRequest = 0,
   onRequestOpened,
-  onRequestedClose,
+  restoreFocus,
 }: {
   /** Spoken name of the button, e.g. "Actions for plan.md". */
   label: string;
@@ -41,13 +41,12 @@ export function RowMenu({
    */
   onRequestOpened?: () => void;
   /**
-   * Where focus goes when a menu opened from elsewhere closes, instead of
-   * this ⋯ button: back to whatever asked for it.
+   * Where Escape sends focus instead of this ⋯ button, however the menu was
+   * opened: the map node it acts on, so a second Escape deselects it.
    */
-  onRequestedClose?: () => void;
+  restoreFocus?: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const requested = useRef(false);
   // Starts at 0, so a menu mounted by the request it should answer (a
   // right-click on a file that wasn't open yet) still opens.
   const seenRequest = useRef(0);
@@ -60,7 +59,6 @@ export function RowMenu({
     if (openRequest === seenRequest.current) return;
     seenRequest.current = openRequest;
     if (openRequest === 0) return;
-    requested.current = true;
     setOpen(true);
     onRequestOpened?.();
   }, [openRequest]);
@@ -79,9 +77,8 @@ export function RowMenu({
 
   function close() {
     setOpen(false);
-    if (requested.current && onRequestedClose) onRequestedClose();
+    if (restoreFocus) restoreFocus();
     else button.current?.focus();
-    requested.current = false;
   }
 
   function onMenuKeyDown(event: KeyboardEvent<HTMLDivElement>) {
@@ -123,10 +120,7 @@ export function RowMenu({
         aria-expanded={open}
         aria-controls={open ? id : undefined}
         tabIndex={tabbable ? 0 : -1}
-        onClick={() => {
-          requested.current = false;
-          setOpen((value) => !value);
-        }}
+        onClick={() => setOpen((value) => !value)}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") {
             event.preventDefault();
@@ -159,7 +153,6 @@ export function RowMenu({
               onClick={() => {
                 if (item.disabledReason) return;
                 setOpen(false);
-                requested.current = false;
                 item.onSelect();
               }}
             >
