@@ -285,13 +285,21 @@ export function deserializeChatState(raw: string | null): ChatState {
 
 /* ------------------------------------------------------- the live store */
 
-const STORAGE_KEY = "folio.chat.conversations";
+export const STORAGE_KEY = "folio.chat.conversations";
 
+// History lasts for one launch of the app (ADR 0018): sessionStorage survives
+// a reload of the window but not quitting Folio. Earlier versions kept it in
+// localStorage, so whatever they left there is deleted on start.
 // Storage can be missing, full or throw; the chat then starts empty, which
 // is the safe direction (nothing is lost that was ever applied to a file).
-function load(): ChatState {
+export function load(): ChatState {
   try {
-    return deserializeChatState(window.localStorage.getItem(STORAGE_KEY));
+    window.localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Nothing older to clear.
+  }
+  try {
+    return deserializeChatState(window.sessionStorage.getItem(STORAGE_KEY));
   } catch {
     return EMPTY_STATE;
   }
@@ -299,9 +307,9 @@ function load(): ChatState {
 
 function save(next: ChatState) {
   try {
-    window.localStorage.setItem(STORAGE_KEY, serializeChatState(next));
+    window.sessionStorage.setItem(STORAGE_KEY, serializeChatState(next));
   } catch {
-    // Not remembered beyond this session.
+    // Not remembered beyond this window.
   }
 }
 
