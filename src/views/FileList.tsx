@@ -38,6 +38,12 @@ interface FileListProps {
  * Arrow keys, Home and End move between rows; Enter or Space opens one. The
  * single Tab stop follows the focused row, so Tab and Shift+Tab come back to
  * it; from there, Tab reaches that row's ⋯ menu.
+ *
+ * A row's spoken name is the text it shows, column by column, rather than a
+ * sentence of its own: the columns change with the table's width, and a name
+ * that does not contain the visible text is one a voice-control user cannot
+ * say. The heading row is hidden from assistive tech, so the date says
+ * "modified" in hidden words.
  */
 export function FileList({
   label,
@@ -130,21 +136,27 @@ export function FileList({
                     <>
                       <span className="file-col-location">{location}</span>
                       <span className="file-col-type">{kind}</span>
+                      {/* The heading row is hidden from assistive tech, so a
+                          date carries its column in words that are spoken,
+                          not shown. */}
                       <span className="file-col-modified tabular">
-                        {modified ?? "—"}
+                        {modified ? (
+                          <>
+                            <span className="visually-hidden">modified </span>
+                            {modified}
+                          </>
+                        ) : (
+                          <>
+                            <span aria-hidden="true">—</span>
+                            <span className="visually-hidden">
+                              no modified date
+                            </span>
+                          </>
+                        )}
                       </span>
                       <span className="file-col-size tabular">{size}</span>
                     </>
                   }
-                  label={[
-                    document.name,
-                    location,
-                    kind,
-                    modified ? `modified ${modified}` : undefined,
-                    size,
-                  ]
-                    .filter(Boolean)
-                    .join(", ")}
                   tooltip={document.relativePath}
                   selected={document.id === selectedId}
                   describedBy={detailId}

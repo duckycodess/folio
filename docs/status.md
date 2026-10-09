@@ -152,6 +152,10 @@ Two `llama-server` hardening items from the #15 review remain open:
 - **Port race.** The parent picks a free loopback port and releases it before the child binds it, so a local process that takes the port in that gap could answer `/health` and receive the key and prompt. Fixing it needs the child to report the port it bound; that hasn't been verified against the pinned b11524 build.
 - **Orphaned server on macOS and Linux.** If Folio itself crashes, `llama-server` keeps running until it's killed. Windows is covered by a kill-on-close Job Object. macOS has no parent-death signal, so this needs a small watchdog helper or a startup sweep of stale servers.
 
+The browser journey suite (issue #9) runs report-only in CI: its failures and
+reports are visible, but they do not block a merge, and it proves nothing about
+the native core — see the verification entry below.
+
 Provider cases are listed as pending, not mocked, in `src/domain/pending.test.ts`. Writer tests use real temporary folders; they are not evidence about the desktop window, installers or a real user's folders.
 
 No AI or save completion should be presented without the corresponding native/provider evidence. Model sizes, installed size, memory targets, and platform support remain subject to measurements.
@@ -215,6 +219,177 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 8-GB measurement is claimed here.
 
 ## Verification
+
+### Browser journeys against a fake native core (2026-10-10, issue #9)
+
+The first authorized slice of issue #9: a browser suite that drives the merged
+UI through journeys A, B and C against a typed, stateful stand-in for the native
+core. It is one Playwright project (Chromium, one worker) added to the existing
+frontend CI job, report-only.
+
+Every browser-only step in CI — the Chromium cache, its install, the artifact
+upload and the summary — carries `continue-on-error`, so a cache miss or a
+download outage cannot fail the frontend job over work that does not block a
+merge. `npm run test:e2e` still exits non-zero locally.
+
+**What the suite is.** `e2e/fake/nativeCore.ts` is a single self-contained
+function that Playwright injects with `addInitScript` before any application
+module runs, so `isTauri()` — read once at import time — takes the page for the
+desktop app.
+It installs `window.isTauri`, `window.__TAURI_INTERNALS__`
+(`invoke`/`transformCallback`/`unregisterCallback`) and
+`window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener`, and answers
+`plugin:event|listen` / `plugin:event|unlisten` so `folio://index-progress`
+arrives as `{ event, id, payload }`, exactly as the installed
+`@tauri-apps/api` expects. Failures reject with the plain
+`{ code, message, details? }` wire payload, never an `Error`.
+
+It implements `choose_workspace`, `list_documents`, `read_document`,
+`list_indexed_documents`, `scan_workspace` with progress and `cancel_indexing`,
+`search_index`, `prepare_plan`, `approve_plan`, `apply_plan`, `preview_undo`,
+`undo_plan`, `list_history`, `organization_suggestions`, `list_relationships`
+and `list_duplicates` over the real `fixtures/documents` corpus, read from disk.
+Content hashes are real SHA-256 over the exact bytes the fake holds for a
+document — the file's own bytes until a test changes them — source offsets are
+real UTF-8 byte offsets, plan digests are the canonical `FOLIO-PLAN-V1` bytes,
+and
+preflight, approval binding, durable outcomes and whole-batch Undo follow
+`docs/contracts.md`. The fixture PDF's text and page ranges are extracted from
+its own bytes, and its size and hash stay the file's.
+
+`e2e/fake/nativeCore.test.ts` runs under Vitest and pins the fake to
+`src/domain/`: identities and hashes against `hash.ts`, located excerpts against
+`offsets.ts`, plan digests against `plan.ts`'s `planDigest`, and six refusal
+cases against `plan.ts`'s `preflightPlan`, so the journeys exercise the frozen
+contract rather than a convenient imitation of it. Playwright specs are
+`*.spec.ts` and Vitest's `include` is scoped to `*.test.ts`, so neither runner
+picks up the other's files. Arguments, replies, event payloads and test-control
+inputs cross a JSON-copy boundary; mutating a returned preview, its digest or
+its approval cannot alter the native stand-in's canonical plan. Cancellation
+coverage waits for an indexing progress event rather than a fixed timer.
+
+**Checked on Linux (WSL2) with Node.js 24.15.0, Chromium 156 (Playwright
+1.64.0), axe-core 4.14.0:**
+
+- `npm run format:check` and `npm run check` (which now type-checks `e2e/`)
+  passed. `node node_modules/vitest/vitest.mjs run --configLoader runner`:
+  39 files passed, one skipped, 339 passed and 9 todo, including the 16 new
+  fake-core contract cases. Verbatim `npm test`
+  failed here during Vite config loading because of the host defect below.
+  The build passed as its two parts, `tsc --noEmit` and
+  `vite build --configLoader runner`; verbatim `npm run build` also could not
+  load the config here. CI runs the unchanged scripts.
+- `npm run check:bundle`: `dist/` carries none of the fake's sentinel,
+  installer name, globals or filename.
+- The final browser run: `node node_modules/@playwright/test/cli.js test --config /tmp/folio9-playwright.config.ts`
+  passed 35 tests in 53.4s (Playwright's reported total), server startup included.
+  This temporary config lives outside the repository and changes the web server
+  command to use Vite's runner loader, with absolute paths for the existing
+  repository and test directory. The budget remains `globalTimeout: 110_000`,
+  and CI gives the step two minutes. Verbatim `npm run test:e2e` failed here
+  during Vite config loading, before tests ran. The suite serves the production
+  build on its own port 1421 with `reuseExistingServer: false`, so it can never
+  report on a server someone else left running.
+
+**What the browser tests assert.** Every document, hash, listing and write
+below is the fake core's own state. Nothing in this suite reads or writes a real
+file; the only files touched on disk are the read-only fixtures the fake loads
+its corpus from.
+
+- _Journey A_: adding the fake's workspace lists the sixteen fixture documents
+  with their locations; a Filipino document reads in full and stays read-only; before
+  indexing, Related says what it cannot see instead of presenting a short list
+  as the whole truth; after indexing, Related opens a linked file and comes
+  back; Graph shows the folder's connections and an evidence excerpt opens the
+  reader with that passage highlighted and focused.
+- _Journey B_: Analyze reports the byte-identical pair as evidence and moves
+  no document; a chosen suggestion becomes an exact preview; the fake core's
+  stored file is unchanged while that preview is on screen; `approve_plan` is
+  only ever invoked after `prepare_plan` and `apply_plan` only after
+  `approve_plan`; applying renames the fake core's stored file and records one
+  history entry; Preview Undo then puts that stored file back and the folder
+  listing catches up. The same preview, approval and result appear for a single
+  file renamed from its row. No step of this touches a real disk.
+- _Journey C_: the current Ask & Act UI sends a Taglish instruction to
+  `interpret_request`; the fake reports `modelNotInstalled`, the failed turn
+  keeps the instruction, and the draft survives a trip to Model Lab. Model Lab
+  loads the pinned manifest metadata with every model and runtime uninstalled;
+  device RAM and free space are unknown. No download, generated reply, semantic
+  inference or model-created action is simulated. Journeys A and B keep their
+  own entry points.
+- _Search and Local Sync_: only names are searched until the folder is indexed;
+  afterwards both Filipino documents containing "panayam" are listed with
+  highlighted excerpts labelled "Words in the text", and the PDF result carries
+  its page. Stop resolves the scan with `cancelled: true` and `total: 0` — the
+  captured reply, not only the screen — and search falls back to names only.
+- _Failures_: all 33 `FolioErrorCode` values are injected one at a time and the
+  screen shows that code's wording from `src/app/recovery.ts`; files that could
+  not be identified are named rather than dropped; a batch that fails at its
+  second operation keeps the first and still offers Undo; a change the fake
+  applied but could not record a reversal for says so and offers no Undo; an
+  expired preview is refused with no stored file changed; a rename onto an
+  existing name is refused and that stored file is unchanged; an Undo blocked by
+  a simulated external edit changes no stored file and the newer text survives.
+- _Practice mode_: `?simulate=<code>` is exercised in a real browser with no
+  fake installed at all, which is the only way it is reachable.
+- _Keyboard_: one path uses no pointer and no programmatic focus at all —
+  Tab from the page as it loads to Add folder, Enter, Tab on to the file list,
+  Enter and Space to open a file — so reachability is shown, not assumed. The
+  rest cover arrow/Home/End movement between rows, Escape back to the row that
+  opened the reader, ⌘K/Ctrl K to search from another view, focus into a dialog
+  and back to the row's ⋯ menu, the skip link, and the live-region
+  announcements for the folder and for search.
+- _Four window sizes_ (1280×850, 1024×768, 700×800, 640×425): first-run Welcome
+  and its Skip setup route, the empty state, the file list, indexed search
+  results with excerpts, the reader, Organize's suggestions and exact preview,
+  Graph Map and List, Ask & Act, Activity and loaded Model Lab each have no
+  sideways scroll — on the page or in any visible scrollable element — and zero
+  axe-core violations under its **default** rule set, with no rule filtered or
+  disabled.
+
+**Two accessibility defects the axe sweep found, and the fixes.**
+
+- A file row's `aria-label` named facts in an order and wording the visible
+  columns did not use, and the columns a row shows change with the table's
+  width, so no single sentence could match them all. A voice-control user would
+  have been naming a control the browser could not match
+  (`label-content-name-mismatch`). The row is now spoken as the columns it
+  shows. The heading row is hidden from assistive tech, so the date is spoken
+  with a hidden "modified" (or "no modified date" for "—"); the keyboard spec
+  checks the row's accessible name for it.
+- The fake's Undo for a plan with no recorded history (after
+  `historyRequired`) answered with an empty, undoable preview. Like the native
+  writer, `preview_undo` and `undo_plan` now refuse it with `historyUnknown`.
+- The same mismatch on Graph and Related evidence excerpts, and on search
+  excerpts. Each now carries its purpose as a visually hidden prefix to the
+  visible text instead of an `aria-label` that replaced it.
+
+No other UI change was made: no responsive defect turned up at any of the four
+sizes.
+
+**What this does not prove.** The fake native core is a browser test double. It
+is not evidence about the Rust core, the Tauri webview, a real filesystem, a
+real folder picker, local inference, screen readers, installers, packaging, or
+any Windows or macOS behaviour. Nothing here closes issue #9's acceptance
+matrix: the offline Taglish demo, cross-language semantic retrieval, grounded
+summaries and real native writes all remain pending on issues #4, #5, #6 and #7.
+Journey C stops at setup guidance because the fake has no installed generation
+model; the suite does not claim the native assistant or its model works.
+
+**One behaviour observed and left alone.** Related and Graph read the folder
+index once and do not re-read it after Organize's Analyze fills it; the data
+refreshes only after an applied change. The suite works with that rather than
+around it, and the fix belongs to the owner of that view, not to this slice.
+
+**Host notes, not repository facts.** These runs were on one Linux (WSL2) host.
+A pre-existing zero-byte `/home/tj/package.json` breaks esbuild's Vite config
+loader for every project under that tree, so local runs passed
+`--configLoader runner`; the committed scripts are unchanged and are what CI
+runs. The host also lacked `libnss3`/`libnspr4` and has no root, so those two
+libraries were extracted to a scratch directory and supplied through
+`LD_LIBRARY_PATH`. Neither workaround is in the repository, and neither is
+evidence about any other machine. The suite was adapted after merging main at
+`7efb4b5`, preserving the shared plan review, Model Lab and onboarding changes.
 
 ### Shared plan review and Edit text (2026-10-10, issue #45)
 

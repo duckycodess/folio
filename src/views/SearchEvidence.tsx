@@ -33,10 +33,13 @@ export function ResultEvidence({
           type="button"
           className="evidence-excerpt"
           onClick={() => onOpenPassage(passage)}
-          aria-label={`Open ${result.document.name} at this passage${
-            passage.page ? `, page ${passage.page}` : ""
-          }: ${passage.text}`}
         >
+          {/* A hidden prefix rather than an `aria-label`: the spoken name has
+              to contain the excerpt as it is shown, so that naming the control
+              out loud still works. */}
+          <span className="visually-hidden">
+            Open {result.document.name} at this passage:{" "}
+          </span>
           <Quote size={14} aria-hidden="true" />
           <span className="evidence-text">
             {passage.page !== undefined && (
