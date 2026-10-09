@@ -47,6 +47,11 @@ export type OrganizeEvent =
       suggestions: OrganizationSuggestions;
     }
   | { type: "analyzeCancelled"; request: number }
+  /**
+   * The user pressed Stop. It takes a new request number, so a scan that had
+   * already finished can't bring its suggestions back afterwards.
+   */
+  | { type: "stopAnalyze"; request: number }
   | { type: "toggle"; documentId: DocumentId }
   | { type: "prepareStarted"; request: number; operations: FileOperation[] }
   | { type: "prepared"; request: number; plan: ActionPlan }
@@ -55,7 +60,8 @@ export type OrganizeEvent =
   | { type: "failed"; request: number; error: FolioError }
   | { type: "backToSuggestions" }
   | { type: "dismissError" }
-  | { type: "reset" };
+  /** Starts over; a new request number drops replies still in flight. */
+  | { type: "reset"; request: number };
 
 export const ORGANIZE_START: OrganizeState = {
   stage: "idle",
@@ -114,6 +120,15 @@ export function organizeFlow(
       };
     case "analyzeCancelled":
       return { ...state, stage: resting(state), progress: null };
+    case "stopAnalyze":
+      return state.stage === "analyzing"
+        ? {
+            ...state,
+            stage: resting(state),
+            request: event.request,
+            progress: null,
+          }
+        : state;
     case "toggle":
       return {
         ...state,
@@ -159,6 +174,6 @@ export function organizeFlow(
     case "dismissError":
       return { ...state, error: null };
     case "reset":
-      return { ...ORGANIZE_START, request: state.request };
+      return { ...ORGANIZE_START, request: event.request };
   }
 }

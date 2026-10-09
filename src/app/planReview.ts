@@ -65,25 +65,34 @@ export function summarizeApply(
   plan: ActionPlan,
   report: ApplyReport,
 ): ApplySummary {
-  const rows: OutcomeRow[] = plan.operations.map((operation, index) => {
+  // A failure the native core reports only after the write (`historyRequired`)
+  // still changed its file, so it counts as changed but not as undoable.
+  let changedWithoutUndo: { row: OutcomeRow; message: string } | undefined;
+  const rows: OutcomeRow[] = [];
+  for (const [index, operation] of plan.operations.entries()) {
     const outcome = report.batch.outcomes.find(
       (item) => item.operationIndex === index,
     );
     const status = outcome?.status ?? "notStarted";
-    return {
+    const recovery = outcome?.error
+      ? recoveryFor(outcome.error, "duringApply")
+      : undefined;
+    const row: OutcomeRow = {
       ...planRow(operation),
       status,
-      ...(outcome?.error
-        ? { reason: recoveryFor(outcome.error, "duringApply").title }
-        : {}),
+      ...(recovery ? { reason: recovery.title } : {}),
     };
-  });
+    if (status === "failed" && recovery?.afterWrite)
+      changedWithoutUndo = { row, message: recovery.message };
+    rows.push(row);
+  }
   const saved = rows.filter((row) => row.status === "succeeded").length;
+  const changed = saved + (changedWithoutUndo ? 1 : 0);
   const total = rows.length;
   const failed = rows.find((row) => row.status === "failed");
   const details: string[] = [];
 
-  if (saved === 0) {
+  if (changed === 0) {
     return {
       tone: "nothingSaved",
       headline:
@@ -96,9 +105,10 @@ export function summarizeApply(
     };
   }
 
-  if (saved < total) {
+  if (saved > 0 && saved < total) {
     details.push("Earlier changes were kept. You can undo them below.");
   }
+  if (changedWithoutUndo) details.push(changedWithoutUndo.message);
   if (!report.historySettled)
     details.push("Undo may not be available for every change.");
   if (!report.indexRefreshed)
@@ -112,11 +122,11 @@ export function summarizeApply(
     headline: complete
       ? `Saved ${changes(saved)}.`
       : report.batch.stopReason === "cancelled"
-        ? `Stopped after ${saved} of ${changes(total)}.`
-        : `Saved ${saved} of ${changes(total)}.${failed?.reason ? ` Stopped at ${failed.from ?? failed.to}: ${failed.reason}.` : ""}`,
+        ? `Stopped after ${changed} of ${changes(total)}.`
+        : `Saved ${changed} of ${changes(total)}.${failed?.reason ? ` Stopped at ${failed.from ?? failed.to}: ${failed.reason}.` : ""}`,
     details,
     rows,
-    undoable: true,
+    undoable: saved > 0,
   };
 }
 

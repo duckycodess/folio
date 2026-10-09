@@ -95,7 +95,7 @@ export function useOrganize(
 
   // A different folder starts the flow over.
   useEffect(() => {
-    dispatch({ type: "reset" });
+    dispatch({ type: "reset", request: ++next.current });
     setHistory([]);
     setUndo(NO_UNDO);
   }, [folderId]);
@@ -135,7 +135,7 @@ export function useOrganize(
   }
 
   function cancelAnalyze() {
-    dispatch({ type: "analyzeCancelled", request: next.current });
+    dispatch({ type: "stopAnalyze", request: ++next.current });
     void cancelIndexing().catch(() => undefined);
   }
 
@@ -239,7 +239,7 @@ export function useOrganize(
     backToSuggestions: () => dispatch({ type: "backToSuggestions" }),
     dismissError: () => dispatch({ type: "dismissError" }),
     done: () => {
-      dispatch({ type: "reset" });
+      dispatch({ type: "reset", request: ++next.current });
       setUndo(NO_UNDO);
       setHistory([]);
     },
