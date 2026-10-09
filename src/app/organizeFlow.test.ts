@@ -2,13 +2,16 @@ import { describe, expect, it } from "vitest";
 import type {
   ActionPlan,
   ApplyReport,
+  FileChangeSuggestions,
   FileOperation,
   OrganizationSuggestions,
 } from "../domain/contracts";
 import { folioError } from "../domain/errors";
 import {
+  chosenOperations,
   ORGANIZE_START,
   organizeFlow,
+  suggestionKey,
   type OrganizeEvent,
 } from "./organizeFlow";
 
@@ -46,7 +49,7 @@ function run(...events: OrganizeEvent[]) {
 const toPreview: OrganizeEvent[] = [
   { type: "analyzeStarted", request: 1 },
   { type: "analyzed", request: 1, suggestions: SUGGESTIONS },
-  { type: "toggle", documentId: OPERATION.documentId },
+  { type: "toggle", key: suggestionKey("title", OPERATION.documentId) },
   { type: "prepareStarted", request: 2, operations: [OPERATION] },
   { type: "prepared", request: 2, plan: PLAN },
 ];
@@ -109,7 +112,9 @@ describe("the Organize flow", () => {
       error: folioError("destinationExists", "Taken."),
     });
     expect(state.stage).toBe("suggestions");
-    expect(state.chosen).toEqual([OPERATION.documentId]);
+    expect(state.chosen).toEqual([
+      suggestionKey("title", OPERATION.documentId),
+    ]);
     expect(state.error?.code).toBe("destinationExists");
   });
 });
@@ -136,5 +141,133 @@ describe("stopping and starting over", () => {
     );
     expect(state.stage).toBe("idle");
     expect(state.report).toBeNull();
+  });
+});
+
+const MODEL_RENAME: FileOperation = {
+  ...OPERATION,
+  destinationRelativePath: "notes/trip-budget.md",
+};
+const MOVE: FileOperation = {
+  kind: "move",
+  documentId: OPERATION.documentId,
+  relativePath: "notes/a.md",
+  expectedContentHash: OPERATION.expectedContentHash,
+  destinationRelativePath: "projects/a.md",
+  expectedDestination: "absent",
+};
+const MODEL: FileChangeSuggestions = {
+  filenames: [
+    {
+      documentId: OPERATION.documentId,
+      relativePath: "notes/a.md",
+      suggestedRelativePath: "notes/trip-budget.md",
+      reason: "Named by the local AI.",
+      operation: MODEL_RENAME,
+      generated: { citations: [], modelId: "qwen", revision: "r" },
+    },
+  ],
+  filenameCandidates: 1,
+  naming: "named",
+  destinations: [
+    {
+      documentId: OPERATION.documentId,
+      relativePath: "notes/a.md",
+      suggestedRelativePath: "projects/a.md",
+      folder: "projects",
+      reason: "Closer in meaning.",
+      similarity: 0.9,
+      currentSimilarity: 0.5,
+      passage: {} as never,
+      evidence: {} as never,
+      provenance: "embedding",
+      spaceFingerprint: "space",
+      operation: MOVE,
+    },
+  ],
+  destinationStatus: "suggested",
+};
+
+describe("the local models' renames and moves", () => {
+  const assisted: OrganizeEvent[] = [
+    ...toPreview.slice(0, 2),
+    { type: "assistStarted", request: 7 },
+    { type: "assisted", request: 7, result: MODEL },
+  ];
+
+  it("lets one change per file be chosen, and previews exactly that one", () => {
+    const title = suggestionKey("title", OPERATION.documentId);
+    const model = suggestionKey("model", OPERATION.documentId);
+    const move = suggestionKey("move", OPERATION.documentId);
+    let state = run(...assisted, { type: "toggle", key: title });
+    expect(chosenOperations(state)).toEqual([OPERATION]);
+    state = organizeFlow(state, { type: "toggle", key: model });
+    expect(state.chosen).toEqual([model]);
+    expect(chosenOperations(state)).toEqual([MODEL_RENAME]);
+    state = organizeFlow(state, { type: "toggle", key: move });
+    expect(chosenOperations(state)).toEqual([MOVE]);
+    state = organizeFlow(state, { type: "toggle", key: move });
+    expect(chosenOperations(state)).toEqual([]);
+  });
+
+  it("keeps what a stopped request already found", () => {
+    const partial: FileChangeSuggestions = { ...MODEL, naming: "cancelled" };
+    const stopping = run(
+      ...toPreview.slice(0, 2),
+      { type: "assistStarted", request: 7 },
+      { type: "assistStopped" },
+    );
+    expect(stopping.assist.status).toBe("stopping");
+    const stopped = organizeFlow(stopping, {
+      type: "assisted",
+      request: 7,
+      result: partial,
+    });
+    expect(stopped.assist.status).toBe("ready");
+    expect(stopped.assist.result).toBe(partial);
+    // A stopped request that is refused is just stopped, not a failure.
+    const refused = organizeFlow(stopping, {
+      type: "assistFailed",
+      request: 7,
+      error: folioError("cancelled", "These suggestions were stopped."),
+    });
+    expect(refused.assist.status).toBe("stopped");
+    expect(refused.assist.error).toBeNull();
+  });
+
+  it("drops a late reply and starts over with a new analysis", () => {
+    const again = run(...assisted, { type: "analyzeStarted", request: 9 });
+    expect(again.assist.result).toBeNull();
+    expect(again.chosen).toEqual([]);
+    // The reply to the earlier models' request no longer lands.
+    expect(
+      organizeFlow(again, { type: "assisted", request: 7, result: MODEL })
+        .assist.result,
+    ).toBeNull();
+    // Nor does a reply to a request a newer one replaced.
+    const newer = run(
+      ...toPreview.slice(0, 2),
+      { type: "assistStarted", request: 7 },
+      { type: "assistStopped" },
+      { type: "assistStarted", request: 8 },
+      { type: "assisted", request: 7, result: MODEL },
+    );
+    expect(newer.assist.status).toBe("working");
+    expect(newer.assist.result).toBeNull();
+  });
+
+  it("keeps the analysis when the local models fail", () => {
+    const failed = run(
+      ...toPreview.slice(0, 2),
+      { type: "assistStarted", request: 7 },
+      {
+        type: "assistFailed",
+        request: 7,
+        error: folioError("providerBusy", "Another request is active."),
+      },
+    );
+    expect(failed.stage).toBe("suggestions");
+    expect(failed.suggestions).toBe(SUGGESTIONS);
+    expect(failed.assist.error?.message).toBe("Another request is active.");
   });
 });

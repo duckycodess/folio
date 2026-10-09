@@ -1,4 +1,4 @@
-import { ArrowRight, Copy, FolderOpen } from "lucide-react";
+import { ArrowRight, Copy, FolderOpen, Sparkles } from "lucide-react";
 import {
   useEffect,
   useRef,
@@ -6,12 +6,21 @@ import {
   type Ref,
   type RefObject,
 } from "react";
-import type { OrganizeStage } from "../app/organizeFlow";
+import {
+  suggestionKey,
+  type OrganizeStage,
+  type SuggestionKind,
+} from "../app/organizeFlow";
 import { planRow, summarizeApply, summarizeUndo } from "../app/planReview";
 import type { CollectionsController } from "../app/useCollections";
 import type { OrganizeController } from "../app/useOrganize";
 import type { WorkspaceState } from "../app/useWorkspace";
-import type { DocumentRecord, IndexProgress } from "../domain/contracts";
+import type {
+  DocumentRecord,
+  IndexProgress,
+  SourcePassage,
+} from "../domain/contracts";
+import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { Notice } from "../ui/Notice";
@@ -96,11 +105,24 @@ export function OrganizeFlowPanel({
     (collection) => collection.id === organize.target,
   );
 
+  // Bumped by Stop, so a run stopped during grouping doesn't go on to naming files.
+  const modelRun = useRef(0);
+
   async function analyze() {
     const wholeFolder = !organize.target;
     if (wholeFolder) collections.clearSuggestions();
     const analyzed = await organize.analyze();
-    if (analyzed && wholeFolder && collections.available) collections.suggest();
+    if (!analyzed || !collections.available) return;
+    // One generation at a time: collections first, then renames and moves.
+    const run = ++modelRun.current;
+    if (wholeFolder) await collections.suggest();
+    if (run === modelRun.current) await organize.suggestWithModel();
+  }
+
+  function stopModels() {
+    modelRun.current++;
+    collections.stopSuggest();
+    organize.stopAssist();
   }
 
   // Each new step is announced by moving focus to its heading.
@@ -255,53 +277,13 @@ export function OrganizeFlowPanel({
                 )}
               </section>
 
-              <fieldset className="suggestions">
-                <legend className="subsection-title">Name suggestions</legend>
-                {suggestions.filenames.length ? (
-                  <ul className="suggestion-list">
-                    {suggestions.filenames.map((item) => {
-                      const document = workspace.documents.find(
-                        (candidate) => candidate.id === item.documentId,
-                      );
-                      return (
-                        <li key={item.documentId}>
-                          <label className="suggestion">
-                            <input
-                              type="checkbox"
-                              checked={state.chosen.includes(item.documentId)}
-                              onChange={() => organize.toggle(item.documentId)}
-                            />
-                            <span className="suggestion-text">
-                              <span className="suggestion-paths">
-                                {document ? (
-                                  <button
-                                    type="button"
-                                    className="link-button plan-path"
-                                    onClick={() => onOpenFile(document)}
-                                  >
-                                    {item.relativePath}
-                                  </button>
-                                ) : (
-                                  <span className="plan-path">
-                                    {item.relativePath}
-                                  </span>
-                                )}
-                                <ArrowRight size={14} aria-label="to" />
-                                <span className="plan-path">
-                                  {item.suggestedRelativePath}
-                                </span>
-                              </span>
-                              <span className="muted">{item.reason}</span>
-                            </span>
-                          </label>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                ) : (
-                  <p className="muted">No name changes to suggest.</p>
-                )}
-              </fieldset>
+              <FileChanges
+                organize={organize}
+                workspace={workspace}
+                onOpenFile={onOpenFile}
+                onRetry={() => void organize.suggestWithModel()}
+                onStop={stopModels}
+              />
 
               {state.stage === "preparing" ? (
                 <Progress label="Preparing the exact preview" />
@@ -322,7 +304,10 @@ export function OrganizeFlowPanel({
                 </div>
               )}
               {!organize.target && (
-                <SuggestedCollections collections={collections} />
+                <SuggestedCollections
+                  collections={collections}
+                  onStop={stopModels}
+                />
               )}
             </div>
           )}
@@ -345,6 +330,266 @@ export function OrganizeFlowPanel({
       </div>
     </Panel>
   );
+}
+
+/**
+ * Name and folder suggestions: title-based names, names the local model wrote,
+ * and moves into folders whose files are closer in meaning. Each is an exact
+ * native operation; at most one per file can be chosen for one preview.
+ */
+function FileChanges({
+  organize,
+  workspace,
+  onOpenFile,
+  onRetry,
+  onStop,
+}: {
+  organize: OrganizeController;
+  workspace: WorkspaceState;
+  onOpenFile: (document: DocumentRecord) => void;
+  onRetry: () => void;
+  onStop: () => void;
+}) {
+  const { state } = organize;
+  const { assist } = state;
+  const result = assist.result;
+  const stopped = useRef<HTMLParagraphElement>(null);
+  // The Stop button is gone once pressed; focus goes to what happened instead.
+  const stopping = assist.status === "stopping";
+  useEffect(() => {
+    if (stopping) stopped.current?.focus();
+  }, [stopping]);
+  const titled = state.suggestions?.filenames ?? [];
+  const named = result?.filenames ?? [];
+  const moves = result?.destinations ?? [];
+  const documentFor = (id: string) =>
+    workspace.documents.find((candidate) => candidate.id === id);
+  const row = (
+    kind: SuggestionKind,
+    item: {
+      documentId: string;
+      relativePath: string;
+      suggestedRelativePath: string;
+      reason: string;
+    },
+    extra?: ReactNode,
+  ) => {
+    const key = suggestionKey(kind, item.documentId);
+    return (
+      <SuggestionRow
+        key={key}
+        checked={state.chosen.includes(key)}
+        onToggle={() => organize.toggle(key)}
+        from={item.relativePath}
+        to={item.suggestedRelativePath}
+        reason={item.reason}
+        document={documentFor(item.documentId)}
+        onOpenFile={onOpenFile}
+        extra={extra}
+      />
+    );
+  };
+  const several =
+    new Set([...titled, ...named, ...moves].map((item) => item.documentId))
+      .size <
+    titled.length + named.length + moves.length;
+
+  return (
+    <>
+      <fieldset className="suggestions">
+        <legend className="subsection-title">Name suggestions</legend>
+        {titled.length || named.length ? (
+          <ul className="suggestion-list">
+            {[
+              ...titled.map((item) => ({ kind: "title" as const, item })),
+              ...named.map((item) => ({ kind: "model" as const, item })),
+            ]
+              // Each file's suggestions side by side, title-based first.
+              .sort(
+                (a, b) =>
+                  a.item.relativePath.localeCompare(b.item.relativePath) ||
+                  (a.kind === "title" ? -1 : 1),
+              )
+              .map(({ kind, item }) =>
+                row(
+                  kind,
+                  item,
+                  item.generated && (
+                    <>
+                      <Badge>
+                        <Sparkles size={12} aria-hidden="true" /> Name by local
+                        AI
+                      </Badge>
+                      <Excerpt passages={item.generated.citations} />
+                    </>
+                  ),
+                ),
+              )}
+          </ul>
+        ) : (
+          assist.status !== "working" &&
+          !stopping && <p className="muted">No name changes to suggest.</p>
+        )}
+        {result?.naming === "generationModelMissing" &&
+          result.filenameCandidates > 0 && (
+            <p className="muted">
+              {result.filenameCandidates}{" "}
+              {result.filenameCandidates === 1
+                ? "file has a generic name"
+                : "files have generic names"}{" "}
+              and no title to name{" "}
+              {result.filenameCandidates === 1 ? "it" : "them"} by. Naming{" "}
+              {result.filenameCandidates === 1 ? "it" : "them"} needs a local
+              generation model.
+            </p>
+          )}
+        {result?.naming === "cancelled" && (
+          <p className="muted">Naming stopped; names already written stay.</p>
+        )}
+        {result?.naming === "failed" && (
+          <Notice tone="warning">
+            Folio couldn't name {named.length ? "every file" : "files"} with the
+            local AI
+            {result.namingError ? `: ${result.namingError.message}` : "."}
+            {named.length ? " Names already written stay." : ""}
+          </Notice>
+        )}
+      </fieldset>
+
+      {assist.status !== "idle" && (
+        <fieldset className="suggestions">
+          <legend className="subsection-title">Folder suggestions</legend>
+          {moves.length ? (
+            <ul className="suggestion-list">
+              {moves.map((item) =>
+                row(
+                  "move",
+                  item,
+                  <span className="muted collection-passage">
+                    In “{item.folder || "the top of the folder"}”: “
+                    {excerpt(item.evidence.text)}”
+                  </span>,
+                ),
+              )}
+            </ul>
+          ) : result?.destinationStatus === "embeddingModelMissing" ? (
+            <p className="muted">
+              Folder suggestions need a local embedding model.
+            </p>
+          ) : (
+            assist.status === "ready" && (
+              <p className="muted">No folder changes to suggest.</p>
+            )
+          )}
+        </fieldset>
+      )}
+
+      {several && (
+        <p className="muted">
+          Some files have more than one suggestion. Choose one change per file.
+        </p>
+      )}
+
+      {(assist.status === "stopping" || assist.status === "stopped") && (
+        <p ref={stopped} tabIndex={-1} className="muted">
+          {assist.status === "stopping"
+            ? "Stopping the local AI. Names already written and folder suggestions found so far will still appear."
+            : "The local AI stopped."}{" "}
+          {assist.status === "stopped" && (
+            <button type="button" className="link-button" onClick={onRetry}>
+              Ask again
+            </button>
+          )}
+        </p>
+      )}
+      {assist.status === "working" && (
+        <div className="flow-step">
+          <Progress label="Asking the local AI for clearer names and folders" />
+          <div className="form-actions">
+            <Button variant="secondary" onClick={onStop}>
+              Stop the local AI
+            </Button>
+          </div>
+        </div>
+      )}
+      {assist.status === "failed" && assist.error && (
+        <Notice
+          tone="warning"
+          action={
+            <button type="button" className="link-button" onClick={onRetry}>
+              Try again
+            </button>
+          }
+        >
+          Folio couldn't get name and folder suggestions: {assist.error.message}
+        </Notice>
+      )}
+    </>
+  );
+}
+
+function SuggestionRow({
+  checked,
+  onToggle,
+  from,
+  to,
+  reason,
+  document,
+  onOpenFile,
+  extra,
+}: {
+  checked: boolean;
+  onToggle: () => void;
+  from: string;
+  to: string;
+  reason: string;
+  document: DocumentRecord | undefined;
+  onOpenFile: (document: DocumentRecord) => void;
+  extra?: ReactNode;
+}) {
+  return (
+    <li>
+      <label className="suggestion">
+        <input type="checkbox" checked={checked} onChange={onToggle} />
+        <span className="suggestion-text">
+          <span className="suggestion-paths">
+            {document ? (
+              <button
+                type="button"
+                className="link-button plan-path"
+                onClick={() => onOpenFile(document)}
+              >
+                {from}
+              </button>
+            ) : (
+              <span className="plan-path">{from}</span>
+            )}
+            <ArrowRight size={14} aria-label="to" />
+            <span className="plan-path">{to}</span>
+          </span>
+          <span className="muted">{reason}</span>
+          {extra}
+        </span>
+      </label>
+    </li>
+  );
+}
+
+/** The first passage a model cited, shortened. */
+function Excerpt({ passages }: { passages: SourcePassage[] }) {
+  const first = passages[0];
+  if (!first) return null;
+  return (
+    <span className="muted collection-passage">
+      Based on “{excerpt(first.text)}”
+      {first.page !== undefined && ` (page ${first.page})`}
+    </span>
+  );
+}
+
+function excerpt(text: string): string {
+  const line = text.trim().split(/\r?\n/u).find(Boolean) ?? "";
+  return line.length > 140 ? `${line.slice(0, 139)}…` : line;
 }
 
 /** The exact native plan, and Approve. Shared by Organize and Home's file actions. */

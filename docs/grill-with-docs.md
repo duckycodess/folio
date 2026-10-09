@@ -27,7 +27,7 @@ This records the already completed Folio interview on 2026-10-09. The user autho
 
 ## Organize virtual collections (2026-10-10, issue #78)
 
-Gab takes #78 from Dann, and Dann reviews the model parts. Rationale: [ADR 0016](adr/0016-virtual-collections-kept-natively-without-a-plan.md).
+Gab takes #78 from Dann, and Dann reviews the model parts. Rationale: [ADR 0017](adr/0017-virtual-collections-kept-natively-without-a-plan.md).
 
 | Question        | Decision                                                                                                          |
 | --------------- | ----------------------------------------------------------------------------------------------------------------- |

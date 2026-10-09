@@ -1249,6 +1249,13 @@ export interface UndoReport {
   indexRefreshed: boolean;
 }
 
+/** Which local model wrote a suggestion, and the passages it was based on. */
+export interface GeneratedBy {
+  citations: SourcePassage[];
+  modelId: string;
+  revision: string;
+}
+
 /** An Organization Suggestion for a filename; `operation` still needs a preview and approval. */
 export interface OrganizationSuggestion {
   documentId: DocumentId;
@@ -1256,6 +1263,38 @@ export interface OrganizationSuggestion {
   suggestedRelativePath: RelativePath;
   reason: string;
   operation: FileOperation;
+  /** Present only when the local model wrote the name; title-based names have none. */
+  generated?: GeneratedBy;
+}
+
+/** A move into an existing folder whose files are closer in meaning (#78). */
+export interface DestinationSuggestion {
+  documentId: DocumentId;
+  relativePath: RelativePath;
+  suggestedRelativePath: RelativePath;
+  /** `""` is the top of the folder. */
+  folder: RelativePath;
+  reason: string;
+  similarity: number;
+  currentSimilarity: number;
+  /** The file's passage closest to the suggested folder. */
+  passage: SourcePassage;
+  /** The passage in the suggested folder closest to the file. */
+  evidence: SourcePassage;
+  provenance: "embedding";
+  spaceFingerprint: string;
+  operation: FileOperation;
+}
+
+/** Renames and moves from the local models; each still needs a preview and approval. */
+export interface FileChangeSuggestions {
+  filenames: OrganizationSuggestion[];
+  /** Files with generic names and no title-based name that the model was asked to name. */
+  filenameCandidates: number;
+  naming: CollectionNaming;
+  namingError?: FolioErrorPayload;
+  destinations: DestinationSuggestion[];
+  destinationStatus: "suggested" | "embeddingModelMissing";
 }
 
 /** Duplicate groups are evidence only: nothing is moved or deleted because of them. */
@@ -1264,7 +1303,7 @@ export interface OrganizationSuggestions {
   filenames: OrganizationSuggestion[];
 }
 
-/* -------------------------------------------- virtual collections (#78, ADR 0016) */
+/* -------------------------------------------- virtual collections (#78, ADR 0017) */
 
 /** One file of a suggested collection, with the revision the analysis read. */
 export interface SuggestedMember {

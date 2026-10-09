@@ -13,6 +13,7 @@ pub mod device;
 pub mod embeddings;
 pub mod error;
 pub mod facts;
+pub mod file_suggestions;
 pub mod generation;
 pub mod grounding;
 pub mod interpretation;

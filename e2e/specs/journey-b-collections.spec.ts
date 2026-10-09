@@ -167,3 +167,109 @@ test.describe("Journey B: suggested collections", () => {
     ).toHaveCount(0);
   });
 });
+
+test.describe("Journey B: names and folders from the local AI", () => {
+  const BUDGET = "personal/budget-notes.md";
+  const STUDY = "notes/study-session.md";
+  test.use({
+    fakeOptions: {
+      collectionGroups: [
+        { paths: [PLAN, CHECKLIST], name: "Project deadlines" },
+      ],
+      modelFilenames: [{ path: BUDGET, name: "Badyet sa Oktubre" }],
+      destinations: [{ path: STUDY, folder: "courses" }],
+    },
+  });
+
+  test("previews a model-written name and a folder move as one exact plan", async ({
+    folio,
+  }) => {
+    await addFolder(folio);
+    await analyzeFolder(folio);
+    const names = folio.getByRole("group", { name: "Name suggestions" });
+    const folders = folio.getByRole("group", { name: "Folder suggestions" });
+    await expect(names.getByText("Name by local AI")).toBeVisible();
+    await names.getByRole("checkbox", { name: /badyet-sa-oktubre/ }).check();
+    await folders.getByRole("checkbox", { name: /study-session/ }).check();
+    await folio.getByRole("button", { name: "Preview 2 changes" }).click();
+
+    const preview = folio.getByRole("table");
+    await expect(preview.getByRole("cell", { name: "Rename" })).toBeVisible();
+    await expect(preview.getByRole("cell", { name: "Move" })).toBeVisible();
+    await expect(
+      preview.getByRole("cell", { name: "courses/study-session.md" }),
+    ).toBeVisible();
+    // A preview is not a saved file.
+    expect(await fake(folio).read(STUDY)).not.toBeNull();
+
+    await folio
+      .getByRole("button", { name: "Approve and apply 2 changes" })
+      .click();
+    await expect(
+      folio.getByRole("heading", { name: "Saved 2 changes." }),
+    ).toBeVisible();
+    expect(await fake(folio).read("courses/study-session.md")).not.toBeNull();
+    expect(
+      await fake(folio).read("personal/badyet-sa-oktubre.md"),
+    ).not.toBeNull();
+    expect(await fake(folio).read(STUDY)).toBeNull();
+  });
+
+  test("lets only one change per file be chosen", async ({ folio }) => {
+    await addFolder(folio);
+    await analyzeFolder(folio);
+    const names = folio.getByRole("group", { name: "Name suggestions" });
+    const title = names.getByRole("checkbox", {
+      name: /^personal\/budget-notes\.md(?!.*badyet)/,
+    });
+    const model = names.getByRole("checkbox", { name: /badyet-sa-oktubre/ });
+    await expect(
+      folio.getByText("Choose one change per file", { exact: false }),
+    ).toBeVisible();
+    await title.check();
+    await model.check();
+    await expect(title).not.toBeChecked();
+    await expect(
+      folio.getByRole("button", { name: "Preview 1 change" }),
+    ).toBeVisible();
+  });
+
+  test("adds a file to a kept collection from its row, without moving it", async ({
+    folio,
+  }) => {
+    await addFolder(folio);
+    await analyzeFolder(folio);
+    await folio.getByRole("button", { name: "Keep collection" }).click();
+    await expect(notice(folio, "Kept as “Project deadlines”.")).toBeVisible();
+
+    await openView(folio, "Home");
+    const before = await fake(folio).list();
+    await folio
+      .locator(
+        `[data-row-id="e2e-workspace:notes/paalala.md"] .row-menu-button`,
+      )
+      .click();
+    await folio.getByRole("menuitem", { name: "Add to collection…" }).click();
+    const dialog = folio.getByRole("dialog", {
+      name: "Add paalala.md to a collection",
+    });
+    await expect(
+      dialog.getByRole("radio", { name: /Project deadlines/ }),
+    ).toBeChecked();
+    await dialog.getByRole("button", { name: "Add to collection" }).click();
+    await expect(
+      dialog.getByText(
+        "Added to “Project deadlines”. The file stays where it is.",
+      ),
+    ).toBeVisible();
+    await dialog.getByRole("button", { name: "Done" }).click();
+    expect(await fake(folio).list()).toEqual(before);
+
+    await openView(folio, "Organize");
+    const kept = folio.locator(".collection-item", {
+      has: folio.getByRole("heading", { name: "Project deadlines" }),
+    });
+    await expect(kept.getByText("3 files")).toBeVisible();
+    await expect(kept.getByText("notes/paalala.md")).toBeVisible();
+  });
+});

@@ -232,7 +232,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
     request: string,
     chosen?: DocumentRecord,
   ): Promise<AskOutcome> {
-    const meaning = await interpretRequest(folder, request);
+    const meaning = await interpretRequest(folder, request, chosen?.id);
     switch (meaning.status) {
       case "nonMutating": {
         const query = meaning.targetQuery?.trim() || request;
