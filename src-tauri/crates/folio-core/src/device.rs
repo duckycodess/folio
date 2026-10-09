@@ -47,6 +47,8 @@ mod imp {
 mod imp {
     use std::path::Path;
 
+    /// `MemTotal` leaves out memory reserved by firmware, so it can read a
+    /// little below the installed RAM. Linux isn't a target platform.
     pub fn total_memory_bytes() -> Option<u64> {
         let info = std::fs::read_to_string("/proc/meminfo").ok()?;
         let line = info.lines().find(|line| line.starts_with("MemTotal:"))?;
@@ -64,9 +66,20 @@ mod imp {
     use std::os::windows::ffi::OsStrExt;
     use std::path::Path;
     use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
-    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    use windows_sys::Win32::System::SystemInformation::{
+        GetPhysicallyInstalledSystemMemory, GlobalMemoryStatusEx, MEMORYSTATUSEX,
+    };
 
     pub fn total_memory_bytes() -> Option<u64> {
+        // The RAM installed in the computer, from its firmware tables.
+        // GlobalMemoryStatusEx reports only what Windows can use, which leaves
+        // out memory reserved for an integrated GPU, so an 8 GB laptop without
+        // a dedicated GPU could look like 7 GB. It is the fallback.
+        let mut kib: u64 = 0;
+        // SAFETY: `kib` is a writable u64 the call fills in.
+        if unsafe { GetPhysicallyInstalledSystemMemory(&mut kib) } != 0 && kib > 0 {
+            return kib.checked_mul(1024);
+        }
         // SAFETY: MEMORYSTATUSEX is plain data; dwLength must be set before the call.
         let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
         status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
