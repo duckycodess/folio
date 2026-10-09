@@ -7,6 +7,7 @@
 - A sidebar theme switch (System, Light, Dark), remembered on the device, and coloured file-type tiles in file lists and the document panel. Checked in headless Chromium: the switch cycles, the choice survives a reload, and System removes the override. The sample files are all Markdown, so the PDF and text tiles have not been seen rendered.
 - File table and reader ([issue #17](https://github.com/duckycodess/folio/issues/17)): name, location, type, modified and size columns that drop to fit the space; the reader beside the table (or in place of it below 860px) shows the file's text as read-only, with its full path. The reader never shows a file the current list excludes. In the desktop app, Folio starts with an "Add folder" state (sample files on request); an added folder with no readable files offers "Choose another folder". The browser preview lists sample files and says so.
 - Relationships with evidence ([issue #21](https://github.com/duckycodess/folio/issues/21)): the document panel's Related tab and the Graph view list every connected file. Each entry has its type (link and direction, or exact duplicate), how Folio knows it, the file's original folder, and evidence excerpts that open the source with the passage highlighted. Files opened from Related keep a "Back to" link to the origin. With a folder open, links and duplicates come from the native index (`list_relationships`, `list_duplicates`) merged with links in opened files. If the folder hasn't been indexed, the UI says so; no UI runs the index scan yet. Exact duplicates are also found from content hashes Folio already has. The list is the only Graph view; there is no drawn graph. Similarity and shared-fact connections have labels and tests, but no producer yet.
+- Shared error and recovery states ([issue #18](https://github.com/duckycodess/folio/issues/18)): every error code maps to one plain-language message and next step ([error-states.md](error-states.md)), shown through one recovery notice in every workflow. Drafts (the Ask & Act request, rename names per file) survive errors and view changes. Success after opening a folder is shown only once the native core reports it. Each view announces into its own live region. Modals keep Tab inside them. A browser-only practice mode (`?simulate=<code>`) triggers each state in its own flow.
 - Keyword filtering (explicitly labelled), actual Markdown-link discovery in fixture text, source content views, and a list of those explicit links with their evidence (Graph view).
 - Tauri folder picker and scoped native listing/TXT/Markdown reading commands.
 - [Frozen cross-track contracts](contracts.md) declared in both `src/domain/contracts.ts` and `src-tauri/src/contracts.rs`: typed failures, stable workspace/document identity, UTF-8 source offsets bound to a document revision, typed relationship evidence, embedding-space fingerprints, provider error/cancellation codes, plans, approvals, per-operation outcomes, history and undo shapes.
@@ -57,6 +58,39 @@ Provider cases are listed as pending, not mocked, in `src/domain/pending.test.ts
 No AI or save completion should be presented until the corresponding native/provider implementation succeeds. Model sizes, installed size, memory targets, and platform support remain subject to measurements.
 
 ## Verification
+
+### Error and recovery states (2026-10-09, issue #18)
+
+Checked on macOS with Node.js 26.10.0:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 120 passed, 16 todo. The new cases:
+  - every error code has a title, a message and a flow;
+  - the wording contains no developer terms or code names;
+  - refused changes say no file was changed;
+  - model failures say the request is kept;
+  - a code this build doesn't know falls back to the general message;
+  - action state: success only from the native success of the pending request, never before; late replies to older requests are ignored, and a failure can't be overwritten;
+  - practice mode is never active in the desktop app.
+- Browser preview in headless Google Chrome via Playwright at 1280×850, once per code with `?simulate=<code>` (all 33):
+  - each message appears in its flow with the expected next-step button;
+  - danger messages are `role="alert"`, and the others reach the view's live region;
+  - the typed rename name and the Ask & Act request are still there afterwards, including after Open Model Lab and back;
+  - no rename preview opens on a refused change.
+- Without practice mode:
+  - there's no banner, and Add folder stays disabled in the browser;
+  - an Ask & Act message is announced in the Ask & Act region, and that region is gone after switching to Organize;
+  - in the rename preview, 8 Tabs and 8 Shift+Tabs stay inside the dialog, and Escape closes it and returns focus to Preview rename;
+  - the rendered text of all six views contains none of "Track T…", "docs/", "engine", "adapter", "fixture", "payload", "null" or "undefined".
+
+After the #31 review:
+
+- Change-related wording now depends on when the error arrived: refused before any write, partway through a batch, or partway through an Undo.
+- `historyRequired` now says the file was changed but Undo isn't available, with no Try again, because the native writer reports it only after a write.
+- `npm test`: 125 passed, 9 todo. New cases: no message claims nothing changed after a write or a partial Undo, partway messages keep earlier changes, and a spent plan is never retried.
+- In the browser, `historyRequired`, `undoConflict` and `targetChanged` show the new wording, and a fast file open no longer announces "Reading file…" (it waits 500 ms).
+
+Not verified: real native failures (only simulated ones), the folder-opened success message (it needs the native folder picker), screen readers, and the Tauri webview.
 
 ### Relationships list and Graph (2026-10-09, issue #21)
 

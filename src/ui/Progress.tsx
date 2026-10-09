@@ -1,3 +1,6 @@
+import { useEffect } from "react";
+import { useAnnounce } from "./Announcer";
+
 interface ProgressProps {
   label: string;
   /** 0–100. Omit when the real progress is unknown. */
@@ -7,6 +10,13 @@ interface ProgressProps {
 /** Never invent a percentage: unknown progress renders as indeterminate. */
 export function Progress({ label, value }: ProgressProps) {
   const known = value !== undefined;
+  const announce = useAnnounce();
+  // Announce only work that's still running after a moment; most local reads
+  // finish first, and announcing each one would be noise.
+  useEffect(() => {
+    const timer = setTimeout(() => announce(`${label}…`), 500);
+    return () => clearTimeout(timer);
+  }, [announce, label]);
   return (
     <div className="progress">
       <div className="progress-label">

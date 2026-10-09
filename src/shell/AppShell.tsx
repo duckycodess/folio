@@ -21,7 +21,11 @@ import {
 } from "../app/theme";
 import { useRelationships } from "../app/useRelationships";
 import { useWorkspace, type WorkspaceSourceKind } from "../app/useWorkspace";
+import { simulatedCode } from "../adapters/simulate";
+import { useDrafts } from "../app/drafts";
+import { RECOVERY } from "../app/recovery";
 import { AnnouncerProvider } from "../ui/Announcer";
+import { RecoveryNotice } from "../ui/RecoveryNotice";
 import { Notice } from "../ui/Notice";
 import { SearchField } from "../ui/SearchField";
 import { AssistantView } from "../views/AssistantView";
@@ -82,6 +86,7 @@ function isEditable(target: EventTarget | null) {
 
 export function AppShell() {
   const workspace = useWorkspace();
+  const drafts = useDrafts();
   const relations = useRelationships(workspace);
   const [view, setView] = useState<ViewId>("home");
   const searchInput = useRef<HTMLInputElement>(null);
@@ -216,8 +221,44 @@ export function AppShell() {
           </header>
 
           <main id="main" className="main" tabIndex={-1}>
-            {workspace.error && (
-              <Notice tone="danger">{workspace.error}</Notice>
+            {simulatedCode && (
+              <Notice tone="info">
+                Practice mode: this preview simulates “
+                {RECOVERY[simulatedCode].title}” so its message can be checked.
+                Nothing here is a real problem.
+              </Notice>
+            )}
+            {workspace.failure && (
+              <RecoveryNotice
+                error={workspace.failure.error}
+                actions={{
+                  retry: workspace.failure.retry,
+                  chooseFolder: workspace.canChooseFolder
+                    ? () => void workspace.selectFolder()
+                    : undefined,
+                  openModelLab: () => setView("modelLab"),
+                }}
+                onDismiss={workspace.dismissFailure}
+              />
+            )}
+            {workspace.folderAction.status === "succeeded" && (
+              <Notice
+                tone="success"
+                action={
+                  <button
+                    type="button"
+                    className="link-button"
+                    onClick={workspace.dismissFolderResult}
+                  >
+                    Dismiss
+                  </button>
+                }
+              >
+                Opened “{workspace.folderAction.result.name}”.{" "}
+                {workspace.folderAction.result.files === 1
+                  ? "1 file is listed."
+                  : `${workspace.folderAction.result.files} files are listed.`}
+              </Notice>
             )}
             {workspace.notice && (
               <Notice
@@ -235,16 +276,25 @@ export function AppShell() {
                 {workspace.notice}
               </Notice>
             )}
-            {view === "home" && (
-              <HomeView workspace={workspace} onNavigate={setView} />
-            )}
-            {view === "files" && <FilesView workspace={workspace} />}
-            {view === "organize" && <OrganizeView workspace={workspace} />}
-            {view === "graph" && (
-              <GraphView workspace={workspace} relations={relations} />
-            )}
-            {view === "assistant" && <AssistantView onNavigate={setView} />}
-            {view === "modelLab" && <ModelLabView />}
+            {/* Each view announces into its own live region, which is
+                replaced when the view changes, so one workflow's messages
+                never surface in another. */}
+            <AnnouncerProvider key={view}>
+              {view === "home" && (
+                <HomeView workspace={workspace} onNavigate={setView} />
+              )}
+              {view === "files" && <FilesView workspace={workspace} />}
+              {view === "organize" && (
+                <OrganizeView workspace={workspace} drafts={drafts} />
+              )}
+              {view === "graph" && (
+                <GraphView workspace={workspace} relations={relations} />
+              )}
+              {view === "assistant" && (
+                <AssistantView drafts={drafts} onNavigate={setView} />
+              )}
+              {view === "modelLab" && <ModelLabView />}
+            </AnnouncerProvider>
           </main>
         </div>
 

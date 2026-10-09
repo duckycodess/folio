@@ -407,6 +407,15 @@
 .notice-body {
   flex: 1;
 }
+.notice-title {
+  font: var(--text-label);
+  font-weight: 600;
+}
+.notice-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
 .notice-action {
   flex: none;
 }

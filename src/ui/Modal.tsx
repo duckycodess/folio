@@ -1,5 +1,14 @@
 import { X } from "lucide-react";
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
+
+const FOCUSABLE =
+  'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 interface ModalProps {
   open: boolean;
@@ -10,13 +19,35 @@ interface ModalProps {
 }
 
 /**
- * Native `<dialog>`: the browser traps focus and closes on Escape. Focus goes
- * back to whatever opened the modal.
+ * Native `<dialog>`: the page behind it is inert and Escape closes it. Tab and
+ * Shift+Tab also wrap inside it, because the browser would otherwise let focus
+ * leave for its own controls. Focus goes back to whatever opened the modal.
  */
 export function Modal({ open, title, onClose, children, footer }: ModalProps) {
   const dialog = useRef<HTMLDialogElement>(null);
   const opener = useRef<Element | null>(null);
   const titleId = useId();
+
+  function trapTab(event: KeyboardEvent<HTMLDialogElement>) {
+    if (event.key !== "Tab") return;
+    const items = [
+      ...event.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE),
+    ];
+    if (!items.length) return;
+    const first = items[0];
+    const last = items[items.length - 1];
+    const active = document.activeElement;
+    if (
+      event.shiftKey &&
+      (active === first || !items.includes(active as HTMLElement))
+    ) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 
   useEffect(() => {
     const element = dialog.current;
@@ -33,6 +64,7 @@ export function Modal({ open, title, onClose, children, footer }: ModalProps) {
       ref={dialog}
       className="modal"
       aria-labelledby={titleId}
+      onKeyDown={trapTab}
       onClose={() => {
         onClose();
         if (opener.current instanceof HTMLElement) opener.current.focus();

@@ -7,6 +7,8 @@ import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { Olio } from "../ui/Olio";
 import { Panel } from "../ui/Panel";
+import { simulatedFailure } from "../adapters/simulate";
+import { RecoveryNotice } from "../ui/RecoveryNotice";
 import { FileList } from "./FileList";
 import { EmptyFolder, NoFolder } from "./NoFolder";
 import { WorkspaceSource } from "./WorkspaceSource";
@@ -86,6 +88,7 @@ function HomeContents({
         </EmptyState>
       </section>
 
+      {searching && <SearchProblem onNavigate={onNavigate} />}
       <Panel
         title={searching ? "Search results" : "Files"}
         actions={searching && <Badge>Keyword search</Badge>}
@@ -117,5 +120,17 @@ function HomeContents({
         )}
       </Panel>
     </>
+  );
+}
+
+/** Practice mode only: retrieval problems, shown above the keyword results. */
+function SearchProblem({ onNavigate }: Pick<HomeViewProps, "onNavigate">) {
+  const failure = simulatedFailure("search");
+  if (!failure) return null;
+  return (
+    <RecoveryNotice
+      error={failure}
+      actions={{ openModelLab: () => onNavigate("modelLab") }}
+    />
   );
 }
