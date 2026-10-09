@@ -11,6 +11,7 @@
 - Graph entry points ([#40](https://github.com/duckycodess/folio/issues/40)): Graph starts from all files, one file, a folder (including connections that leave it) or a keyword topic. With a file open, it starts from that file, and opening a file from the list makes it the new start, with keyboard focus moved to the list's new title. A topic with no letters or digits matches nothing. Confirmed connections (links, identical copies) are listed apart from suggested ones (similarity, possible shared facts), which only appear when the index has them. A "Where these files are" panel counts the connected files per folder. That count isn't a written summary: the relationship summary needs a local model and isn't built. Arrow keys, Home and End move between the files in the list.
 - Home as the file browser ([#42](https://github.com/duckycodess/folio/issues/42), [#43](https://github.com/duckycodess/folio/issues/43), ADR 0010). The Files tab is gone. Home lists every file, sorted by path, with a count. Each row has a keyboard-accessible ⋯ menu (Open, Rename…, Move to folder…, Show related), and the document panel has the same menu. Rename and Move use the exact preview, Approve and Undo flow from #22, in a dialog. The search field is only on Home, centred, and ⌘K / Ctrl K from any page opens Home and focuses it. Rows take an optional `renderDetail` slot for #19's search evidence. With the sample files, Rename and Move explain that a folder is needed. In practice mode (`?simulate=<code>`), they show the simulated refusal instead.
 - Organize flow ([issue #22](https://github.com/duckycodess/folio/issues/22)), desktop only. Analyze re-indexes the open folder, with live progress and Stop, then lists exact duplicates (by content, never moved or deleted) and filename suggestions to tick. The exact preview shows every from → to path from the native plan. Approve echoes that plan's digest and applies it. The result is worded from the per-file outcomes, so a batch that stopped partway never says nothing changed. It shows what was recorded in history and offers a Preview Undo. A refused apply keeps the preview, with Preview again. The Rename form uses the same native plan with a folder open. With the sample files, Organize explains that a folder is needed. Virtual collections are still not available.
+- Search evidence ([issue #19](https://github.com/duckycodess/folio/issues/19)): each Home search result shows how it matched (words in the text or in the name; "Similar meaning" only for semantic results) and up to two excerpts with the query words highlighted, case- and accent-insensitive, plus page labels for PDFs. Selecting an excerpt opens the reader at that highlighted passage. In an open folder, text search uses the persistent index (FTS5 keyword search), merged with file-name matches. An unindexed folder says that only names are searched and offers **Index this folder**, with progress and Stop. A file kept open outside the results is labelled, and a note says that finding files by meaning needs a local AI model.
 - Keyword filtering (explicitly labelled), actual Markdown-link discovery in fixture text, source content views, and a list of those explicit links with their evidence (Graph view).
 - Tauri folder picker and scoped native listing/TXT/Markdown reading commands.
 - [Frozen cross-track contracts](contracts.md) declared in both `src/domain/contracts.ts` and `src-tauri/src/contracts.rs`: typed failures, stable workspace/document identity, UTF-8 source offsets bound to a document revision, typed relationship evidence, embedding-space fingerprints, provider error/cancellation codes, plans, approvals, per-operation outcomes, history and undo shapes.
@@ -91,6 +92,32 @@ After review (2026-10-10):
 - Browser preview (sample files) in headless Chrome: Enter on `project-plan-copy.md` from `project-plan.md` focuses "Connected to project-plan-copy.md", and Tab then reaches the first file in the list. The topics `?`, `#` and `—` give 0 found, and "plan" gives 9. The folder fallback and typing speed on a large indexed folder weren't checked in the browser.
 
 Not verified: suggested connections with real index data (no producer yet), screen readers, and the Tauri app.
+
+### Search evidence (2026-10-10, issue #19)
+
+Checked on macOS with Node.js 26.10.0:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 170 passed, 9 todo. The new cases:
+  - index text matches come before name-only matches, without repeats, and a result for a file no longer listed is dropped;
+  - match labels never call keyword matching semantic;
+  - highlighting marks whole words, case- and accent-insensitive ("nino" marks "Niño"), and keeps the excerpt's exact text.
+- Browser preview, sample files, headless Chrome at 1280×850:
+  - "deadline" shows four results, each with "Words in the text" and a highlighted excerpt;
+  - the row's spoken description includes the label and the excerpt;
+  - the live region says "4 files match your search.";
+  - selecting an excerpt opens the reader with that passage highlighted and focused;
+  - an open file the search leaves out is labelled with "Clear search";
+  - a query with no matches shows "No matching files".
+- Folder mode, with the desktop app's commands stood in for by a browser mock (`choose_workspace`, `list_documents`, `list_indexed_documents`, `search_index`, `scan_workspace` with progress events, `read_document`):
+  - before indexing, only names are searched, and the "Index this folder" note appears;
+  - indexing shows its phase and progress;
+  - afterwards, "panayam" lists both files that contain it, with highlights;
+  - an excerpt opens the read file with the passage highlighted;
+  - a PDF result shows "Page 3";
+  - there's no horizontal scroll at 700px.
+
+Not verified: the real native index (this used a mock), semantic or hybrid results (there's no embedding model yet), opening a PDF at its page (the reader can't show PDF text yet; see #47), cross-language matches (which need semantic search), screen readers, and the Tauri webview.
 
 ### Home as the file browser (2026-10-10, issues #42 and #43)
 
