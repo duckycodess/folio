@@ -7,16 +7,22 @@ import {
 } from "react";
 import {
   cancelModelLab,
+  installLabCandidate,
   isAvailable,
   labModels,
   listLabResults,
   listLabRuns,
   onLabProgress,
+  recordLabReview,
+  removeLabCandidate,
   runModelLab,
 } from "../adapters/modelLab";
+import { cancelInstall, onInstallProgress } from "../adapters/models";
 import type {
   BenchmarkRecord,
+  BenchmarkReview,
   BenchmarkRunSummary,
+  DownloadProgress,
   LabModel,
   LabProgress,
 } from "../domain/contracts";
@@ -41,6 +47,18 @@ export interface ActiveRun {
   cancelling: boolean;
 }
 
+export interface CandidateInstall {
+  modelId: string;
+  progress: DownloadProgress | null;
+  cancelling: boolean;
+}
+
+export interface ReviewInput {
+  status: BenchmarkReview["status"];
+  reviewer: string;
+  notes?: string;
+}
+
 export interface ModelLabController {
   load: LabLoad;
   models: LabModel[];
@@ -61,6 +79,18 @@ export interface ModelLabController {
   error: FolioError | null;
   /** How the last run ended, until dismissed. */
   ended: LabProgress | null;
+  /** The evaluation candidate downloading now; one download at a time. */
+  candidateInstall: CandidateInstall | null;
+  /** The candidate being removed. */
+  removingCandidate: string | null;
+  installCandidate: (modelId: string) => void;
+  cancelCandidate: () => void;
+  removeCandidate: (modelId: string) => void;
+  /**
+   * Appends a review of the record's exact output. Rejects with the native
+   * core's error, e.g. when the stored output is no longer the one read.
+   */
+  saveReview: (record: BenchmarkRecord, review: ReviewInput) => Promise<void>;
   reload: () => void;
   dismiss: () => void;
 }
@@ -76,6 +106,44 @@ let lastEnd: LabProgress | null = null;
 let finishedRuns = 0;
 let progressSubscription: Promise<unknown> | null = null;
 const listeners = new Set<() => void>();
+
+/**
+ * A candidate download, kept outside the page for the same reason. It shares
+ * the native install lock with product downloads, so only one runs at a time.
+ * `candidateChanges` counts installs and removals that ended.
+ */
+let candidateInstall: CandidateInstall | null = null;
+let candidateChanges = 0;
+let candidateError: FolioError | null = null;
+
+function setCandidateInstall(next: CandidateInstall | null) {
+  candidateInstall = next;
+  listeners.forEach((listener) => listener());
+}
+
+async function runCandidateInstall(modelId: string) {
+  candidateError = null;
+  setCandidateInstall({ modelId, progress: null, cancelling: false });
+  let stop: (() => void) | null = null;
+  try {
+    stop = await onInstallProgress((progress) => {
+      if (candidateInstall?.modelId === modelId) {
+        setCandidateInstall({ ...candidateInstall, progress });
+      }
+    });
+    const state = await installLabCandidate(modelId);
+    // A cancelled download ends without installing, which isn't an error.
+    if (state.error && !candidateInstall?.cancelling) {
+      candidateError = toFolioError(state.error);
+    }
+  } catch (cause) {
+    if (!candidateInstall?.cancelling) candidateError = toFolioError(cause);
+  } finally {
+    stop?.();
+    candidateChanges += 1;
+    setCandidateInstall(null);
+  }
+}
 
 function setActiveRun(next: ActiveRun | null) {
   activeRun = next;
@@ -115,7 +183,10 @@ function useLabRun() {
   const running = useSyncExternalStore(subscribe, () => activeRun);
   const finished = useSyncExternalStore(subscribe, () => finishedRuns);
   const ended = useSyncExternalStore(subscribe, () => lastEnd);
-  return { running, finished, ended };
+  const installing = useSyncExternalStore(subscribe, () => candidateInstall);
+  const changes = useSyncExternalStore(subscribe, () => candidateChanges);
+  const installError = useSyncExternalStore(subscribe, () => candidateError);
+  return { running, finished, ended, installing, changes, installError };
 }
 
 /**
@@ -138,7 +209,13 @@ export function useModelLab(installedModels = ""): ModelLabController {
   });
   const [error, setError] = useState<FolioError | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const { running, finished, ended } = useLabRun();
+  // Bumped to read the shown run's records again, e.g. after a refused review.
+  const [recordsVersion, setRecordsVersion] = useState(0);
+  const { running, finished, ended, installing, changes, installError } =
+    useLabRun();
+  const [removingCandidate, setRemovingCandidate] = useState<string | null>(
+    null,
+  );
   const seenFinished = useRef(finished);
   const choices = labChoices(models);
 
@@ -182,7 +259,7 @@ export function useModelLab(installedModels = ""): ModelLabController {
     return () => {
       active = false;
     };
-  }, [available, attempt, finished, installedModels]);
+  }, [available, attempt, finished, installedModels, changes]);
 
   // The chosen run's records. They outlive the models they measured.
   useEffect(() => {
@@ -205,12 +282,12 @@ export function useModelLab(installedModels = ""): ModelLabController {
     return () => {
       active = false;
     };
-  }, [available, runId, finished, attempt]);
+  }, [available, runId, finished, attempt, recordsVersion]);
 
   const planned = runRequest(selection, choices);
 
   const start = useCallback(() => {
-    if (!("request" in planned) || activeRun) return;
+    if (!("request" in planned) || activeRun || candidateInstall) return;
     setError(null);
     lastEnd = null;
     setActiveRun({ runId: null, progress: null, cancelling: false });
@@ -248,7 +325,12 @@ export function useModelLab(installedModels = ""): ModelLabController {
       setSelection((current) => ({ ...current, embeddingModelId: modelId })),
     toggleGeneration: (modelId) =>
       setSelection((current) => toggleGeneration(current, modelId)),
-    blocked: "blocked" in planned ? planned.blocked : null,
+    blocked:
+      "blocked" in planned
+        ? planned.blocked
+        : installing
+          ? "Wait for the download to finish."
+          : null,
     running,
     start,
     cancel,
@@ -257,8 +339,59 @@ export function useModelLab(installedModels = ""): ModelLabController {
     chooseRun: setRunId,
     records,
     recordsLoading,
-    error,
+    error: error ?? installError,
     ended,
+    candidateInstall: installing,
+    removingCandidate,
+    installCandidate: (modelId) => {
+      if (candidateInstall || activeRun) return;
+      setError(null);
+      void runCandidateInstall(modelId);
+    },
+    cancelCandidate: () => {
+      if (!candidateInstall || candidateInstall.cancelling) return;
+      setCandidateInstall({ ...candidateInstall, cancelling: true });
+      cancelInstall().catch((cause: unknown) => {
+        if (candidateInstall) {
+          setCandidateInstall({ ...candidateInstall, cancelling: false });
+        }
+        setError(toFolioError(cause));
+      });
+    },
+    removeCandidate: (modelId) => {
+      if (candidateInstall || activeRun) return;
+      setError(null);
+      setRemovingCandidate(modelId);
+      removeLabCandidate(modelId)
+        .catch((cause: unknown) => setError(toFolioError(cause)))
+        .finally(() => {
+          setRemovingCandidate(null);
+          candidateChanges += 1;
+          listeners.forEach((listener) => listener());
+        });
+    },
+    saveReview: async (record, review) => {
+      let updated: BenchmarkRecord;
+      try {
+        updated = await recordLabReview({
+          id: record.id,
+          outputSha256: record.outputSha256,
+          ...review,
+        });
+      } catch (cause) {
+        const failure = toFolioError(cause);
+        // The stored output isn't the one shown: show the stored one.
+        if (failure.code === "evidenceInvalid") {
+          setRecordsVersion((value) => value + 1);
+        }
+        throw failure;
+      }
+      setRecords((current) =>
+        current.map((candidate) =>
+          candidate.id === updated.id ? updated : candidate,
+        ),
+      );
+    },
     reload: () => {
       setError(null);
       setLoad("loading");
@@ -266,6 +399,7 @@ export function useModelLab(installedModels = ""): ModelLabController {
     },
     dismiss: () => {
       setError(null);
+      candidateError = null;
       lastEnd = null;
       listeners.forEach((listener) => listener());
     },

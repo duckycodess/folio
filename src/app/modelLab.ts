@@ -355,3 +355,65 @@ export function recordModelLabel(record: BenchmarkRecord): string {
   const name = modelName(record.model);
   return record.model.evaluationOnly ? `${name} (evaluation only)` : name;
 }
+
+/* ------------------------------------------------------------- candidates */
+
+/**
+ * Evaluation-only models, which install only here, into their own folder.
+ * They are never offered as the app's model.
+ */
+export function evaluationCandidates(models: LabModel[]): LabModel[] {
+  return models.filter((model) => model.catalog === "evaluationCandidate");
+}
+
+/* ---------------------------------------------------------------- reviews */
+
+/**
+ * Summaries are the one task with no automatic grade, so they are the ones a
+ * person reviews. A case that produced no summary has nothing to review.
+ */
+export function canReview(record: BenchmarkRecord): boolean {
+  return record.task === "summary" && record.outcomeKind === "valid";
+}
+
+export interface ReviewMaterial {
+  request: string | null;
+  document: string | null;
+  summary: string | null;
+  /** The passages the model was given, which the summary must stay within. */
+  passages: string[];
+}
+
+function text(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+/**
+ * What the reviewer reads, taken from the recorded output. The output is the
+ * native core's raw record, so every field is checked rather than assumed.
+ */
+export function reviewMaterial(record: BenchmarkRecord): ReviewMaterial {
+  const output =
+    record.output && typeof record.output === "object"
+      ? (record.output as Record<string, unknown>)
+      : {};
+  const result =
+    output.result && typeof output.result === "object"
+      ? (output.result as Record<string, unknown>)
+      : {};
+  const passages = Array.isArray(output.suppliedPassages)
+    ? output.suppliedPassages
+        .map((passage) =>
+          passage && typeof passage === "object"
+            ? text((passage as Record<string, unknown>).text)
+            : null,
+        )
+        .filter((passage): passage is string => passage !== null)
+    : [];
+  return {
+    request: text(output.request),
+    document: text(output.document),
+    summary: text(result.text),
+    passages,
+  };
+}

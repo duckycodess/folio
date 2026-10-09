@@ -6,7 +6,9 @@ import type {
   LabModel,
 } from "../domain/contracts";
 import {
+  canReview,
   cpuLabel,
+  evaluationCandidates,
   defaultSelection,
   durationLabel,
   isRunEnd,
@@ -17,6 +19,7 @@ import {
   progressLabel,
   reconcileSelection,
   recordsByTask,
+  reviewMaterial,
   runConditionRows,
   runRequest,
   sortRuns,
@@ -290,5 +293,54 @@ describe("Model Lab runs", () => {
     expect(runConditionRows({ ...run, indexBuildMs: 2500 }).at(-1)?.value).toBe(
       "2.5 s",
     );
+  });
+});
+
+describe("Model Lab candidates and reviews", () => {
+  it("lists only evaluation candidates, installed or not", () => {
+    const models = [
+      labModel("qwen", "generation"),
+      labModel("sea", "generation", { ...CANDIDATE, status: "notInstalled" }),
+    ];
+    expect(evaluationCandidates(models).map((model) => model.id)).toEqual([
+      "sea",
+    ]);
+  });
+
+  it("offers a review only for a summary that was produced", () => {
+    expect(canReview(record)).toBe(true);
+    expect(canReview({ ...record, outcomeKind: "timedOut" })).toBe(false);
+    expect(canReview({ ...record, task: "interpretation" })).toBe(false);
+  });
+
+  it("reads what the reviewer needs from the recorded output", () => {
+    const output = {
+      request: "Ibuod mo ito",
+      document: "notes/plano.md",
+      suppliedPassages: [{ text: "Unang talata." }, { start: 1 }, null],
+      result: { text: "Buod ng plano." },
+    };
+    expect(reviewMaterial({ ...record, output })).toEqual({
+      request: "Ibuod mo ito",
+      document: "notes/plano.md",
+      summary: "Buod ng plano.",
+      passages: ["Unang talata."],
+    });
+  });
+
+  it("never fails on an output shaped differently than expected", () => {
+    for (const output of [
+      null,
+      "text",
+      3,
+      { result: "x", suppliedPassages: {} },
+    ]) {
+      expect(reviewMaterial({ ...record, output })).toEqual({
+        request: null,
+        document: null,
+        summary: null,
+        passages: [],
+      });
+    }
   });
 });

@@ -1,6 +1,7 @@
-import { useId } from "react";
+import { useId, useState } from "react";
 import {
   budgetLabels,
+  canReview,
   cpuLabel,
   durationLabel,
   memoryLabels,
@@ -24,9 +25,17 @@ import { Notice } from "../ui/Notice";
 import { Panel } from "../ui/Panel";
 import { Progress } from "../ui/Progress";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
+import { EvaluationCandidates } from "./ModelLabCandidates";
+import { ReviewDialog } from "./ModelLabReview";
 
 /** Choose installed models and run the fixed tasks on them, one at a time. */
-export function CompareModels({ lab }: { lab: ModelLabController }) {
+export function CompareModels({
+  lab,
+  productDownloading,
+}: {
+  lab: ModelLabController;
+  productDownloading: boolean;
+}) {
   const embeddingId = useId();
   const { choices, selection, running } = lab;
 
@@ -151,6 +160,10 @@ export function CompareModels({ lab }: { lab: ModelLabController }) {
               {lab.blocked && <span className="muted">{lab.blocked}</span>}
             </div>
           )}
+          <EvaluationCandidates
+            lab={lab}
+            productDownloading={productDownloading}
+          />
           <p className="muted">
             While it runs, summaries and Ask &amp; Act wait, and model downloads
             can't start.
@@ -165,7 +178,13 @@ function ordinal(n: number): string {
   return n === 1 ? "st" : n === 2 ? "nd" : n === 3 ? "rd" : "th";
 }
 
-function RecordsTable({ records }: { records: BenchmarkRecord[] }) {
+function RecordsTable({
+  records,
+  onReview,
+}: {
+  records: BenchmarkRecord[];
+  onReview: (record: BenchmarkRecord) => void;
+}) {
   return (
     <div className="table-scroll">
       <table className="results-table">
@@ -198,6 +217,22 @@ function RecordsTable({ records }: { records: BenchmarkRecord[] }) {
                     <span className="muted">Worth running again</span>
                   </>
                 )}
+                {canReview(record) && (
+                  <>
+                    <br />
+                    <button
+                      type="button"
+                      className="link-button"
+                      onClick={() => onReview(record)}
+                    >
+                      Review
+                      <span className="visually-hidden">
+                        {" "}
+                        {record.caseId}, {requestLabel(record).toLowerCase()}
+                      </span>
+                    </button>
+                  </>
+                )}
               </td>
               <td>{requestLabel(record)}</td>
               <td className="tabular">{durationLabel(record)}</td>
@@ -227,7 +262,9 @@ function RecordsTable({ records }: { records: BenchmarkRecord[] }) {
 /** Recorded runs and their per-task results, never combined into a score. */
 export function RecordedResults({ lab }: { lab: ModelLabController }) {
   const runSelectId = useId();
+  const [reviewing, setReviewing] = useState<string | null>(null);
   if (lab.load !== "ready") return null;
+  const reviewed = lab.records.find((record) => record.id === reviewing);
   const run = lab.runs.find((candidate) => candidate.runId === lab.runId);
 
   return (
@@ -284,7 +321,10 @@ export function RecordedResults({ lab }: { lab: ModelLabController }) {
                 <section key={task} className="results-task">
                   <h3 className="graph-list-heading">{TASK_LABELS[task]}</h3>
                   {records.length ? (
-                    <RecordsTable records={records} />
+                    <RecordsTable
+                      records={records}
+                      onReview={(record) => setReviewing(record.id)}
+                    />
                   ) : (
                     <p className="muted">No results recorded for this task.</p>
                   )}
@@ -293,6 +333,13 @@ export function RecordedResults({ lab }: { lab: ModelLabController }) {
             </>
           )}
         </>
+      )}
+      {reviewed && (
+        <ReviewDialog
+          record={reviewed}
+          lab={lab}
+          onClose={() => setReviewing(null)}
+        />
       )}
     </Panel>
   );

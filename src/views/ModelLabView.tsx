@@ -98,7 +98,10 @@ export function ModelLabView() {
         </p>
       )}
 
-      <CompareModels lab={lab} />
+      <CompareModels
+        lab={lab}
+        productDownloading={models.installing !== null}
+      />
       <RecordedResults lab={lab} />
 
       {removing && (
