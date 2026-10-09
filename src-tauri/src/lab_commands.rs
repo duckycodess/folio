@@ -14,7 +14,7 @@ use folio_core::generation::GenerationProvider;
 use folio_core::lab::candidates::{candidate_store, is_candidate_id, license_note};
 use folio_core::lab::host::{host_info, onnxruntime_version};
 use folio_core::lab::native::{
-    llama_runtime_detail, model_ref, open_embedding, StoreGeneratorFactory,
+    cpu_only_options, llama_runtime_detail, model_ref, open_embedding, StoreGeneratorFactory,
 };
 use folio_core::lab::runner::{
     system_clock_ms, EmbeddingSubject, LabProgress, LabRunner, OsMemoryProbe, RunEnd,
@@ -299,6 +299,7 @@ fn execute_lab(
         runtime_id_for_host(),
         &executable,
         GpuOffload::Disabled,
+        cpu_only_options().extra_args(),
     )?;
     let embedding_descriptor = store.model(&request.embedding_model_id)?.clone();
     let provider = open_embedding(&store, &embedding_descriptor)?;

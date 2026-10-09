@@ -24,7 +24,9 @@ use crate::interpretation::interpret_request_traced;
 use crate::lab::checks::{
     check_edit, check_interpretation, check_retrieval, check_summary, Evaluation, RETRIEVAL_LIMIT,
 };
-use crate::lab::host::{hardware_summary, host_info, parse_backend_log, prompt_fingerprint};
+use crate::lab::host::{
+    hardware_summary, host_info, parse_backend_log, prompt_fingerprint, BackendObservation,
+};
 use crate::lab::memory::PeakReading;
 use crate::lab::record::{
     ApplyOutcome, BenchmarkRecord, BenchmarkTask, Check, Conditions, HostInfo, MemoryEntry,
@@ -73,12 +75,27 @@ impl LabGenerator for LlamaServerProvider {
     }
 }
 
+/// Whether the server's own output shows CPU-only inference after CPU-only was
+/// requested. True needs positive evidence (zero layers offloaded and no GPU
+/// backend named); a reported GPU layer is false; anything else cannot be told.
+fn cpu_only_verdict(requested: GpuOffload, seen: &BackendObservation) -> Option<bool> {
+    if requested != GpuOffload::Disabled {
+        return None;
+    }
+    match seen.gpu_layers_offloaded {
+        Some(layers) if layers > 0 => Some(false),
+        Some(_) if !seen.gpu_backend_mentioned => Some(true),
+        _ => None,
+    }
+}
+
 /// The runtime detail for a record, with the backend facts the server itself
 /// printed when the lab captured its output.
 fn observed_runtime(base: &RuntimeDetail, log: Option<&str>) -> RuntimeDetail {
     let mut runtime = base.clone();
     if let (Some(backend), Some(log)) = (runtime.backend.as_mut(), log) {
         let seen = parse_backend_log(log);
+        backend.cpu_only_verified = cpu_only_verdict(backend.gpu_offload, &seen);
         backend.observed_log_excerpt = seen.excerpt;
         backend.gpu_layers_offloaded = seen.gpu_layers_offloaded;
         backend.layers_total = seen.layers_total;
@@ -1547,6 +1564,34 @@ mod tests {
     }
 
     #[test]
+    fn cpu_only_is_verified_only_by_positive_evidence_from_the_server() {
+        use crate::lab::record::GpuOffload::{Disabled, RuntimeDefault};
+        let cpu = parse_backend_log(
+            "load_backend: loaded CPU backend from x\nload_tensors: offloaded 0/29 layers to GPU",
+        );
+        assert_eq!(cpu_only_verdict(Disabled, &cpu), Some(true));
+        // Not requested: nothing is verified.
+        assert_eq!(cpu_only_verdict(RuntimeDefault, &cpu), None);
+        // Partial Metal offload: contradicted.
+        let partial = parse_backend_log("load_tensors: offloaded 4/29 layers to GPU");
+        assert_eq!(cpu_only_verdict(Disabled, &partial), Some(false));
+        // Zero layers but a GPU backend is named: cannot be told.
+        let metal = parse_backend_log(
+            "ggml_metal_init: found device: Apple M1\nload_tensors: offloaded 0/29 layers to GPU",
+        );
+        assert_eq!(cpu_only_verdict(Disabled, &metal), None);
+        // No offload line, or no output at all: cannot be told, never assumed CPU.
+        assert_eq!(
+            cpu_only_verdict(
+                Disabled,
+                &parse_backend_log("load_backend: loaded CPU backend")
+            ),
+            None
+        );
+        assert_eq!(cpu_only_verdict(Disabled, &parse_backend_log("")), None);
+    }
+
+    #[test]
     fn a_server_lost_after_the_first_request_is_never_timed_as_a_warm_repeat() {
         let harness = harness();
         let mut sink = MemorySink::default();
@@ -1692,6 +1737,8 @@ mod tests {
                 device_listing: None,
                 unavailable_reason: Some("not listed".into()),
                 gpu_offload: crate::lab::record::GpuOffload::Disabled,
+                flags: vec![],
+                cpu_only_verified: None,
                 observed_log_excerpt: None,
                 gpu_layers_offloaded: None,
                 layers_total: None,
@@ -1708,6 +1755,12 @@ mod tests {
         assert_eq!(
             backend.gpu_offload,
             crate::lab::record::GpuOffload::Disabled
+        );
+
+        assert_eq!(
+            backend.cpu_only_verified,
+            Some(false),
+            "layers on a GPU are not CPU-only"
         );
 
         let unchanged = observed_runtime(&base, None);

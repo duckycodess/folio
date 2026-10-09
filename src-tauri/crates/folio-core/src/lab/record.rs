@@ -204,6 +204,16 @@ pub struct RuntimeBackend {
     /// What Folio asked of the runtime. `Disabled` is a request, and the
     /// observed fields below say what the server reported.
     pub gpu_offload: GpuOffload,
+    /// The exact extra launch flags the lab passed (e.g. `--n-gpu-layers 0
+    /// --device none`); empty when it passed none.
+    #[serde(default)]
+    pub flags: Vec<String>,
+    /// `Some(true)` only when the server's own output reported zero offloaded
+    /// layers and named no GPU backend, after CPU-only was requested.
+    /// `Some(false)` when it reported offloading layers. `None` when it cannot
+    /// be told (no output, no offload line, or a GPU backend named with no layers
+    /// offloaded). Never inferred from the absence of a GPU.
+    pub cpu_only_verified: Option<bool>,
     /// Backend and device lines from the server's own startup output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observed_log_excerpt: Option<String>,
@@ -422,6 +432,23 @@ impl BenchmarkRecord {
             return Err(invalid(
                 "summary correctness stays null until a human review",
             ));
+        }
+        if let Some(backend) = &self.runtime_detail.backend {
+            if backend.cpu_only_verified == Some(true) {
+                if backend.gpu_offload != GpuOffload::Disabled {
+                    return Err(invalid(
+                        "cpuOnlyVerified needs CPU-only to have been requested",
+                    ));
+                }
+                if backend
+                    .gpu_layers_offloaded
+                    .is_some_and(|layers| layers > 0)
+                {
+                    return Err(invalid(
+                        "cpuOnlyVerified cannot be true when layers were offloaded to a GPU",
+                    ));
+                }
+            }
         }
         for entry in &self.memory {
             let reason = entry.unavailable_reason.as_deref().unwrap_or("");

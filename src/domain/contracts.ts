@@ -837,6 +837,15 @@ export interface BenchmarkRecord extends BenchmarkResult {
       unavailableReason?: string;
       /** What Folio asked for; the observed fields say what the server reported. */
       gpuOffload: "runtimeDefault" | "disabled";
+      /** The exact extra launch flags the lab passed; empty when none. */
+      flags: string[];
+      /**
+       * True only when the server's own output reported zero offloaded layers
+       * and named no GPU backend after CPU-only was requested; false when it
+       * reported offloaded layers; null when that cannot be told. Never
+       * inferred from the absence of a GPU.
+       */
+      cpuOnlyVerified: boolean | null;
       observedLogExcerpt?: string;
       gpuLayersOffloaded?: number;
       layersTotal?: number;

@@ -362,6 +362,8 @@ describe("Model Lab record contract (issue #8)", () => {
     expect(backend?.gpuOffload).toBe("disabled");
     expect(backend?.deviceListing).toEqual(expect.any(String));
     expect(backend?.observedLogExcerpt).toEqual(expect.any(String));
+    expect(backend?.flags).toEqual(["--n-gpu-layers", "0", "--device", "none"]);
+    expect(backend?.cpuOnlyVerified).toBe(true);
     expect(backend?.gpuLayersOffloaded).toBe(0);
     expect(backend?.layersTotal).toBe(29);
     expect(JSON.stringify(backend)).not.toMatch(/cpu-only|cpuOnly/i);

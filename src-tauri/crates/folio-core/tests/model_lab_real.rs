@@ -10,7 +10,7 @@ use folio_core::error::CoreResult;
 use folio_core::lab::candidates::{candidate_store, is_candidate_id};
 use folio_core::lab::host::{host_info, onnxruntime_version};
 use folio_core::lab::native::{
-    llama_runtime_detail, model_ref, open_embedding, StoreGeneratorFactory,
+    cpu_only_options, llama_runtime_detail, model_ref, open_embedding, StoreGeneratorFactory,
 };
 use folio_core::lab::runner::{
     system_clock_ms, EmbeddingSubject, LabProgress, LabRunner, OsMemoryProbe, RunEnd,
@@ -83,7 +83,13 @@ fn model_lab_real_run() -> CoreResult<()> {
     let factory = StoreGeneratorFactory {
         data_dir: data_dir.clone(),
         executable: executable.clone(),
-        runtime: llama_runtime_detail(&store, &runtime_id, &executable, GpuOffload::Disabled)?,
+        runtime: llama_runtime_detail(
+            &store,
+            &runtime_id,
+            &executable,
+            GpuOffload::Disabled,
+            cpu_only_options().extra_args(),
+        )?,
         threads,
         cpu_only: true,
         log_dir: Some(workspaces.logs_dir(&run_id)?),

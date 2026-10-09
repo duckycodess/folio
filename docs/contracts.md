@@ -301,6 +301,14 @@ example with placeholder values, not a measurement.
   the license the catalog records, not a legal conclusion, and
   `model.licenseNote` carries a caveat such as conflicting publisher metadata.
   A measured candidate is not thereby supported or recommended.
+- **CPU-only verification.** The lab launches llama-server with `--n-gpu-layers 0
+--device none` (llama.cpp b11524: `none` means don't offload) and records those
+  `flags`. `cpuOnlyVerified` is `true` only when the server's own output reported
+  zero offloaded layers and named no GPU backend, `false` when it reported
+  offloaded layers, and `null` when that cannot be told; `validate()` refuses
+  `true` alongside offloaded layers or without the request. ONNX Runtime rows use
+  the default CPU execution provider (no GPU provider is registered), stated in
+  the runtime version.
 - **Sizes.** `modelFileBytes` equals `modelDiskBytes`: the model's own files.
   It is not an installed size. `host.installedRamBytes` is installed capacity,
   not usage.

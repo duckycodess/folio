@@ -231,6 +231,9 @@ pub fn llama_server_devices(executable: &Path) -> CoreResult<String> {
 pub struct BackendObservation {
     /// Backend, device and offload lines, as printed.
     pub excerpt: Option<String>,
+    /// A line other than the offload count names a GPU backend or device
+    /// (Metal, CUDA, Vulkan, OpenCL, ROCm, SYCL or "GPU").
+    pub gpu_backend_mentioned: bool,
     pub gpu_layers_offloaded: Option<u32>,
     pub layers_total: Option<u32>,
 }
@@ -238,6 +241,7 @@ pub struct BackendObservation {
 const BACKEND_KEYWORDS: &[&str] = &[
     "backend", "offload", "device", "metal", "cuda", "vulkan", "opencl", "blas", "gpu",
 ];
+const GPU_WORDS: &[&str] = &["metal", "cuda", "vulkan", "opencl", "rocm", "sycl", "gpu"];
 const MAX_EXCERPT_LINES: usize = 30;
 const MAX_EXCERPT_CHARS: usize = 3000;
 
@@ -253,6 +257,7 @@ fn offloaded_layers(line: &str) -> Option<(u32, u32)> {
 pub fn parse_backend_log(log: &str) -> BackendObservation {
     let mut lines = Vec::new();
     let mut offloaded = None;
+    let mut gpu_backend_mentioned = false;
     for line in log.lines() {
         let line = line.trim();
         let lower = line.to_lowercase();
@@ -261,6 +266,8 @@ pub fn parse_backend_log(log: &str) -> BackendObservation {
         }
         if let Some(found) = offloaded_layers(line) {
             offloaded = Some(found);
+        } else if GPU_WORDS.iter().any(|word| lower.contains(word)) {
+            gpu_backend_mentioned = true;
         }
         if lines.len() < MAX_EXCERPT_LINES {
             lines.push(line.to_string());
@@ -277,6 +284,7 @@ pub fn parse_backend_log(log: &str) -> BackendObservation {
     });
     BackendObservation {
         excerpt,
+        gpu_backend_mentioned,
         gpu_layers_offloaded: offloaded.map(|(done, _)| done),
         layers_total: offloaded.map(|(_, total)| total),
     }
@@ -284,7 +292,12 @@ pub fn parse_backend_log(log: &str) -> BackendObservation {
 
 /// ONNX Runtime as linked into this build, with the `ort` crate version.
 pub fn onnxruntime_version() -> String {
-    format!("ort 2.0.0-rc.13; {}", ort::info())
+    // `OrtE5Provider` registers no execution provider, so ONNX Runtime uses its
+    // default CPU provider; the crate enables no GPU provider feature.
+    format!(
+        "ort 2.0.0-rc.13 (CPU execution provider; no GPU execution provider is registered); {}",
+        ort::info()
+    )
 }
 
 fn placeholder_passage() -> SourcePassage {
@@ -420,6 +433,7 @@ mod tests {
         assert_eq!(quiet, BackendObservation::default());
         let no_count = parse_backend_log("ggml_metal_init: found device: Apple M1");
         assert!(no_count.excerpt.is_some());
+        assert!(no_count.gpu_backend_mentioned);
         assert_eq!(
             no_count.gpu_layers_offloaded, None,
             "a device line is not an offload count"

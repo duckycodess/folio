@@ -49,6 +49,17 @@ pub fn model_ref(descriptor: &ModelDescriptor) -> ModelRef {
     model_ref_in(descriptor, ModelCatalog::Product)
 }
 
+/// The lab's CPU-only launch options: no layer on a GPU and no offload device
+/// (b11524: `--device none` means don't offload). Product launches add neither.
+pub fn cpu_only_options() -> LabServerOptions {
+    LabServerOptions {
+        gpu_layers: Some(0),
+        device: Some("none".into()),
+        no_implicit_start: true,
+        log_path: None,
+    }
+}
+
 /// What a record says about the llama.cpp runtime: its exact version, the
 /// device listing and the offload setting Folio asked for. `Disabled` is a
 /// request (`--n-gpu-layers 0`); the backend the server actually reported is
@@ -59,6 +70,7 @@ pub fn llama_runtime_detail(
     runtime_id: &str,
     executable: &std::path::Path,
     gpu_offload: GpuOffload,
+    flags: Vec<String>,
 ) -> CoreResult<RuntimeDetail> {
     let descriptor = store.runtime(runtime_id)?;
     let (device_listing, unavailable_reason) = match llama_server_devices(executable) {
@@ -74,6 +86,8 @@ pub fn llama_runtime_detail(
             device_listing,
             unavailable_reason,
             gpu_offload,
+            flags,
+            cpu_only_verified: None,
             observed_log_excerpt: None,
             gpu_layers_offloaded: None,
             layers_total: None,
@@ -122,15 +136,18 @@ impl GeneratorFactory for StoreGeneratorFactory {
         let provider =
             LlamaServerProvider::from_verified_model(&self.executable, verified, self.threads)?
                 .with_lab_options(LabServerOptions {
-                    gpu_layers: self.cpu_only.then_some(0),
-                    device: self.cpu_only.then(|| "none".to_string()),
-                    // Only `restart` may start a process, so a request can never
-                    // run on a server the lab did not restart and measure.
-                    no_implicit_start: true,
                     log_path: self
                         .log_dir
                         .as_ref()
                         .map(|dir| dir.join(format!("{model_id}.log"))),
+                    // Only `restart` may start a process, so a request can never
+                    // run on a server the lab did not restart and measure.
+                    no_implicit_start: true,
+                    ..if self.cpu_only {
+                        cpu_only_options()
+                    } else {
+                        LabServerOptions::default()
+                    }
                 });
         Ok(GeneratorHandle {
             model,
@@ -231,6 +248,15 @@ mod tests {
         let product = model_ref(&first_of(&store, ModelRole::Generation));
         assert_eq!(product.catalog, ModelCatalog::Product);
         assert!(!product.evaluation_only && product.license_note.is_none());
+    }
+
+    #[test]
+    fn the_cpu_only_launch_adds_exactly_two_flags_and_never_to_a_product_launch() {
+        assert_eq!(
+            cpu_only_options().extra_args(),
+            vec!["--n-gpu-layers", "0", "--device", "none"]
+        );
+        assert!(LabServerOptions::default().extra_args().is_empty());
     }
 
     #[test]

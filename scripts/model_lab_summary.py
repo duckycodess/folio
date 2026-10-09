@@ -28,7 +28,8 @@ def offload(record):
     done = backend.get("gpuLayersOffloaded")
     total = backend.get("layersTotal")
     seen = "not reported" if done is None else f"{done}/{total} layers on GPU"
-    return f'asked {backend["gpuOffload"]}; server {seen}'
+    verified = {True: "CPU-only verified", False: "MISMATCH: GPU layers reported", None: "CPU-only not verified"}[backend.get("cpuOnlyVerified")]
+    return f'asked {backend["gpuOffload"]} ({" ".join(backend.get("flags") or []) or "no flags"}); server {seen}; {verified}'
 
 
 def catalog(record):

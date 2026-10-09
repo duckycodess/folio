@@ -47,6 +47,8 @@
       "platform": "contract-example-platform",
       "deviceListing": "contract example listing, not a real device",
       "gpuOffload": "disabled",
+      "flags": ["--n-gpu-layers", "0", "--device", "none"],
+      "cpuOnlyVerified": true,
       "observedLogExcerpt": "contract example log line, not a real server log",
       "gpuLayersOffloaded": 0,
       "layersTotal": 29
