@@ -15,7 +15,12 @@
   - The summary is labelled as a generated preview that's not saved or reviewed, with its model and revision. A partial summary says how much of the file it covered. "Not enough information" is shown instead of a summary, and a file that changed afterwards gets a warning.
   - **Save as new document…** shows the exact Markdown first, then the native create plan, Approve, and the result with Undo. It never overwrites a file. The dialog stays open while the change applies, Done closes it, and focus returns to the button that opened it.
   - Without a model, the shared recovery notice links to Model Lab. The browser preview says summaries need the desktop app, and sample files say a folder is needed.
+  - A partial summary's coverage is measured against the file's extracted text, never its size on disk, so a PDF isn't understated. Without the text, it only says "Partial summary". Clearing never drops a running summary.
   - Summaries are kept for the session (up to 20 files) in one store that Ask & Act can also write to. Ask & Act doesn't request summaries yet (#36).
+- Ask Olio launcher ([#37](https://github.com/duckycodess/folio/issues/37)).
+  - Home has a labelled **Ask Olio** button under the centred search field, and a "Hello! Need a deeper search?" greeting that stays dismissed on this device once dismissed. There's no extra Olio image: Home keeps its one in the header.
+  - The button opens Ask & Act with Home's search as the request and Home's folder filter as the scope. Both stay editable, and nothing is sent.
+  - Coming back to Home restores its search, filters, open file and scroll position. ⌘K / Ctrl K still focuses Home search.
 - Ask & Act changes ([#23](https://github.com/duckycodess/folio/issues/23)). A change Olio understood gets **Preview change…**, which opens the exact native preview.
   - **Rename, move, create:** they become plan operations that pin the revision Olio read and refuse to overwrite.
   - **Edits:** they come from `prepare_passage_edit`, which needs the text to appear exactly once. They're refused if the file changed after Olio read it.
@@ -130,6 +135,26 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 8-GB measurement is claimed here.
 
 ## Verification
+
+### Ask Olio launcher and #20 review fixes (2026-10-10, issues #37 and #20)
+
+Checked on macOS with Node.js 26.10.0, on `main` with #52 and #62 merged in:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 257 passed, 9 todo. New cases cover:
+  - coverage measured against extracted text, including multi-byte text and unread text;
+  - a running summary never being cleared.
+- With a **mocked** native core in headless Chromium (1280×600):
+  - the launcher and greeting showed, and Home still had one Olio image;
+  - with "plan" searched and the folder filter on `school`, Ask Olio opened Ask & Act with request "plan" and scope `school`, and no request was sent;
+  - going back to Home kept "plan", `school`, the open file and the scroll position (162px);
+  - ⌘K focused "Search files";
+  - the dismissed greeting stayed dismissed after a reload;
+  - the search field is still centred (168px each side);
+  - nothing scrolls sideways at 700px.
+- The stale-summary check was kept: summary passages carry `read_text`'s hash, which is the hash of the file's bytes for PDFs too (`src-tauri/src/workspace.rs`), the same kind the listing uses.
+
+Not verified: screen readers, and the Tauri app.
 
 ### Ask & Act changes (2026-10-10, issue #23)
 
