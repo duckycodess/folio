@@ -200,7 +200,7 @@ Checked on macOS with Node.js 26.10.0, on `main` after #63 and #64:
   - with 4 GB of RAM, the 8 GB warning showed;
   - with no figures from the system, both read "Unknown";
   - no horizontal scroll at 700px.
-- Native (`folio_core::device`): device RAM from `sysctl hw.memsize` on macOS, `GlobalMemoryStatusEx` on Windows and `/proc/meminfo` on Linux; free space from `statvfs` or `GetDiskFreeSpaceExW`, measured at the nearest existing folder. **Not built or run on this host** (no Rust toolchain); its tests run only in CI's `desktop-check` on macOS and Windows.
+- Native (`folio_core::device`): device RAM from `sysctl hw.memsize` on macOS, `GlobalMemoryStatusEx` on Windows and `/proc/meminfo` on Linux; free space from `statvfs` or `GetDiskFreeSpaceExW`, measured at the nearest existing folder. **Not built on this host** (no Rust toolchain). In CI it compiles on macOS and Windows (`desktop-check`), but its tests (device RAM reported, free space for an existing folder and for one not created yet) run only on Linux, in the `frontend` job's folio-core step, where they passed. The macOS and Windows code paths are compiled there, never run.
 
 Not verified: real downloads and the real figures in the Tauri app, an interrupted download or a hash mismatch against the real store (they surface through the shared recovery notice and the "Damaged: download again" state), and screen readers.
 
