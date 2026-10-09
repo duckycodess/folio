@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs::Metadata;
 use std::io::Read;
@@ -9,8 +9,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 use folio_core::relationships::{
-    AiRelationshipKind, DiscoveredRelationship, RelationshipChunk, RelationshipDocument,
-    MAX_RELATIONSHIP_CHUNKS, MAX_STORED_CANDIDATES_PER_ENDPOINT,
+    AiRelationshipKind, DiscoveredRelationship, MAX_STORED_CANDIDATES_PER_ENDPOINT,
 };
 use crate::contracts::{OffsetUnit, SourcePassage};
 use crate::db::NativeResult;
@@ -1271,14 +1270,14 @@ pub fn register_space(conn: &Connection, space: &EmbeddingSpace) -> NativeResult
     Ok(fingerprint)
 }
 
-fn space_dimensions(conn: &Connection, fingerprint: &str) -> NativeResult<usize> {
+pub(crate) fn space_dimensions(conn: &Connection, fingerprint: &str) -> NativeResult<usize> {
     conn.query_row("SELECT dimensions FROM embedding_spaces WHERE id = ?1", [fingerprint], |row| row.get::<_, i64>(0))
         .optional()?
         .map(|dimensions| dimensions as usize)
         .ok_or_else(|| error(ErrorCode::EmbeddingSpaceMismatch, "Unknown embedding space. Register it before storing or comparing vectors.").with_detail("spaceFingerprint", fingerprint))
 }
 
-fn check_vector(vector: &[f32], dimensions: usize) -> NativeResult<()> {
+pub(crate) fn check_vector(vector: &[f32], dimensions: usize) -> NativeResult<()> {
     if vector.len() != dimensions {
         return Err(error(ErrorCode::EmbeddingSpaceMismatch, format!("Expected a {dimensions}-dimension vector for this embedding space.")).with_detail("receivedDimensions", vector.len().to_string()));
     }
@@ -1344,97 +1343,6 @@ pub fn vector_candidates(conn: &Connection, workspace_id: &str, fingerprint: &st
     Ok(candidates)
 }
 
-/// Loads complete documents from the persistent vector store for one embedding
-/// space. This is the discovery seam for #27: it uses the same `space_id`
-/// filter and dimension validation as `vector_candidates`, but returns every
-/// stored vector needed for bounded document-pair discovery.
-pub fn relationship_documents(
-    conn: &Connection,
-    workspace_id: &str,
-    fingerprint: &str,
-) -> NativeResult<Vec<RelationshipDocument>> {
-    let dimensions = space_dimensions(conn, fingerprint)?;
-    let chunk_count: i64 = conn.query_row(
-        "SELECT count(*) FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.workspace_id = ?1 AND d.status = 'indexed'",
-        [workspace_id],
-        |row| row.get(0),
-    )?;
-    if chunk_count < 0 || chunk_count as usize > MAX_RELATIONSHIP_CHUNKS {
-        return Err(error(
-            ErrorCode::EvidenceInvalid,
-            format!(
-                "Relationship discovery is limited to {MAX_RELATIONSHIP_CHUNKS} indexed chunks in this version."
-            ),
-        )
-        .with_detail("reason", "tooManyChunks"));
-    }
-
-    let mut statement = conn.prepare(
-        "SELECT d.id, d.content_hash, c.chunk_text, c.start_offset, c.end_offset, c.page, e.vector FROM documents d JOIN chunks c ON c.document_id = d.id LEFT JOIN embeddings e ON e.chunk_id = c.chunk_id AND e.space_id = ?2 WHERE d.workspace_id = ?1 AND d.status = 'indexed' ORDER BY d.id, c.ordinal",
-    )?;
-    let rows = statement.query_map(params![workspace_id, fingerprint], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, i64>(3)?,
-            row.get::<_, i64>(4)?,
-            row.get::<_, Option<u32>>(5)?,
-            row.get::<_, Option<Vec<u8>>>(6)?,
-        ))
-    })?;
-    let mut documents = BTreeMap::<String, RelationshipDocument>::new();
-    let mut incomplete = HashSet::new();
-    for row in rows {
-        let (document_id, content_hash, text, start, end, page, blob) = row?;
-        let _document = documents
-            .entry(document_id.clone())
-            .or_insert_with(|| RelationshipDocument {
-                id: document_id.clone(),
-                content_hash: content_hash.clone(),
-                chunks: Vec::new(),
-            });
-        let Some(blob) = blob else {
-            incomplete.insert(document_id);
-            continue;
-        };
-        if blob.len() % std::mem::size_of::<f32>() != 0 {
-            return Err(error(
-                ErrorCode::EvidenceInvalid,
-                "A stored relationship vector is not a complete float array.",
-            ));
-        }
-        let vector = blob
-            .chunks_exact(std::mem::size_of::<f32>())
-            .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-            .collect::<Vec<_>>();
-        check_vector(&vector, dimensions)?;
-        if start < 0 || end <= start || end as usize > text.len() {
-            return Err(error(
-                ErrorCode::EvidenceInvalid,
-                "A stored chunk has unusable UTF-8 byte offsets.",
-            ));
-        }
-        documents
-            .get_mut(&document_id)
-            .expect("document inserted above")
-            .chunks
-            .push(RelationshipChunk {
-                document_id,
-                document_content_hash: content_hash,
-                start: start as usize,
-                end: end as usize,
-                page,
-                text,
-                vector,
-            });
-    }
-    documents.retain(|document_id, document| {
-        !incomplete.contains(document_id) && !document.chunks.is_empty()
-    });
-    Ok(documents.into_values().collect())
-}
-
 fn validate_relationship_passage(
     passage: &folio_core::contracts::SourcePassage,
     document_id: &str,
@@ -1469,82 +1377,6 @@ fn native_relationship_passage(
     }
 }
 
-/// Replaces only AI-derived relationships for one workspace and persistent
-/// vector space. Explicit document links are deliberately left untouched.
-pub fn replace_ai_relationships(
-    conn: &mut Connection,
-    workspace_id: &str,
-    fingerprint: &str,
-    edges: &[DiscoveredRelationship],
-    now: u64,
-) -> NativeResult<usize> {
-    space_dimensions(conn, fingerprint)?;
-    let mut hashes = HashMap::new();
-    let mut statement = conn.prepare(
-        "SELECT id, content_hash FROM documents WHERE workspace_id = ?1",
-    )?;
-    for row in statement.query_map([workspace_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })? {
-        let (id, hash) = row?;
-        hashes.insert(id, hash);
-    }
-    drop(statement);
-
-    for edge in edges {
-        if edge.space_fingerprint != fingerprint || edge.source_id == edge.target_id {
-            return Err(error(
-                ErrorCode::EmbeddingSpaceMismatch,
-                "A discovered relationship belongs to a different embedding space.",
-            ));
-        }
-        let Some(source_hash) = hashes.get(&edge.source_id) else {
-            return Err(error(ErrorCode::EvidenceInvalid, "A relationship source is not in this workspace."));
-        };
-        let Some(target_hash) = hashes.get(&edge.target_id) else {
-            return Err(error(ErrorCode::EvidenceInvalid, "A relationship target is not in this workspace."));
-        };
-        if source_hash != &edge.source_content_hash || target_hash != &edge.target_content_hash {
-            return Err(error(
-                ErrorCode::EvidenceInvalid,
-                "A discovered relationship is stale relative to the persistent index.",
-            )
-            .with_detail("reason", "documentChanged"));
-        }
-        for passage in &edge.source_evidence {
-            validate_relationship_passage(passage, &edge.source_id, source_hash)?;
-        }
-        for passage in &edge.target_evidence {
-            validate_relationship_passage(passage, &edge.target_id, target_hash)?;
-        }
-        if edge.source_evidence.is_empty() || edge.target_evidence.is_empty() {
-            return Err(error(
-                ErrorCode::EvidenceInvalid,
-                "A discovered relationship needs evidence in both documents.",
-            ));
-        }
-        if let Some(score) = edge.score {
-            if !score.is_finite() || !(0.0..=1.0).contains(&score) {
-                return Err(error(ErrorCode::EvidenceInvalid, "A relationship score must be between 0 and 1."));
-            }
-        }
-        if let Some(confidence) = edge.confidence {
-            if !confidence.is_finite() || !(0.0..=1.0).contains(&confidence) {
-                return Err(error(ErrorCode::EvidenceInvalid, "A relationship confidence must be between 0 and 1."));
-            }
-        }
-    }
-
-    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    tx.execute(
-        "DELETE FROM relationships WHERE relationship_type IN ('similarity', 'sharedFactCandidate') AND space_fingerprint = ?2 AND source_document_id IN (SELECT id FROM documents WHERE workspace_id = ?1)",
-        params![workspace_id, fingerprint],
-    )?;
-    insert_candidate_edges(&tx, workspace_id, fingerprint, edges, now)?;
-    tx.commit()?;
-    Ok(edges.len())
-}
-
 /// Stores candidate edges for one space, bounded per endpoint. Whenever an
 /// endpoint would hold more than `MAX_STORED_CANDIDATES_PER_ENDPOINT` of one
 /// kind, its weakest candidate (lowest discovery cosine, then largest other
@@ -1559,7 +1391,9 @@ pub fn insert_candidate_edges(
     edges: &[DiscoveredRelationship],
     now: u64,
 ) -> NativeResult<()> {
+    space_dimensions(tx, fingerprint)?;
     for edge in edges {
+        validate_candidate_edge(tx, workspace_id, fingerprint, edge)?;
         let (relationship_type, provenance, score) = match edge.kind {
             AiRelationshipKind::Similarity => ("similarity", "embedding", edge.score),
             AiRelationshipKind::SharedFactCandidate => ("sharedFactCandidate", "embedding", None),
@@ -1608,6 +1442,66 @@ pub fn insert_candidate_edges(
     endpoints.dedup();
     for (kind, document_id) in endpoints {
         evict_over_cap(tx, workspace_id, fingerprint, kind, document_id)?;
+    }
+    Ok(())
+}
+
+/// Refuses an edge for another space, another workspace, a changed document
+/// revision, missing evidence or an out-of-range score.
+fn validate_candidate_edge(
+    tx: &Transaction<'_>,
+    workspace_id: &str,
+    fingerprint: &str,
+    edge: &DiscoveredRelationship,
+) -> NativeResult<()> {
+    if edge.space_fingerprint != fingerprint || edge.source_id == edge.target_id {
+        return Err(error(
+            ErrorCode::EmbeddingSpaceMismatch,
+            "A discovered relationship belongs to a different embedding space.",
+        ));
+    }
+    let current = |id: &str, what: &str| -> NativeResult<String> {
+        tx.query_row(
+            "SELECT content_hash FROM documents WHERE id = ?1 AND workspace_id = ?2",
+            params![id, workspace_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .ok_or_else(|| error(ErrorCode::EvidenceInvalid, format!("A relationship {what} is not in this workspace.")))
+    };
+    let source_hash = current(&edge.source_id, "source")?;
+    let target_hash = current(&edge.target_id, "target")?;
+    if source_hash != edge.source_content_hash || target_hash != edge.target_content_hash {
+        return Err(error(
+            ErrorCode::EvidenceInvalid,
+            "A discovered relationship is stale relative to the persistent index.",
+        )
+        .with_detail("reason", "documentChanged"));
+    }
+    for passage in &edge.source_evidence {
+        validate_relationship_passage(passage, &edge.source_id, &source_hash)?;
+    }
+    for passage in &edge.target_evidence {
+        validate_relationship_passage(passage, &edge.target_id, &target_hash)?;
+    }
+    if edge.source_evidence.is_empty() || edge.target_evidence.is_empty() {
+        return Err(error(
+            ErrorCode::EvidenceInvalid,
+            "A discovered relationship needs evidence in both documents.",
+        ));
+    }
+    for (value, what) in [(edge.score, "score"), (edge.confidence, "confidence")] {
+        if let Some(value) = value {
+            if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                return Err(error(
+                    ErrorCode::EvidenceInvalid,
+                    format!("A relationship {what} must be between 0 and 1."),
+                ));
+            }
+        }
+    }
+    if !edge.discovery_cosine.is_finite() {
+        return Err(error(ErrorCode::EvidenceInvalid, "A relationship ranking cosine must be finite."));
     }
     Ok(())
 }
@@ -2016,119 +1910,6 @@ pub mod tests {
             .unwrap(),
             None
         );
-    }
-
-    #[test]
-    fn relationship_refresh_reads_persistent_vectors_and_keeps_spaces_isolated() {
-        let folder = tempfile::tempdir().unwrap();
-        fs::write(
-            folder.path().join("a.md"),
-            "Project deadline October 20. The team meets in Quezon City.",
-        )
-        .unwrap();
-        fs::write(
-            folder.path().join("b.md"),
-            "Ang deadline ay Oktubre 20. Nagkikita ang team sa Quezon City.",
-        )
-        .unwrap();
-        fs::write(folder.path().join("c.md"), "A separate unrelated note.").unwrap();
-        let mut conn = db::open_in_memory().unwrap();
-        let root = authorize(&conn, folder.path());
-        scan(&mut conn, &root);
-
-        let space = register_space(&conn, &EmbeddingSpace {
-            model_id: "draft-e5".into(),
-            revision: "r1".into(),
-            quantization: "q8".into(),
-            dimensions: 2,
-            preprocessing_fingerprint: "passage-v1".into(),
-        }).unwrap();
-        let pending = pending_embedding_chunks(&conn, &root.id, &space, 100).unwrap();
-        assert!(!pending.is_empty());
-        let first_space_items = pending.iter().map(|chunk| ChunkVector {
-            chunk_id: chunk.chunk_id,
-            content_hash: chunk.content_hash.clone(),
-            vector: if chunk.document_id == id_of(&root, "c.md") {
-                vec![0.0, 1.0]
-            } else if chunk.document_id == id_of(&root, "b.md") {
-                vec![0.99, 0.01]
-            } else {
-                vec![1.0, 0.0]
-            },
-        }).collect::<Vec<_>>();
-        put_embeddings(&mut conn, &root.id, &space, &first_space_items).unwrap();
-
-        let documents = relationship_documents(&conn, &root.id, &space).unwrap();
-        assert_eq!(documents.len(), 3, "all complete documents are available to discovery");
-        let edges = folio_core::relationships::discover(&documents, &space, None).unwrap();
-        assert!(edges.iter().any(|edge| edge.kind == AiRelationshipKind::Similarity));
-        assert!(edges.iter().any(|edge| edge.kind == AiRelationshipKind::SharedFactCandidate));
-        let created = replace_ai_relationships(&mut conn, &root.id, &space, &edges, 1).unwrap();
-        assert_eq!(created, edges.len());
-        let stored = list_relationships(&conn, &root.id, Some(&space)).unwrap();
-        let similarity = stored.iter().find_map(|relationship| match relationship {
-            Relationship::Similarity(similarity) => Some(similarity),
-            _ => None,
-        }).expect("persistent similarity row");
-        assert_eq!(similarity.space_fingerprint, space);
-        assert!((0.0..=1.0).contains(&similarity.score));
-        assert!(!similarity.source_evidence.is_empty());
-        assert!(!similarity.target_evidence.is_empty());
-        assert_located(folder.path(), "a.md", &similarity.source_evidence[0]);
-        assert_located(folder.path(), "b.md", &similarity.target_evidence[0]);
-        assert!(list_relationships(&conn, &root.id, None).unwrap().is_empty());
-
-        let other_space = register_space(&conn, &EmbeddingSpace {
-            model_id: "draft-e5".into(),
-            revision: "r2".into(),
-            quantization: "q8".into(),
-            dimensions: 2,
-            preprocessing_fingerprint: "passage-v1".into(),
-        }).unwrap();
-        let other_pending = pending_embedding_chunks(&conn, &root.id, &other_space, 100).unwrap();
-        let other_items = other_pending.iter().map(|chunk| ChunkVector {
-            chunk_id: chunk.chunk_id,
-            content_hash: chunk.content_hash.clone(),
-            vector: vec![1.0, 0.0],
-        }).collect::<Vec<_>>();
-        put_embeddings(&mut conn, &root.id, &other_space, &other_items).unwrap();
-        let other_documents = relationship_documents(&conn, &root.id, &other_space).unwrap();
-        let other_edges = folio_core::relationships::discover(&other_documents, &other_space, None).unwrap();
-        replace_ai_relationships(&mut conn, &root.id, &other_space, &other_edges, 2).unwrap();
-        assert!(!list_relationships(&conn, &root.id, Some(&space)).unwrap().is_empty());
-        assert!(!list_relationships(&conn, &root.id, Some(&other_space)).unwrap().is_empty());
-        replace_ai_relationships(&mut conn, &root.id, &space, &[], 3).unwrap();
-        assert!(list_relationships(&conn, &root.id, Some(&space)).unwrap().is_empty());
-        assert!(!list_relationships(&conn, &root.id, Some(&other_space)).unwrap().is_empty());
-
-        let refreshed_documents = relationship_documents(&conn, &root.id, &space).unwrap();
-        let refreshed_edges = folio_core::relationships::discover(&refreshed_documents, &space, None).unwrap();
-        replace_ai_relationships(&mut conn, &root.id, &space, &refreshed_edges, 4).unwrap();
-        assert!(!list_relationships(&conn, &root.id, Some(&space)).unwrap().is_empty());
-
-        fs::write(
-            folder.path().join("a.md"),
-            "The project deadline moved to November 1.",
-        )
-        .unwrap();
-        scan(&mut conn, &root);
-        let changed_document = id_of(&root, "a.md");
-        let touches_changed_document = |relationship: &Relationship| match relationship {
-            Relationship::ExplicitReference(relationship) => {
-                relationship.source_id == changed_document || relationship.target_id == changed_document
-            }
-            Relationship::Similarity(relationship) => {
-                relationship.source_id == changed_document || relationship.target_id == changed_document
-            }
-            Relationship::SharedFactCandidate(relationship) => {
-                relationship.source_id == changed_document || relationship.target_id == changed_document
-            }
-        };
-        let space_after = list_relationships(&conn, &root.id, Some(&space)).unwrap();
-        let other_space_after = list_relationships(&conn, &root.id, Some(&other_space)).unwrap();
-        assert!(space_after.iter().all(|relationship| !touches_changed_document(relationship)));
-        assert!(other_space_after.iter().all(|relationship| !touches_changed_document(relationship)));
-        assert!(!other_space_after.is_empty(), "unrelated pairs in another space remain valid");
     }
 
     #[test]

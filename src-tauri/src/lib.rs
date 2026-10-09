@@ -1,5 +1,8 @@
 mod active_space;
 mod ai_boundary;
+mod ai_discovery;
+#[cfg(test)]
+mod ai_discovery_tests;
 mod config_guard;
 mod contract_fixtures;
 mod contracts;
@@ -373,9 +376,11 @@ async fn list_relationships(
     )
 }
 
-/// Discovers AI relationships from vectors already persisted for one space.
-/// #27 owns populating that space; this command only supplies the bounded,
-/// independently testable refresh seam and never starts an embedding producer.
+/// Runs progressive AI relationship discovery over the vectors #27 persisted
+/// for the active space: admission, then fair bounded tiles until nothing is
+/// left, the run's comparison budget is spent, a Stop arrives or the selected
+/// model changes. Completed tiles always stay. It never starts an embedding
+/// producer and holds no lock while comparing.
 #[tauri::command]
 async fn refresh_ai_connections(
     app: AppHandle,
@@ -385,21 +390,13 @@ async fn refresh_ai_connections(
 ) -> Result<AiRelationshipRefresh, FolioError> {
     state.root(&workspace_id)?;
     let index_path = state.index_path.clone();
-    let scanning = state.scanning.clone();
     let cancel = state.cancel_relationships.clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
-        // Reset before waiting for Local Sync's mutex. A Stop pressed while
-        // waiting must remain visible after the lock is acquired.
         cancel.store(false, Ordering::SeqCst);
-        let active_space = {
-            let conn = db::open(&index_path)?;
+        let mut conn = db::open(&index_path)?;
+        let Some(active_space) =
             active_relationship_space(&app, &conn, space_fingerprint.as_deref())?
-        };
-        let _scanning = scanning.lock().map_err(|_| unavailable_state())?;
-        if cancel.load(Ordering::SeqCst) {
-            return Err(error(ErrorCode::Cancelled, "Relationship refresh was stopped."));
-        }
-        let Some(active_space) = active_space else {
+        else {
             return Ok(AiRelationshipRefresh {
                 workspace_id,
                 space_fingerprint: None,
@@ -408,31 +405,27 @@ async fn refresh_ai_connections(
                 cancelled: false,
             });
         };
-        let mut conn = db::open(&index_path)?;
-        let documents = {
-            index::relationship_documents(&conn, &workspace_id, &active_space)?
+        let still_active = |conn: &Connection| -> Result<bool, FolioError> {
+            Ok(active_relationship_space(&app, conn, None)?.as_deref() == Some(active_space.as_str()))
         };
-        let documents_compared = documents.len();
-        let edges = folio_core::relationships::discover(
-            &documents,
-            &active_space,
-            Some(cancel.as_ref()),
-        )
-        .map_err(|failure| {
-            if failure.to_string().contains("cancelled") {
-                error(ErrorCode::Cancelled, "Relationship refresh was stopped.")
-            } else {
-                ai_boundary::core_failure(failure)
-            }
-        })?;
-        let relationships_created =
-            index::replace_ai_relationships(&mut conn, &workspace_id, &active_space, &edges, index::now_ms())?;
+        let summary = ai_discovery::run_discovery(
+            &mut conn,
+            &ai_discovery::RunContext {
+                workspace_id: &workspace_id,
+                space: &active_space,
+                limits: ai_discovery::DiscoveryLimits::default(),
+                cancel: cancel.as_ref(),
+                still_active: &still_active,
+            },
+            &mut |_| {},
+        )?;
+        let coverage = ai_discovery::coverage(&conn, &workspace_id, Some(&active_space))?;
         Ok(AiRelationshipRefresh {
             workspace_id,
             space_fingerprint: Some(active_space),
-            documents_compared,
-            relationships_created,
-            cancelled: false,
+            documents_compared: coverage.eligible_documents,
+            relationships_created: summary.progress.edges_stored,
+            cancelled: summary.end == ai_discovery::RunEnd::Cancelled,
         })
     })
     .await?)
