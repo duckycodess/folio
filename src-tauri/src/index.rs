@@ -375,7 +375,11 @@ fn discover(root: &Path) -> NativeResult<Discovery> {
             }
         };
         // Symlinks report their own type here, so links never enter the index.
-        if !entry.file_type().is_file() || entry.file_name().to_string_lossy().starts_with('.') { continue; }
+        if !entry.file_type().is_file() { continue; }
+        if entry.file_name().to_string_lossy().starts_with('.') {
+            if let Ok(metadata) = entry.metadata() { crate::writer::remove_if_abandoned(entry.path(), &metadata); }
+            continue;
+        }
         let Some(kind) = MediaKind::from_path(entry.path()) else { continue };
         let Ok(relative) = relative_path_below(root, entry.path()) else {
             discovery.skipped += 1;

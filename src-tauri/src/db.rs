@@ -8,7 +8,8 @@ pub type NativeResult<T> = Result<T, FolioError>;
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/001_initial.sql"),
     include_str!("../migrations/002_index_state.sql"),
-    include_str!("../migrations/003_retry_backoff.sql"),
+    include_str!("../migrations/003_actions.sql"),
+    include_str!("../migrations/004_retry_backoff.sql"),
 ];
 
 impl From<rusqlite::Error> for FolioError {
