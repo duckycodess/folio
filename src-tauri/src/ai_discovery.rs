@@ -25,6 +25,7 @@ use folio_core::relationships::{
     RelationshipChunk, MAX_RUN_COMPARISONS, MAX_TILE_COMPARISONS, TILES_PER_JOB_PER_TURN,
     TILE_COLS, TILE_ROWS,
 };
+use folio_core::error::CoreError;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde::Serialize;
 
@@ -529,7 +530,7 @@ fn step(
             Some(context.cancel),
         ) {
             Ok(_) => {}
-            Err(failure) if failure.to_string().contains("cancelled") => {
+            Err(CoreError::Cancelled) => {
                 return Ok(Step::Cancelled)
             }
             Err(failure) => return Err(crate::ai_boundary::core_failure(failure)),

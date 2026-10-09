@@ -368,9 +368,7 @@ fn narrowed(chunk: &RelationshipChunk, start: u32, end: u32) -> CoreResult<Sourc
 
 fn check_cancel(cancel: Option<&AtomicBool>) -> CoreResult<()> {
     if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
-        return Err(CoreError::Message(
-            "relationship discovery cancelled".into(),
-        ));
+        return Err(CoreError::Cancelled);
     }
     Ok(())
 }
@@ -728,7 +726,7 @@ mod tests {
             Some(&flag),
         )
         .unwrap_err();
-        assert!(error.to_string().contains("cancelled"));
+        assert!(matches!(error, CoreError::Cancelled));
     }
 
     #[test]

@@ -666,6 +666,7 @@ mod tests {
             sentences,
             coverage_ranges: vec![],
             uncited_sentence_count: uncited,
+            basis: None,
         }
     }
 
