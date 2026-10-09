@@ -688,14 +688,16 @@ async fn summarize_relationships(
                 || coverage.overflow_documents > 0
                 || entries.len() < available_connections,
         };
-        let (provider, cancel) = acquire_generation(&app, &generation_state)?;
+        let lease = acquire_generation(&app, &generation_state)?;
         let result = grounding::relationship_summary(
-            provider.as_ref(),
+            lease.provider.as_ref(),
             entries,
             language,
-            cancel.as_ref(),
+            lease.claim.cancel.as_ref(),
         );
-        finish_generation(&generation_state, &cancel)?;
+        // Release the slot before the result is shaped (the lease's drop
+        // would release it anyway, on every path).
+        drop(lease);
         let mut result = result?;
         if result.kind == folio_core::contracts::GroundedAnswerKind::RelationshipSummary {
             result.basis = Some(basis);
@@ -784,17 +786,16 @@ async fn explain_impact(
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
-        let (provider, cancel) = acquire_generation(&app, &generation_state)?;
+        let lease = acquire_generation(&app, &generation_state)?;
         let result = grounding::impact_explanation(
-            provider.as_ref(),
+            lease.provider.as_ref(),
             impact_relationship_label(&candidate),
             impact_strength_label(candidate.strength),
             &candidate.reason,
             candidate.evidence.iter().map(core_passage).collect(),
             language,
-            cancel.as_ref(),
+            lease.claim.cancel.as_ref(),
         );
-        finish_generation(&generation_state, &cancel)?;
         Ok(result?)
     })
     .await?)
