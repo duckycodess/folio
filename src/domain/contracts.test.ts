@@ -219,6 +219,12 @@ function isBenchmarkRecord(value: unknown): value is BenchmarkRecord {
   const timing = value.timing;
   const settings = value.serverSettings;
   const conditions = value.conditions;
+  const model = value.model;
+  const runtimeDetail = value.runtimeDetail;
+  const backend = isRecord(runtimeDetail) ? runtimeDetail.backend : undefined;
+  // The same cross-field rules as `BenchmarkRecord::validate` in Rust.
+  const settled =
+    value.outcomeKind === "valid" || value.outcomeKind === "cancelled";
   return (
     ["retrieval", "interpretation", "summary", "edit"].some(
       (task) => task === value.task,
@@ -237,10 +243,23 @@ function isBenchmarkRecord(value: unknown): value is BenchmarkRecord {
     ["firstRequestAfterServerRestart", "immediateRepeat"].some(
       (position) => position === timing.requestPosition,
     ) &&
+    value.cold ===
+      (timing.requestPosition === "firstRequestAfterServerRestart") &&
+    value.modelDiskBytes === value.modelFileBytes &&
+    isRecord(model) &&
+    ["product", "evaluationCandidate"].includes(model.catalog as string) &&
+    model.evaluationOnly === (model.catalog === "evaluationCandidate") &&
     (settings === null ||
       (isRecord(settings) && typeof settings.cachePrompt === "boolean")) &&
     isRecord(conditions) &&
     conditions.pageCache === "notControlled" &&
+    conditions.appActivity === "notControlled" &&
+    value.contextTokens === conditions.nCtx &&
+    (backend === undefined ||
+      (isRecord(backend) &&
+        (backend.cpuOnlyVerified !== true ||
+          (backend.gpuOffload === "disabled" &&
+            !(Number(backend.gpuLayersOffloaded) > 0))))) &&
     Array.isArray(value.memory) &&
     value.memory.every(
       (entry) =>
@@ -258,7 +277,11 @@ function isBenchmarkRecord(value: unknown): value is BenchmarkRecord {
       "runtimeError",
       "cancelled",
     ].some((kind) => kind === value.outcomeKind) &&
-    typeof value.retryNeeded === "boolean" &&
+    value.retryNeeded === !settled &&
+    // A summary is never graded here; a failure is false where labels grade.
+    (value.task === "summary"
+      ? value.correctness === null
+      : settled || value.correctness === false) &&
     Array.isArray(value.objectiveChecks) &&
     Array.isArray(value.reviews) &&
     isRecord(value.apply) &&
@@ -387,6 +410,56 @@ describe("Model Lab record contract (issue #8)", () => {
     ).toBe(false);
     expect(
       isBenchmarkRecord({ ...benchmarkRecord, apply: { status: "applied" } }),
+    ).toBe(false);
+  });
+
+  it("refuses what the Rust record refuses", () => {
+    const golden = benchmarkRecord as unknown as BenchmarkRecord;
+    const refused: unknown[] = [
+      // A summary is never self-graded.
+      { ...golden, correctness: true },
+      // A timeout needs a retry.
+      { ...golden, outcomeKind: "timedOut", retryNeeded: false },
+      { ...golden, retryNeeded: true },
+      {
+        ...golden,
+        conditions: { ...golden.conditions, appActivity: "controlled" },
+      },
+      {
+        ...golden,
+        model: { ...golden.model, catalog: "evaluationCandidate" },
+      },
+      {
+        ...golden,
+        timing: { ...golden.timing, requestPosition: "immediateRepeat" },
+      },
+      { ...golden, contextTokens: golden.contextTokens + 1 },
+      {
+        ...golden,
+        runtimeDetail: {
+          ...golden.runtimeDetail,
+          backend: { ...golden.runtimeDetail.backend!, gpuLayersOffloaded: 12 },
+        },
+      },
+    ];
+    for (const record of refused) expect(isBenchmarkRecord(record)).toBe(false);
+    // A failed edit is graded false, never left ungraded.
+    const edit = { ...golden, task: "edit", objectiveChecks: [] };
+    expect(
+      isBenchmarkRecord({
+        ...edit,
+        outcomeKind: "runtimeError",
+        retryNeeded: true,
+        correctness: false,
+      }),
+    ).toBe(true);
+    expect(
+      isBenchmarkRecord({
+        ...edit,
+        outcomeKind: "runtimeError",
+        retryNeeded: true,
+        correctness: null,
+      }),
     ).toBe(false);
   });
 });
