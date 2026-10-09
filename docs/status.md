@@ -82,6 +82,13 @@ Checked on macOS with Node.js 26.10.0:
   - in the rename preview, 8 Tabs and 8 Shift+Tabs stay inside the dialog, and Escape closes it and returns focus to Preview rename;
   - the rendered text of all six views contains none of "Track T…", "docs/", "engine", "adapter", "fixture", "payload", "null" or "undefined".
 
+After the #31 review:
+
+- Change-related wording now depends on when the error arrived: refused before any write, partway through a batch, or partway through an Undo.
+- `historyRequired` now says the file was changed but Undo isn't available, with no Try again, because the native writer reports it only after a write.
+- `npm test`: 125 passed, 9 todo. New cases: no message claims nothing changed after a write or a partial Undo, partway messages keep earlier changes, and a spent plan is never retried.
+- In the browser, `historyRequired`, `undoConflict` and `targetChanged` show the new wording, and a fast file open no longer announces "Reading file…" (it waits 500 ms).
+
 Not verified: real native failures (only simulated ones), the folder-opened success message (it needs the native folder picker), screen readers, and the Tauri webview.
 
 ### File table and reader (2026-10-09, issue #17)

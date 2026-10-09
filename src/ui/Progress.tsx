@@ -11,8 +11,12 @@ interface ProgressProps {
 export function Progress({ label, value }: ProgressProps) {
   const known = value !== undefined;
   const announce = useAnnounce();
-  // Say once that work started; the result is announced by whatever follows.
-  useEffect(() => announce(`${label}…`), [announce, label]);
+  // Announce only work that's still running after a moment; most local reads
+  // finish first, and announcing each one would be noise.
+  useEffect(() => {
+    const timer = setTimeout(() => announce(`${label}…`), 500);
+    return () => clearTimeout(timer);
+  }, [announce, label]);
   return (
     <div className="progress">
       <div className="progress-label">

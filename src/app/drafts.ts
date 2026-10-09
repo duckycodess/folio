@@ -10,6 +10,8 @@ export interface Drafts {
   setInstruction: (text: string) => void;
   renameName: (documentId: string) => string;
   setRenameName: (documentId: string, name: string) => void;
+  /** Call once a rename succeeds, so an old draft can't reappear after Undo. */
+  clearRenameName: (documentId: string) => void;
 }
 
 export function useDrafts(): Drafts {
@@ -21,5 +23,11 @@ export function useDrafts(): Drafts {
     renameName: (documentId) => renames[documentId] ?? "",
     setRenameName: (documentId, name) =>
       setRenames((all) => ({ ...all, [documentId]: name })),
+    clearRenameName: (documentId) =>
+      setRenames((all) => {
+        const rest = { ...all };
+        delete rest[documentId];
+        return rest;
+      }),
   };
 }
