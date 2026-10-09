@@ -3,6 +3,7 @@ import type { ActivityState } from "../app/useActivity";
 import type { WorkspaceState } from "../app/useWorkspace";
 import {
   batchTitle,
+  changedWithoutHistory,
   changeKind,
   CONFLICT_REASONS,
   SOURCE_LABELS,
@@ -115,6 +116,12 @@ function ActivityBody({
           />
         ))}
       </ol>
+      {activity.failure && (
+        <RecoveryNotice
+          error={activity.failure}
+          actions={{ retry: activity.loadOlder }}
+        />
+      )}
       {activity.hasOlder && (
         <Button
           variant="ghost"
@@ -172,7 +179,7 @@ function ActivityItem({
             {operation.history ? (
               <ChangeLine entry={operation.history} />
             ) : (
-              <UnchangedLine operation={operation} />
+              <OperationLine operation={operation} />
             )}
           </li>
         ))}
@@ -223,23 +230,26 @@ const NOT_CHANGED: Record<string, string> = {
   notStarted: "not started",
 };
 
-/** An operation that changed nothing: what it would have done, and why not. */
-function UnchangedLine({ operation }: { operation: ActivityOperation }) {
+/** A write without history, or an operation that did not change its file. */
+function OperationLine({ operation }: { operation: ActivityOperation }) {
   const before = operation.beforeRelativePath;
   const after = operation.afterRelativePath;
+  const changed = changedWithoutHistory(operation);
   const what =
     operation.operationKind === "create"
-      ? `Create ${after ?? "a file"}`
+      ? `${changed ? "Created" : "Create"} ${after ?? "a file"}`
       : operation.operationKind === "delete"
-        ? `Delete ${before ?? "a file"}`
+        ? `${changed ? "Deleted" : "Delete"} ${before ?? "a file"}`
         : operation.operationKind === "edit"
-          ? `Edit ${after ?? before ?? "a file"}`
+          ? `${changed ? "Edited" : "Edit"} ${after ?? before ?? "a file"}`
           : `${before ?? "a file"} → ${after ?? "a new name"}`;
-  const outcome = operation.status
-    ? (NOT_CHANGED[operation.status] ?? "not changed")
-    : "outcome not recorded";
+  const outcome = changed
+    ? "changed, Undo unavailable"
+    : operation.status
+      ? (NOT_CHANGED[operation.status] ?? "not changed")
+      : "outcome not recorded";
   return (
-    <span className="change-line is-unchanged">
+    <span className={`change-line${changed ? "" : " is-unchanged"}`}>
       {what} <span className="muted">({outcome})</span>
     </span>
   );

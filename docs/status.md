@@ -133,6 +133,13 @@
 - Checked on Windows with Node.js 20: `npm run check`, `npm test` (328 passed, 9 todo) and `npm run build`. New tests: `src/domain/activity.test.ts` (stopped, nothing changed, cancelled, unrecorded older batches, sources) and a relabelled-source digest test in `src/domain/plan.test.ts`.
 - **Rust not compiled on this host** (not enough free disk for the native build); the files were only parse-checked with `rustfmt`. The new native tests (failed and cancelled batches with outcomes, nothing-changed batches, unapplied plans excluded, paging, a relabelled source refused, and migration 006 over a pre-006 database) run only in CI's `desktop-check`. Activity hasn't been checked in a browser or the Tauri app.
 
+PR #72 review follow-up (2026-10-10, Linux, Node.js 24.15.0):
+
+- Activity counts `historyRequired` after-write failures as changed without Undo, including the first operation and partial batches. Missing legacy outcomes stay unknown rather than being labelled "Nothing changed". Reversing the recoverable entries does not label an unrecoverable write undone.
+- Older-page results, errors and loading-state updates are ignored after a folder change, reload or unmount. Paging failures appear beside the loaded batches with retry, and retry clears the old error.
+- Five new domain regressions pass; the complete frontend suite has 333 passed and 9 existing todo. Type checks and the production build passed.
+- A temporary Chromium harness exercised the actual Activity hook/view with controlled action adapters: six regressions passed for late page success/failure after a folder switch, a stale page finishing during a new page after reload, visible paging errors and retry, a first-operation `historyRequired` result, and unknown legacy outcomes. No browser exceptions occurred. These verify UI state, not native fault injection, the Tauri window or screen readers.
+
 ## Pending
 
 Model-generated Ripple explanations and similarity/shared-fact discovery (issues #4 and #8), creating folders during moves, UI use of the native index and actions (the current UI still searches loaded content), live file watching, multi-folder workspaces, native packaging, and real Model Lab results remain pending. Issue #4 on `FOLIO-4` carries multilingual embedding, semantic search, local generation, grounded summaries/answers, model/runtime setup and proposal-only interpretation through its own interim in-memory chunking and vector index; it does not yet read #3's persistent index, and its proposals are not yet connected to #5's native plan/apply path.

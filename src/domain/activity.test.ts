@@ -140,6 +140,82 @@ describe("activity batches", () => {
 });
 
 describe("failed and cancelled batches", () => {
+  const writtenWithoutHistory = (index: number): ActivityOperation => ({
+    operationIndex: index,
+    operationKind: "edit",
+    beforeRelativePath: "notes/plan.md",
+    afterRelativePath: "notes/plan.md",
+    status: "failed",
+    error: {
+      code: "historyRequired",
+      message:
+        "The file was changed, but Folio could not record how to undo it.",
+    },
+  });
+
+  it("counts a first write whose history could not be stored", () => {
+    const written = one(
+      batch([writtenWithoutHistory(0)], { stopReason: "failed" }),
+    );
+    expect(written.status).toBe("stopped");
+    expect(batchTitle(written)).toBe("Edited 1 file");
+    expect(written.entries).toHaveLength(0);
+    expect(written.canUndo).toBe(false);
+    expect(stopSummary(written)).toBe(
+      "Stopped at notes/plan.md: The file was changed, but Folio could not record how to undo it. Undo isn't available for this file.",
+    );
+  });
+
+  it("keeps writes without history in a partial batch's changed count", () => {
+    const written = one(
+      batch([moved(0), writtenWithoutHistory(1), unmoved(2, "notStarted")], {
+        stopReason: "failed",
+      }),
+    );
+    expect(batchTitle(written)).toBe("Changed 2 of 3 files");
+    expect(written.canUndo).toBe(true);
+    expect(stopSummary(written)).toContain("The earlier change was kept.");
+    expect(stopSummary(written)).toContain(
+      "Undo isn't available for this file.",
+    );
+  });
+
+  it("does not call the whole batch undone while an unrecorded write remains", () => {
+    const partly = one(
+      batch([moved(0, { undoneAt: 2000 }), writtenWithoutHistory(1)], {
+        stopReason: "failed",
+      }),
+    );
+    expect(partly.status).toBe("partlyUndone");
+    expect(partly.canUndo).toBe(false);
+    expect(batchTitle(partly)).toBe("Changed 2 files");
+  });
+
+  it("does not call a recorded success unchanged when its history is unavailable", () => {
+    const operation: ActivityOperation = moved(0);
+    delete operation.history;
+    const written = one(batch([operation]));
+    expect(written.status).toBe("applied");
+    expect(batchTitle(written)).toBe("Moved 1 file");
+    expect(written.canUndo).toBe(false);
+  });
+
+  it("keeps a wholly unknown legacy outcome distinct from no changes", () => {
+    const unknown = one(
+      batch([unmoved(0)], {
+        source: "unknown",
+        finishedAt: undefined,
+        stopReason: undefined,
+      }),
+    );
+    expect(unknown.status).toBe("unknown");
+    expect(batchTitle(unknown)).toBe("Attempted to move 1 file");
+    expect(stopSummary(unknown)).toBe(
+      "Folio didn't record what happened to 1 file in this change.",
+    );
+    expect(unknown.canUndo).toBe(false);
+  });
+
   it("shows a batch that stopped partway, and keeps what changed", () => {
     const stopped = one(
       batch(
