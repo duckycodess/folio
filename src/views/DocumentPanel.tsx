@@ -1,4 +1,4 @@
-import { ArrowLeft, FileText, Sparkles, X } from "lucide-react";
+import { ArrowLeft, Sparkles, X } from "lucide-react";
 import { useId, useRef, useState, type KeyboardEvent } from "react";
 import type { WorkspaceState } from "../app/useWorkspace";
 import type { DocumentRecord } from "../domain/contracts";
@@ -6,6 +6,7 @@ import type { ViewId } from "../shell/navigation";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
+import { FileTypeIcon } from "../ui/FileTypeIcon";
 import { Progress } from "../ui/Progress";
 import {
   fileKind,
@@ -59,9 +60,7 @@ export function DocumentPanel({
         >
           <ArrowLeft size={18} aria-hidden="true" />
         </button>
-        <span className="document-icon" aria-hidden="true">
-          <FileText size={24} />
-        </span>
+        <FileTypeIcon mediaType={document.mediaType} />
         <div className="document-heading">
           <h2 className="document-title" title={document.name}>
             {document.name}
@@ -167,7 +166,7 @@ export function DocumentPanel({
                     className="related-item"
                     onClick={() => workspace.selectDocument(related)}
                   >
-                    <FileText size={20} aria-hidden="true" />
+                    <FileTypeIcon mediaType={related.mediaType} size={20} />
                     <span className="related-text">
                       <span className="related-name">{related.name}</span>
                       <span className="related-path">

@@ -118,7 +118,7 @@ Dark-theme contrast, measured with the same formula:
 | `#FFFCF3` / `#B8BAB4` on sidebar-active `#2A2D28` | 13.61 / 7.13:1 | Active nav item                |
 | Gold on sidebar `#111310` / active `#2A2D28`      | 10.98 / 8.21:1 | Sidebar indicator and focus    |
 
-Define dark values under `@media (prefers-color-scheme: dark)` and a `data-theme="dark"` override. Any new token or pair must be added to both contrast tables.
+Define dark values under `@media (prefers-color-scheme: dark)` and a `data-theme="dark"` override. The sidebar's **Theme** switch cycles System → Light → Dark. System follows the OS. The choice is remembered on this device (`src/app/theme.ts`) and applied before the first render. Any new token or pair must be added to both contrast tables.
 
 ## Typography
 
@@ -222,7 +222,7 @@ Active item: `--sidebar-item-active` background, 3px gold bar on the left edge, 
 
 ## Icons
 
-Outline icons on a 24px grid, 1.5–2px rounded strokes, charcoal on light surfaces — the brandbook set matches **Lucide**. Install `lucide-react` from npm so icons are bundled; no icon CDN. Icon-only buttons need an `aria-label` and a tooltip. File-type icons (PDF, Markdown, text) may use their recognizable colors at 20–24px.
+Outline icons on a 24px grid, 1.5–2px rounded strokes, charcoal on light surfaces — the brandbook set matches **Lucide**. Install `lucide-react` from npm so icons are bundled; no icon CDN. Icon-only buttons need an `aria-label` and a tooltip. File types use coloured tiles at 20–24px, as in the brandbook: PDF red (`--file-pdf`), plain text blue (`--file-text`), and Markdown charcoal in light mode and ivory in dark mode. Each tile has a white or charcoal Lucide glyph at ≥4.5:1, and the tiles are ≥3:1 against surfaces. They're decorative, because the file name and type text carry the meaning. Brand logos (Acrobat, Word, Notion) are not used.
 
 ## Olio, the mascot
 

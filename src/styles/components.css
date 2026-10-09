@@ -294,6 +294,26 @@
   display: inline-flex;
 }
 
+/* File-type tile */
+.file-type-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  color: #ffffff;
+}
+.file-type-pdf {
+  background: var(--file-pdf);
+}
+.file-type-text {
+  background: var(--file-text);
+}
+.file-type-markdown {
+  background: var(--file-markdown-bg);
+  color: var(--file-markdown-fg);
+}
+
 /* Notice */
 .notice {
   display: flex;

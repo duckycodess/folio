@@ -3,11 +3,22 @@ import {
   Folder,
   Folders,
   House,
+  Monitor,
+  Moon,
   Sparkles,
+  Sun,
   Waypoints,
   type LucideIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  applyTheme,
+  loadTheme,
+  nextTheme,
+  saveTheme,
+  THEME_LABELS,
+  type ThemePreference,
+} from "../app/theme";
 import { useWorkspace } from "../app/useWorkspace";
 import { Notice } from "../ui/Notice";
 import { SearchField } from "../ui/SearchField";
@@ -37,6 +48,12 @@ const ICONS: Record<ViewId, LucideIcon> = {
   modelLab: FlaskConical,
 };
 
+const THEME_ICONS: Record<ThemePreference, LucideIcon> = {
+  system: Monitor,
+  light: Sun,
+  dark: Moon,
+};
+
 const TITLES: Record<ViewId, string> = {
   home: "Overview",
   files: "Files",
@@ -54,6 +71,7 @@ export function AppShell() {
   const [view, setView] = useState<ViewId>("home");
   const searchInput = useRef<HTMLInputElement>(null);
   const platform = useMemo(currentPlatform, []);
+  const [theme, setTheme] = useState<ThemePreference>(loadTheme);
   const showsDocument = DOCUMENT_VIEWS.has(view) && workspace.selected;
 
   useEffect(() => {
@@ -76,6 +94,16 @@ export function AppShell() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   });
+
+  function cycleTheme() {
+    const next = nextTheme(theme);
+    setTheme(next);
+    saveTheme(next);
+    applyTheme(next, document.documentElement);
+  }
+  const ThemeIcon = THEME_ICONS[theme];
+  const themeLabel = `Theme: ${THEME_LABELS[theme]}`;
+  const themeAction = `${themeLabel}. Switch to ${THEME_LABELS[nextTheme(theme)]}.`;
 
   // Closing the reader returns focus to the list row that opened it.
   function closeDocument() {
@@ -116,6 +144,18 @@ export function AppShell() {
           <nav aria-label="Settings" className="nav">
             <NavList items={SECONDARY_NAV} current={view} onSelect={setView} />
           </nav>
+          <button
+            type="button"
+            className="nav-item theme-switch"
+            aria-label={themeAction}
+            title={themeAction}
+            onClick={cycleTheme}
+          >
+            <ThemeIcon size={20} aria-hidden="true" />
+            <span className="nav-label" aria-hidden="true">
+              {themeLabel}
+            </span>
+          </button>
           <button
             type="button"
             className="status-pill"

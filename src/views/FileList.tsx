@@ -1,6 +1,6 @@
-import { FileText } from "lucide-react";
 import type { KeyboardEvent } from "react";
 import type { DocumentRecord } from "../domain/contracts";
+import { FileTypeIcon } from "../ui/FileTypeIcon";
 import { ListRow } from "../ui/ListRow";
 import { fileKind, folderOf, formatBytes } from "./format";
 
@@ -50,7 +50,7 @@ export function FileList({
       {documents.map((document, index) => (
         <ListRow
           key={document.id}
-          icon={<FileText size={20} />}
+          icon={<FileTypeIcon mediaType={document.mediaType} />}
           title={document.name}
           subtitle={folderOf(document.relativePath)}
           meta={
