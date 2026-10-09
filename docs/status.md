@@ -58,6 +58,6 @@ Checked on 2026-10-09 on Windows 11 (x64) with Rust 1.91.1 and Node.js 20.20.2 (
   - Undo restores bytes and paths and refuses after external edits; a create's undo refuses if the new file was changed; pruned history is listed but can't be undone.
 - `npm run check`, `npm test` (9 passed), `npm run build`: passed after the adapter/contract additions.
 - `npm run tauri dev` on Windows: the app boots and creates `folio.sqlite` (plus WAL files) in `%APPDATA%\dev.folio.desktop`. The folder picker, scan and search were not exercised through the real window, since that needs a person at the dialog.
-- Not run: any macOS native test. macOS relies on the CI `desktop-check` job.
+- CI run 37932669223 (PR #12, which contains the #3 and #5 changes): `frontend`, `desktop-check (windows-latest)` and `desktop-check (macos-latest)` passed, so `cargo test` ran on macOS in CI. No local macOS run, installer, or real-window workflow was tested.
 
 Local inference, filesystem apply/undo, native packaging, and actual performance/size measurements remain unverified and unimplemented as described above. Indexing time and database size have not been measured.
