@@ -1,9 +1,14 @@
 import type {
   DocumentRecord,
-  EmbeddingSpace,
   Relationship,
   SearchResult,
+  SourcePassage,
 } from "./contracts";
+import { normalizeRelativePath } from "./identity";
+import { passageFromUtf16Range } from "./offsets";
+
+const PASSAGE_LEAD = 40;
+const PASSAGE_LENGTH = 200;
 
 function words(value: string): string[] {
   return (
@@ -14,7 +19,12 @@ function words(value: string): string[] {
   );
 }
 
-/** Development fallback; this is deliberately not semantic retrieval. */
+/**
+ * Development fallback. This is keyword filtering, not semantic retrieval, and
+ * `method` says so. Passages are produced only for documents whose text and
+ * revision are both known, so evidence is never attached to an unknown
+ * revision.
+ */
 export function keywordSearch(
   documents: DocumentRecord[],
   query: string,
@@ -22,42 +32,31 @@ export function keywordSearch(
   const terms = [...new Set(words(query))];
   return documents
     .map((document) => {
+      const content = document.content ?? "";
       const tokens = new Set(
-        words(`${document.name} ${document.title} ${document.content ?? ""}`),
+        words(`${document.name} ${document.title} ${content}`),
       );
       const score = terms.length
         ? terms.filter((term) => tokens.has(term)).length / terms.length
         : 1;
-      const content = document.content ?? "";
-      const offset = terms.length
-        ? Math.max(
-            0,
-            content
-              .toLocaleLowerCase()
-              .indexOf(
-                terms.find((term) =>
-                  content.toLocaleLowerCase().includes(term),
-                ) ?? "",
-              ),
-          )
-        : 0;
-      const start = Math.max(0, offset - 40);
-      const end = Math.min(content.length, start + 200);
-      return {
-        document,
-        score,
-        method: "keyword" as const,
-        passages: content
+      const lowered = content.toLocaleLowerCase();
+      const hit = terms.find((term) => lowered.includes(term));
+      const offset = hit ? Math.max(0, lowered.indexOf(hit)) : 0;
+      const startIndex = Math.max(0, offset - PASSAGE_LEAD);
+      const endIndex = Math.min(content.length, startIndex + PASSAGE_LENGTH);
+      const passages: SourcePassage[] =
+        content && document.contentHash
           ? [
-              {
+              passageFromUtf16Range({
                 documentId: document.id,
-                start,
-                end,
-                text: content.slice(start, end),
-              },
+                documentContentHash: document.contentHash,
+                text: content,
+                startIndex,
+                endIndex,
+              }),
             ]
-          : [],
-      };
+          : [];
+      return { document, score, method: "keyword" as const, passages };
     })
     .filter((result) => result.score > 0)
     .sort(
@@ -83,10 +82,18 @@ function linkedPath(sourcePath: string, link: string): string | undefined {
       parts.pop();
     } else parts.push(part);
   }
-  return parts.join("/");
+  try {
+    return normalizeRelativePath(parts.join("/"));
+  } catch {
+    return undefined;
+  }
 }
 
-/** Explicit Markdown links are evidence; no similarity or dependency is inferred. */
+/**
+ * Explicit Markdown links are evidence of a reference. No similarity and no
+ * dependency is inferred, and a link that leaves the workspace is not a
+ * connection.
+ */
 export function discoverExplicitReferences(
   documents: DocumentRecord[],
 ): Relationship[] {
@@ -95,23 +102,32 @@ export function discoverExplicitReferences(
   );
   const relationships: Relationship[] = [];
   for (const document of documents) {
-    const content = document.content ?? "";
+    const content = document.content;
+    if (!content || !document.contentHash) continue;
     for (const match of content.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
       const path = linkedPath(document.relativePath, match[1]);
       const target = path ? byPath.get(path) : undefined;
-      if (!target || target.id === document.id) continue;
+      if (!target || !target.contentHash || target.id === document.id) continue;
+      const startIndex = match.index ?? 0;
       relationships.push({
-        sourceId: document.id,
-        targetId: target.id,
         type: "explicitReference",
         provenance: "documentLink",
+        sourceId: document.id,
+        targetId: target.id,
+        sourceContentHash: document.contentHash,
+        targetContentHash: target.contentHash,
+        link: {
+          rawTarget: match[1],
+          resolvedRelativePath: target.relativePath,
+        },
         evidence: [
-          {
+          passageFromUtf16Range({
             documentId: document.id,
-            start: match.index!,
-            end: match.index! + match[0].length,
-            text: match[0],
-          },
+            documentContentHash: document.contentHash,
+            text: content,
+            startIndex,
+            endIndex: startIndex + match[0].length,
+          }),
         ],
       });
     }
@@ -119,15 +135,8 @@ export function discoverExplicitReferences(
   return relationships;
 }
 
-export function sameEmbeddingSpace(
-  a: EmbeddingSpace,
-  b: EmbeddingSpace,
-): boolean {
-  return (
-    a.modelId === b.modelId &&
-    a.revision === b.revision &&
-    a.quantization === b.quantization &&
-    a.dimensions === b.dimensions &&
-    a.preprocessingFingerprint === b.preprocessingFingerprint
-  );
-}
+export {
+  assertSameEmbeddingSpace,
+  embeddingSpaceFingerprint,
+  sameEmbeddingSpace,
+} from "./identity";
