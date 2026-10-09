@@ -55,6 +55,10 @@ Earlier Q5–Q7 recommendations (mandatory-test completion gate, processing-limi
 
 These decisions do not authorize implementation, issue queueing, or worker dispatch.
 
+## Optional-model expansion interview
+
+After removing the download allowance cap, the user identified correctness and efficiency as the reasons to consider more models. Larger models remain optional, explicitly downloaded packs; the under-1-GB default-install target is unchanged. The removed allowance applies to model download/on-disk size, not runtime RAM. The 8 GB target means total device RAM shared with the OS and other applications; CPU-only operation must not require a dedicated GPU. Removal of the download cap does not waive that evaluation target or establish model quality. The user also accepted measuring task correctness, response time, process memory, and retry needs separately: prioritize acceptable correctness, then efficiency among models that meet it. Generation and embedding adapters are evaluated independently; expand only where observed weaknesses justify it, using current candidates as the baseline. New candidates enter an evaluation-only shortlist rather than immediately becoming selectable supported packs. Promotion requires review of required task outcomes and resource measurements; if none qualifies, report that no suitable candidate has been established. Evaluation runs on remote Windows/macOS CI; those measurements describe the runner, not proof of the 8-GB device target. The interview supports evidence-driven optional-model expansion, but the final summary and any concrete new candidate shortlist still require user confirmation before additions.
+
 ## Open verification items, not interview questions
 
 - Actual generation/command quality of the selected small model in Filipino and Taglish.

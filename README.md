@@ -8,14 +8,14 @@ Folio finds documents by meaning, explains their connections, proposes file chan
 
 This is a development starter, not a finished Folio release.
 
-| Available in this starter                                                        | Still to implement                                                         |
-| -------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| React/TypeScript SOS interface and all three entry workflows                     | Multilingual semantic retrieval (keyword index is native and persistent)   |
-| Fifteen synthetic English/Filipino/Taglish documents                             | Local model downloads, loading, and generation                             |
-| Keyword filtering and explicit Markdown-reference discovery                      | AI summaries, natural-language action interpretation, semantic graph edges |
-| Tauri commands for folders, a persistent index, and TXT/Markdown/text-PDF reads  | UI wiring for the native index, actions and Undo                           |
-| Frozen contracts, native approved apply/undo with history, and Ripple evidence   | Model-generated Ripple explanations and real benchmark recording           |
-| Glossary, decision records, acceptance criteria, team plan, and CI configuration | Tested Windows/macOS packages and measured installation/RAM budgets        |
+| Available in this starter                                                        | Still to implement                                                               |
+| -------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| React/TypeScript SOS interface and all three entry workflows                     | Multilingual semantic retrieval (keyword index is native and persistent)         |
+| Fifteen synthetic English/Filipino/Taglish documents                             | Local model downloads, loading, and generation                                   |
+| Keyword filtering and explicit Markdown-reference discovery                      | AI summaries, natural-language action interpretation, semantic graph edges       |
+| Tauri commands for folders, a persistent index, and TXT/Markdown/text-PDF reads  | UI wiring for the native index, actions and Undo                                 |
+| Frozen contracts, native approved apply/undo with history, and Ripple evidence   | Model-generated Ripple explanations; real-model Model Lab runs (manual workflow) |
+| Glossary, decision records, acceptance criteria, team plan, and CI configuration | Tested Windows/macOS packages and measured installation/RAM budgets              |
 
 The browser preview uses synthetic fixtures and cannot modify your filesystem. It labels keyword search and missing models explicitly. No model output, semantic relationship, benchmark result, or successful save is fabricated.
 

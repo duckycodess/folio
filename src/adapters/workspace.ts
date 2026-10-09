@@ -6,6 +6,7 @@ import {
   type DocumentId,
   type DocumentRecord,
   type DuplicateGroup,
+  type EmbeddingSyncSummary,
   type EmbeddingSpace,
   type EmbeddingSpaceFingerprint,
   type FolioErrorCode,
@@ -342,4 +343,16 @@ export function vectorCandidates(
     vector,
     k,
   });
+}
+
+/** Fill the persistent store from pending chunks using the installed local model. */
+export function syncEmbeddings(
+  workspaceId: WorkspaceId,
+): Promise<EmbeddingSyncSummary> {
+  return call<EmbeddingSyncSummary>("sync_embeddings", { workspaceId });
+}
+
+/** Stop a persistent embedding fill after the current provider operation. */
+export function cancelEmbeddingSync(): Promise<void> {
+  return call<void>("cancel_embedding_sync");
 }

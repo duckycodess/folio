@@ -20,6 +20,54 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run build
+      - run: npm run check:bundle
+      # Everything below is the report-only browser suite. Each step carries
+      # continue-on-error, so a cache miss, a browser download outage or an
+      # upload problem cannot fail the frontend job over something that does
+      # not block a merge. The summary step says what really happened.
+      - name: Cache Playwright Chromium
+        id: playwright-cache
+        continue-on-error: true
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          # The exact version in package.json: a new one must download its own.
+          key: playwright-1.64.0-chromium-${{ runner.os }}
+      - name: Install Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: npx playwright install --with-deps chromium
+      - name: Install Chromium system libraries
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+        continue-on-error: true
+        run: npx playwright install-deps chromium
+      - name: Browser journeys (report-only)
+        id: browser
+        continue-on-error: true
+        timeout-minutes: 2
+        run: npm run test:e2e
+      - name: Browser journey report
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+          if-no-files-found: ignore
+      - name: Browser journey result
+        if: always()
+        continue-on-error: true
+        run: |
+          if [ "${{ steps.browser.outcome }}" = "success" ]; then
+            echo "Browser journeys passed." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**Browser journeys did not pass: \`${{ steps.browser.outcome }}\` (report-only, does not block a merge).**" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Download the \`playwright-report\` artifact for the failures and traces. A browser that never installed shows here too." >> "$GITHUB_STEP_SUMMARY"
+          fi
       - name: Test Folio core provider
         run: cargo test --manifest-path src-tauri/crates/folio-core/Cargo.toml
   desktop-check:
@@ -38,3 +86,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: cargo test --manifest-path src-tauri/Cargo.toml
+      - name: Test Model Lab core on this platform
+        run: >
+          cargo test --manifest-path src-tauri/crates/folio-core/Cargo.toml --lib
+          -- lab:: prompt_caching_is_untouched a_provider_that_has_not_started

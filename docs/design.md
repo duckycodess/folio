@@ -159,17 +159,23 @@ The tagline style under the page title ("Everything in its place.") uses `--text
 
 Desktop window, three regions as in the brandbook:
 
-| Region       | Width                  | Content                                                         |
-| ------------ | ---------------------- | --------------------------------------------------------------- |
-| Sidebar      | 240px (64px collapsed) | Wordmark, navigation, local AI status at the bottom             |
-| Main         | Flexible, min 480px    | Breadcrumb, page header, global search, collections, file table |
-| Detail panel | 360–400px              | Selected file: tabs Summary · Details · Related, actions        |
+| Region  | Width                                 | Content                                                         |
+| ------- | ------------------------------------- | --------------------------------------------------------------- |
+| Sidebar | 240px, or a 64px icon rail            | Wordmark, navigation, local AI status at the bottom             |
+| Main    | Flexible, min 420px beside the reader | Breadcrumb, page header, global search, collections, file table |
+| Reader  | Resizable, 320px to 60% of the window | Selected file: tabs Summary · Details · Related, actions        |
 
-- At **1280×850**, all three regions are visible.
-- At **1024×768**, the detail panel stays visible and the sidebar collapses to icons with tooltips. The file list and selected document must both be on the first screen (#17).
-- At the **700px minimum** and **200% zoom**, the detail panel becomes a full-width view with a Back control; the sidebar becomes an icon rail or a menu button. The workspace/folder action stays reachable.
+The sidebar, the list and the reader follow the space actually available — computed from the app's own measured width in `src/app/shellLayout.ts` — rather than a single fixed window breakpoint (#67):
+
+- **Resizable reader:** a vertical separator (`role="separator"`, keyboard-operable with Left/Right, Home/End) between the list and the reader lets it be dragged from 320px up to 60% of the window, with the list keeping at least 420px. The width is remembered per device (`folio.reader.width`); if storage fails, the default (380px) is used.
+- **Reader beside the list (split):** whenever the list's 420px minimum and the reader's width both fit beside the sidebar, they sit side by side. This applies on Home, Graph, Ask & Act, Activity and Organize (from a file named in an entry or suggestion) — not only Home.
+- **Reader over the list (overlay):** once they don't both fit (even with the sidebar collapsed to its rail), the reader becomes an overlay sliding in from the right, with Back and Escape. The list stays mounted behind it, keeping its scroll position and focus; closing it returns focus to the row that opened it. See [ADR 0012](adr/0012-reader-overlay-instead-of-full-width-replacement.md) for why this replaced the earlier full-width "replace the list" behaviour.
+- **Sidebar labels:** shown whenever there's room for them plus the main area's 480px minimum (and the reader, if one is open) — not from a fixed 1180px window width down. A wide window keeps labels even with the reader open; a narrow one with the reader open collapses to the icon rail sooner than it used to.
+- **File table columns** drop one at a time as the table's own measured width shrinks, in priority order — size, then modified, then type, then location (location then moves under the name) — so the file name is never the column that gets crushed (`src/app/fileColumns.ts`).
+- At **1280×850** and **1024×768**, the file list and the open document are both on the first screen, without scrolling: Home's mascot, tagline, pinned/recent strips and the empty-collections placeholder give way to the list and reader while a file is open.
 - The page header (mascot + "Your workspace") is compact: at most ~96px tall on Home and absent on other pages.
 - Below **768px height**, down to the **600px minimum** in `tauri.conf.json`, the Home page header is hidden and the collection cards collapse to one horizontally scrolling row. The search field and file table tabs stay, and the file table keeps at least five rows visible.
+- At narrow Home widths (around 400px), the Folder/Type/Modified filters wrap as label-above-control pairs instead of a label-beside-select row, and the search field's ⌘K/Ctrl K hint gives up its room so the placeholder isn't cut off.
 
 The phone frame in the brandbook is a future direction. Phone packaging is outside the MVP.
 
@@ -272,7 +278,7 @@ Olio is a yellow folder-owl with ivory face mask, black eyes and wings, and oran
 
 ### Assets
 
-The source sheets are in `olio-asset-pack.zip`: `olio-main-design.png`, `olio-angles-and-actions.png` and `olio-more-actions.png`. The pack is kept outside Git and is ignored by `.gitignore` until the team decides whether source sheets belong in the repository; get it from the design owner and do not commit it.
+The source sheets are in `docs/assets/olio-asset-pack.zip`: `olio-main-design.png`, `olio-angles-and-actions.png` and `olio-more-actions.png`. The pack is committed so everyone works from the same sheets; replace it in place when the design owner sends a new version.
 
 The twelve poses in the table below are cleaned and sliced into `src/assets/olio/olio-<pose>-<px>.png`:
 

@@ -14,6 +14,7 @@ pub mod error;
 pub mod generation;
 pub mod grounding;
 pub mod interpretation;
+pub mod lab;
 pub mod models;
 pub mod relationships;
 pub mod retrieval;

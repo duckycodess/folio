@@ -59,6 +59,7 @@
     "task": "edit",
     "input": "Change Community Learning Project submission deadline to October 23.",
     "expectedTarget": "projects/project-plan.md",
+    "expectedAfter": "October 23",
     "reviewCandidates": [
       "meetings/meeting-notes.md",
       "projects/submission-checklist.md",

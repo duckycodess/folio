@@ -4,7 +4,7 @@ use std::fs::Metadata;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use rusqlite::{params, Connection, OptionalExtension, Row, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
@@ -1200,7 +1200,7 @@ pub fn resolve_active_space(
     Ok(registered)
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct ChunkVector {
     pub chunk_id: i64,
@@ -1263,7 +1263,7 @@ fn check_vector(vector: &[f32], dimensions: usize) -> NativeResult<()> {
 
 pub fn put_embeddings(conn: &mut Connection, workspace_id: &str, fingerprint: &str, items: &[ChunkVector]) -> NativeResult<usize> {
     let dimensions = space_dimensions(conn, fingerprint)?;
-    let tx = conn.transaction()?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     for item in items {
         check_vector(&item.vector, dimensions)?;
         let current: Option<String> = tx

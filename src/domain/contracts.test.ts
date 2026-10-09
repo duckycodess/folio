@@ -4,9 +4,12 @@ import providerError from "../../fixtures/contracts/provider-error.json";
 import modelDescriptor from "../../fixtures/contracts/model-descriptor.json";
 import groundedAnswer from "../../fixtures/contracts/grounded-answer.json";
 import interpretationResult from "../../fixtures/contracts/interpretation-result.json";
+import benchmarkRecord from "../../fixtures/contracts/benchmark-record.json";
 import submissionChecklist from "../../fixtures/documents/projects/submission-checklist.md?raw";
 import { assertPassageMatches, sliceByUtf8Offsets } from "./offsets";
 import type {
+  BenchmarkRecord,
+  BenchmarkResult,
   GroundedAnswer,
   GroundedResult,
   ModelDescriptor,
@@ -209,5 +212,259 @@ describe("native contract goldens", () => {
         passage.text,
       );
     }
+  });
+});
+
+function isBenchmarkRecord(value: unknown): value is BenchmarkRecord {
+  if (!isRecord(value)) return false;
+  const text = (key: string): boolean => typeof value[key] === "string";
+  const num = (key: string): boolean => typeof value[key] === "number";
+  const nullableNum = (key: string): boolean =>
+    value[key] === null || typeof value[key] === "number";
+  const timing = value.timing;
+  const settings = value.serverSettings;
+  const conditions = value.conditions;
+  const model = value.model;
+  const runtimeDetail = value.runtimeDetail;
+  const backend = isRecord(runtimeDetail) ? runtimeDetail.backend : undefined;
+  // The same cross-field rules as `BenchmarkRecord::validate` in Rust.
+  const settled =
+    value.outcomeKind === "valid" || value.outcomeKind === "cancelled";
+  return (
+    ["retrieval", "interpretation", "summary", "edit"].some(
+      (task) => task === value.task,
+    ) &&
+    ["caseId", "modelId", "revision", "quantization", "runtime", "hardware"]
+      .concat(["id", "runId", "promptSha256", "outputSha256"])
+      .every(text) &&
+    ["contextTokens", "taskDurationMs", "modelDiskBytes", "modelFileBytes"]
+      .concat(["createdAt"])
+      .every(num) &&
+    typeof value.cold === "boolean" &&
+    (value.correctness === null || typeof value.correctness === "boolean") &&
+    nullableNum("peakProcessRamBytes") &&
+    value.schemaVersion === 1 &&
+    isRecord(timing) &&
+    ["firstRequestAfterServerRestart", "immediateRepeat"].some(
+      (position) => position === timing.requestPosition,
+    ) &&
+    value.cold ===
+      (timing.requestPosition === "firstRequestAfterServerRestart") &&
+    value.modelDiskBytes === value.modelFileBytes &&
+    isRecord(model) &&
+    ["product", "evaluationCandidate"].includes(model.catalog as string) &&
+    model.evaluationOnly === (model.catalog === "evaluationCandidate") &&
+    (settings === null ||
+      (isRecord(settings) && typeof settings.cachePrompt === "boolean")) &&
+    isRecord(conditions) &&
+    conditions.pageCache === "notControlled" &&
+    conditions.appActivity === "notControlled" &&
+    value.contextTokens === conditions.nCtx &&
+    (backend === undefined ||
+      (isRecord(backend) &&
+        (backend.cpuOnlyVerified !== true ||
+          (backend.gpuOffload === "disabled" &&
+            !(Number(backend.gpuLayersOffloaded) > 0))))) &&
+    Array.isArray(value.memory) &&
+    value.memory.every(
+      (entry) =>
+        isRecord(entry) &&
+        typeof entry.scope === "string" &&
+        typeof entry.method === "string" &&
+        (entry.peakBytes === null || typeof entry.peakBytes === "number") &&
+        (entry.peakBytes !== null ||
+          typeof entry.unavailableReason === "string"),
+    ) &&
+    [
+      "valid",
+      "invalidModelOutput",
+      "timedOut",
+      "runtimeError",
+      "cancelled",
+    ].some((kind) => kind === value.outcomeKind) &&
+    value.retryNeeded === !settled &&
+    // A summary is never graded here; a failure is false where labels grade.
+    (value.task === "summary"
+      ? value.correctness === null
+      : settled || value.correctness === false) &&
+    Array.isArray(value.objectiveChecks) &&
+    Array.isArray(value.reviews) &&
+    isRecord(value.apply) &&
+    value.apply.status === "notRun"
+  );
+}
+
+describe("Model Lab record contract (issue #8)", () => {
+  it("matches the golden record and stays assignable to BenchmarkResult", () => {
+    expect(isBenchmarkRecord(benchmarkRecord)).toBe(true);
+    const record = benchmarkRecord as unknown as BenchmarkRecord;
+    const frozen: BenchmarkResult = record;
+    expect(frozen.caseId).toBe("summary-fil");
+    expect(hasOnlyCamelCaseKeys(benchmarkRecord)).toBe(true);
+  });
+
+  it("maps the frozen fields from the richer record", () => {
+    const record = benchmarkRecord as unknown as BenchmarkRecord;
+    expect(record.modelDiskBytes).toBe(record.modelFileBytes);
+    expect(record.contextTokens).toBe(record.conditions.nCtx);
+    expect(record.runtime).toContain(record.runtimeDetail.version);
+    expect(record.cold).toBe(
+      record.timing.requestPosition === "firstRequestAfterServerRestart",
+    );
+  });
+
+  it("never grades a summary and carries no aggregate score", () => {
+    const record = benchmarkRecord as unknown as BenchmarkRecord;
+    expect(record.task).toBe("summary");
+    expect(record.correctness).toBeNull();
+    expect(record.reviews).toEqual([]);
+    const keys: string[] = [];
+    const collect = (value: unknown): void => {
+      if (Array.isArray(value)) value.forEach(collect);
+      else if (isRecord(value)) {
+        for (const [key, child] of Object.entries(value)) {
+          keys.push(key);
+          collect(child);
+        }
+      }
+    };
+    collect(benchmarkRecord);
+    expect(
+      keys.filter((key) => /score|aggregate|overall|rank/i.test(key)),
+    ).toEqual([]);
+  });
+
+  it("requires a reason whenever a peak is unavailable", () => {
+    const record = benchmarkRecord as unknown as BenchmarkRecord;
+    for (const entry of record.memory) {
+      if (entry.peakBytes === null) {
+        expect(entry.unavailableReason).toBeTruthy();
+      }
+    }
+    const withoutReason = {
+      ...benchmarkRecord,
+      memory: [{ ...benchmarkRecord.memory[0], unavailableReason: undefined }],
+    };
+    expect(isBenchmarkRecord(withoutReason)).toBe(false);
+  });
+
+  it("labels an evaluation candidate and keeps the flag consistent", () => {
+    const record = benchmarkRecord as unknown as BenchmarkRecord;
+    expect(record.model.catalog).toBe("product");
+    expect(record.model.evaluationOnly).toBe(false);
+    const candidate: BenchmarkRecord = {
+      ...record,
+      model: {
+        ...record.model,
+        catalog: "evaluationCandidate",
+        evaluationOnly: true,
+        licenseNote: "Unsettled: publisher metadata conflicts.",
+      },
+    };
+    expect(candidate.model.evaluationOnly).toBe(
+      candidate.model.catalog === "evaluationCandidate",
+    );
+  });
+
+  it("tells a failed case from an ungraded one", () => {
+    const record = benchmarkRecord as unknown as BenchmarkRecord;
+    expect(record.outcomeKind).toBe("valid");
+    expect(record.retryNeeded).toBe(false);
+    expect(record.correctness).toBeNull(); // a valid summary awaits a person
+    const failed: BenchmarkRecord = {
+      ...record,
+      outcomeKind: "timedOut",
+      retryNeeded: true,
+    };
+    // Same `null` for a summary, but the cause and the retry flag differ.
+    expect(failed.correctness).toBeNull();
+    expect(failed.outcomeKind).not.toBe(record.outcomeKind);
+    expect(isBenchmarkRecord({ ...benchmarkRecord, outcomeKind: "hung" })).toBe(
+      false,
+    );
+  });
+
+  it("keeps the runtime backend as observed and never assumes CPU", () => {
+    const record = benchmarkRecord as unknown as BenchmarkRecord;
+    const backend = record.runtimeDetail.backend;
+    expect(backend?.gpuOffload).toBe("disabled");
+    expect(backend?.deviceListing).toEqual(expect.any(String));
+    expect(backend?.observedLogExcerpt).toEqual(expect.any(String));
+    expect(backend?.flags).toEqual(["--n-gpu-layers", "0", "--device", "none"]);
+    expect(backend?.cpuOnlyVerified).toBe(true);
+    expect(backend?.gpuLayersOffloaded).toBe(0);
+    expect(backend?.layersTotal).toBe(29);
+  });
+
+  it("allows an in-process retrieval row to have no server settings", () => {
+    const retrieval = {
+      ...benchmarkRecord,
+      task: "retrieval",
+      serverSettings: null,
+      timing: { ...benchmarkRecord.timing, processStartMs: null },
+    };
+    expect(isBenchmarkRecord(retrieval)).toBe(true);
+  });
+
+  it("rejects a record that claims to be controlled or applied", () => {
+    expect(
+      isBenchmarkRecord({
+        ...benchmarkRecord,
+        conditions: { ...benchmarkRecord.conditions, pageCache: "cold" },
+      }),
+    ).toBe(false);
+    expect(
+      isBenchmarkRecord({ ...benchmarkRecord, apply: { status: "applied" } }),
+    ).toBe(false);
+  });
+
+  it("refuses what the Rust record refuses", () => {
+    const golden = benchmarkRecord as unknown as BenchmarkRecord;
+    const refused: unknown[] = [
+      // A summary is never self-graded.
+      { ...golden, correctness: true },
+      // A timeout needs a retry.
+      { ...golden, outcomeKind: "timedOut", retryNeeded: false },
+      { ...golden, retryNeeded: true },
+      {
+        ...golden,
+        conditions: { ...golden.conditions, appActivity: "controlled" },
+      },
+      {
+        ...golden,
+        model: { ...golden.model, catalog: "evaluationCandidate" },
+      },
+      {
+        ...golden,
+        timing: { ...golden.timing, requestPosition: "immediateRepeat" },
+      },
+      { ...golden, contextTokens: golden.contextTokens + 1 },
+      {
+        ...golden,
+        runtimeDetail: {
+          ...golden.runtimeDetail,
+          backend: { ...golden.runtimeDetail.backend!, gpuLayersOffloaded: 12 },
+        },
+      },
+    ];
+    for (const record of refused) expect(isBenchmarkRecord(record)).toBe(false);
+    // A failed edit is graded false, never left ungraded.
+    const edit = { ...golden, task: "edit", objectiveChecks: [] };
+    expect(
+      isBenchmarkRecord({
+        ...edit,
+        outcomeKind: "runtimeError",
+        retryNeeded: true,
+        correctness: false,
+      }),
+    ).toBe(true);
+    expect(
+      isBenchmarkRecord({
+        ...edit,
+        outcomeKind: "runtimeError",
+        retryNeeded: true,
+        correctness: null,
+      }),
+    ).toBe(false);
   });
 });

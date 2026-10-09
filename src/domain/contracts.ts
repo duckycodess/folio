@@ -769,6 +769,236 @@ export interface BenchmarkResult {
   modelDiskBytes: number;
 }
 
+export type BenchmarkMemoryProcess = "llama-server" | "folio";
+
+/** One measured process. `peakBytes` is null, with a reason, when unavailable. */
+export interface BenchmarkMemory {
+  process: BenchmarkMemoryProcess;
+  pid: number | null;
+  peakBytes: number | null;
+  /** The span the peak covers, e.g. process lifetime since its start. */
+  scope: string;
+  /** How the peak was read, e.g. `PeakWorkingSetSize`. */
+  method: string;
+  unavailableReason?: string;
+}
+
+export interface BenchmarkCheck {
+  name: string;
+  /** Null when the check could not be evaluated; never a guessed pass. */
+  passed: boolean | null;
+  detail: string;
+}
+
+/** A person's judgment of one recorded output. Appended, never overwritten. */
+export interface BenchmarkReview {
+  status: "correct" | "incorrect" | "partiallyCorrect";
+  reviewer: string;
+  reviewedAt: number;
+  notes?: string;
+  /** The `outputSha256` of the output the reviewer actually read. */
+  outputSha256: string;
+}
+
+/**
+ * Issue #8's additive Model Lab record. It extends the frozen
+ * `BenchmarkResult` and stays assignable to it. There is no aggregate or
+ * self-graded score anywhere: `correctness` comes only from deterministic
+ * checks against the labelled suite, and summary records keep it `null`.
+ * `reviews: []` means "Not reviewed".
+ */
+export interface BenchmarkRecord extends BenchmarkResult {
+  id: string;
+  runId: string;
+  /** Unix milliseconds. */
+  createdAt: number;
+  /** `frozen` stays false until a held-out suite is frozen. */
+  suite: { id: string; sha256: string; frozen: boolean };
+  /** Hash of the prompt templates the run used. */
+  promptSha256: string;
+  model: {
+    id: string;
+    role: ModelRole;
+    repo: string;
+    revision: string;
+    quantization: string;
+    files: { path: string; sha256: string; bytes: number }[];
+    /**
+     * An evaluation candidate is not a supported model; measuring it says
+     * nothing about promoting it.
+     */
+    catalog: "product" | "evaluationCandidate";
+    /** True exactly when `catalog` is `evaluationCandidate`. */
+    evaluationOnly: boolean;
+    /** The license the catalog records, not a legal conclusion. */
+    license?: string;
+    /** A caveat on that license, such as conflicting publisher metadata. */
+    licenseNote?: string;
+  };
+  /** Retrieval rows: the same as `model.id`. */
+  embeddingModelId: string;
+  runtimeDetail: {
+    name: "llama.cpp" | "onnxruntime";
+    version: string;
+    /**
+     * Recorded for llama.cpp rows. The device listing is kept as observed.
+     * Model Lab requests CPU-only (`gpuOffload: "disabled"`, with the `flags`
+     * it passed); whether the server honoured it is `cpuOnlyVerified`, read
+     * from the server's own output. `"runtimeDefault"` means Folio passed no
+     * offload setting, so the runtime chose; it is never read as CPU-only.
+     */
+    backend?: {
+      runtimeId: string;
+      platform: string;
+      deviceListing: string | null;
+      unavailableReason?: string;
+      /** What Folio asked for; the observed fields say what the server reported. */
+      gpuOffload: "runtimeDefault" | "disabled";
+      /** The exact extra launch flags the lab passed; empty when none. */
+      flags: string[];
+      /**
+       * True only when the server's own output reported zero offloaded layers
+       * and named no GPU backend after CPU-only was requested; false when it
+       * reported offloaded layers; null when that cannot be told. Never
+       * inferred from the absence of a GPU.
+       */
+      cpuOnlyVerified: boolean | null;
+      observedLogExcerpt?: string;
+      gpuLayersOffloaded?: number;
+      layersTotal?: number;
+    };
+  };
+  /** `installedRamBytes` is installed capacity, never usage. */
+  host: {
+    os: string;
+    osVersion: string | null;
+    arch: string;
+    cpuBrand: string | null;
+    logicalCpus: number;
+    installedRamBytes: number | null;
+  };
+  conditions: {
+    nCtx: number;
+    maxOutputTokens: number;
+    maxPassages: number;
+    temperature: number;
+    seed: number;
+    threads: number;
+    corpusSha256: string;
+    /** The operating system's file cache is never controlled. */
+    pageCache: "notControlled";
+    /**
+     * The rest of Folio is not kept idle: the lab holds the generation slot and
+     * the install lock, but search or indexing may still use the CPU.
+     */
+    appActivity: "notControlled";
+  };
+  /**
+   * `cold` is true only for the first request after the process restarted.
+   * Startup time is separate from `taskDurationMs`. A task with several
+   * requests is cold only through its first one.
+   */
+  timing: {
+    processStartMs: number | null;
+    requestsInTask: number;
+    requestsSinceProcessStart: number;
+    requestPosition: "firstRequestAfterServerRestart" | "immediateRepeat";
+  };
+  /**
+   * The llama-server values actually used, not the defaults assumed. Null for
+   * retrieval rows, which run in-process with no server.
+   */
+  serverSettings: {
+    startupWarmup: "default-on" | "disabled";
+    cachePrompt: boolean;
+  } | null;
+  observation: "single cold/repeat pair; initial observation, not a stable performance estimate";
+  memory: BenchmarkMemory[];
+  /** Equals `modelDiskBytes`: the model's own files, never installed size. */
+  modelFileBytes: number;
+  objectiveChecks: BenchmarkCheck[];
+  /**
+   * How the case ended. `valid` means the model produced an answer the label
+   * checks (or, for a summary, a reviewer) can judge. Any other kind is a
+   * failure to produce one: `correctness` is then `false`, or `null` for a
+   * summary, and the cause is here, so a failure is never mistaken for
+   * "not graded yet".
+   */
+  outcomeKind:
+    "valid" | "invalidModelOutput" | "timedOut" | "runtimeError" | "cancelled";
+  /** True exactly when `outcomeKind` is not `valid` or `cancelled`. */
+  retryNeeded: boolean;
+  /** The full raw outcome, kept so a reviewer can read what was produced. */
+  output: unknown;
+  outputSha256: string;
+  reviews: BenchmarkReview[];
+  schemaVersion: 1;
+  apply: { status: "notRun"; reason: string };
+}
+
+export type BenchmarkRunStatus =
+  "running" | "completed" | "cancelled" | "failed";
+
+/** The summary row of one Model Lab run. */
+export interface BenchmarkRunSummary {
+  runId: string;
+  status: BenchmarkRunStatus;
+  /** The embedding model, then the generation models in the order run. */
+  requestedModelIds: string[];
+  suite: BenchmarkRecord["suite"];
+  corpusSha256: string;
+  host: BenchmarkRecord["host"];
+  serverSettings: NonNullable<BenchmarkRecord["serverSettings"]>;
+  startedAt: number;
+  endedAt: number | null;
+  /** Building the passage index is not a case; its time is kept here. */
+  indexBuildMs: number | null;
+  error?: string;
+  schemaVersion: 1;
+}
+
+/**
+ * A manifest model as Model Lab sees it. `modelFileBytes` is the pinned size
+ * of the model's own files, never an installed size. `runnable` means
+ * installed and hash-verified.
+ */
+export interface LabModel {
+  id: string;
+  role: ModelRole;
+  repo: string;
+  revision: string;
+  quantization: string;
+  modelFileBytes: number;
+  status: ModelInstallStatus;
+  runnable: boolean;
+  /** Only a product model can be the app's selection. */
+  selected: boolean;
+  catalog: "product" | "evaluationCandidate";
+  /**
+   * True for an evaluation candidate: not supported, not recommended and not
+   * selectable. Present it as "evaluation-only", never as a choice.
+   */
+  evaluationOnly: boolean;
+  license: string;
+  /** A caveat on the license, such as conflicting publisher metadata. */
+  licenseNote: string | null;
+}
+
+export interface LabRunRequest {
+  embeddingModelId: string;
+  /** Run one at a time, in this order. Nothing is substituted. */
+  generationModelIds: string[];
+}
+
+/** `folio://lab-progress`. `finished`, `cancelled` and `failed` end a run. */
+export interface LabProgress {
+  runId: string;
+  step: string;
+  caseId: string | null;
+  modelId: string | null;
+  error?: string | null;
+}
+
 /* -------------------------------------------------------- persistent index */
 
 /**
@@ -848,7 +1078,7 @@ export type ExplicitReference = Extract<
  * A chunk without a vector in the given embedding space. Echo `contentHash`
  * when storing its vector: chunk ids can be reused after a rescan, and a vector
  * for text the chunk no longer holds is refused (`evidenceInvalid`,
- * `details.reason` = `chunkChanged`).
+ * `details.reason` = `chunkChanged` or `chunkMissing`).
  */
 export interface PendingChunk {
   chunkId: number;
@@ -863,6 +1093,20 @@ export interface VectorCandidate {
   score: number;
   spaceFingerprint: EmbeddingSpaceFingerprint;
   passage: SourcePassage;
+}
+
+/**
+ * Result of filling the persistent embedding store. `droppedStale` counts
+ * chunks that changed or disappeared while they were being embedded and were
+ * re-listed; it is not a user-facing failure count.
+ */
+export interface EmbeddingSyncSummary {
+  workspaceId: WorkspaceId;
+  spaceFingerprint: EmbeddingSpaceFingerprint;
+  stored: number;
+  droppedStale: number;
+  cancelled: boolean;
+  complete: boolean;
 }
 
 /* ------------------------------------------------------------ native writer */

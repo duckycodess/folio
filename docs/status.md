@@ -12,20 +12,23 @@ summary/impact-explanation commands use the existing secure provider boundary.
 The UI never treats a relationship row as a model answer, and the provider is
 not called without native evidence.
 
-The embedding producer is intentionally not included. The #27 producer still
-needs to populate the existing persistent `pending_embedding_chunks` /
-`put_embeddings` API and select the active space; this branch neither replaces
-that producer nor changes `put_embeddings` acceptance semantics. Until that
-wiring lands, AI relationships are available only to an explicit native
-refresh seam populated with existing vectors, not as an end-to-end product
-workflow. The persistent tests populate vectors through those real APIs; they
-are plumbing tests, not evidence of model quality.
+The merged #27 producer populates the existing persistent
+`pending_embedding_chunks` / `put_embeddings` API through `sync_embeddings`,
+using the shared `stored_chunk_space` (`chunk-text-v1`) definition. This branch
+does not duplicate that producer or change `put_embeddings` acceptance
+semantics. The #46 active-space resolver remains draft-safe and returns `None`
+until it is wired to that shared stored-space metadata; the native discovery
+seam and its persistent tests therefore do not yet constitute an end-to-end
+relationship workflow. Those tests are plumbing and deterministic-discovery
+coverage, not evidence of model quality.
 
 The following are draft engineering assumptions for issue #46, not settled
-product decisions: D2 uses the caller's registered space and its existing
-preprocessing fingerprint; D3 adds migration `006_ai_relationships.sql` after
-the actual registry's `005_delete_history.sql`; D4 stores raw cosine clamped
-to the contract range with provisional thresholds; D5 uses a stricter cosine
+product decisions: D2 uses the selected installed model and the shared #27
+stored-chunk space (`chunk-text-v1`) once the active-space seam is integrated;
+until then the resolver returns `None`; D3 adds migration
+`006_ai_relationships.sql` after the actual registry's `005_delete_history.sql`;
+D4 stores raw cosine clamped to the contract range with provisional
+thresholds; D5 uses a stricter cosine
 plus a normalized date/numeric anchor as a shared-fact candidate heuristic,
 not contradiction detection; D6 accepts a native document-id scope capped at
 50; D7 adds display-only grounded-result kinds; D8 rechecks native plan
@@ -36,7 +39,8 @@ be rebased and renumbered rather than skipping a registry version.
 
 Verification on this Linux/WSL host is recorded below. Windows/macOS native
 packaging, real-model E5 quality, threshold calibration, factual review of
-generated text, and the #27 producer integration remain unverified.
+generated text, and the #46 active-space/end-to-end relationship integration
+remain unverified.
 
 Verification for this draft:
 
@@ -54,13 +58,32 @@ Verification for this draft:
   ignored, loopback 1 passed, real acceptance 0 passed/7 ignored, and zero
   doc-test failures. This is not a native test run on the exact checkout.
 
+## PR #68 merge resolution
+
+Merged `main` at `7efb4b5` into the Model Lab branch. The native dependency
+resolution keeps Windows filesystem and device-information support from
+onboarding together with Model Lab's process-memory support. The shared Unix
+`libc` dependency also covers the macOS memory reader.
+
+Static checks passed: `git diff --check`, no remaining conflict markers, and
+locked, offline Cargo metadata parsing with both Windows feature sets present.
+[GitHub Actions run 37973557484](https://github.com/duckycodess/folio/actions/runs/37973557484)
+at resolution commit `fe42122` passed all three jobs: frontend formatting,
+type checks, 342 Vitest tests and build; Linux `folio-core` (156 unit tests and
+one integration test passed); macOS native (205 passed) and Model Lab core
+(77 passed); Windows native (193 passed) and Model Lab core (76 passed).
+The real-model tests remain ignored. Later changes through `95bb703` are
+documentation only. No local build, test, or model inference was run for this
+resolution, and these CI results do not verify desktop interaction, packaging,
+real-model quality, or target-device resource use.
+
 ## Implemented starter pieces
 
 - Golden Daylight app shell ([issue #16](https://github.com/duckycodess/folio/issues/16)): design tokens with light and proposed dark themes, locally bundled Inter and Lucide icons, sidebar navigation (Home, Files, Organize, Graph, Ask & Act, Model Lab), a global search field with a platform-aware ⌘K / Ctrl K shortcut, a document panel with Summary, Details and Related tabs, and shared button, badge, panel, list row, empty state, notice, modal and progress components. The starter `App.tsx` presentation and `src/styles.css` are retired. Summaries, Ask & Act, collections, renames and Model Lab show honest "not available yet" states; nothing is presented as AI output or a saved change.
-- Olio mascot artwork: twelve cleaned poses bundled in `src/assets/olio/`. Home's header pose follows the file list (default, confused for no results, peeking for an empty folder). The Files empty states, Organize's empty Collections and Model Lab's "no model" state also show a pose. The wordmark is still interim text.
+- Olio mascot artwork: twelve cleaned poses bundled in `src/assets/olio/`, shown through `<Olio pose size>`. Since the floating Olio chat (#66) put one Olio on every other view, the per-view poses that used to live in Home's header, Home's empty states, Organize's empty Collections and Model Lab's "no model" state were removed, so each view still shows exactly one (`docs/design.md`'s "one Olio per view"). Ask & Act, which the launcher never shows on, kept its own two poses. The wordmark is still interim text.
 - A sidebar theme switch (System, Light, Dark), remembered on the device, and coloured file-type tiles in file lists and the document panel. Checked in headless Chromium: the switch cycles, the choice survives a reload, and System removes the override. The sample files are all Markdown, so the PDF and text tiles have not been seen rendered.
 - File table and reader ([issue #17](https://github.com/duckycodess/folio/issues/17)): name, location, type, modified and size columns that drop to fit the space; the reader beside the table (or in place of it below 860px) shows the file's text as read-only, with its full path. The reader never shows a file the current list excludes. In the desktop app, Folio starts with an "Add folder" state (sample files on request); an added folder with no readable files offers "Choose another folder". The browser preview lists sample files and says so.
-- Relationships with evidence ([issue #21](https://github.com/duckycodess/folio/issues/21)): the document panel's Related tab and the Graph view list every connected file. Each entry has its type (link and direction, or exact duplicate), how Folio knows it, the file's original folder, and evidence excerpts that open the source with the passage highlighted. Files opened from Related keep a "Back to" link to the origin. With a folder open, links and duplicates come from the native index (`list_relationships`, `list_duplicates`) merged with links in opened files. If the folder hasn't been indexed, the UI says so; no UI runs the index scan yet. Exact duplicates are also found from content hashes Folio already has. Graph also draws the same connections as a concept map (below). Issue #46 adds draft similarity/shared-fact contracts and a bounded persistent discovery seam; the #27 embedding producer and end-to-end UI refresh wiring are still pending.
+- Relationships with evidence ([issue #21](https://github.com/duckycodess/folio/issues/21)): the document panel's Related tab and the Graph view list every connected file. Each entry has its type (link and direction, or exact duplicate), how Folio knows it, the file's original folder, and evidence excerpts that open the source with the passage highlighted. Files opened from Related keep a "Back to" link to the origin. With a folder open, links and duplicates come from the native index (`list_relationships`, `list_duplicates`) merged with links in opened files. If the folder hasn't been indexed, the UI says so; no UI runs the index scan yet. Exact duplicates are also found from content hashes Folio already has. Graph also draws the same connections as a concept map (below). Issue #46 adds draft similarity/shared-fact contracts and a bounded persistent discovery seam; similarity and shared-fact connections have labels and tests; the #27 embedding producer is now merged, while active-space integration and end-to-end UI refresh wiring remain pending.
 - Shared error and recovery states ([issue #18](https://github.com/duckycodess/folio/issues/18)): every error code maps to one plain-language message and next step ([error-states.md](error-states.md)), shown through one recovery notice in every workflow. Drafts (the Ask & Act request, rename names per file) survive errors and view changes. Success after opening a folder is shown only once the native core reports it. Each view announces into its own live region. Modals keep Tab inside them. A browser-only practice mode (`?simulate=<code>`) triggers each state in its own flow.
 - Summary tab ([#20](https://github.com/duckycodess/folio/issues/20)), using #15's `summarize_document`.
   - Each file's Summary tab offers **Summarize this file**. Nothing is generated until it's pressed.
@@ -71,10 +94,15 @@ Verification for this draft:
   - Without a model, the shared recovery notice links to Model Lab. The browser preview says summaries need the desktop app, and sample files say a folder is needed.
   - A partial summary's coverage is measured against the file's extracted text, never its size on disk, so a PDF isn't understated. Without the text, it only says "Partial summary". Clearing never drops a running summary.
   - Summaries are kept for the session (up to 20 files) in one store that Ask & Act can also write to. Ask & Act doesn't request summaries yet (#36).
-- Ask Olio launcher ([#37](https://github.com/duckycodess/folio/issues/37)).
-  - Home has a labelled **Ask Olio** button under the centred search field, and a "Hello! Need a deeper search?" greeting that stays dismissed on this device once dismissed. There's no extra Olio image: Home keeps its one in the header.
-  - The button opens Ask & Act with Home's search as the request and Home's folder filter as the scope. Both stay editable, and nothing is sent.
-  - Coming back to Home restores its search, filters, open file and scroll position. ⌘K / Ctrl K still focuses Home search.
+- Floating Olio chat ([#66](https://github.com/duckycodess/folio/issues/66)), replacing #37's Home-only launcher. Decisions recorded in [ADR 0013](adr/0013-floating-olio-chat-on-device-history.md).
+  - A labelled **Ask Olio** launcher floats on every view except Ask & Act, with a once-dismissed greeting (`folio.olioChat.greetingDismissed`). It never opens or sends by itself. `OlioSprite` (`src/ui/OlioSprite.tsx`) is a clearly-marked placeholder animated mascot — idle, blink, wave, thinking and responding, built from the existing static poses with CSS keyframes — that freezes under `prefers-reduced-motion`; final art swaps the component without touching a caller.
+  - Clicking it opens a compact panel: Olio, the local AI status from `useModels()` (never assumed), History, Expand and Close. Below 700px it becomes a bottom sheet with no horizontal scroll.
+  - **One store, both surfaces.** `src/app/chatStore.ts` holds every conversation (keyed by the open folder), and `useAskAct` reads and writes it for both the compact chat and the full Ask & Act page: there's no second copy of turns. Conversations persist to `localStorage`, capped at 20 total (oldest dropped first), 20 turns each and about 1 million stored characters (oldest conversations left out first); damaged stored turns are dropped on load; running turns aren't persisted, since nothing is left to resume after a reload. History lists a folder's other conversations by their first request, with New conversation and a confirmed "Delete all conversations" that clears every folder's history. Opening a different folder never shows another folder's conversation.
+  - **Commands.** Typing `/` suggests `/search <query>`, `/organize` and `/summarize [file]` (`src/app/commands.ts`), which call the same `find`/navigate-to-Organize/`ask` handlers Ask & Act already used; anything else is read as an ordinary request. `parseCommand` only ever runs on the literal composer text, never on a retrieved passage, so a document's own words can't trigger a command.
+  - **Context.** The file open in the reader can be attached with a removable chip; nothing is attached automatically. The compact chat shares Ask & Act's existing allowlisted-proposal preview/Approve/Undo flow for any change Olio proposes, and the same "no delete from chat" rule (ADR 0013).
+  - **Browser preview only:** since there's no model there, the chat uses a labelled "Practice replies — not a model" mock (`src/adapters/mockChat.ts`) with simulated loading, word-by-word streaming, and `?simulate=<code>` errors with Retry — loaded only when `isAvailable()` is false. In the desktop build (`tauri build` sets `TAURI_ENV_PLATFORM`, exposed through Vite's `envPrefix`) that branch is dead code and the mock is not bundled. Ask & Act's own "needs the desktop app" page is unchanged.
+  - Enter sends, Shift+Enter adds a line; Escape inside the panel closes it and returns focus to the launcher, while Escape in a dialog over it belongs to that dialog. Controls are labelled, and the end of a request this chat started is announced (not checked with a screen reader).
+  - One request at a time across every conversation and folder: starting or opening another conversation while a request runs doesn't start a second one. A file chosen with "Use <file>", attached with the chip, or picked by `/summarize` with no argument binds the request: a proposed change to any other file is refused before a preview, as on Ask & Act (#64 review).
 - Ask & Act changes ([#23](https://github.com/duckycodess/folio/issues/23)). A change Olio understood gets **Preview change…**, which opens the exact native preview.
   - **Rename, move, create:** they become plan operations that pin the revision Olio read and refuse to overwrite.
   - **Edits:** they come from `prepare_passage_edit`, which needs the text to appear exactly once. They're refused if the file changed after Olio read it.
@@ -154,7 +182,10 @@ Verification for this draft:
 - FTS5 keyword search across unopened documents, returning document id, path and excerpt as `utf8Byte` passages bound to the indexed revision (`documentContentHash`), with page numbers for PDFs. Labelled `keyword`.
 - Follows the [frozen contract](contracts.md): `workspaceId:relativePath` document ids, `sha256:` hashes, `explicitReference` relationships with the raw and resolved link, `folio-space-v1/...` space fingerprints, and `{ code, message, details }` failures. `read_document` now also returns the extracted text of text-based PDFs.
 - Exact-duplicate groups are confirmed by comparing the files byte for byte in blocks, so files of any size are verified; the comparison runs without holding the index.
-- Embedding store for the provider track: registered spaces keyed by model/revision/quantization/dimensions/preprocessing, per-space pending-chunk listing, vector storage with dimension checks, and exact cosine search within one space only. A vector is stored only while its chunk still holds the text it was computed from (`contentHash`), because chunk ids can be reused after a rescan. Issue #46 reads this persistent store through a bounded discovery seam; no embedding producer is connected yet.
+- Embedding store for the provider track: registered spaces keyed by model/revision/quantization/dimensions/preprocessing, per-space pending-chunk listing, vector storage with dimension checks, and exact cosine search within one space only. `sync_embeddings` fills the store from pending chunks with the selected local embedding model in a stored-chunk space separate from the snapshot space; stale `chunkChanged`/`chunkMissing` refusals are retried silently, bounded by stale and idle limits. Its initial space probe and each provider batch check Model Lab inside the `EmbeddingState` lock before any provider load: a batch already holding that lock may finish when Lab starts, then the next guarded batch returns `providerBusy` and keeps earlier commits. A vector is stored only while its chunk still holds the text it was computed from (`contentHash`), because chunk ids can be reused after a rescan. Live search and Model Lab still use the #4 snapshot path; the existing live `semantic_search` path can reload the product provider during Lab, and #27 does not change that limitation. No UI automatically triggers this fill.
+- Issue #46 reads this persistent store through a bounded discovery seam; its
+  active-space integration remains draft-pending and does not infer the
+  snapshot title/path space.
 
 ## Native writer, Ripple, history and Undo (issue #5)
 
@@ -180,24 +211,68 @@ Verification for this draft:
 
 ## Pending
 
-#27's embedding producer wiring and end-to-end refresh remain pending, as do
-creating folders during moves, UI use of the native index and actions (the
-current UI still searches loaded content), live file watching, multi-folder
-workspaces, native packaging, and real Model Lab results. Issue #4 on
-`FOLIO-4` carries multilingual embedding, semantic search, local generation,
-grounded summaries/answers, model/runtime setup and proposal-only
-interpretation through its own interim in-memory chunking and vector index; it
-does not yet read #3's persistent index, and its proposals are not yet
-connected to #5's native plan/apply path.
+Model-generated Ripple explanations and similarity/shared-fact discovery
+integration (issues #4 and #8/#46), including wiring #46's active-space seam to
+the merged #27 producer, creating folders during moves, UI use of the native
+index and actions (the current UI still searches loaded content), live file
+watching, multi-folder workspaces, native packaging, and real Model Lab
+results (the harness exists; no real run has been recorded, see Model Lab
+below) remain pending. Issue #4 on `FOLIO-4` carries multilingual embedding,
+semantic search, local generation, grounded summaries/answers, model/runtime
+setup and proposal-only interpretation through its own interim in-memory
+chunking and vector index; it does not yet read #3's persistent index, and its
+proposals are not yet connected to #5's native plan/apply path.
 
 Two `llama-server` hardening items from the #15 review remain open:
 
 - **Port race.** The parent picks a free loopback port and releases it before the child binds it, so a local process that takes the port in that gap could answer `/health` and receive the key and prompt. Fixing it needs the child to report the port it bound; that hasn't been verified against the pinned b11524 build.
 - **Orphaned server on macOS and Linux.** If Folio itself crashes, `llama-server` keeps running until it's killed. Windows is covered by a kill-on-close Job Object. macOS has no parent-death signal, so this needs a small watchdog helper or a startup sweep of stale servers.
 
+The browser journey suite (issue #9) runs report-only in CI: its failures and
+reports are visible, but they do not block a merge, and it proves nothing about
+the native core — see the verification entry below.
+
 Provider cases are listed as pending, not mocked, in `src/domain/pending.test.ts`. Writer tests use real temporary folders; they are not evidence about the desktop window, installers or a real user's folders.
 
 No AI or save completion should be presented without the corresponding native/provider evidence. Model sizes, installed size, memory targets, and platform support remain subject to measurements.
+
+## Model Lab (issue #8)
+
+**What exists.** A sequential Model Lab harness in `folio-core::lab`, its SQLite persistence and native commands, a typed adapter and a manual measurement workflow. Nothing here is a measurement yet: **no real-model run has been dispatched**, so there are no recorded model results, and no result in this repository should be read as one.
+
+- `BenchmarkRecord` extends the frozen `BenchmarkResult` ([contracts](contracts.md), proposal for TJ). Retrieval, interpretation, summary and edit-proposal outcomes are separate records; there is no aggregate or self-graded score. Outcomes come from deterministic label checks; a summary keeps `correctness: null` and `reviews: []` (Not reviewed) until a person appends a review bound to the output hash.
+- The runner measures one embedding model, then each requested generation model strictly one at a time, on a fresh disposable copy of the bundled corpus (marker-guarded, hash-checked, reset per model; user folders are never touched). Per case the server is restarted, the first request is recorded as `cold` and an immediate repeat as warm; startup time is separate, prompt reuse is off for lab requests only, the OS file cache is not controlled, and one pair per case is an initial observation, not a stable estimate. An actual apply is `notRun`; Ripple candidates are `notRun`.
+- Each record names the exact model revision, quantization and files, the runtime version, OS/CPU/installed RAM (capacity, not usage), context and output budgets, the suite, corpus and prompt hashes, and the process whose peak memory was read with its method and span (process lifetime peak, or `null` with a reason). `modelFileBytes` is the model's own files, not installed size. For llama.cpp rows the runtime id, platform and `--list-devices` output are kept as observed, with `gpuOffload: disabled`, the flags passed (`--n-gpu-layers 0 --device none`) and what the server printed about its backend.
+- Results are stored as versioned JSON in the existing `benchmark_results` table (no new migration) and outlive removal of the model.
+- Commands: `lab_models`, `run_model_lab` (holds the generation slot, so user generation gets `providerBusy`), `cancel_model_lab`, `list_lab_runs`, `list_lab_results`, `record_lab_review`; adapter `src/adapters/modelLab.ts` rejects in the browser preview. Louise's UI is a separate track.
+- `.github/workflows/model-lab.yml` is `workflow_dispatch` only (Windows default, macOS opt-in; smallest pair by default). The user waived the download byte cap, so the workflow validates the requested ids against the pinned manifest and the free disk, prints the manifest byte totals for information, and does not substitute models. Model task failures are recorded as data, not job failures. GitHub rejected the first version (the `runner` context is not allowed in job-level `env`); after the fix a push no longer creates a failed validation run, but the workflow has not been dispatched.
+
+**Verified (GitHub Actions only; no local build, test or inference was run).** [Run 37972963956](https://github.com/duckycodess/folio/actions/runs/37972963956) at `db0d20a` (code through the candidate catalog, native candidate commands, adapter, CPU-only option and backend record) passed all three jobs: frontend (20 Vitest files passed, 1 skipped; `folio-core` 153 passed, 2 ignored on Linux), macOS native (189 passed, 2 ignored; 77 `folio-core` lab/provider tests passed) and Windows native (180 passed, 2 ignored; 76 `folio-core` lab/provider tests passed). Later commits changed code and the contract too; see "After review" below for the current state. The `folio-core` step on Windows and macOS covers the platform memory readers (the test process's own peak is measured on both), host information, the disposable workspaces and the runner with scripted providers. The SQLite writer is tested on a temporary database created by the real migrations, closed and reopened. An earlier Windows-only failure (a line-ending test that doubled `\r` on a CRLF checkout) was a test bug and is fixed.
+
+**Not verified.**
+
+- Real inference through Model Lab, on any platform (product models or candidates): the llama.cpp provider has still not run on Windows or macOS since the #4 review fixes, and no pinned model has passed every #4 acceptance phase. A first dispatch may surface #4 defects; those are reported, not fixed here.
+- The native commands through the desktop window, the adapter against the real core, and the Windows `PeakWorkingSetSize` / macOS `ri_lifetime_max_phys_footprint` readings of a real `llama-server`.
+- Any 8 GB-device, CPU-only or installed-size claim. Hosted runners are not the target device.
+- The suite is the six-case development suite and is not frozen; it is not a held-out acceptance suite.
+
+**Evaluation-only candidates.** `model-evaluation-candidates.json` adds three pinned Q4_K_M GGUF candidates (Qwen3.5-0.8B, Qwen3.5-2B, Gemma-SEA-LION-v4.5-E2B; see [model candidates](model-candidates.md)). Their commits, sizes and SHA-256 were checked against the Hugging Face API without downloading weights. They install only through Model Lab into an isolated store, are not in the product manifest, `list_models`, `select_model` or onboarding, and every record is labelled `evaluationOnly`. **None has been downloaded or run, so nothing is known about their quality, speed or RAM, and none is supported or recommended.** Whether b11524 loads the `qwen35` and `gemma4` architectures is unverified; a model that cannot start is recorded as a startup failure rather than hidden. The SEA-LION license metadata conflicts (MIT tag, Gemma 4 license link) and is unsettled; nothing is redistributed.
+
+**CPU-only measurement.** The target is CPU inference on 8 GB of shared device RAM. The lab now launches every llama-server with `--n-gpu-layers 0 --device none` through an additive, lab-only provider option (the product launch arguments and ordinary requests are unchanged and still carry no offload flag), captures the server's output, and records per generation record the requested setting, the device listing and the backend and offload lines the server printed. A contradiction (a GPU layer count above zero despite the request) is kept as data. Whether these flags are accepted and honoured by b11524 on Windows and macOS is unverified until a real run.
+
+**After review (TJ, PR #68).**
+
+- `folio-core` didn't compile at `2171ab0` (`GpuOffload` not imported in `runner.rs`), and two tests contradicted the CPU-only record. Both are fixed, along with a scripted test server that died between a summary's two requests.
+- A summary stopped part way returned its notes as a partial summary, and was recorded as a valid measurement. Such a case now ends the run as cancelled.
+- The retrieval check cut at five entries, but search keeps a byte-identical copy next to its original. With `archive/project-plan-copy.md` ranked, only four distinct files were graded. The check now counts five distinct contents, as search does.
+- llama.cpp's "offloading N repeating layers to GPU" line, printed before the count by builds that can offload, counted as a GPU being named, so `cpuOnlyVerified` could never be `true`. It is now read as part of the offload report. A CPU-only build prints no offload line, so its verdict stays `null` ("can't tell"). The parser still has to be checked against a real b11524 log on each platform.
+- macOS memory is `ri_lifetime_max_phys_footprint`, which leaves out the memory-mapped model file. The recorded method now says so: macOS peaks can't be compared with the Windows and Linux peaks, which include the touched pages of the model file.
+- A run left `running` by an earlier session is marked interrupted at startup, not only when the next run starts. Listing runs or results leaves out a row this version can't read (and logs it) instead of failing every call. Reviewing that row is still refused.
+- Quitting during a run cancels it and waits up to 10 seconds for it to end, which stops its llama-server. Before, macOS and Linux could leave the server running.
+- The Model Lab workspace marker is written before the copy, so a failed copy can be replaced.
+- The TypeScript test guard refuses what `BenchmarkRecord::validate` refuses.
+- Not changed: `unload_generation` during a run still frees the generation slot before the lab thread ends. No UI calls it, and the fix belongs with #4's slot handling.
+- Checked on Linux (WSL, Node.js 24.15.0): `folio-core` 167 passed and 2 ignored, the native library 211 passed and 2 ignored (an existing test needed `LabHold` to implement `Debug`), and `npm run format:check`, `check`, `test` (344 passed, 9 todo) and `build` passed. No real model was run.
 
 ## Remote CI verification after conflict resolution
 
@@ -220,6 +295,224 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 8-GB measurement is claimed here.
 
 ## Verification
+
+### Embedding store fill (2026-10-10, issue #27)
+
+The native loop and its real SQLite seams were verified on WSL/Linux with the
+rustup Cargo toolchain (Cargo 1.96.1). The deterministic embedding fakes use
+SHA-256-derived vectors to prove hash/text/race safety; they are not evidence
+of real model quality.
+
+- `PATH=/home/pandan/.cargo/bin:$PATH cargo test --manifest-path src-tauri/Cargo.toml`: 231 passed, 2 ignored, including the merged Model Lab native suite, the guard-before-load test, the vector-reuse assertion and the strengthened Immediate-transaction handshake.
+- `PATH=/home/pandan/.cargo/bin:$PATH cargo test --manifest-path src-tauri/Cargo.toml -p folio-core`: 168 unit tests passed, 2 ignored; the loopback integration test passed; the real Model Lab run was ignored; 7 real-acceptance tests were ignored because verified local model files were not supplied.
+- `npm run check`: passed. `npm test`: 344 passed, 9 todo, with 9 pending cases skipped. `npm run build`: passed (`tsc --noEmit` plus Vite production build).
+- The precise Model Lab guarantee is limited to `sync_embeddings`: its initial space probe and each provider batch check inside `EmbeddingState` before any provider load. A batch already holding the lock may finish if Lab starts; Lab then unloads the slot and the next sync batch returns `providerBusy`. The existing live `semantic_search` snapshot path can still reload the product provider during Lab, and #27 does not migrate it.
+- Not verified here: real E5 inference or cross-language model quality, Windows or macOS native execution, the desktop window, packaging, live semantic search over the persistent store, or automatic UI triggering.
+### Adaptive layout and resizable reader (2026-10-10, issue #67)
+
+- The shell picks its layout from its own measured width, not fixed window breakpoints (`src/app/shellLayout.ts`). The sidebar keeps its labels while there's room. With a file open, the sidebar collapses to the icon rail before the list loses its 420px minimum. Only when even the rail leaves too little room does the reader overlay the list from the right ([ADR 0012](adr/0012-reader-overlay-instead-of-full-width-replacement.md)). The list stays mounted behind it and is made `inert`.
+- The reader can be resized by dragging the separator, or with Left/Right and Home/End on the focusable `role="separator"`. Its width stays between 320px and 60% of the window, and never wider than fits beside the list's 420px minimum when both minimums fit, so resizing can't push it into overlay. It's saved, already clamped, in `localStorage`; a width saved in a larger window narrows to fit; if storage fails, the 380px default is used.
+- File table columns drop one at a time as the row's own width shrinks: Size, then Modified, then Type, then Location (`src/app/fileColumns.ts`). The name column keeps room for the longest name, from 160px up to 320px, so the name isn't the column that gets truncated. Once Location drops, it moves under the name.
+- Files named in Activity entries and in Organize name suggestions and duplicates now open the reader.
+- Narrow Home (480px and below): filters wrap as label-above-control pairs, the search shortcut hint gives up its room so the placeholder isn't cut off, and the header mascot hides so the title stays on one line.
+- Graph: the map is taller (up to 70vh) and leaves more room under the bottom node's label. Label collisions are left for #45.
+- `docs/design.md`'s Layout section describes the resizable reader instead of the fixed 360–400px panel.
+
+Checked on macOS with Node.js 24.21.0:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test` (excluding the local `.claude/` worktrees): 344 passed, 9 todo. New unit tests cover reader-width clamping, sidebar and reader modes at boundary widths, the list's minimum width whenever the reader is split, the column drop order, the name column's width, and Activity and Organize opening the reader.
+- A scripted pass in headless Chromium against the browser preview (sample files), not committed. It ran at 1920×1080, 1440×900, 1280×850, 1180×800, 1024×768, 900×700, 860×700, 768×700, 600×700 and 400×760, and at 720×450 and 640×425 to stand in for 200% zoom, in light and dark themes:
+  - no horizontal overflow at any size, with the reader open or closed;
+  - no truncated file names in the visible list;
+  - with a file open, 9 rows visible at 1280×850 and 7 at 1024×768;
+  - sidebar labels kept at 1180px, and the rail only once the reader needs the room;
+  - in the overlay, focus moved into the reader and returned to the row on Escape.
+- The separator in the same browser: Left/Right changed the width by 16px, Home and End went to 320px and 60% of the window, dragging resized it, a drag past the edge saved the clamped width, the width survived a reload, and blocked storage fell back to 380px.
+
+Review fixes (Gab, 2026-10-10), after merging `main` (the file row's spoken "modified" date kept inside the new optional columns):
+
+- The width observer follows the app container even when it mounts after Welcome or the setup guide, so a first run doesn't keep the 1280px fallback.
+- The reader's maximum is what fits beside the list (`readerMaxWidth`), used by the layout, the clamp and the separator. Dragging or End can no longer flip it into an overlay that has no handle.
+- ⌘K/Ctrl K closes an overlaying reader before focusing search, since the list behind it is inert.
+- A panel that becomes an overlay while open moves focus into itself.
+- Activity links open the file at the path they show. A rename's history keeps the old path's identity, so the old lookup never matched.
+- The separator ignores non-primary buttons and ends a drag on pointer cancel or lost capture.
+
+Checked on Linux with Node.js 24.15.0: `npm run format:check`, `npm run check`, `npm test` and `npm run build` pass. New layout tests cover the cap beside the list and a remembered width narrowing. Not rerun in a browser.
+
+Not verified: the desktop app on Windows or macOS, screen readers, reduced motion, and browser zoom itself (smaller viewports stood in for it). Opening files from Activity and Organize needs a real folder, so it was not tried in the browser. Neither was a first run through Welcome. Graph label collisions are still open, with #45.
+
+### Browser journeys against a fake native core (2026-10-10, issue #9)
+
+The first authorized slice of issue #9: a browser suite that drives the merged
+UI through journeys A, B and C against a typed, stateful stand-in for the native
+core. It is one Playwright project (Chromium, one worker) added to the existing
+frontend CI job, report-only.
+
+Every browser-only step in CI — the Chromium cache, its install, the artifact
+upload and the summary — carries `continue-on-error`, so a cache miss or a
+download outage cannot fail the frontend job over work that does not block a
+merge. `npm run test:e2e` still exits non-zero locally.
+
+**What the suite is.** `e2e/fake/nativeCore.ts` is a single self-contained
+function that Playwright injects with `addInitScript` before any application
+module runs, so `isTauri()` — read once at import time — takes the page for the
+desktop app.
+It installs `window.isTauri`, `window.__TAURI_INTERNALS__`
+(`invoke`/`transformCallback`/`unregisterCallback`) and
+`window.__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener`, and answers
+`plugin:event|listen` / `plugin:event|unlisten` so `folio://index-progress`
+arrives as `{ event, id, payload }`, exactly as the installed
+`@tauri-apps/api` expects. Failures reject with the plain
+`{ code, message, details? }` wire payload, never an `Error`.
+
+It implements `choose_workspace`, `list_documents`, `read_document`,
+`list_indexed_documents`, `scan_workspace` with progress and `cancel_indexing`,
+`search_index`, `prepare_plan`, `approve_plan`, `apply_plan`, `preview_undo`,
+`undo_plan`, `list_history`, `organization_suggestions`, `list_relationships`
+and `list_duplicates` over the real `fixtures/documents` corpus, read from disk.
+Content hashes are real SHA-256 over the exact bytes the fake holds for a
+document — the file's own bytes until a test changes them — source offsets are
+real UTF-8 byte offsets, plan digests are the canonical `FOLIO-PLAN-V1` bytes,
+and
+preflight, approval binding, durable outcomes and whole-batch Undo follow
+`docs/contracts.md`. The fixture PDF's text and page ranges are extracted from
+its own bytes, and its size and hash stay the file's.
+
+`e2e/fake/nativeCore.test.ts` runs under Vitest and pins the fake to
+`src/domain/`: identities and hashes against `hash.ts`, located excerpts against
+`offsets.ts`, plan digests against `plan.ts`'s `planDigest`, and six refusal
+cases against `plan.ts`'s `preflightPlan`, so the journeys exercise the frozen
+contract rather than a convenient imitation of it. Playwright specs are
+`*.spec.ts` and Vitest's `include` is scoped to `*.test.ts`, so neither runner
+picks up the other's files. Arguments, replies, event payloads and test-control
+inputs cross a JSON-copy boundary; mutating a returned preview, its digest or
+its approval cannot alter the native stand-in's canonical plan. Cancellation
+coverage waits for an indexing progress event rather than a fixed timer.
+
+**Checked on Linux (WSL2) with Node.js 24.15.0, Chromium 156 (Playwright
+1.64.0), axe-core 4.14.0:**
+
+- `npm run format:check` and `npm run check` (which now type-checks `e2e/`)
+  passed. `node node_modules/vitest/vitest.mjs run --configLoader runner`:
+  39 files passed, one skipped, 339 passed and 9 todo, including the 16 new
+  fake-core contract cases. Verbatim `npm test`
+  failed here during Vite config loading because of the host defect below.
+  The build passed as its two parts, `tsc --noEmit` and
+  `vite build --configLoader runner`; verbatim `npm run build` also could not
+  load the config here. CI runs the unchanged scripts.
+- `npm run check:bundle`: `dist/` carries none of the fake's sentinel,
+  installer name, globals or filename.
+- The final browser run: `node node_modules/@playwright/test/cli.js test --config /tmp/folio9-playwright.config.ts`
+  passed 35 tests in 53.4s (Playwright's reported total), server startup included.
+  This temporary config lives outside the repository and changes the web server
+  command to use Vite's runner loader, with absolute paths for the existing
+  repository and test directory. The budget remains `globalTimeout: 110_000`,
+  and CI gives the step two minutes. Verbatim `npm run test:e2e` failed here
+  during Vite config loading, before tests ran. The suite serves the production
+  build on its own port 1421 with `reuseExistingServer: false`, so it can never
+  report on a server someone else left running.
+
+**What the browser tests assert.** Every document, hash, listing and write
+below is the fake core's own state. Nothing in this suite reads or writes a real
+file; the only files touched on disk are the read-only fixtures the fake loads
+its corpus from.
+
+- _Journey A_: adding the fake's workspace lists the sixteen fixture documents
+  with their locations; a Filipino document reads in full and stays read-only; before
+  indexing, Related says what it cannot see instead of presenting a short list
+  as the whole truth; after indexing, Related opens a linked file and comes
+  back; Graph shows the folder's connections and an evidence excerpt opens the
+  reader with that passage highlighted and focused.
+- _Journey B_: Analyze reports the byte-identical pair as evidence and moves
+  no document; a chosen suggestion becomes an exact preview; the fake core's
+  stored file is unchanged while that preview is on screen; `approve_plan` is
+  only ever invoked after `prepare_plan` and `apply_plan` only after
+  `approve_plan`; applying renames the fake core's stored file and records one
+  history entry; Preview Undo then puts that stored file back and the folder
+  listing catches up. The same preview, approval and result appear for a single
+  file renamed from its row. No step of this touches a real disk.
+- _Journey C_: the current Ask & Act UI sends a Taglish instruction to
+  `interpret_request`; the fake reports `modelNotInstalled`, the failed turn
+  keeps the instruction, and the draft survives a trip to Model Lab. Model Lab
+  loads the pinned manifest metadata with every model and runtime uninstalled;
+  device RAM and free space are unknown. No download, generated reply, semantic
+  inference or model-created action is simulated. Journeys A and B keep their
+  own entry points.
+- _Search and Local Sync_: only names are searched until the folder is indexed;
+  afterwards both Filipino documents containing "panayam" are listed with
+  highlighted excerpts labelled "Words in the text", and the PDF result carries
+  its page. Stop resolves the scan with `cancelled: true` and `total: 0` — the
+  captured reply, not only the screen — and search falls back to names only.
+- _Failures_: all 33 `FolioErrorCode` values are injected one at a time and the
+  screen shows that code's wording from `src/app/recovery.ts`; files that could
+  not be identified are named rather than dropped; a batch that fails at its
+  second operation keeps the first and still offers Undo; a change the fake
+  applied but could not record a reversal for says so and offers no Undo; an
+  expired preview is refused with no stored file changed; a rename onto an
+  existing name is refused and that stored file is unchanged; an Undo blocked by
+  a simulated external edit changes no stored file and the newer text survives.
+- _Practice mode_: `?simulate=<code>` is exercised in a real browser with no
+  fake installed at all, which is the only way it is reachable.
+- _Keyboard_: one path uses no pointer and no programmatic focus at all —
+  Tab from the page as it loads to Add folder, Enter, Tab on to the file list,
+  Enter and Space to open a file — so reachability is shown, not assumed. The
+  rest cover arrow/Home/End movement between rows, Escape back to the row that
+  opened the reader, ⌘K/Ctrl K to search from another view, focus into a dialog
+  and back to the row's ⋯ menu, the skip link, and the live-region
+  announcements for the folder and for search.
+- _Four window sizes_ (1280×850, 1024×768, 700×800, 640×425): first-run Welcome
+  and its Skip setup route, the empty state, the file list, indexed search
+  results with excerpts, the reader, Organize's suggestions and exact preview,
+  Graph Map and List, Ask & Act, Activity and loaded Model Lab each have no
+  sideways scroll — on the page or in any visible scrollable element — and zero
+  axe-core violations under its **default** rule set, with no rule filtered or
+  disabled.
+
+**Two accessibility defects the axe sweep found, and the fixes.**
+
+- A file row's `aria-label` named facts in an order and wording the visible
+  columns did not use, and the columns a row shows change with the table's
+  width, so no single sentence could match them all. A voice-control user would
+  have been naming a control the browser could not match
+  (`label-content-name-mismatch`). The row is now spoken as the columns it
+  shows. The heading row is hidden from assistive tech, so the date is spoken
+  with a hidden "modified" (or "no modified date" for "—"); the keyboard spec
+  checks the row's accessible name for it.
+- The fake's Undo for a plan with no recorded history (after
+  `historyRequired`) answered with an empty, undoable preview. Like the native
+  writer, `preview_undo` and `undo_plan` now refuse it with `historyUnknown`.
+- The same mismatch on Graph and Related evidence excerpts, and on search
+  excerpts. Each now carries its purpose as a visually hidden prefix to the
+  visible text instead of an `aria-label` that replaced it.
+
+No other UI change was made: no responsive defect turned up at any of the four
+sizes.
+
+**What this does not prove.** The fake native core is a browser test double. It
+is not evidence about the Rust core, the Tauri webview, a real filesystem, a
+real folder picker, local inference, screen readers, installers, packaging, or
+any Windows or macOS behaviour. Nothing here closes issue #9's acceptance
+matrix: the offline Taglish demo, cross-language semantic retrieval, grounded
+summaries and real native writes all remain pending on issues #4, #5, #6 and #7.
+Journey C stops at setup guidance because the fake has no installed generation
+model; the suite does not claim the native assistant or its model works.
+
+**One behaviour observed and left alone.** Related and Graph read the folder
+index once and do not re-read it after Organize's Analyze fills it; the data
+refreshes only after an applied change. The suite works with that rather than
+around it, and the fix belongs to the owner of that view, not to this slice.
+
+**Host notes, not repository facts.** These runs were on one Linux (WSL2) host.
+A pre-existing zero-byte `/home/tj/package.json` breaks esbuild's Vite config
+loader for every project under that tree, so local runs passed
+`--configLoader runner`; the committed scripts are unchanged and are what CI
+runs. The host also lacked `libnss3`/`libnspr4` and has no root, so those two
+libraries were extracted to a scratch directory and supplied through
+`LD_LIBRARY_PATH`. Neither workaround is in the repository, and neither is
+evidence about any other machine. The suite was adapted after merging main at
+`7efb4b5`, preserving the shared plan review, Model Lab and onboarding changes.
 
 ### Shared plan review and Edit text (2026-10-10, issue #45)
 
@@ -327,6 +620,31 @@ Checked on macOS with Node.js 26.10.0, on `main` after #63 and #64:
 
 Not verified: real downloads and the real figures in the Tauri app, an interrupted download or a hash mismatch against the real store (they surface through the shared recovery notice and the "Damaged: download again" state), and screen readers.
 
+### Floating Olio chat (2026-10-10, issue #66)
+
+Checked on macOS with Node.js 24.21.0, on `main` (#65 merged in). Built in an isolated git worktree after a concurrent session reset the shared working directory mid-task; redone there with nothing lost from that incident.
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 347 passed, 9 todo. New cases cover:
+  - `src/app/chatStore.test.ts`: folder isolation (a folder never sees another folder's conversation, including when a different folder is the active one), the 20-conversation cap (oldest dropped first), adding/updating/clearing turns, scope changes staying scoped to one conversation, conversation titles, and the persistence round-trip (including a running turn being dropped and a failed turn's typed error surviving it);
+  - `src/app/commands.test.ts`: parsing and argument capture for all three commands, case-insensitivity on the command name only, anything outside the registry (including a sentence that merely contains "/organize" mid-text) never being read as a command, and the slash-suggestion list narrowing by prefix;
+  - `src/app/localAi.test.ts`: the status label for every `useModels()` state, so the chat header can't claim readiness it hasn't checked.
+- With the **real browser preview** (sample files, no native core) in headless Chromium via Playwright, driving the actual built app rather than a mock harness:
+  - the launcher (labelled "Ask Olio") showed on Home, and was absent on Ask & Act (0 matches for `.olio-chat-launcher`);
+  - opening the chat, typing a message and pressing **Shift+Enter** added a newline without sending (composer value kept both lines); a plain **Enter** sent it;
+  - the browser-preview mock answered with the word-by-word streamed "Practice replies — not a model" reply, badge and all;
+  - typing `/` suggested all three commands with their usage and hint text;
+  - the History panel showed "New conversation" and an honest "No earlier conversations in this folder yet" for a fresh folder;
+  - **Escape** closed the panel and returned focus to the launcher button (confirmed via `document.activeElement`);
+  - at 390px wide, the panel became a bottom sheet with no horizontal scroll (`scrollWidth` vs `clientWidth`);
+  - under `prefers-reduced-motion: reduce`, the sprite's `animation-name` computed to `none`;
+  - a sent message survived a full page reload (same request text, same turn), and **Delete all conversations** (after a confirmation) actually cleared it — the first run of this check caught a real bug: the button was gated on _other_ conversations existing, not the active one with messages, so it never appeared for a folder's first conversation; fixed before this was written up.
+  - **Expand** navigated to Ask & Act, but Ask & Act's own "needs the desktop app" gate (pre-existing, unrelated to #66) hid its content there, since this preview has no Tauri core; the shared-store mechanics (same conversation id, same persisted turns) were confirmed by the reload check above and by reading the code, not by seeing the turn rendered on the Ask & Act page.
+
+Review fixes (Gab, 2026-10-10), after merging `main` (#64 review's chosen-file check, ported into `AskTurns.tsx` and the chat): one request at a time across all conversations; stored turns validated and capped on load, and the stored history capped at about 1 million characters; Escape left to dialogs over the chat; no announcement for stored history or a conversation switch, on the chat or Ask & Act; the attached file binding the request; `/search` with no query not sent and `/summarize` with no file using the attached or open file; the mock left out of the desktop bundle (checked: `TAURI_ENV_PLATFORM=linux npm run build` output has no practice-reply text, a plain `npm run build` does). Checked on Linux with Node.js 24.15.0: `npm run format:check`, `npm run check`, `npm test` and `npm run build` pass; two new `chatStore` tests cover damaged stored turns and the size cap. Not rerun in a browser.
+
+Not verified: the desktop app, a real local model (so real streaming — the native core doesn't stream today, and the compact chat shows progress + Cancel there exactly as Ask & Act already did), Expand actually rendering a turn on Ask & Act (blocked by the desktop-only gate in this environment), a rename/move/create proposal's preview-Approve-Undo cycle started from the compact chat specifically (AssistantView's existing `ChangeDialog` is reused unchanged, and its own flow is already covered under #23's entry below), and screen readers.
+
 ### Ask Olio launcher and #20 review fixes (2026-10-10, issues #37 and #20)
 
 Checked on macOS with Node.js 26.10.0, on `main` with #52 and #62 merged in:
@@ -369,6 +687,20 @@ Checked on macOS with Node.js 26.10.0, on #36's branch:
   - nothing scrolls sideways at 700px.
 
 Not verified: real interpretation output (#15 lists the Taglish deadline case as pending), conflict-aware Undo against the real writer, and screen readers.
+
+After Gab's review of #64 (2026-10-10, Windows, Node.js 20; in a follow-up PR, since #64 had already merged):
+
+- Fixed: after "Use <file>", a proposal for any other existing file is refused before a preview, with "Olio proposed a change to another file than the one you chose". A create is still allowed, since it changes no existing file. `targetsChosenFile` has tests in `src/app/askAct.test.ts`, and a retry keeps the chosen file.
+- Fixed: when an edit's file has to be read again for the diff, its revision must match the one the edit applies to, or the preview is refused as `targetChanged`.
+- Fixed (#24): a running model download is kept outside Model Lab, so leaving the page and coming back still shows its progress and Cancel. If a download started on an earlier visit ends while Model Lab is open, the model list is read again.
+- Rebased onto `main` after #65 (onboarding now shares the same download store): `npm run check`, `npm test` (326 passed, 9 todo) and `npm run build` passed. The download fix was checked by type check and code reading only, not in a browser.
+
+PR #70 download-feedback follow-up (2026-10-10, Linux, Node.js 24.15.0):
+
+- The shared download store also keeps its final error or cancellation notice. Leaving Model Lab and returning during a download, or after it ends, retains that feedback. Cancellation is informational, not an error. Dismissal, retrying an error, and starting another model operation clear the appropriate feedback.
+- A temporary headless Chromium harness exercised the actual `useModels()` hook with controlled model-adapter promises and progress. All 11 cases passed: successful installation/selection after navigation; cancellation without navigation; cancellation and failure after remount; cancellation and failure while the view is closed; dismissing either outcome and remounting; retry clearing a failure; and a new download clearing either outcome. No browser exceptions occurred.
+- `npm run check`, `npm test` (326 passed, 9 todo), and `npm run build` passed. Formatting was checked separately. No dependencies or native code changed.
+- These browser checks verify hook state with controlled adapters. Real downloads, the Tauri window, screen readers, and installers remain unverified by this follow-up.
 
 ### Ask & Act workspace (2026-10-10, issue #36)
 
@@ -981,3 +1313,15 @@ On 2026-10-09, the user confirmed the settled scope and authorized Impeccable in
 The named team plan now gives TJ most checking and integration/release coordination, Dann local AI, Gab native workspace/actions and Louise the replacement UI. The full MVP and current UI replacement remain implementation work; this documentation refresh does not complete any of those features.
 
 Documentation-refresh validation passed: Impeccable product schema 1 and the webview platform value, all 15 local Markdown references, preservation of the four original scope sections, named ownership and all ten issue links, and Prettier formatting for the three changed documentation files. Application and native tests were not rerun for this documentation-only refresh.
+
+### Installer preparation (issue #10, first slice)
+
+A manual-only packaging workflow and dedicated Tauri bundling override prepare Windows x64 NSIS and Apple Silicon macOS DMG test artifacts. Default bundling stays disabled. The workflow records the exact commit/tool versions and lockfile/config/manifest hashes, produces installer SHA-256 checksums and labels evidence limits in each artifact. Windows builds are unsigned; macOS uses an ad-hoc signature without an Apple identity or notarization. No release publication, updater artifact, model weights or explicit llama.cpp download is added.
+
+Verified locally on Linux/WSL2 with Node 24.15.0 and locked Tauri CLI 2.12.1: the merged override passes the CLI configuration schema without changing window/CSP settings, the manual YAML matrix and source-only Cargo cache validate, the committed SVG produces every configured PNG/ICO/ICNS icon in ignored output, and the collector passes Node syntax plus 12 synthetic success/refusal checks for fresh target artifacts, hashes/provenance, reused output, pre-existing/stale/multiple/missing installers and invalid/missing build markers. Frontend formatting and type checks pass; Vitest reports 323 passed and 9 existing pending cases after incorporating main at `7efb4b5`; the production frontend builds. Tests/build used `--configLoader runner` to avoid the pre-existing malformed `/home/tj/package.json`; no host file was changed. These checks produce no native installer or target-platform acceptance.
+
+**Not verified by configuration alone:** hosted installer production, clean-machine installation, real desktop startup/folder picking, first-run model setup, runtime-library redistribution/linkage, native offline A/B/C, install/update/removal, installed footprint, and 8-GB memory/responsiveness. The new manual workflow must exist on the default branch before its first dispatch. Record actual run/artifact results here after execution; do not infer them from existing native test CI. Intel macOS and Windows ARM64 remain follow-up targets.
+
+Current model weights/tokenizer from the manifest total 532,096,387 bytes for E5 plus Qwen 0.6B Q4_K_M, excluding the app and runtime. These declared file sizes do not establish an installed footprint or an accepted default model. No pinned candidate has passed every historically recorded provider acceptance phase. Model Lab setup controls are implemented, but first-run setup in a packaged app and the accepted model choice remain release prerequisites.
+
+Issue #10 remains open. Its final #9 native integration dependency is retained; the separate fake-core UI tests do not prove native/offline release readiness.
