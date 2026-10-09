@@ -234,7 +234,16 @@ pub fn list_records(
     let mut records = Vec::new();
     for row in rows {
         let (id, case_id, task, model_id, conditions, measurements) = row?;
-        let record = rebuild_record(id, case_id, task, model_id, conditions, measurements)?;
+        // One row this version can't read (a newer schema after a downgrade,
+        // or a rule added later) is left out, not allowed to hide every result.
+        let record = match rebuild_record(id, case_id, task, model_id, conditions, measurements)
+        {
+            Ok(record) => record,
+            Err(failure) => {
+                skipped_row("result", &failure);
+                continue;
+            }
+        };
         if filter
             .run_id
             .as_deref()
@@ -257,16 +266,30 @@ pub fn list_runs(conn: &Connection) -> NativeResult<Vec<RunSummary>> {
     let mut runs = Vec::new();
     for row in rows {
         let (conditions_json, measurements_json) = row?;
-        let conditions = object(serde_json::from_str(&conditions_json)?)?;
-        let measurements = object(serde_json::from_str(&measurements_json)?)?;
-        check_version(&conditions)?;
-        check_version(&measurements)?;
-        let mut all = Map::new();
-        all.extend(conditions);
-        all.extend(measurements);
-        runs.push(serde_json::from_value(Value::Object(all))?);
+        match rebuild_run(&conditions_json, &measurements_json) {
+            Ok(run) => runs.push(run),
+            Err(failure) => skipped_row("run", &failure),
+        }
     }
     Ok(runs)
+}
+
+fn rebuild_run(conditions_json: &str, measurements_json: &str) -> NativeResult<RunSummary> {
+    let conditions = object(serde_json::from_str(conditions_json)?)?;
+    let measurements = object(serde_json::from_str(measurements_json)?)?;
+    check_version(&conditions)?;
+    check_version(&measurements)?;
+    let mut all = Map::new();
+    all.extend(conditions);
+    all.extend(measurements);
+    Ok(serde_json::from_value(Value::Object(all))?)
+}
+
+fn skipped_row(kind: &str, failure: &FolioError) {
+    eprintln!(
+        "Model Lab left out a stored {kind} this version can't read: {}",
+        failure.message
+    );
 }
 
 pub struct ReviewInput {
@@ -528,12 +551,52 @@ mod tests {
         let mut conn = database(dir.path());
         insert_record(&mut conn, &sample("rec-1", 2_000)).unwrap();
         edit_measurements(&conn, |value| value["schemaVersion"] = json!(2));
-        let failure = list_records(&conn, &RecordFilter::default()).unwrap_err();
+        insert_record(&mut conn, &sample("rec-2", 3_000)).unwrap();
+
+        // The row is left out of the list, never guessed at, and the rest
+        // still list.
+        let listed = list_records(&conn, &RecordFilter::default()).unwrap();
+        let ids: Vec<&str> = listed.iter().map(|record| record.id.as_str()).collect();
+        assert_eq!(ids, ["rec-2"]);
+
+        // Reading that row itself is refused.
+        let failure = record_review(
+            &mut conn,
+            "rec-1",
+            "sha256:unused",
+            ReviewInput {
+                status: ReviewStatus::Correct,
+                reviewer: "TJ".into(),
+                notes: None,
+            },
+            5_000,
+        )
+        .unwrap_err();
         assert_eq!(failure.code, ErrorCode::Internal);
         assert_eq!(
             failure.detail("reportedCode"),
             Some("benchmarkSchemaVersion")
         );
+    }
+
+    #[test]
+    fn a_run_this_version_cannot_read_does_not_stop_the_others() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut conn = database(dir.path());
+        upsert_run(&mut conn, &run(RunStatus::Running)).unwrap();
+        // A run row from a newer Folio, written after a downgrade.
+        conn.execute(
+            "UPDATE benchmark_results SET measurements_json = json_set(measurements_json, '$.schemaVersion', 2)",
+            [],
+        )
+        .unwrap();
+        let mut current = run(RunStatus::Running);
+        current.run_id = "run-2".into();
+        upsert_run(&mut conn, &current).unwrap();
+
+        assert_eq!(list_runs(&conn).unwrap().len(), 1);
+        // Marking interrupted runs, which a new run does first, still works.
+        assert_eq!(fail_interrupted_runs(&mut conn, 9_000).unwrap(), 1);
     }
 
     #[test]
