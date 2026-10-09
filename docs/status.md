@@ -110,7 +110,7 @@ generation. No lock is held across discovery compute.
   `PATH=$HOME/.cargo/bin:$PATH` (rustc 1.96.1): Folio 272 passed/2 ignored,
   folio-core 195 passed/2 ignored, loopback 1 passed; real-model suites ignored.
   Baseline before this work: 234 / 176 / 1.
-- `npm run check`, `npm test` (47 files passed, 1 skipped; 441 passed, 9 todo;
+- `npm run check`, `npm test` (47 files passed, 1 skipped; 442 passed, 9 todo;
   baseline 414), `npm run build`, `npx prettier --check .` and `git diff --check`
   passed.
 - The default `/usr/bin/cargo` (1.75) cannot read this lockfile; use the rustup
