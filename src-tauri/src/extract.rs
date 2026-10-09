@@ -4,6 +4,9 @@ use crate::db::NativeResult;
 use crate::error::{error, ErrorCode};
 use crate::identity::media_type_for_path;
 
+/// Bump when extraction changes in a way that could read a previously failing file, so
+/// documents that failed under an older version are retried at once (ADR 0009).
+pub const EXTRACTOR_VERSION: u32 = 1;
 pub const MAX_TEXT_BYTES: u64 = 2 * 1024 * 1024;
 pub const MAX_PDF_BYTES: u64 = 20 * 1024 * 1024;
 /// Bounds every decompressed PDF stream: object and cross-reference streams while

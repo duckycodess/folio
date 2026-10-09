@@ -24,7 +24,7 @@
 - SQLite in the OS app-data directory (`folio.sqlite`), migrated through `PRAGMA user_version`; WAL mode, so scans run on their own connection.
 - Folders chosen in the native picker are remembered and can be reopened by id; reopening is refused when the folder is gone, unreadable or resolves elsewhere (ADR 0007).
 - Incremental scan of TXT, Markdown and text-based PDFs (per page, via `lopdf`). Size+mtime, then SHA-256, decide whether a file is re-read. Hidden folders, `node_modules` and symlinks are skipped. Progress events, cancellation between files, batches of 50.
-- Scanned/image-only PDFs are `unsupported`; unreadable new files are `failed`; a changed file that cannot be re-read keeps its previous chunks and is marked `stale`. `stale` and `failed` documents are re-read on every scan, so a file that was locked, offline or briefly unreadable recovers once it can be read.
+- Scanned/image-only PDFs are `unsupported`; unreadable new files are `failed`; a changed file that cannot be re-read keeps its previous chunks and is marked `stale`. `stale` and `failed` documents are re-read even when their size and time match, so a file that was locked, offline or briefly unreadable recovers once it can be read. Documents that keep failing the same way back off (issue #28, ADR 0009). After two free retries, Folio waits 10 minutes, then 20, 40 and so on, up to 6 hours. It retries sooner when the file's change signature changes (size, modification time, plus change time and mode on Unix or attributes on Windows), when the extractor version changes, or when the user asks: the `recheckUnreadable` scan option, or `recheck_documents` for "Check again". A deferred document is still counted in `failed` or `stale`, and also in the scan summary's `deferred`. Its `retryAfterMs` says when Folio will next read it. Status messages say Folio will check again later, and read errors are worded for people; the operating system's text stays in `details.cause`. No UI calls the re-check yet.
 - A folder or file that cannot be read during a scan is not treated as deleted: records at or below it keep their data and status. Only files that are really gone are removed.
 - Each batch reads, hashes and extracts its files before opening the write transaction, so other writes (remembering a folder, storing vectors) are not blocked behind PDF extraction.
 - PDF object, cross-reference and page streams are each bounded at 16 MiB of decompressed data while loading and extracting, so a decompression bomb is dropped rather than allocated. A page whose text cannot be extracted is skipped and named in the document's status message; a PDF whose pages all fail is `failed`, not reported as a scan.
@@ -56,6 +56,39 @@ Provider cases are listed as pending, not mocked, in `src/domain/pending.test.ts
 No AI or save completion should be presented until the corresponding native/provider implementation succeeds. Model sizes, installed size, memory targets, and platform support remain subject to measurements.
 
 ## Verification
+
+### Retry backoff for unreadable documents (2026-10-09, issue #28)
+
+Checked on Linux (x86-64 VM, 8 vCPUs, 7 GiB RAM) with Rust 1.99.0 and Node.js 24.15.0. This host has no WebKit/GTK development libraries, so the Tauri crate can't be built here. The native suites ran in a scratch crate that compiles every module in `src-tauri/src` except `lib.rs` (the Tauri command glue), with the same dependency versions from `Cargo.lock`:
+
+- Native tests: 129 passed, 5 ignored on this branch, and 155 passed, 2 ignored after merging `main` with #12 (its writer, Ripple and Organize suites included; the migration is now `004_retry_backoff.sql`). This includes the two #11 retry tests unchanged, plus new tests for:
+  - corrupt PDFs that are no longer re-extracted from the fourth scan, while still counted as `failed`;
+  - a file fixed without a visible change, which recovers once the 10-minute wait ends;
+  - a read-only toggle that retries at once;
+  - an extractor-version change that retries at once;
+  - the scan flag and `recheck_documents`, including refused unknown and other-folder ids;
+  - the backoff schedule and its 6-hour cap;
+  - the count restarting when the file changes;
+  - a clock that went back;
+  - a successful read clearing the retry state;
+  - a deferred stale document that stays searchable.
+- `lib.rs`, including the new `recheck_documents` command and the `recheckUnreadable` argument, was not compiled on this host; CI's Windows and macOS jobs build it. The Windows attribute signature is likewise built and tested only there.
+- `npm run format:check`, `npm run check`, `npm test` (104 passed, 9 todo, after merging `main` with #12 and #17) and `npm run build`: passed.
+
+Rescan time (`measure_rescan_with_corrupt_pdfs`, ignored in CI). Each folder is the 16 fixture documents plus 30 PDFs that always fail, and each figure is the mean of 5 rescans after the first three failures. "Every scan" is the old behaviour, forced with `recheckUnreadable`.
+
+| 30 failing PDFs                              | Build   | Every scan | With backoff |
+| -------------------------------------------- | ------- | ---------- | ------------ |
+| `%PDF-1.4` + 1 MiB of garbage                | release | 356 ms     | 0.9 ms       |
+| `%PDF-1.4` + 1 MiB of garbage                | debug   | 3.3 s      | 2.9 ms       |
+| One page that inflates past the 16 MiB limit | release | 260 ms     | 0.9 ms       |
+| One page that inflates past the 16 MiB limit | debug   | 5.5 s      | 2.9 ms       |
+
+These are single runs on one VM with a warm file cache, not Windows or macOS figures. Full-folder indexing time and database size remain unmeasured.
+
+After TJ's review of PR #30: "Check again" (and a refresh after a Folio write) now removes a record only when its path is really absent. A file inside a folder that can't be read right now (permissions, an offline cloud or network folder), or whose metadata can't be read, keeps its record and index data, is recorded as a read failure (`stale` if it was indexed) and backs off like any unreadable file. One such file no longer aborts the rest of the re-check. TJ's repro passes on Linux (157 passed, 2 ignored with `main` and #12 merged), along with a test that a deleted file is still removed. [CI run 37949475975](https://github.com/duckycodess/folio/actions/runs/37949475975), before this fix, passed on Windows (146 passed, 2 ignored) and macOS (154 passed, 2 ignored).
+
+Developer note: if you ran this branch before the migration was renumbered to `004_retry_backoff.sql`, your index records the retry columns as version 3 and will fail to open with "duplicate column name: retry_failures". Delete `folio.sqlite` (and its `-wal`/`-shm` files) in Folio's app-data folder; the next scan rebuilds it. Nothing has shipped, so no user database is affected.
 
 ### File table and reader (2026-10-09, issue #17)
 
