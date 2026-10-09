@@ -208,6 +208,12 @@ pub fn resolve_model_intent(
     };
     let Some(target) = resolve_target(target_description, documents, contents, chunks) else {
         let candidates = candidate_results(target_description, documents, chunks);
+        if candidates.is_empty() {
+            return clarification(
+                "Which file should I use?".into(),
+                "No authorized file matched the target description.",
+            );
+        }
         return InterpretationResult::NeedsFileSelection {
             candidates,
             pending_intent: serde_json::to_string(intent).unwrap_or_else(|_| "{}".into()),
@@ -685,6 +691,33 @@ mod tests {
         assert!(
             matches!(result, InterpretationResult::NeedsFileSelection { candidates, .. } if candidates.len() == 2)
         );
+    }
+
+    #[test]
+    fn unmatched_target_requests_clarification_instead_of_empty_selection() {
+        let (record, chunks) = document(
+            "projects/project-plan.md",
+            "project-plan.md",
+            "The deadline is October 20.",
+        );
+        let mut model_intent = intent(IntentKind::Edit);
+        model_intent.target_description = Some("missing budget archive".into());
+        model_intent.find = Some("October 20".into());
+        model_intent.replace = Some("October 23".into());
+
+        let result = resolve_model_intent(
+            &model_intent,
+            Language::En,
+            &[record],
+            &HashMap::new(),
+            &chunks,
+        );
+
+        assert!(matches!(
+            result,
+            InterpretationResult::NeedsClarification { reason, .. }
+                if reason.contains("No authorized file matched")
+        ));
     }
 
     #[test]
