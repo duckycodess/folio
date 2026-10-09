@@ -102,7 +102,7 @@ fn embedding_provider() -> OrtE5Provider {
         folio_core::embeddings::DEFAULT_BATCH_SIZE,
         2,
     )
-    .expect("local multilingual E5 provider loads");
+    .expect("local multilingual E5 provider loads")
 }
 
 fn generation_provider() -> LlamaServerProvider {
@@ -143,7 +143,7 @@ fn generation_provider() -> LlamaServerProvider {
         },
         2,
     )
-    .expect("local llama provider loads");
+    .expect("local llama provider loads")
 }
 
 fn search_fixture(
