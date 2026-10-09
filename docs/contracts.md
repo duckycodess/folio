@@ -245,7 +245,8 @@ example with placeholder values, not a measurement.
   `cold: false` is the immediate repeat on the same process. Startup time is
   `timing.processStartMs`, outside `taskDurationMs`. The operating system's
   file cache is not controlled (`conditions.pageCache: "notControlled"`).
-  `serverSettings` records the startup warmup and prompt-cache settings used.
+  `serverSettings` records the llama-server startup warmup and prompt-cache
+  settings used; it is `null` for retrieval rows, which run in-process.
   One pair per case is an initial observation, not a stable estimate.
 - **Memory.** Each `memory` entry names its process and states what span the
   peak covers (`scope`) and how it was read (`method`). A process-lifetime peak

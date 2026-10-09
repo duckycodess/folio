@@ -237,8 +237,8 @@ function isBenchmarkRecord(value: unknown): value is BenchmarkRecord {
     ["firstRequestAfterServerRestart", "immediateRepeat"].some(
       (position) => position === timing.requestPosition,
     ) &&
-    isRecord(settings) &&
-    typeof settings.cachePrompt === "boolean" &&
+    (settings === null ||
+      (isRecord(settings) && typeof settings.cachePrompt === "boolean")) &&
     isRecord(conditions) &&
     conditions.pageCache === "notControlled" &&
     Array.isArray(value.memory) &&
@@ -310,6 +310,16 @@ describe("Model Lab record contract (issue #8)", () => {
       memory: [{ ...benchmarkRecord.memory[0], unavailableReason: undefined }],
     };
     expect(isBenchmarkRecord(withoutReason)).toBe(false);
+  });
+
+  it("allows an in-process retrieval row to have no server settings", () => {
+    const retrieval = {
+      ...benchmarkRecord,
+      task: "retrieval",
+      serverSettings: null,
+      timing: { ...benchmarkRecord.timing, processStartMs: null },
+    };
+    expect(isBenchmarkRecord(retrieval)).toBe(true);
   });
 
   it("rejects a record that claims to be controlled or applied", () => {

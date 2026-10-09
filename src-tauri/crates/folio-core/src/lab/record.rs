@@ -271,7 +271,8 @@ pub struct BenchmarkRecord {
     pub host: HostInfo,
     pub conditions: Conditions,
     pub timing: Timing,
-    pub server_settings: ServerSettings,
+    /// None for retrieval rows, which run in-process with no server.
+    pub server_settings: Option<ServerSettings>,
     pub observation: Observation,
     pub memory: Vec<MemoryEntry>,
     pub model_file_bytes: u64,
@@ -380,6 +381,18 @@ mod tests {
         record.validate().expect("golden record is valid");
         let original: Value = serde_json::from_str(GOLDEN).unwrap();
         assert_eq!(serde_json::to_value(&record).unwrap(), original);
+    }
+
+    #[test]
+    fn an_in_process_retrieval_row_has_no_server_settings_or_start_time() {
+        let mut value: Value = serde_json::from_str(GOLDEN).unwrap();
+        value["task"] = Value::from("retrieval");
+        value["serverSettings"] = Value::Null;
+        value["timing"]["processStartMs"] = Value::Null;
+        let record: BenchmarkRecord = serde_json::from_value(value.clone()).unwrap();
+        record.validate().unwrap();
+        assert_eq!(record.server_settings, None);
+        assert_eq!(serde_json::to_value(&record).unwrap(), value);
     }
 
     #[test]

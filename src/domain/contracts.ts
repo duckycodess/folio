@@ -802,11 +802,14 @@ export interface BenchmarkRecord extends BenchmarkResult {
     requestsSinceProcessStart: number;
     requestPosition: "firstRequestAfterServerRestart" | "immediateRepeat";
   };
-  /** The values actually used, not the defaults assumed. */
+  /**
+   * The llama-server values actually used, not the defaults assumed. Null for
+   * retrieval rows, which run in-process with no server.
+   */
   serverSettings: {
     startupWarmup: "default-on" | "disabled";
     cachePrompt: boolean;
-  };
+  } | null;
   observation: "single cold/repeat pair; initial observation, not a stable performance estimate";
   memory: BenchmarkMemory[];
   /** Equals `modelDiskBytes`: the model's own files, never installed size. */
