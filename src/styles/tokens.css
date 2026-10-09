@@ -37,6 +37,13 @@
   --file-markdown-bg: #20231f;
   --file-markdown-fg: #ffffff;
 
+  /* Graph lines and node rims reuse text colours; AI lines have their own
+     non-gold hue. Each is ≥3:1 on the map (docs/design.md). Line style and
+     labels carry the meaning. */
+  --graph-edge: var(--color-text-secondary);
+  --graph-edge-ai: #5b5bd6;
+  --graph-node-rim: var(--color-text-secondary);
+
   /* Olio sits directly on light surfaces; dark themes give it a disc. */
   --olio-backdrop: transparent;
   --olio-scale: 1;
@@ -98,6 +105,7 @@
     --olio-scale: 0.86;
     --file-markdown-bg: #e6e3da;
     --file-markdown-fg: #20231f;
+    --graph-edge-ai: #9b8afb;
     --shadow-float: 0 8px 24px rgb(0 0 0 / 0.5);
     color-scheme: dark;
   }
@@ -125,6 +133,7 @@
   --olio-scale: 0.86;
   --file-markdown-bg: #e6e3da;
   --file-markdown-fg: #20231f;
+  --graph-edge-ai: #9b8afb;
   --shadow-float: 0 8px 24px rgb(0 0 0 / 0.5);
   color-scheme: dark;
 }
