@@ -9,7 +9,7 @@ Read `GLOSSARY.md`, `docs/product.md`, `docs/workflows.md`, `docs/architecture.m
 - Target Windows and macOS, 8 GB RAM without a dedicated GPU, and an under-1-GB default app/model installation. These are unmeasured targets, not completed achievements.
 - Core operations work offline after setup. MCP and hosted Jev are optional adapters, not dependencies of the offline path.
 - Keep original files in user-selected folders. Virtual collections do not move or duplicate documents. Physical changes require an exact preview and approval.
-- Scope content edits to TXT/Markdown; text-based PDFs are read/index-only. Impact analysis flags related passages for review and does not silently update related documents.
+- Scope content edits to TXT/Markdown; text-based PDFs are read/index-only for content, and can be renamed or moved (ADR 0016). Impact analysis flags related passages for review and does not silently update related documents.
 - Sync means refreshing Folio's local index and graph. Cloud or cross-device synchronization is outside this MVP.
 
 ## Code boundaries

@@ -1586,6 +1586,35 @@ mod tests {
     }
 
     #[test]
+    fn a_pdf_can_be_renamed_and_the_rename_undone_with_its_bytes_untouched() {
+        let (folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let pdf = "research/consent-form-guide.pdf";
+        let renamed = "research/pahintulot-guide.pdf";
+        let original = fs::read(folder.path().join(pdf)).unwrap();
+        let operation = relocate(&conn, &root, pdf, renamed, true);
+        let report = apply_with(&mut conn, &root, vec![operation], &RealFileSystem);
+        assert_eq!(statuses(&report), vec![OperationStatus::Succeeded]);
+        assert!(!folder.path().join(pdf).exists());
+        assert_eq!(fs::read(folder.path().join(renamed)).unwrap(), original);
+        let rescan = scan(&mut conn, &root);
+        assert_eq!(rescan.added + rescan.updated + rescan.removed, 0, "the index already followed the rename");
+        undo_all(&mut conn, &root, &report.batch.plan_id, &RealFileSystem).unwrap();
+        assert_eq!(fs::read(folder.path().join(pdf)).unwrap(), original);
+        assert!(!folder.path().join(renamed).exists());
+    }
+
+    #[test]
+    fn a_rename_cannot_change_a_pdf_into_another_type() {
+        let (_folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let operation = relocate(&conn, &root, "research/consent-form-guide.pdf", "research/consent-form-guide.md", true);
+        let mut registry = PlanRegistry::new();
+        let plan = registry.prepare(&root.id, PlanSource::Organize, vec![operation], Vec::new(), NOW, LIFETIME).unwrap();
+        assert_eq!(plan::preflight_plan(&root.path, &plan, NOW + 1).unwrap_err().code, ErrorCode::OperationUnsupported);
+    }
+
+    #[test]
     fn a_pdf_is_never_deleted() {
         let (folder, mut conn, root) = fixture_workspace();
         scan(&mut conn, &root);

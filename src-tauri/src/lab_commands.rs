@@ -276,6 +276,7 @@ fn begin_lab_exclusive(
     }
     let cancel = Arc::new(AtomicBool::new(false));
     guard.active_cancel = Some(cancel.clone());
+    guard.holder = Some(crate::GenerationHolder::ModelLab);
     *lab = Some(cancel.clone());
     Ok(cancel)
 }

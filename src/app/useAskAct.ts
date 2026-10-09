@@ -83,6 +83,8 @@ export interface AskActController {
   /** Summarizes the chosen file of an earlier turn. */
   chooseForSummary: (turnId: number, document: DocumentRecord) => void;
   cancel: () => void;
+  /** Stops whatever holds the local model (a summary, Model Lab, …). */
+  stopRunning: () => Promise<void>;
   clear: () => void;
   /** The conversation currently open. Both Ask & Act and the floating chat
    * read and write this same id: there is no copy to keep in sync. */
@@ -315,6 +317,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
       });
     },
     cancel: () => void cancelGeneration().catch(() => undefined),
+    stopRunning: () => cancelGeneration().catch(() => undefined),
     clear: () => conversation && clearTurnsIn(conversation.id),
     conversationId: conversation?.id ?? null,
     history: conversationsForFolder(snapshot, folderId)

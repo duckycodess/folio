@@ -152,7 +152,12 @@ export function TurnBody({
     return (
       <RecoveryNotice
         error={turn.error}
-        actions={{ retry: onRetry, openModelLab: () => onNavigate("modelLab") }}
+        actions={{
+          retry: onRetry,
+          // The native core waits briefly for the stopped work to finish.
+          stopAndRetry: () => void ask.stopRunning().then(onRetry),
+          openModelLab: () => onNavigate("modelLab"),
+        }}
       />
     );
 
