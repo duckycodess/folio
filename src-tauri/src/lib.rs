@@ -915,30 +915,32 @@ async fn interpret_request(
     })
 }
 
+fn unload_generation_now(generation_state: &GenerationState) -> Result<(), NativeProviderError> {
+    let mut guard = generation_state.lock().map_err(|_| NativeProviderError {
+        code: folio_core::contracts::ProviderErrorCode::IoError,
+        message: "The local generation state is unavailable.".into(),
+        detail: None,
+    })?;
+    if let Some(cancel) = guard.active_cancel.take() {
+        cancel.store(true, Ordering::Release);
+    }
+    if let Some(slot) = guard.slot.take() {
+        slot.provider.unload().map_err(native_error)?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn unload_generation(
     generation_state: State<'_, GenerationState>,
 ) -> Result<(), NativeProviderError> {
     let generation_state = generation_state.inner().clone();
-    run_blocking(move || {
-        let mut guard = generation_state.lock().map_err(|_| NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::IoError,
-            message: "The local generation state is unavailable.".into(),
-            detail: None,
-        })?;
-        if let Some(cancel) = guard.active_cancel.take() {
-            cancel.store(true, Ordering::Release);
-        }
-        if let Some(slot) = guard.slot.take() {
-            slot.provider.unload().map_err(native_error)?;
-        }
-        Ok(())
-    })
+    run_blocking(move || unload_generation_now(&generation_state)).await
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(Mutex::new(None::<ScopedRoot>)))
         .manage(Arc::new(Mutex::new(None::<IndexSnapshot>)))
@@ -965,6 +967,16 @@ pub fn run() {
             cancel_generation,
             unload_generation
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("Folio could not start");
+    app.run(|app_handle, event| {
+        if matches!(
+            event,
+            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+        ) {
+            if let Some(generation_state) = app_handle.try_state::<GenerationState>() {
+                let _ = unload_generation_now(generation_state.inner());
+            }
+        }
+    });
 }

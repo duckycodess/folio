@@ -9,7 +9,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use uuid::Uuid;
@@ -73,9 +73,12 @@ pub struct LlamaServerProvider {
     executable: PathBuf,
     model: VerifiedModelFile,
     threads: usize,
-    state: Mutex<ServerState>,
-    active: AtomicBool,
+    state: Arc<Mutex<ServerState>>,
+    active: Arc<AtomicBool>,
     client: Client,
+    idle_unload: Duration,
+    reaper_stop: Arc<AtomicBool>,
+    reaper: Option<thread::JoinHandle<()>>,
 }
 
 impl LlamaServerProvider {
@@ -83,6 +86,15 @@ impl LlamaServerProvider {
         executable: impl Into<PathBuf>,
         model: VerifiedModelFile,
         threads: usize,
+    ) -> CoreResult<Self> {
+        Self::from_verified_model_with_idle(executable, model, threads, IDLE_UNLOAD)
+    }
+
+    fn from_verified_model_with_idle(
+        executable: impl Into<PathBuf>,
+        model: VerifiedModelFile,
+        threads: usize,
+        idle_unload: Duration,
     ) -> CoreResult<Self> {
         let executable = executable.into();
         if !executable.is_file() {
@@ -102,13 +114,25 @@ impl LlamaServerProvider {
             .timeout(GENERATION_TIMEOUT)
             .build()
             .map_err(|error| CoreError::Message(format!("HTTP client setup failed: {error}")))?;
+        let state = Arc::new(Mutex::new(ServerState::default()));
+        let active = Arc::new(AtomicBool::new(false));
+        let reaper_stop = Arc::new(AtomicBool::new(false));
+        let reaper = Some(spawn_idle_reaper(
+            state.clone(),
+            active.clone(),
+            reaper_stop.clone(),
+            idle_unload,
+        ));
         Ok(Self {
             executable,
             model,
             threads: threads.max(1),
-            state: Mutex::new(ServerState::default()),
-            active: AtomicBool::new(false),
+            state,
+            active,
             client,
+            idle_unload,
+            reaper_stop,
+            reaper,
         })
     }
 
@@ -148,7 +172,7 @@ impl LlamaServerProvider {
         if let Some(running) = state.running.as_mut() {
             if running.child.try_wait().ok().flatten().is_some() {
                 state.running = None;
-            } else if running.last_used.elapsed() < IDLE_UNLOAD {
+            } else if running.last_used.elapsed() < self.idle_unload {
                 running.last_used = Instant::now();
                 return Ok((loopback_url(running.port)?, running.api_key.clone()));
             } else {
@@ -340,8 +364,44 @@ impl GenerationProvider for LlamaServerProvider {
 
 impl Drop for LlamaServerProvider {
     fn drop(&mut self) {
+        self.reaper_stop.store(true, Ordering::Release);
+        if let Some(reaper) = self.reaper.take() {
+            let _ = reaper.join();
+        }
         let _ = self.unload();
     }
+}
+
+fn spawn_idle_reaper(
+    state: Arc<Mutex<ServerState>>,
+    active: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+    idle_unload: Duration,
+) -> thread::JoinHandle<()> {
+    let interval = idle_unload
+        .min(Duration::from_millis(100))
+        .max(Duration::from_millis(10));
+    thread::spawn(move || {
+        while !stop.load(Ordering::Acquire) {
+            thread::sleep(interval);
+            if stop.load(Ordering::Acquire) || active.load(Ordering::Acquire) {
+                continue;
+            }
+            let Ok(mut guard) = state.lock() else {
+                break;
+            };
+            let expired = guard
+                .running
+                .as_ref()
+                .is_some_and(|running| running.last_used.elapsed() >= idle_unload);
+            if expired {
+                if let Some(mut running) = guard.running.take() {
+                    let _ = running.child.kill();
+                    let _ = running.child.wait();
+                }
+            }
+        }
+    })
 }
 
 struct ActiveGuard<'a>(&'a AtomicBool);
@@ -424,6 +484,58 @@ mod tests {
             true
         );
         assert!(parse_json_text("not json").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn idle_reaper_unloads_an_expired_server() {
+        use crate::contracts::{ModelDescriptor, ModelRole};
+        use crate::models::VerifiedModelFile;
+        use std::fs;
+        use std::process::Command;
+
+        let temp = tempfile::tempdir().unwrap();
+        let executable = temp.path().join("llama-server");
+        let model_path = temp.path().join("model.gguf");
+        fs::write(&executable, b"runtime").unwrap();
+        fs::write(&model_path, b"model").unwrap();
+        let provider = LlamaServerProvider::from_verified_model_with_idle(
+            &executable,
+            VerifiedModelFile {
+                descriptor: ModelDescriptor {
+                    id: "test-generation".into(),
+                    role: ModelRole::Generation,
+                    repo: "local/test".into(),
+                    revision: "test".into(),
+                    files: Vec::new(),
+                    quantization: "test".into(),
+                    license: "test".into(),
+                    runtime: "test".into(),
+                    optional_pack: false,
+                },
+                path: model_path,
+            },
+            1,
+            Duration::from_millis(20),
+        )
+        .unwrap();
+        let child = Command::new("sleep").arg("5").spawn().unwrap();
+        provider.state.lock().unwrap().running = Some(RunningServer {
+            child,
+            port: 1,
+            api_key: "test".into(),
+            last_used: Instant::now() - Duration::from_secs(1),
+        });
+
+        let mut unloaded = false;
+        for _ in 0..50 {
+            if provider.state.lock().unwrap().running.is_none() {
+                unloaded = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(unloaded, "idle server was not reaped");
     }
 
     #[test]
