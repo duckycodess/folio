@@ -11,6 +11,7 @@ import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { Olio } from "../ui/Olio";
+import { OlioSprite } from "../ui/OlioSprite";
 import { Panel } from "../ui/Panel";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
 import { TurnBody, type OpenFile } from "./AskTurns";
@@ -123,7 +124,7 @@ export function AssistantView({
   return (
     <div className="view">
       <header className="page-header page-header-compact ask-header">
-        <Olio pose="thinking" size={96} />
+        <OlioSprite state={ask.busy ? "thinking" : "idle"} size={130} />
         <div>
           <h1 className="page-title">Ask &amp; Act</h1>
           <p className="page-tagline">

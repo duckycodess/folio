@@ -175,6 +175,32 @@ Merge with `main` and second review follow-up (2026-10-10, Linux, Node.js 24):
 - `npm run check`, `npm test` (427 passed, 9 todo), `npm run build` and `npm run check:bundle` passed. Playwright: 31 passed. The 4 `viewports` axe failures (`.olio-chat-greeting` outside a landmark) fail the same way on `main` and come from the Olio chat, not Activity.
 - Native: `cargo test --no-run` and `cargo check --tests` compiled everything, but the tests couldn't run on this host. It's a QEMU virtual CPU without AVX, and the test binary stops with SIGILL before any test starts, as `main`'s build does. The new native tests still need CI's `desktop-check`. The Tauri app wasn't opened.
 
+## Opening a file from the list (issue #85)
+
+A single click on a row already opened the file (`ListRow`'s own doc comment said so), and the row's **⋯ → Open** action calls the same `workspace.selectDocument`, so neither was actually broken in isolation — a Playwright sweep of the browser preview confirmed click, ⋯ → Open (including switching between files and reopening the same file after closing it), and overlay/narrow mode all open the file correctly. What was genuinely missing: `ListRow` had no `onDoubleClick` at all, so a fast double click relied on two ordinary click events landing cleanly rather than any explicit double-click handling, and a stray native double-click side effect (text selection) could show instead. Added an explicit `onDoubleClick` that calls the same `onSelect`, confirmed via Playwright it opens the file with no duplicated panel.
+
+The reported "open button not working" in the real desktop app could not be reproduced here: the browser preview's sample files never call the native `read_document` path at all (`selectDocument` short-circuits when `document.content` is already set), so a native-read-specific failure wouldn't show up in this harness. If it recurs, check `workspace.failure`/`RecoveryNotice` for a surfaced error first — the native read path does propagate failures there.
+
+`npm run check`, `npm test` (427 passed, 9 todo) and `npm run build` passed. The Tauri app wasn't opened against a real folder for this change.
+
+## Choosing a workspace folder could freeze the window (issue #86)
+
+Root cause: `choose_workspace` (`src-tauri/src/lib.rs`) called `app.dialog().file().blocking_pick_folder()` directly inside its `async fn` body, instead of going through the file's own `blocking()` helper (`tauri::async_runtime::spawn_blocking`, already used by `read_document` and `list_workspaces` for exactly this reason). `blocking_pick_folder` blocks its calling thread until the dialog closes; called unwrapped, that thread was one of the async runtime's own worker threads, so every other pending async command — including the IPC responses `workspace.busy`/`workspace.failure` depend on — queued behind it. A second folder pick (reselecting a different folder, as in onboarding step 2) made the odds of hitting a busy worker much worse, which fits "can't back or continue": `workspace.selectFolder`'s `busy` flag only clears in a `finally` once its matching IPC call actually returns, and the onboarding Back/Continue buttons are gated on their own `downloading`/`workspace.source` checks that read state the stuck call never got to update.
+
+Fix: wrapped the same `blocking_pick_folder()` call in the existing `blocking()` helper, so it runs on a dedicated blocking thread and leaves the async worker pool free. The "Change folder" control on Home (`src/views/WorkspaceSource.tsx`) already existed and was already reachable outside onboarding — it just inherited the same freeze whenever it called `selectFolder`, so no separate UI work was needed there once the native command was fixed.
+
+`cargo check`, `cargo fmt --check` (437 pre-existing diffs elsewhere in the crate, unrelated to this change and unchanged by it — not touched) and `cargo test --lib` (240 passed, 2 ignored, 0 failed) ran clean on real macOS hardware. The actual freeze under load (a real folder, a second pick, a local model running) was not reproduced live — the root cause was found by code inspection, matching this file's own established `blocking()` convention, not by catching it mid-freeze.
+
+## A chosen file was ignored when asking a question (issue #88)
+
+Investigating #88 found the disambiguation half of the report was already correct, not broken: `chooseFile` (`src/app/askAct.ts`) already fires for `summarize` (an ambiguous target) and for a `change`/edit request (the native `needsFileSelection` status) — a plain conversational question deliberately never asks "which file", because `answer_question` answers from retrieval across the whole folder, which is the right behavior for open-ended questions.
+
+What was actually broken: the floating chat's "Attach {file}" chip (`FloatingOlioChat.tsx`) passes the attached file as `ask.ask(text, attached)`, and `useAskAct.ts`'s `interpret()` already receives it as `chosen` — but for a `question`-intent request it called `answerQuestion(folder, request)` without ever passing `chosen?.id` through, even though the adapter (`src/adapters/ai.ts`) and the native `answer_question` command both already accept an optional `documentId` to scope retrieval to one file (confirmed in `search_snapshot`, `src-tauri/src/lib.rs`: `document_id.is_none_or(|id| result.document.id == id)`, a no-op filter when `None`, so this is a strictly additive fix). So attaching a file to a question silently did nothing: retrieval stayed folder-wide, that file's own passages competed with and could be outranked by every other file's, and the answer could look like it never read the attached file at all — which plausibly explains both "the ai model cannot read the contents of the file" and "the ai model is kinda wrong" for a question asked about one attached file.
+
+Fixed by passing `chosen?.id` through. Not fixed and not claimed as fixed: whether whole-folder retrieval (the common case, no attached file) surfaces good passages for a small real folder, and whether the 0.6B interpretation step reliably classifies requests at all — both need a real folder and a real model to measure, which is what #77 (verify Model Lab records on the first real run) is for. Calling either of those "fixed" here without that measurement would be the kind of claim `AGENTS.md` says not to make.
+
+`npm run check`, `npm test` (427 passed, 9 todo) and `npm run build` passed. Not verified live: the browser preview's practice-reply path never calls the real `answerQuestion`, so this specific fix couldn't be exercised with Playwright here — it needs a real folder, an attached file, and a real model in the desktop app.
+
 ## Virtual collections (issue #78)
 
 Gab took #78 over from Dann ([ADR 0015](adr/0015-virtual-collections-kept-natively-without-a-plan.md)). This first slice covers suggested and kept collections; model-written filenames and destination suggestions are follow-up PRs.
@@ -278,6 +304,12 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 8-GB measurement is claimed here.
 
 ## Verification
+
+### Sidebar local AI status (2026-10-10, issue #89)
+
+The sidebar's status pill was hard-coded to "Local AI not set up". It now reads the model store through `useModels()`, using the same `localAiStatus()` as the floating chat and Model Lab, so the three always agree. It says "Local AI ready" (green dot) only when the selected writing model is installed, and "Checking local AI…" while that model is still being verified rather than "not set up". It also says "Local AI status unavailable" (red dot) when the check fails, and "Local AI needs the desktop app" in the browser preview. Clicking it still opens Model Lab. The shell reads the model store once and passes the label to the floating chat, so the installed models are verified once instead of once per consumer. Selecting or removing a model in Model Lab now refreshes the other readers too.
+
+Tested: `npm run check`, `npm test` (428 passed, including a new case for "checking" while the selected model is verified) and `npm run build`. The desktop app launched on macOS with the models installed, but the pill's text in the window was not captured, so the "ready" state in the real app is not verified by this entry.
 
 ### Embedding store fill (2026-10-10, issue #27)
 
@@ -1309,3 +1341,15 @@ Verified locally on Linux/WSL2 with Node 24.15.0 and locked Tauri CLI 2.12.1: th
 Current model weights/tokenizer from the manifest total 532,096,387 bytes for E5 plus Qwen 0.6B Q4_K_M, excluding the app and runtime. These declared file sizes do not establish an installed footprint or an accepted default model. No pinned candidate has passed every historically recorded provider acceptance phase. Model Lab setup controls are implemented, but first-run setup in a packaged app and the accepted model choice remain release prerequisites.
 
 Issue #10 remains open. Its final #9 native integration dependency is retained; the separate fake-core UI tests do not prove native/offline release readiness.
+
+### Plain "find a file" misclassified as edit (2026-10-10, issue #88)
+
+Reported against the real desktop app with a real local model (qwen3-0.6b-q4-k-m): a plain request naming an unambiguous file, with nothing to change, was returned as a mutation (`edit`/`rename`/`move`) with no `targetDescription`, landing on `interpretation.rs`'s generic "Which file should I use?" clarification instead of running the search. Traced in `src-tauri/crates/folio-core/src/interpretation.rs:resolve_model_intent`: that exact message has exactly two call sites, both only reachable once the model has already classified the request as a mutation — so this is a classification bug, not a target-resolution bug. The resolver itself (`resolve_target`, `normalize_stem`) already matches a bare filename like `class-schedule.md` correctly when given it.
+
+Likely cause: `build_interpretation_messages`'s few-shot examples were all mutations (rename, two edits, create, delete) — zero examples showed a `search`, `summarize` or `question` intent — and the system prompt's `edit` definition said it applies "even if they also ask to find or open that file first," with no example distinguishing a _pure_ find request. A small model pattern-matching against five mutation examples and no search example is a plausible explanation for defaulting to `edit`.
+
+**Fix:** the prompt now has worked examples for `search` (including a request shaped exactly like the report: `Find class-schedule.md.`), `question` and `summarize`, and the `edit` definition now explicitly excludes "merely finding, opening, locating, showing or asking about" a file.
+
+**Verified:** `cargo test --manifest-path src-tauri/Cargo.toml` — 240 passed, 0 failed, 2 ignored (unrelated to this change). New tests added and passing: `interpretation_prompt_demonstrates_search_not_only_mutations` and `search_intent_never_asks_which_file` guard the fix; `edit_without_target_description_asks_which_file_not_silently` documents that the clarification dead-end is still correct once a mutation genuinely has no target, which this fix does not and should not change.
+
+**Not verified:** whether this prompt change actually changes qwen3-0.6b-q4-k-m's real output for the reported request. A matching real-model test, `issue_88_plain_find_request_is_search_not_clarification`, was added next to the existing `r8_interpretation_ambiguity` acceptance test, but like its siblings it's `#[ignore]`d — this sandbox has no verified local E5/llama.cpp model files to run it against. Someone with those files needs to run `cargo test --manifest-path src-tauri/Cargo.toml -p folio-core --test real_acceptance -- --ignored issue_88_plain_find_request_is_search_not_clarification` and confirm it passes before this is considered closed. Issue #88's second hypothesis (whether a file's actual text reaches the model during generation, for `question`/`summarize` requests) was not investigated here; this fix only addresses the classification/clarification dead-end actually reported.

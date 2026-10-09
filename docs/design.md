@@ -1,10 +1,12 @@
 # Design system: Golden Daylight
 
-Folio's visual direction is **Golden Daylight**: white surfaces, a charcoal sidebar, gold reserved for primary actions and brand moments, Inter for all UI text, and **Olio** — a folder-shaped owl — as the mascot. This document turns the brandbook into rules for the replacement UI (#6, #16 and the tickets that build on it).
+Folio's visual direction is **Golden Daylight**: white surfaces, a charcoal sidebar, gold reserved for primary actions and brand moments, Manrope for headings with DM Sans for interface text, and **Olio** — a folder-shaped owl — as the mascot. This document turns the brandbook into rules for the replacement UI (#6, #16 and the tickets that build on it).
 
 ![Golden Daylight brandbook](assets/brandbook-golden-daylight.jpg)
 
 The brandbook is a direction, not a spec of shipped features. Its screens contain illustrative files and features; [Product truth](#product-truth-in-the-mockups) lists where the MVP must differ. Product rules in `AGENTS.md` and `docs/product.md` win over this document.
+
+A second, newer reference, the Folio brandkit (`docs/assets/Folio-Brandkit/`, not committed — ask the design owner), supplied the typography above and the floating chat's mascot animation (see [Assets](#assets)). Its interactive mockup also uses a few layout values this app does not: a 222px sidebar (this app's is 240px, sized for the adaptive layout in #67), a 68px fixed header (this app's topbar height follows its content), and an ivory `#FAF9F5` canvas (this app measures its contrast ratios against white — see [Contrast rules](#contrast-rules)). Reconciling those needs a real pass against the contrast table and the #67 breakpoint math, not a drive-by change, so they are intentionally left as-is for now.
 
 ## Principles
 
@@ -133,9 +135,9 @@ Define dark values under `@media (prefers-color-scheme: dark)` and a `data-theme
 
 ## Typography
 
-**Inter** for all UI text, bundled with the app (for example via `@fontsource/inter` or font files in `src/assets/fonts/`). Never load fonts from Google Fonts or another CDN — the app must work offline.
+**Manrope** for headings (`--text-display`, `--text-title`, `--text-heading`, the wordmark) and **DM Sans** for interface text (`--text-body`, `--text-label`, `--text-small`), per the Folio brandkit (`docs/assets/Folio-Brandkit/`). Both are bundled with the app via `@fontsource/manrope` and `@fontsource/dm-sans`. Never load fonts from Google Fonts or another CDN — the app must work offline; this differs from the brandkit's own interactive mockup, which is a disposable web demo and loads them remotely.
 
-The **folio wordmark** is a custom heavy rounded logotype, not Inter. Use it only as an SVG asset (`src/assets/brand/folio-wordmark.svg`, still to be exported — see [Assets](#assets)); do not try to recreate it with CSS.
+The **folio wordmark** is a custom heavy rounded logotype, not Manrope. Use it only as an SVG asset (`src/assets/brand/folio-wordmark.svg`, still to be exported — see [Assets](#assets)); do not try to recreate it with CSS.
 
 | Token             | Size / line height                   | Weight  | Use                                                  |
 | ----------------- | ------------------------------------ | ------- | ---------------------------------------------------- |
@@ -286,9 +288,11 @@ The twelve poses in the table below are cleaned and sliced into `src/assets/olio
 - Each pose is exported at 96, 192 and 320px: 2× of the 48, 96 and 160px display sizes. There is no separate 1× set, because the source poses are only about 300px and browsers downscale the 2× files well. Every file is under 100 KB.
 - Use them only through the `<Olio pose size>` component (`src/ui/Olio.tsx`). A test fails if a pose is missing at any size.
 
+**The animated loop** (floating chat, #66): `src/assets/olio/olio-animated.webp`, from the Folio brandkit's `olio-animated.webp` (2048×2048, ~300 frames, 60fps, five-second loop, 34.8 MB). Re-encoded at 320×320 (2× of the largest display size) with `ffmpeg`/`img2webp` (lossy, `-q 70 -m 6`) — same frame count and rate, transparency kept — down to 2.2 MB, since it only ever displays at up to 150px. Shown through `<OlioSprite state size>` (`src/ui/OlioSprite.tsx`) at 150px in the floating launcher, 64px in its chat header, and 130px in the Ask & Act header, per the brandkit. It is one continuous loop, not sliced into poses: `state="thinking"` layers a CSS breathing transform over the same loop rather than switching art. A CSS `animation` can't pause a WebP's own frame playback, so `prefers-reduced-motion` swaps the `<img>` to a static poster frame (`olio-animated-poster.png`) instead.
+
 **The app icon** (desktop window/dock/taskbar and the browser tab) is the brandkit's `folio-app-icon-1024.png`: Olio's face on the folder badge, on a charcoal square. `src-tauri/icons/` holds the generated set (`npx tauri icon docs/assets/Folio-Brandkit/assets/folio-app-icon-1024.png -o src-tauri/icons`, pruned to `icon.png`, `icon.ico` and `icon.icns` — this desktop-only app doesn't need the command's Android/iOS/Windows Store sizes) plus `source.png`, the 1024px original. `public/favicon.png` is a 64px export of the same art for the browser preview. It replaces the starter template's generic green "F" placeholder.
 
-Still to produce: **the wordmark.** Export the folio wordmark as `src/assets/brand/folio-wordmark.svg`, in a charcoal version for light surfaces and an ivory version for the sidebar. Until then the sidebar shows an interim Inter 800 wordmark.
+Still to produce: **the wordmark.** Export the folio wordmark as `src/assets/brand/folio-wordmark.svg`, in a charcoal version for light surfaces and an ivory version for the sidebar. Until then the sidebar shows an interim Manrope 800 wordmark.
 
 ### Poses and where they appear
 
