@@ -366,6 +366,7 @@ pub struct RunSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lab::sink::{LabSink, MemorySink};
 
     const GOLDEN: &str = include_str!("../../../../../fixtures/contracts/benchmark-record.json");
 
