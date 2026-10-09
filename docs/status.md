@@ -13,7 +13,7 @@
   - The summary runs in the background and can be cancelled. Only one runs at a time, and other files' tabs say so.
   - Each point has numbered citations that open the passage highlighted in Details. Uncited points are marked "(no source)" and counted.
   - The summary is labelled as a generated preview that's not saved or reviewed, with its model and revision. A partial summary says how much of the file it covered. "Not enough information" is shown instead of a summary, and a file that changed afterwards gets a warning.
-  - **Save as new document…** shows the exact Markdown first, then the native create plan, Approve, and the result with Undo. It never overwrites a file.
+  - **Save as new document…** shows the exact Markdown first, then the native create plan, Approve, and the result with Undo. It never overwrites a file. The dialog stays open while the change applies, Done closes it, and focus returns to the button that opened it.
   - Without a model, the shared recovery notice links to Model Lab. The browser preview says summaries need the desktop app, and sample files say a folder is needed.
   - Summaries are kept for the session (up to 20 files) in one store that Ask & Act can also write to. Ask & Act doesn't request summaries yet (#36).
 - Home as the file browser ([#42](https://github.com/duckycodess/folio/issues/42), [#43](https://github.com/duckycodess/folio/issues/43), ADR 0010). The Files tab is gone. Home lists every file, sorted by path, with a count. Each row has a keyboard-accessible ⋯ menu (Open, Rename…, Move to folder…, Show related), and the document panel has the same menu. Rename and Move use the exact preview, Approve and Undo flow from #22, in a dialog. The search field is only on Home, centred, and ⌘K / Ctrl K from any page opens Home and focuses it. Rows take an optional `renderDetail` slot for #19's search evidence. With the sample files, Rename and Move explain that a folder is needed. In practice mode (`?simulate=<code>`), they show the simulated refusal instead.
@@ -117,6 +117,7 @@ Checked on macOS with Node.js 26.10.0, on #48 with #15 (`FOLIO-4`) merged in:
   - nothing scrolls sideways at 700px.
 
 Not verified: a real model's summaries, which #15 still marks "Not reviewed"; cancellation against llama.cpp; Filipino and Taglish output; screen readers.
+
 ### Search evidence (2026-10-10, issue #19)
 
 Checked on macOS with Node.js 26.10.0:

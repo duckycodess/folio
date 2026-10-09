@@ -53,6 +53,8 @@ function SaveSummaryDialog({
   const organize = useOrganize(workspace, relations.refresh);
   const { state } = organize;
   const heading = useRef<HTMLHeadingElement>(null);
+  const previewButton = useRef<HTMLButtonElement>(null);
+  const left = useRef(false);
   const [path] = useState(() =>
     summaryPath(
       document.relativePath,
@@ -64,22 +66,37 @@ function SaveSummaryDialog({
   );
   const inPlan = state.stage === "preview" || state.stage === "applying";
 
+  // Each step takes focus: the heading of a preview or result, and the
+  // Preview button again after Back.
   useEffect(() => {
     if (state.stage === "preview" || state.stage === "result")
       heading.current?.focus();
+    else if (state.stage === "idle" && left.current)
+      previewButton.current?.focus();
+    if (state.stage === "preview") left.current = true;
   }, [state.stage]);
 
   return (
     <Modal
       open
       title="Save summary as a new document"
+      // The result and its Undo belong to this dialog, so it stays open
+      // until the change has been applied.
+      dismissible={state.stage !== "applying"}
       onClose={() => {
-        if (state.stage !== "applying") organize.done();
+        organize.done();
         onClose();
       }}
     >
       {state.stage === "result" ? (
-        <ResultStep organize={organize} heading={heading} />
+        <ResultStep
+          organize={organize}
+          heading={heading}
+          onDone={() => {
+            organize.done();
+            onClose();
+          }}
+        />
       ) : inPlan ? (
         <PreviewStep organize={organize} heading={heading} cancelLabel="Back" />
       ) : (
@@ -104,6 +121,7 @@ function SaveSummaryDialog({
           ) : (
             <div className="form-actions">
               <Button
+                ref={previewButton}
                 variant="primary"
                 onClick={() => organize.previewCreate(path, content)}
               >
@@ -135,6 +153,14 @@ function SummaryResult({
   onClear: () => void;
 }) {
   const [saving, setSaving] = useState(false);
+  const saveButton = useRef<HTMLButtonElement>(null);
+  const wasSaving = useRef(false);
+
+  // The dialog unmounts when it closes, so focus comes back here itself.
+  useEffect(() => {
+    if (wasSaving.current && !saving) saveButton.current?.focus();
+    wasSaving.current = saving;
+  }, [saving]);
   const stale = isStale(result, document);
   const covered = coveredPercent(result, document);
   const sources: string[] = [];
@@ -218,7 +244,11 @@ function SummaryResult({
         </p>
       )}
       <div className="form-actions">
-        <Button variant="primary" onClick={() => setSaving(true)}>
+        <Button
+          ref={saveButton}
+          variant="primary"
+          onClick={() => setSaving(true)}
+        >
           Save as new document…
         </Button>
         <Button onClick={onAgain}>Summarize again</Button>
