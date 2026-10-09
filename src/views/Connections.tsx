@@ -59,8 +59,12 @@ export function ConnectionEvidence({
               type="button"
               className="evidence-item"
               onClick={() => onOpen(passage)}
-              aria-label={`Show passage in ${where}: ${excerpt(passage.text)}`}
             >
+              {/* The spoken name has to contain the words on screen, or a
+                  voice-control user names a control the browser can't match.
+                  So the purpose is a hidden prefix to the visible text rather
+                  than an `aria-label` that replaces it. */}
+              <span className="visually-hidden">Show passage: </span>
               <Quote size={14} aria-hidden="true" />
               <span className="evidence-text">{excerpt(passage.text)}</span>
               <span className="evidence-where">
