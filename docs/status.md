@@ -120,7 +120,7 @@ Checked on the same Windows host after merging the frozen contract:
 
 Fixes for the review: edits keep permissions and refuse files Folio may not write, the apply setup is one transaction, an apply that changed files always returns its report (`historySettled`), renames and moves re-check their source, abandoned temporary files are cleaned up, apply and Undo run off the async workers, Filipino _may_ no longer matches "May 20", and the stale writer placeholder text in `plan.rs` is gone. New tests cover each of these, including TJ's two permission repros on Unix (`0600` kept through an edit and its Undo, and a `0444` file refused).
 
-These changes were written on a Linux host without a Rust toolchain or the Tauri system libraries, so `cargo test` was not run locally; the native suite is verified by the CI `desktop-check` jobs only. `npm run check`, `npm test` and `npm run build` were run locally.
+These changes were written on a Linux host without a Rust toolchain or the Tauri system libraries, so `cargo test` was not run locally. [Run 37947687958](https://github.com/duckycodess/folio/actions/runs/37947687958), for commit `8cd03f0`, passed all three jobs: frontend, `desktop-check (macos-latest)` with 144 native tests passed and 1 ignored (including both Unix permission tests), and `desktop-check (windows-latest)` with 136 passed and 1 ignored. Locally, `npm run check`, `npm test` (177 passed, 25 `todo`) and `npm run build` passed. The native suite was not run on Linux.
 
 Local inference, native packaging, and actual performance/size measurements remain unverified. Indexing time and database size have not been measured.
 
