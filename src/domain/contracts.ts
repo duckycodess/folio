@@ -593,6 +593,11 @@ export interface IndexedDocument extends DocumentRecord {
   status: IndexStatus;
   statusMessage?: string;
   indexedAtMs?: number;
+  /**
+   * For a `stale` or `failed` document: Local Sync will not read it again
+   * before this time unless the file changes or the user asks to check again.
+   */
+  retryAfterMs?: number;
 }
 
 /** A folder chosen in an earlier session; restoring it revalidates access. */
@@ -624,6 +629,11 @@ export interface ScanSummary {
   unsupported: number;
   failed: number;
   stale: number;
+  /**
+   * `failed` and `stale` documents not read again this scan because they
+   * failed the same way recently. Already counted in `failed` or `stale`.
+   */
+  deferred: number;
   /** Entries that could not be read or identified. */
   skipped: number;
   cancelled: boolean;
