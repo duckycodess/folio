@@ -364,7 +364,7 @@ After "Use <file>" on Ask & Act's "This could mean several files", a rename such
 
 - `interpret_request` now takes an optional `chosenDocumentId`, and `useAskAct` sends the chosen file's id with the request. A rename, move or edit targets that file, whatever the model calls it (`interpretation::resolve_model_intent_for_chosen`). The model still decides the intent, destination, find and replace.
 - The chosen id must be one of the folder's documents, or Folio asks again. Every other rule is unchanged: a rename keeps its folder and extension, a PDF stays read-only for edits, delete stays unsupported, and a proposal still needs the file's current hash. A chosen PDF is hashed even if its name shares no word with the request.
-- Fixed while verifying: main didn't compile. #87's `generate_in_run` called `acquire_generation` without the holder that #104 added. Organize suggestions now hold the slot as `organizeSuggestions` ("Folio is suggesting names and collections in Organize").
+- Fixed while verifying: main didn't compile. #87's `generate_in_run` called `acquire_generation` without the holder that #104 added. Organize suggestions now hold the slot as `organizeSuggestions` ("Folio is naming suggestions in Organize"), the same change as #116, so either can merge first.
 - Checked on macOS: `cargo test --manifest-path src-tauri/Cargo.toml --workspace` (all passed; new tests: chosen file with no model target, with an ambiguous or different model target, outside the folder, and with an unknown revision or an unsupported intent), `npm run check`, `npm test` (486 passed, 9 todo) and `npm run build`. Not checked in the desktop app with a real model.
 
 ## Virtual collections (issue #78)

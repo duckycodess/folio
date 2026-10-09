@@ -305,7 +305,7 @@ const BUSY_HOLDER: Record<string, string> = {
   interpretation: "Folio is reading another request",
   relationshipSummary: "Folio is summarizing connections in Graph",
   impactExplanation: "Folio is explaining a related file in a preview",
-  organizeSuggestions: "Folio is suggesting names and collections in Organize",
+  organizeSuggestions: "Folio is naming suggestions in Organize",
   modelLab: "Model Lab is measuring models",
 };
 

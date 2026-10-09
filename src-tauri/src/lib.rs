@@ -1533,6 +1533,7 @@ enum GenerationHolder {
     Interpretation,
     RelationshipSummary,
     ImpactExplanation,
+    /// Organize's suggested collection names and file names (#78).
     OrganizeSuggestions,
     ModelLab,
 }
@@ -1558,7 +1559,7 @@ impl GenerationHolder {
             Self::Interpretation => "Folio is reading another request.",
             Self::RelationshipSummary => "Folio is summarizing connections in Graph.",
             Self::ImpactExplanation => "Folio is explaining a related file in a preview.",
-            Self::OrganizeSuggestions => "Folio is suggesting names and collections in Organize.",
+            Self::OrganizeSuggestions => "Folio is naming suggestions in Organize.",
             Self::ModelLab => "Model Lab is measuring models.",
         }
     }
