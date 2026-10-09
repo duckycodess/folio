@@ -122,6 +122,7 @@ export function useRelationships(
     expected.current = null;
     setTrail([]);
     setReturnedTo(null);
+    setFocus(null);
   }, [selectedId]);
 
   function select(document: DocumentRecord) {
