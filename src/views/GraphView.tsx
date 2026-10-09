@@ -1,4 +1,10 @@
-import { ArrowLeftRight, ArrowRight, Waypoints } from "lucide-react";
+import {
+  ArrowLeftRight,
+  ArrowRight,
+  List,
+  Network,
+  Waypoints,
+} from "lucide-react";
 import {
   useDeferredValue,
   useEffect,
@@ -31,8 +37,13 @@ import {
   folderLocation,
   originalLocation,
 } from "./Connections";
+import { ConceptMap } from "./graph/ConceptMap";
 
 type StartKind = GraphStart["kind"];
+type GraphMode = "map" | "list";
+
+/** The last Map/List choice, kept while the app runs. */
+let rememberedMode: GraphMode = "map";
 
 const START_LABELS: Record<StartKind, string> = {
   all: "All files",
@@ -163,10 +174,11 @@ function scopeTitle(start: GraphStart, byId: Map<string, DocumentRecord>) {
 }
 
 /**
- * Relationships as a keyboard- and screen-reader-friendly list, starting from
- * every file, one file, a folder or a topic. Confirmed connections (links,
- * identical bytes) are kept apart from suggestions. A drawn graph would be an
- * extra view, never the only one.
+ * Relationships starting from every file, one file, a folder or a topic, as a
+ * concept map or as a keyboard- and screen-reader-friendly list. Both are
+ * drawn from the same pairs; the list is an equal alternative, never a
+ * fallback. In the list, confirmed connections (links, identical bytes) are
+ * kept apart from suggestions.
  */
 export function GraphView({
   workspace,
@@ -228,6 +240,11 @@ export function GraphView({
   const confirmed = pairs.filter((pair) => isConfirmed(pair.connection));
   const suggested = pairs.filter((pair) => !isConfirmed(pair.connection));
   const spread = folderSpread(pairs);
+  const [mode, setMode] = useState<GraphMode>(rememberedMode);
+  function choose(next: GraphMode) {
+    rememberedMode = next;
+    setMode(next);
+  }
 
   // Opening a file from the list in "A file" mode rebuilds the list, which
   // removes the button that had focus. Move focus to the new title so the
@@ -345,42 +362,72 @@ export function GraphView({
       >
         <CoverageNote relations={relations} />
         {pairs.length ? (
-          // Arrow keys move between files across both lists.
-          <div className="graph-lists" onKeyDown={moveBetweenFiles}>
-            {confirmed.length > 0 && (
-              <section aria-labelledby={`${ids}-confirmed`}>
-                <h3 id={`${ids}-confirmed`} className="graph-list-heading">
-                  Confirmed <Badge>{confirmed.length}</Badge>
-                </h3>
-                <p className="muted">
-                  Links written in the files and identical copies.
-                </p>
-                <PairList
-                  pairs={confirmed}
-                  workspace={workspace}
-                  relations={relations}
-                  onOpen={openFile}
-                />
-              </section>
+          <>
+            <div className="segmented" role="group" aria-label="Show as">
+              <button
+                type="button"
+                className="segmented-option"
+                aria-pressed={mode === "map"}
+                onClick={() => choose("map")}
+              >
+                <Network size={16} aria-hidden="true" />
+                Map
+              </button>
+              <button
+                type="button"
+                className="segmented-option"
+                aria-pressed={mode === "list"}
+                onClick={() => choose("list")}
+              >
+                <List size={16} aria-hidden="true" />
+                List
+              </button>
+            </div>
+            {mode === "map" ? (
+              <ConceptMap
+                workspace={workspace}
+                relations={relations}
+                pairs={pairs}
+              />
+            ) : (
+              // Arrow keys move between files across both lists.
+              <div className="graph-lists" onKeyDown={moveBetweenFiles}>
+                {confirmed.length > 0 && (
+                  <section aria-labelledby={`${ids}-confirmed`}>
+                    <h3 id={`${ids}-confirmed`} className="graph-list-heading">
+                      Confirmed <Badge>{confirmed.length}</Badge>
+                    </h3>
+                    <p className="muted">
+                      Links written in the files and identical copies.
+                    </p>
+                    <PairList
+                      pairs={confirmed}
+                      workspace={workspace}
+                      relations={relations}
+                      onOpen={openFile}
+                    />
+                  </section>
+                )}
+                {suggested.length > 0 && (
+                  <section aria-labelledby={`${ids}-suggested`}>
+                    <h3 id={`${ids}-suggested`} className="graph-list-heading">
+                      Suggested <Badge>{suggested.length}</Badge>
+                    </h3>
+                    <p className="muted">
+                      Similar passages and possible shared facts. Check the
+                      evidence before relying on them.
+                    </p>
+                    <PairList
+                      pairs={suggested}
+                      workspace={workspace}
+                      relations={relations}
+                      onOpen={openFile}
+                    />
+                  </section>
+                )}
+              </div>
             )}
-            {suggested.length > 0 && (
-              <section aria-labelledby={`${ids}-suggested`}>
-                <h3 id={`${ids}-suggested`} className="graph-list-heading">
-                  Suggested <Badge>{suggested.length}</Badge>
-                </h3>
-                <p className="muted">
-                  Similar passages and possible shared facts. Check the evidence
-                  before relying on them.
-                </p>
-                <PairList
-                  pairs={suggested}
-                  workspace={workspace}
-                  relations={relations}
-                  onOpen={openFile}
-                />
-              </section>
-            )}
-          </div>
+          </>
         ) : (
           <EmptyState
             icon={<Waypoints size={24} />}

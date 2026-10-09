@@ -1,0 +1,230 @@
+/* Graph: Map/List switch, concept map, legend. Nothing here animates, so the
+   map is the same with reduced motion (docs/design.md). */
+.segmented {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+.segmented-option {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 32px;
+  padding: 0 var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: var(--text-label);
+}
+.segmented-option:hover {
+  color: var(--color-text);
+  background: var(--color-surface-muted);
+}
+/* Pressed is bold and outlined, not only tinted. */
+.segmented-option[aria-pressed="true"] {
+  border-color: var(--color-text);
+  background: var(--color-selected);
+  color: var(--color-text);
+  font-weight: 600;
+}
+
+.concept-map {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.graph-canvas-frame {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.graph-canvas {
+  position: relative;
+  height: clamp(300px, 56vh, 640px);
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+.graph-svg {
+  display: block;
+  touch-action: none;
+  user-select: none;
+  cursor: grab;
+}
+.graph-svg:active {
+  cursor: grabbing;
+}
+.graph-zoom {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-float);
+}
+.graph-hint {
+  font: var(--text-small);
+  color: var(--color-text-secondary);
+}
+
+/* Edges: confirmed solid, copies a double line, model-found dashed + "AI". */
+.graph-edge {
+  fill: none;
+  stroke: var(--graph-edge);
+  stroke-width: 1.5;
+}
+.graph-edge.is-active {
+  stroke: var(--color-text);
+  stroke-width: 2.25;
+}
+.graph-edge.is-inferred {
+  stroke: var(--graph-edge-ai);
+  stroke-dasharray: 6 4;
+}
+.graph-edge .graph-edge-outer {
+  stroke-width: 5;
+}
+.graph-edge .graph-edge-inner {
+  stroke: var(--color-surface);
+  stroke-width: 1.5;
+}
+.graph-edge.is-active .graph-edge-outer {
+  stroke-width: 6;
+}
+.has-selection .graph-edge:not(.is-active) {
+  opacity: 0.5;
+}
+.graph-arrow {
+  fill: var(--graph-edge);
+}
+.graph-arrow.is-active {
+  fill: var(--color-text);
+}
+.graph-edge-label {
+  fill: var(--color-text-secondary);
+  font: var(--text-small);
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: var(--color-surface);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+.graph-edge-label.is-active {
+  fill: var(--color-text);
+}
+
+/* Nodes */
+.graph-node {
+  cursor: pointer;
+}
+.graph-node:focus {
+  outline: none;
+}
+.graph-node-hit {
+  fill: transparent;
+}
+.graph-node-dot {
+  fill: var(--color-surface);
+  stroke: var(--graph-node-rim);
+  stroke-width: 2;
+}
+.graph-node:hover .graph-node-dot,
+.graph-node.is-neighbour .graph-node-dot {
+  stroke: var(--color-text);
+}
+/* Selected: gold fill, a heavier rim and a bold label, never colour alone. */
+.graph-node.is-selected .graph-node-dot {
+  fill: var(--brand-gold);
+  stroke: var(--color-text);
+  stroke-width: 3;
+}
+.graph-focus-ring {
+  fill: none;
+  stroke: none;
+}
+.graph-node:focus-visible .graph-focus-ring {
+  stroke: var(--color-focus);
+  stroke-width: 2;
+}
+.graph-node-label {
+  fill: var(--color-text);
+  font: var(--text-small);
+  font-weight: 500;
+  paint-order: stroke;
+  stroke: var(--color-surface);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+.graph-node.is-selected .graph-node-label {
+  font-weight: 700;
+}
+
+/* Legend and filters */
+.graph-legend {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.graph-legend legend {
+  padding: 0 var(--space-1);
+}
+.graph-legend-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-6);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.graph-legend-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+.graph-legend-label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font: var(--text-label);
+  cursor: pointer;
+}
+.graph-legend-label input {
+  margin: 0;
+  accent-color: var(--brand-charcoal);
+}
+.graph-swatch {
+  flex: none;
+}
+.graph-legend-description {
+  font: var(--text-small);
+  color: var(--color-text-secondary);
+}
+
+.graph-selection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--color-border);
+}
+.graph-selection .subsection-title {
+  overflow-wrap: anywhere;
+}
