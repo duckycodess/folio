@@ -8,6 +8,7 @@
 - File table and reader ([issue #17](https://github.com/duckycodess/folio/issues/17)): name, location, type, modified and size columns that drop to fit the space; the reader beside the table (or in place of it below 860px) shows the file's text as read-only, with its full path. The reader never shows a file the current list excludes. In the desktop app, Folio starts with an "Add folder" state (sample files on request); an added folder with no readable files offers "Choose another folder". The browser preview lists sample files and says so.
 - Relationships with evidence ([issue #21](https://github.com/duckycodess/folio/issues/21)): the document panel's Related tab and the Graph view list every connected file. Each entry has its type (link and direction, or exact duplicate), how Folio knows it, the file's original folder, and evidence excerpts that open the source with the passage highlighted. Files opened from Related keep a "Back to" link to the origin. With a folder open, links and duplicates come from the native index (`list_relationships`, `list_duplicates`) merged with links in opened files. If the folder hasn't been indexed, the UI says so; no UI runs the index scan yet. Exact duplicates are also found from content hashes Folio already has. The list is the only Graph view; there is no drawn graph. Similarity and shared-fact connections have labels and tests, but no producer yet.
 - Shared error and recovery states ([issue #18](https://github.com/duckycodess/folio/issues/18)): every error code maps to one plain-language message and next step ([error-states.md](error-states.md)), shown through one recovery notice in every workflow. Drafts (the Ask & Act request, rename names per file) survive errors and view changes. Success after opening a folder is shown only once the native core reports it. Each view announces into its own live region. Modals keep Tab inside them. A browser-only practice mode (`?simulate=<code>`) triggers each state in its own flow.
+- Graph entry points ([#40](https://github.com/duckycodess/folio/issues/40)): Graph starts from all files, one file, a folder (including connections that leave it) or a keyword topic. With a file open, it starts from that file, and opening a file from the list makes it the new start. Confirmed connections (links, identical copies) are listed apart from suggested ones (similarity, possible shared facts), which only appear when the index has them. A "Where these files are" panel counts the connected files per folder. That count isn't a written summary: the relationship summary needs a local model and isn't built. Arrow keys, Home and End move between the files in the list.
 - Home as the file browser ([#42](https://github.com/duckycodess/folio/issues/42), [#43](https://github.com/duckycodess/folio/issues/43), ADR 0010). The Files tab is gone. Home lists every file, sorted by path, with a count. Each row has a keyboard-accessible ⋯ menu (Open, Rename…, Move to folder…, Show related), and the document panel has the same menu. Rename and Move use the exact preview, Approve and Undo flow from #22, in a dialog. The search field is only on Home, centred, and ⌘K / Ctrl K from any page opens Home and focuses it. Rows take an optional `renderDetail` slot for #19's search evidence. With the sample files, Rename and Move explain that a folder is needed.
 - Organize flow ([issue #22](https://github.com/duckycodess/folio/issues/22)), desktop only. Analyze re-indexes the open folder, with live progress and Stop, then lists exact duplicates (by content, never moved or deleted) and filename suggestions to tick. The exact preview shows every from → to path from the native plan. Approve echoes that plan's digest and applies it. The result is worded from the per-file outcomes, so a batch that stopped partway never says nothing changed. It shows what was recorded in history and offers a Preview Undo. A refused apply keeps the preview, with Preview again. The Rename form uses the same native plan with a folder open. With the sample files, Organize explains that a folder is needed. Virtual collections are still not available.
 - Keyword filtering (explicitly labelled), actual Markdown-link discovery in fixture text, source content views, and a list of those explicit links with their evidence (Graph view).
@@ -60,6 +61,29 @@ Provider cases are listed as pending, not mocked, in `src/domain/pending.test.ts
 No AI or save completion should be presented until the corresponding native/provider implementation succeeds. Model sizes, installed size, memory targets, and platform support remain subject to measurements.
 
 ## Verification
+
+### Graph entry points (2026-10-10, issue #40)
+
+Checked on macOS with Node.js 26.10.0, on top of #48:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 170 passed, 9 todo. New cases in `graphScope.test.ts` cover:
+  - each connection listed once;
+  - a file start that keeps the file first;
+  - a folder start that includes connections leaving the folder, and doesn't treat `project` as a prefix of `projects`;
+  - topic matching and an empty topic;
+  - a file that's no longer listed;
+  - links and duplicates as confirmed but never similarity or shared facts;
+  - per-folder counts.
+- Browser preview (sample files) in headless Chromium:
+  - all files: 11 confirmed and 0 suggested, across 6 folders;
+  - the folder `archive`: 2;
+  - an empty topic shows "Type a topic to start", and "deadline" gives 8;
+  - the file start follows the opened file;
+  - ArrowDown and End move between files, and Enter opens one in the reader;
+  - nothing scrolls sideways at 700px.
+
+Not verified: suggested connections with real index data (no producer yet), screen readers, and the Tauri app.
 
 ### Home as the file browser (2026-10-10, issues #42 and #43)
 
