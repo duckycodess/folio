@@ -14,20 +14,27 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
+import { isAvailable, summarizeRelationships } from "../adapters/ai";
 import { folderChoices } from "../app/fileActions";
+import { useGenerationReady } from "../app/generationReady";
 import type { RelationshipsState } from "../app/useRelationships";
+import { useAiIndexState } from "../app/useAiIndex";
+import { mayClaimNoConnections, summaryBasisLine } from "../domain/aiCoverage";
 import type { WorkspaceState } from "../app/useWorkspace";
 import { describeConnection } from "../domain/connections";
 import { hasSearchWords } from "../domain/discovery";
-import type { DocumentRecord } from "../domain/contracts";
+import type { DocumentRecord, GroundedResult } from "../domain/contracts";
+import { toFolioError, type FolioError } from "../domain/errors";
 import {
   folderSpread,
   graphPairs,
   isConfirmed,
+  relationshipSummaryScope,
   type GraphPair,
   type GraphStart,
 } from "../domain/graphScope";
 import { Badge } from "../ui/Badge";
+import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { FileTypeIcon } from "../ui/FileTypeIcon";
 import { Panel } from "../ui/Panel";
@@ -38,6 +45,9 @@ import {
   originalLocation,
 } from "./Connections";
 import { ConceptMap } from "./graph/ConceptMap";
+import { CitedSentences } from "./CitedSentences";
+import { Notice } from "../ui/Notice";
+import { RecoveryNotice } from "../ui/RecoveryNotice";
 
 type StartKind = GraphStart["kind"];
 type GraphMode = "map" | "list";
@@ -188,6 +198,8 @@ export function GraphView({
   relations: RelationshipsState;
 }) {
   const { request } = relations;
+  const aiIndex = useAiIndexState();
+  const generationReady = useGenerationReady();
   useEffect(request, [request]);
   const ids = useId();
   const documents = useMemo(
@@ -240,6 +252,56 @@ export function GraphView({
   const confirmed = pairs.filter((pair) => isConfirmed(pair.connection));
   const suggested = pairs.filter((pair) => !isConfirmed(pair.connection));
   const spread = folderSpread(pairs);
+  const summaryScope = useMemo(
+    () =>
+      relationshipSummaryScope(
+        pairs,
+        start.kind === "file" ? start.documentId : undefined,
+      ),
+    [pairs, start],
+  );
+  const summaryDocumentIds = summaryScope.documentIds;
+  const summaryScopeKey = summaryDocumentIds.join("|");
+  const [summary, setSummary] = useState<GroundedResult | null>(null);
+  const [summaryBusy, setSummaryBusy] = useState(false);
+  const [summaryError, setSummaryError] = useState<FolioError | null>(null);
+  const summaryRequest = useRef(0);
+  useEffect(() => {
+    summaryRequest.current += 1;
+    setSummary(null);
+    setSummaryError(null);
+    setSummaryBusy(false);
+    // A summary describes the connections and coverage it was written from;
+    // when either changes (a refresh, a new model), it is dropped.
+  }, [
+    summaryScopeKey,
+    summaryScope.totalDocuments,
+    start.kind === "file" ? start.documentId : "",
+    aiIndex.coverage?.state,
+    aiIndex.coverage?.pairsConsidered,
+    aiIndex.coverage?.spaceFingerprint,
+    relations.relationships,
+  ]);
+  async function writeRelationshipSummary() {
+    const folderId = workspace.workspace?.id;
+    if (!folderId || summaryDocumentIds.length === 0) return;
+    const requestId = ++summaryRequest.current;
+    setSummaryBusy(true);
+    setSummaryError(null);
+    try {
+      const result = await summarizeRelationships(
+        folderId,
+        summaryDocumentIds,
+        start.kind === "file" ? start.documentId : undefined,
+      );
+      if (requestId === summaryRequest.current) setSummary(result);
+    } catch (cause) {
+      if (requestId === summaryRequest.current)
+        setSummaryError(toFolioError(cause));
+    } finally {
+      if (requestId === summaryRequest.current) setSummaryBusy(false);
+    }
+  }
   const [mode, setMode] = useState<GraphMode>(rememberedMode);
   function choose(next: GraphMode) {
     rememberedMode = next;
@@ -434,7 +496,10 @@ export function GraphView({
             title={
               start.kind === "topic" && !hasSearchWords(start.term)
                 ? "Type a topic to start"
-                : "No connections found"
+                : // Unknown coverage claims nothing on desktop: "so far".
+                  mayClaimNoConnections(aiIndex.coverage) || !isAvailable()
+                  ? "No connections found"
+                  : "No connections found so far"
             }
           >
             Folio connects files through links written inside them and identical
@@ -457,11 +522,59 @@ export function GraphView({
               </li>
             ))}
           </ul>
-          <p className="muted">
-            A written relationship summary needs a local AI model, which isn't
-            available in this version yet. The connections and evidence above
-            don't need one.
-          </p>
+          <div className="form-actions">
+            <Button
+              variant="primary"
+              disabled={summaryBusy || !generationReady}
+              onClick={() => void writeRelationshipSummary()}
+            >
+              {summaryBusy
+                ? "Writing relationship summary…"
+                : "Write relationship summary"}
+            </Button>
+          </div>
+          {!generationReady && (
+            <p className="muted">
+              Set up and select an installed writing model and runtime in Model
+              Lab to write a relationship summary. The connections and evidence
+              above do not need a model.
+            </p>
+          )}
+          {summaryScope.totalDocuments > summaryDocumentIds.length && (
+            <p className="muted">
+              This preview is based on {summaryDocumentIds.length} of{" "}
+              {summaryScope.totalDocuments} connected files, prioritizing the
+              selected file and its strongest neighbours.
+            </p>
+          )}
+          {summaryError && (
+            <RecoveryNotice
+              error={summaryError}
+              actions={{ retry: () => void writeRelationshipSummary() }}
+            />
+          )}
+          {summary && summary.kind === "insufficientEvidence" && (
+            <Notice tone="info">
+              There is not enough relationship evidence for a summary.
+            </Notice>
+          )}
+          {summary && summary.kind !== "insufficientEvidence" && (
+            <div className="summary">
+              <div className="summary-head">
+                <Badge>Relationship summary</Badge>
+                <Badge>Generated preview, not saved</Badge>
+              </div>
+              <p className="muted">
+                Made by the local model {summary.modelId} (revision{" "}
+                {summary.revision.slice(0, 12)}). Not reviewed for accuracy:
+                each point links to its evidence.
+              </p>
+              {summary.basis && (
+                <p className="muted">{summaryBasisLine(summary.basis)}</p>
+              )}
+              <CitedSentences result={summary} onOpen={relations.openPassage} />
+            </div>
+          )}
         </Panel>
       )}
     </div>

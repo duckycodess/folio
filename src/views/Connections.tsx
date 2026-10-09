@@ -8,6 +8,7 @@ import { Badge } from "../ui/Badge";
 import { EmptyState } from "../ui/EmptyState";
 import { FileTypeIcon } from "../ui/FileTypeIcon";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
+import { AiCoverageNotice } from "../ui/AiCoverageNotice";
 
 const EXCERPT_LENGTH = 160;
 
@@ -81,22 +82,39 @@ export function ConnectionEvidence({
 
 /** Says which connections Folio can see, so a short list isn't misleading. */
 export function CoverageNote({ relations }: { relations: RelationshipsState }) {
+  const invalid = relations.invalidRelationshipCount > 0 && (
+    <p className="muted">
+      Folio left out {relations.invalidRelationshipCount} malformed relationship
+      {relations.invalidRelationshipCount === 1 ? "" : "s"}.
+    </p>
+  );
   switch (relations.coverage) {
     case "samples":
       return (
-        <p className="muted">
-          Sample files: Folio shows the links written inside them.
-        </p>
+        <>
+          <p className="muted">
+            Sample files: Folio shows the links written inside them.
+          </p>
+          {invalid}
+        </>
       );
     case "notIndexed":
       return (
-        <p className="muted">
-          This folder hasn't been indexed yet, so only links in files you've
-          opened are shown.
-        </p>
+        <>
+          <p className="muted">
+            This folder hasn't been indexed yet, so only links in files you've
+            opened are shown.
+          </p>
+          {invalid}
+        </>
       );
     case "loading":
-      return <p className="muted">Checking the folder index…</p>;
+      return (
+        <>
+          <p className="muted">Checking the folder index…</p>
+          {invalid}
+        </>
+      );
     case "failed":
       return (
         <>
@@ -110,10 +128,16 @@ export function CoverageNote({ relations }: { relations: RelationshipsState }) {
             Folio couldn't read this folder's index, so only links in files
             you've opened are shown.
           </p>
+          {invalid}
         </>
       );
     default:
-      return null;
+      return (
+        <>
+          {invalid}
+          <AiCoverageNotice />
+        </>
+      );
   }
 }
 
