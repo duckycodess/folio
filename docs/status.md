@@ -252,6 +252,12 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 
 ## Verification
 
+### Sidebar local AI status (2026-10-10, issue #89)
+
+The sidebar's status pill was hard-coded to "Local AI not set up". It now reads the model store through `useModels()`, using the same `localAiStatus()` as the floating chat and Model Lab, so the three always agree. It says "Local AI ready" (green dot) only when the selected writing model is installed, and "Checking local AI…" while that model is still being verified rather than "not set up". It also says "Local AI status unavailable" (red dot) when the check fails, and "Local AI needs the desktop app" in the browser preview. Clicking it still opens Model Lab. The shell reads the model store once and passes the label to the floating chat, so the installed models are verified once instead of once per consumer. Selecting or removing a model in Model Lab now refreshes the other readers too.
+
+Tested: `npm run check`, `npm test` (428 passed, including a new case for "checking" while the selected model is verified) and `npm run build`. The desktop app launched on macOS with the models installed, but the pill's text in the window was not captured, so the "ready" state in the real app is not verified by this entry.
+
 ### Embedding store fill (2026-10-10, issue #27)
 
 The native loop and its real SQLite seams were verified on WSL/Linux with the
