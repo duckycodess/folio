@@ -10,8 +10,9 @@ pub struct Chunk {
     pub document_id: String,
     pub ordinal: usize,
     pub text: String,
-    pub start: u32,
-    pub end: u32,
+    /// UTF-8 byte offsets into the source document, on character boundaries.
+    pub start: usize,
+    pub end: usize,
     pub content_hash: String,
 }
 
