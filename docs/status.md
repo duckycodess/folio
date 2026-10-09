@@ -18,6 +18,13 @@
   - Filters are kept when leaving Home and coming back.
   - The empty Collections placeholder gives way once pins or recent files exist, so the file list stays on the first screen.
   - The heading stays "Your workspace", per #43.
+- First-run onboarding ([issue #14](https://github.com/duckycodess/folio/issues/14), partly): in the desktop app, five skippable steps, shown until completed or skipped and reopened from the sidebar's "Setup guide".
+  1. Welcome.
+  2. Choose a folder: nothing is read before the system picker returns one, and a cancelled picker changes nothing.
+  3. Local AI: explains what it's for and that Model Lab shows sizes before any download. Nothing downloads here.
+  4. Index: real phases, Stop, and "Continue to Home while indexing".
+  5. What Folio found: exact duplicates and links between files from the indexed folder, with paths and the linking text, or an honest empty state with Search, Organize and Ask & Act.
+  - The model recommendation (device RAM, disk, exact size and revision) is not built yet; it waits on #24 (PR #52).
 - Keyword filtering (explicitly labelled), actual Markdown-link discovery in fixture text, source content views, and a list of those explicit links with their evidence (Graph view).
 - Tauri folder picker and scoped native listing/TXT/Markdown reading commands.
 - [Frozen cross-track contracts](contracts.md) declared in both `src/domain/contracts.ts` and `src-tauri/src/contracts.rs`: typed failures, stable workspace/document identity, UTF-8 source offsets bound to a document revision, typed relationship evidence, embedding-space fingerprints, provider error/cancellation codes, plans, approvals, per-operation outcomes, history and undo shapes.
@@ -68,6 +75,29 @@ Provider cases are listed as pending, not mocked, in `src/domain/pending.test.ts
 No AI or save completion should be presented until the corresponding native/provider implementation succeeds. Model sizes, installed size, memory targets, and platform support remain subject to measurements.
 
 ## Verification
+
+### Onboarding (2026-10-10, issue #14)
+
+Checked on macOS with Node.js 26.10.0:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 183 passed, 9 todo. The new cases:
+  - onboarding starts once, in the desktop app only;
+  - step order doesn't run off either end;
+  - findings put duplicates first, then cross-folder links;
+  - files the folder no longer lists are ignored, and nothing is invented;
+  - the limit is respected.
+- Headless Chrome, with the desktop commands stood in for by a browser mock:
+  - the browser preview never shows onboarding;
+  - in desktop mode each step's heading takes focus, and no native command runs before the folder is picked;
+  - a cancelled picker leaves Continue disabled;
+  - the chosen folder and its file count show, and the AI step offers no download;
+  - indexing shows its phase with Stop and "Continue to Home while indexing";
+  - "What Folio found" lists the folder's link with both paths and the linking text;
+  - finishing opens Home, the Setup guide reopens it, and it doesn't return after a reload;
+  - no horizontal scroll at 700px.
+
+Not verified: the real picker and index in the desktop app, offline use after setup, model setup (waits on #24), screen readers, and the Tauri webview.
 
 ### Home filters, pins and recent files (2026-10-10, issue #33)
 
