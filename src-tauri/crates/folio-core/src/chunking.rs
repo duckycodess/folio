@@ -14,6 +14,9 @@ pub struct Chunk {
     pub start: usize,
     pub end: usize,
     pub content_hash: String,
+    /// 1-based page of a PDF chunk; a PDF is chunked page by page, so a chunk
+    /// never spans two pages. `None` for TXT and Markdown.
+    pub page: Option<u32>,
 }
 
 #[derive(Clone, Debug)]
@@ -144,6 +147,7 @@ pub fn chunk_text(
             start,
             end,
             content_hash: content_hash.into(),
+            page: None,
         })
         .collect())
 }

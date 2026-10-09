@@ -75,7 +75,7 @@ pub fn passages_from_chunks(chunks: &[Chunk]) -> Vec<SourcePassage> {
             start: chunk.start,
             end: chunk.end,
             text: chunk.text.clone(),
-            page: None,
+            page: chunk.page,
         })
         .collect()
 }

@@ -75,6 +75,7 @@ import {
 } from "../views/FileActionDialog";
 import { FloatingOlioChat } from "../views/FloatingOlioChat";
 import { GraphView } from "../views/GraphView";
+import { AddToCollectionDialog } from "../views/AddToCollectionDialog";
 import { HomeView } from "../views/HomeView";
 import { ActivityView } from "../views/ActivityView";
 import { ModelLabView } from "../views/ModelLabView";
@@ -189,6 +190,8 @@ export function AppShell() {
   // Home's Rename and Move have their own plan, so they never show up in
   // Organize (and the reverse).
   const fileAction = useOrganize(workspace, "home", filesChanged);
+  const [collectionDialog, setCollectionDialog] =
+    useState<DocumentRecord | null>(null);
   const [actionDialog, setActionDialog] = useState<{
     kind: FileActionKind;
     document: DocumentRecord;
@@ -308,6 +311,15 @@ export function AppShell() {
         label: "Move to folder…",
         onSelect: () => setActionDialog({ kind: "move", document }),
       },
+      ...(collections.available && collections.collections.length
+        ? [
+            {
+              id: "collection",
+              label: "Add to collection…",
+              onSelect: () => setCollectionDialog(document),
+            },
+          ]
+        : []),
       {
         id: "related",
         label: "Show related",
@@ -664,6 +676,13 @@ export function AppShell() {
                 onClose={closeDocument}
                 onNavigate={setView}
                 isOverlay={layout.readerMode === "overlay"}
+              />
+            )}
+            {collectionDialog && (
+              <AddToCollectionDialog
+                document={collectionDialog}
+                collections={collections}
+                onClose={() => setCollectionDialog(null)}
               />
             )}
             {actionDialog && (

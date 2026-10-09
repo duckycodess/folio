@@ -325,7 +325,7 @@ fn group_id(members: &[SuggestedMember], fingerprint: &str) -> String {
 }
 
 /// The normalized mean of normalized vectors, or `None` if they cancel out.
-fn mean_direction<'a>(vectors: impl Iterator<Item = &'a [f32]>, dimensions: usize) -> Option<Vec<f32>> {
+pub(crate) fn mean_direction<'a>(vectors: impl Iterator<Item = &'a [f32]>, dimensions: usize) -> Option<Vec<f32>> {
     let mut sum = vec![0.0_f32; dimensions];
     for vector in vectors {
         let norm = norm(vector);
@@ -344,7 +344,7 @@ fn norm(vector: &[f32]) -> f32 {
     vector.iter().map(|value| value * value).sum::<f32>().sqrt()
 }
 
-fn cosine(left: &[f32], right: &[f32]) -> f32 {
+pub(crate) fn cosine(left: &[f32], right: &[f32]) -> f32 {
     let (a, b) = (norm(left), norm(right));
     if a == 0.0 || b == 0.0 {
         return 0.0;
@@ -352,7 +352,7 @@ fn cosine(left: &[f32], right: &[f32]) -> f32 {
     left.iter().zip(right).map(|(x, y)| x * y).sum::<f32>() / (a * b)
 }
 
-fn unit(value: f32) -> f32 {
+pub(crate) fn unit(value: f32) -> f32 {
     value.clamp(0.0, 1.0)
 }
 

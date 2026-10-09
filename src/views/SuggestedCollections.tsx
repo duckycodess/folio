@@ -20,8 +20,11 @@ import { Progress } from "../ui/Progress";
  */
 export function SuggestedCollections({
   collections,
+  onStop = collections.stopSuggest,
 }: {
   collections: CollectionsController;
+  /** Stops grouping, and whatever local AI work follows it. */
+  onStop?: () => void;
 }) {
   const { suggestions } = collections;
   const stopped = useRef<HTMLParagraphElement>(null);
@@ -48,7 +51,7 @@ export function SuggestedCollections({
         <div className="flow-step">
           <Progress label="Grouping files by meaning with the local model" />
           <div className="form-actions">
-            <Button variant="secondary" onClick={collections.stopSuggest}>
+            <Button variant="secondary" onClick={onStop}>
               Stop grouping
             </Button>
           </div>
@@ -68,7 +71,7 @@ export function SuggestedCollections({
             <button
               type="button"
               className="link-button"
-              onClick={collections.suggest}
+              onClick={() => void collections.suggest()}
             >
               Try again
             </button>

@@ -2,6 +2,7 @@ import type {
   ActionPlan,
   ApplyReport,
   DocumentId,
+  FileChangeSuggestions,
   FileOperation,
   IndexProgress,
   OrganizationSuggestions,
@@ -22,14 +23,55 @@ export type OrganizeStage =
   | "applying"
   | "result";
 
+/**
+ * Where a suggestion came from: the title-based name, a name the local model
+ * wrote, or a move into a folder whose files are closer in meaning.
+ */
+export type SuggestionKind = "title" | "model" | "move";
+
+export function suggestionKey(
+  kind: SuggestionKind,
+  documentId: DocumentId,
+): string {
+  return `${kind}:${documentId}`;
+}
+
+function documentOfKey(key: string): DocumentId {
+  return key.slice(key.indexOf(":") + 1);
+}
+
+/**
+ * The local models' renames and moves, which arrive after the analysis.
+ * `stopping` waits for the reply to a stopped request, which carries the names
+ * already written and the moves; `stopped` is a stopped request that failed.
+ */
+export interface AssistState {
+  status: "idle" | "working" | "stopping" | "stopped" | "ready" | "failed";
+  /** Only the reply to this request may change what's shown. */
+  request: number;
+  result: FileChangeSuggestions | null;
+  error: FolioError | null;
+}
+
+export const ASSIST_IDLE: AssistState = {
+  status: "idle",
+  request: 0,
+  result: null,
+  error: null,
+};
+
 export interface OrganizeState {
   stage: OrganizeStage;
   /** Only the reply to this request may move the flow on. */
   request: number;
   progress: IndexProgress | null;
   suggestions: OrganizationSuggestions | null;
-  /** Filename suggestions the user picked, by document. */
-  chosen: DocumentId[];
+  /**
+   * Suggestions the user picked, by `suggestionKey`. At most one per file,
+   * since a plan can change each file only once.
+   */
+  chosen: string[];
+  assist: AssistState;
   /** The operations last sent for preview, so "Preview again" can resend them. */
   operations: FileOperation[];
   plan: ActionPlan | null;
@@ -52,7 +94,16 @@ export type OrganizeEvent =
    * already finished can't bring its suggestions back afterwards.
    */
   | { type: "stopAnalyze"; request: number }
-  | { type: "toggle"; documentId: DocumentId }
+  /** Choosing a suggestion drops any other one already chosen for that file. */
+  | { type: "toggle"; key: string }
+  | { type: "assistStarted"; request: number }
+  | { type: "assisted"; request: number; result: FileChangeSuggestions }
+  | { type: "assistFailed"; request: number; error: FolioError }
+  /**
+   * Stop keeps the request number: the stopped request's reply still lands,
+   * with the names written before the stop and the moves already found.
+   */
+  | { type: "assistStopped" }
   | { type: "prepareStarted"; request: number; operations: FileOperation[] }
   | { type: "prepared"; request: number; plan: ActionPlan }
   | { type: "applyStarted"; request: number }
@@ -69,11 +120,42 @@ export const ORGANIZE_START: OrganizeState = {
   progress: null,
   suggestions: null,
   chosen: [],
+  assist: ASSIST_IDLE,
   operations: [],
   plan: null,
   report: null,
   error: null,
 };
+
+/** The operations of the chosen suggestions, in the order they are listed. */
+export function chosenOperations(state: OrganizeState): FileOperation[] {
+  const listed: [string, FileOperation][] = [
+    ...(state.suggestions?.filenames ?? []).map(
+      (item) =>
+        [suggestionKey("title", item.documentId), item.operation] as [
+          string,
+          FileOperation,
+        ],
+    ),
+    ...(state.assist.result?.filenames ?? []).map(
+      (item) =>
+        [suggestionKey("model", item.documentId), item.operation] as [
+          string,
+          FileOperation,
+        ],
+    ),
+    ...(state.assist.result?.destinations ?? []).map(
+      (item) =>
+        [suggestionKey("move", item.documentId), item.operation] as [
+          string,
+          FileOperation,
+        ],
+    ),
+  ];
+  return listed
+    .filter(([key]) => state.chosen.includes(key))
+    .map(([, operation]) => operation);
+}
 
 const REPLIES = new Set<OrganizeEvent["type"]>([
   "progress",
@@ -83,6 +165,12 @@ const REPLIES = new Set<OrganizeEvent["type"]>([
   "applied",
   "failed",
 ]);
+
+function awaitingReply(state: OrganizeState): boolean {
+  return (
+    state.assist.status === "working" || state.assist.status === "stopping"
+  );
+}
 
 /** Where the flow rests when there is no plan in flight. */
 function resting(state: OrganizeState): OrganizeStage {
@@ -105,6 +193,8 @@ export function organizeFlow(
         request: event.request,
         progress: null,
         error: null,
+        chosen: [],
+        assist: ASSIST_IDLE,
       };
     case "progress":
       return state.stage === "analyzing"
@@ -129,13 +219,48 @@ export function organizeFlow(
             progress: null,
           }
         : state;
-    case "toggle":
+    case "toggle": {
+      if (state.chosen.includes(event.key))
+        return {
+          ...state,
+          chosen: state.chosen.filter((key) => key !== event.key),
+        };
+      const document = documentOfKey(event.key);
       return {
         ...state,
-        chosen: state.chosen.includes(event.documentId)
-          ? state.chosen.filter((id) => id !== event.documentId)
-          : [...state.chosen, event.documentId],
+        chosen: [
+          ...state.chosen.filter((key) => documentOfKey(key) !== document),
+          event.key,
+        ],
       };
+    }
+    case "assistStarted":
+      return {
+        ...state,
+        assist: { ...ASSIST_IDLE, status: "working", request: event.request },
+      };
+    case "assisted":
+      if (event.request !== state.assist.request || !awaitingReply(state))
+        return state;
+      return {
+        ...state,
+        assist: { ...state.assist, status: "ready", result: event.result },
+      };
+    case "assistFailed":
+      if (event.request !== state.assist.request || !awaitingReply(state))
+        return state;
+      // A stopped request's refusal is the stop itself, not a failure to show.
+      return {
+        ...state,
+        assist:
+          state.assist.status === "stopping"
+            ? { ...state.assist, status: "stopped" }
+            : { ...state.assist, status: "failed", error: event.error },
+      };
+    case "assistStopped":
+      return state.assist.status === "working"
+        ? { ...state, assist: { ...state.assist, status: "stopping" } }
+        : state;
     case "prepareStarted":
       return {
         ...state,

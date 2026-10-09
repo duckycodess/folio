@@ -7,6 +7,8 @@ import type {
   BatchResult,
   BatchStopReason,
   CollectionSuggestions,
+  DestinationSuggestion,
+  FileChangeSuggestions,
   ContentHash,
   DocumentId,
   DuplicateGroup,
@@ -1686,6 +1688,104 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
     };
   }
 
+  async function suggestFileChanges(
+    workspaceId: string,
+    collectionId?: string,
+  ): Promise<FileChangeSuggestions> {
+    assertWorkspace(workspaceId);
+    const inScope = collectionId
+      ? new Set(
+          collectionView(storedCollection(collectionId))
+            .members.filter((member) => !member.missing)
+            .map((member) => member.relativePath),
+        )
+      : null;
+    const wanted = (path: RelativePath) =>
+      files.has(path) && (!inScope || inScope.has(path));
+    const passageOf = async (path: RelativePath): Promise<SourcePassage> => {
+      const entry = fileAt(path);
+      const line = entry.content.split("\n").find((text) => text.trim()) ?? "";
+      const start = utf8Offset(entry.content, entry.content.indexOf(line));
+      return {
+        documentId: documentIdFor(path),
+        documentContentHash: await hashOf(entry),
+        offsetUnit: "utf8Byte",
+        start,
+        end: start + utf8Length(line),
+        text: line,
+      };
+    };
+    const filenames: OrganizationSuggestion[] = [];
+    for (const { path, name } of options.modelFilenames ?? []) {
+      if (!wanted(path)) continue;
+      const slug = slugify(name);
+      const extension = path.slice(path.lastIndexOf(".") + 1);
+      const folder = folderOf(path);
+      const suggested = folder
+        ? `${folder}/${slug}.${extension}`
+        : `${slug}.${extension}`;
+      if (files.has(suggested)) continue;
+      filenames.push({
+        documentId: documentIdFor(path),
+        relativePath: path,
+        suggestedRelativePath: suggested,
+        reason: `Named by the local AI from the file's contents: “${name}”.`,
+        operation: {
+          kind: "rename",
+          documentId: documentIdFor(path),
+          relativePath: path,
+          expectedContentHash: await hashOf(fileAt(path)),
+          destinationRelativePath: suggested,
+          expectedDestination: "absent",
+        },
+        generated: {
+          citations: [await passageOf(path)],
+          modelId: "fake-generation",
+          revision: "fake",
+        },
+      });
+    }
+    const destinations: DestinationSuggestion[] = [];
+    for (const { path, folder } of options.destinations ?? []) {
+      if (!wanted(path)) continue;
+      const suggested = folder ? `${folder}/${nameOf(path)}` : nameOf(path);
+      const neighbour = Array.from(files.keys())
+        .sort()
+        .find((other) => folderOf(other) === folder && other !== path);
+      if (files.has(suggested) || !neighbour) continue;
+      destinations.push({
+        documentId: documentIdFor(path),
+        relativePath: path,
+        suggestedRelativePath: suggested,
+        folder,
+        reason: `Closer in meaning to the files in “${folder}” than to the files beside it.`,
+        similarity: 0.92,
+        currentSimilarity: 0.6,
+        passage: await passageOf(path),
+        evidence: await passageOf(neighbour),
+        provenance: "embedding",
+        spaceFingerprint: "folio-space-v1/fake-embedding/fake/none/384/fake",
+        operation: {
+          kind: "move",
+          documentId: documentIdFor(path),
+          relativePath: path,
+          expectedContentHash: await hashOf(fileAt(path)),
+          destinationRelativePath: suggested,
+          expectedDestination: "absent",
+        },
+      });
+    }
+    return {
+      filenames,
+      filenameCandidates: filenames.length,
+      naming: filenames.length ? "named" : "notNeeded",
+      destinations,
+      destinationStatus: options.destinations
+        ? "suggested"
+        : "embeddingModelMissing",
+    };
+  }
+
   /* --------------------------------------------------------- the commands */
 
   const commands: Record<
@@ -1913,6 +2013,15 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
 
     async organization_suggestions(args) {
       return organizationSuggestions(
+        String(args.workspaceId),
+        args.collectionId === undefined || args.collectionId === null
+          ? undefined
+          : String(args.collectionId),
+      );
+    },
+
+    async suggest_file_changes(args) {
+      return suggestFileChanges(
         String(args.workspaceId),
         args.collectionId === undefined || args.collectionId === null
           ? undefined

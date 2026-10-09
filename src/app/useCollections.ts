@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import {
+  addCollectionMembers,
   keepCollection,
   listCollections,
   removeCollection,
@@ -31,8 +32,11 @@ export interface CollectionsController {
   /** Resolves true once the collection is gone; its files stay where they are. */
   remove: (collectionId: string) => Promise<boolean>;
   removeMember: (collectionId: string, documentId: string) => void;
+  /** Adds one file; the file itself stays where it is. */
+  addMember: (collectionId: string, documentId: string) => Promise<boolean>;
   suggestions: SuggestState;
-  suggest: () => void;
+  /** Resolves once the groups arrive, fail or are stopped. */
+  suggest: () => Promise<void>;
   /**
    * Stops grouping natively, before it takes the generation slot or by
    * cancelling the naming it holds; never another feature's generation.
@@ -106,18 +110,21 @@ export function useCollections(
       (item) => item.id === groupId,
     );
     const draft = suggestions.drafts[groupId];
-    if (!folderId || !group || !draft) return;
+    const folder = folderId;
+    if (!folder || !group || !draft) return;
     dispatch({ type: "keepStarted", groupId });
     try {
       const collection = await keepCollection(
-        folderId,
+        folder,
         cleanCollectionName(draft.name),
         keptMembers(group, draft),
       );
+      if (!stillOpen(folder)) return;
       dispatch({ type: "kept", groupId, collection });
-      if (stillOpen(folderId)) setCollections((list) => [collection, ...list]);
+      setCollections((list) => [collection, ...list]);
     } catch (cause) {
-      dispatch({ type: "keepFailed", groupId, error: toFolioError(cause) });
+      if (stillOpen(folder))
+        dispatch({ type: "keepFailed", groupId, error: toFolioError(cause) });
     }
   }
 
@@ -149,6 +156,22 @@ export function useCollections(
     }
   }
 
+  async function addMember(collectionId: string, documentId: string) {
+    if (!folderId) return false;
+    try {
+      const updated = await addCollectionMembers(folderId, collectionId, [
+        documentId,
+      ]);
+      if (!stillOpen(folderId)) return false;
+      replace(updated);
+      setError(null);
+      return true;
+    } catch (cause) {
+      refused(folderId, cause);
+      return false;
+    }
+  }
+
   async function removeMember(collectionId: string, documentId: string) {
     if (!folderId) return;
     try {
@@ -171,10 +194,11 @@ export function useCollections(
     reload,
     rename,
     remove,
+    addMember,
     removeMember: (collectionId, documentId) =>
       void removeMember(collectionId, documentId),
     suggestions,
-    suggest: () => void suggest(),
+    suggest,
     stopSuggest: () => {
       if (suggestions.status !== "grouping") return;
       dispatch({ type: "stopped", request: ++next.current });
