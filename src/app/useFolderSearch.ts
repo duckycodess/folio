@@ -40,6 +40,16 @@ export interface FolderSearch {
 
 const DEBOUNCE_MS = 200;
 
+/**
+ * Where text search stands after a scan, finished or stopped: the folder's
+ * text is searchable once the index holds any of its files. A stopped scan
+ * keeps what it had already indexed; with nothing indexed, only names are
+ * searched.
+ */
+export function indexAfterScan(indexedFiles: number): IndexState {
+  return indexedFiles > 0 ? "ready" : "missing";
+}
+
 export function useFolderSearch(
   folderId: WorkspaceId | undefined,
   query: string,
@@ -53,6 +63,8 @@ export function useFolderSearch(
   const [attempt, setAttempt] = useState(0);
   // Only the latest search may update the results.
   const latest = useRef(0);
+  const openFolder = useRef(folderId);
+  openFolder.current = folderId;
 
   // What does the index hold for this folder?
   useEffect(() => {
@@ -128,12 +140,14 @@ export function useFolderSearch(
 
   const buildIndex = useCallback(() => {
     if (!folderId) return;
+    // A scan outlives a folder change; its result must not land on another folder.
+    const stillOpen = () => openFolder.current === folderId;
     setIndex("indexing");
     setIndexFailure(null);
     setProgress(null);
     let unlisten: (() => void) | undefined;
     onIndexProgress((update) => {
-      if (update.workspaceId === folderId) setProgress(update);
+      if (update.workspaceId === folderId && stillOpen()) setProgress(update);
     })
       .then((stop) => {
         unlisten = stop;
@@ -141,23 +155,32 @@ export function useFolderSearch(
       .catch(() => {
         // Progress is a nicety; the scan's own result is what counts.
       });
+    // Stop doesn't fail the scan: the native core returns a summary marked
+    // `cancelled`, keeping whatever it had already indexed.
+    const settleStopped = () =>
+      listIndexedDocuments(folderId)
+        .then((indexed) => {
+          if (stillOpen()) setIndex(indexAfterScan(indexed.length));
+        })
+        .catch(() => {
+          if (stillOpen()) setIndex("missing");
+        });
     scanWorkspace(folderId)
-      .then(() => setIndex("ready"))
+      .then((summary) => {
+        if (!stillOpen()) return;
+        if (summary.cancelled) return settleStopped();
+        setIndex(indexAfterScan(summary.total));
+      })
       .catch((cause) => {
+        if (!stillOpen()) return;
         const error = toFolioError(cause);
-        // Cancelling leaves whatever was already indexed searchable.
-        if (error.code === "cancelled") {
-          listIndexedDocuments(folderId)
-            .then((indexed) => setIndex(indexed.length ? "ready" : "missing"))
-            .catch(() => setIndex("missing"));
-          return;
-        }
+        if (error.code === "cancelled") return settleStopped();
         setIndex("failed");
         setIndexFailure(error);
       })
       .finally(() => {
         unlisten?.();
-        setProgress(null);
+        if (stillOpen()) setProgress(null);
       });
   }, [folderId]);
 

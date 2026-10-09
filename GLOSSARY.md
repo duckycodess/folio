@@ -22,6 +22,9 @@ _Avoid_: A generated answer without matching files.
 **File Summary**: A concise account of one document's contents, with references to its supporting passages.
 _Avoid_: Unattributed interpretation.
 
+**Partial Summary**: A summary of only part of a document, with the covered sections or passages identified.
+_Avoid_: A whole-file summary or an implication that unread sections were covered.
+
 **Project Summary**: A summary of an explicitly identified group of documents, with its coverage stated.
 _Avoid_: A claim to cover every file when only retrieved excerpts were inspected.
 
