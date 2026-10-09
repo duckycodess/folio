@@ -1,4 +1,11 @@
-import { Fragment, useEffect, useMemo, useRef, type RefObject } from "react";
+import {
+  Fragment,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  type RefObject,
+} from "react";
 import { hasUndoableChange } from "../app/planAction";
 import {
   impactGroups,
@@ -188,9 +195,10 @@ const IMPACT_HEADINGS: Record<ImpactKind, string> = {
  */
 export function ImpactList({ impacts }: { impacts: ImpactCandidate[] }) {
   const groups = impactGroups(impacts);
+  const headingId = useId();
   return (
-    <section className="impact-review" aria-labelledby="impact-heading">
-      <h3 id="impact-heading" className="subsection-title">
+    <section className="impact-review" aria-labelledby={headingId}>
+      <h3 id={headingId} className="subsection-title">
         Related passages to review
       </h3>
       {impacts.length === 0 ? (
