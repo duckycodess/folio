@@ -1,6 +1,13 @@
 import { Folders, SearchX } from "lucide-react";
 import { useMemo, type Ref } from "react";
+import type { HomeState } from "../app/useHome";
 import type { WorkspaceState } from "../app/useWorkspace";
+import {
+  foldersOf,
+  hasFilters,
+  NO_FILTERS,
+  passesFilters,
+} from "../domain/homeFilters";
 import type { DocumentRecord, SourcePassage } from "../domain/contracts";
 import type { ViewId } from "../shell/navigation";
 import { Badge } from "../ui/Badge";
@@ -13,6 +20,7 @@ import { RecoveryNotice } from "../ui/RecoveryNotice";
 import type { RowMenuItem } from "../ui/RowMenu";
 import { SearchField } from "../ui/SearchField";
 import { FileList } from "./FileList";
+import { HomeFilterBar, PinnedFolders, RecentFiles } from "./HomeFilters";
 import { FolderSearchStatus, ResultEvidence } from "./SearchEvidence";
 import { EmptyFolder, NoFolder } from "./NoFolder";
 import { WorkspaceSource } from "./WorkspaceSource";
@@ -28,6 +36,8 @@ interface HomeViewProps {
   fileActions: (document: DocumentRecord) => RowMenuItem[];
   /** Opens the reader at a search excerpt, highlighted. */
   onOpenPassage: (passage: SourcePassage) => void;
+  /** Filters, pinned folders and recent files, kept above the views. */
+  home: HomeState;
 }
 
 /**
@@ -38,12 +48,17 @@ export function HomeView(props: HomeViewProps) {
   const { workspace } = props;
   const searching = workspace.query.trim().length > 0;
   // Every file while not searching; the ranked matches while searching.
-  const documents = useMemo(() => {
+  const matched = useMemo(() => {
     const listed = workspace.results.map((result) => result.document);
     return searching
       ? listed
       : listed.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   }, [searching, workspace.results]);
+  const { filters } = props.home;
+  const documents = useMemo(() => {
+    const now = Date.now();
+    return matched.filter((document) => passesFilters(document, filters, now));
+  }, [matched, filters]);
   const noFolder = workspace.source === "none";
 
   return (
@@ -82,7 +97,12 @@ export function HomeView(props: HomeViewProps) {
       {noFolder ? (
         <NoFolder workspace={workspace} />
       ) : (
-        <HomeContents {...props} searching={searching} documents={documents} />
+        <HomeContents
+          {...props}
+          searching={searching}
+          documents={documents}
+          unfiltered={matched.length}
+        />
       )}
     </div>
   );
@@ -94,48 +114,75 @@ function HomeContents({
   fileActions,
   onOpenPassage,
   onSearch,
+  home,
   searching,
   documents,
-}: HomeViewProps & { searching: boolean; documents: DocumentRecord[] }) {
+  unfiltered,
+}: HomeViewProps & {
+  searching: boolean;
+  documents: DocumentRecord[];
+  /** Matches before the filters, to say what the filters hid. */
+  unfiltered: number;
+}) {
+  const filtering = hasFilters(home.filters);
+  const folders = useMemo(
+    () => foldersOf(workspace.documents),
+    [workspace.documents],
+  );
+  const recent = home.recentIds
+    .map((id) => workspace.documents.find((document) => document.id === id))
+    .filter((document): document is DocumentRecord => Boolean(document))
+    .slice(0, 5);
   const query = workspace.query.trim();
   // A file kept open from before the search, which the search leaves out.
   const openElsewhere =
-    searching &&
+    (searching || filtering) &&
     workspace.selected &&
     !documents.some((document) => document.id === workspace.selected?.id)
       ? workspace.selected
       : undefined;
-  const status = !searching
-    ? ""
-    : workspace.search.searching
-      ? "Searching…"
-      : `${documents.length} ${documents.length === 1 ? "file matches" : "files match"} your search.`;
+  const status =
+    !searching && !filtering
+      ? ""
+      : workspace.search.searching
+        ? "Searching…"
+        : `${documents.length} ${documents.length === 1 ? "file matches" : "files match"} ${searching ? "your search" : "the filters"}.`;
 
   return (
     <>
+      {workspace.documents.length > 0 && (
+        <HomeFilterBar home={home} folders={folders} />
+      )}
       <WorkspaceSource workspace={workspace} />
+      <PinnedFolders home={home} />
+      {!searching && !filtering && (
+        <RecentFiles documents={recent} onOpen={workspace.selectDocument} />
+      )}
 
-      {/* Empty, so it gives way to the file list in short windows. */}
-      <section
-        className="section home-collections-empty"
-        aria-labelledby="collections-heading"
-      >
-        <h2 id="collections-heading" className="section-title">
-          Collections
-        </h2>
-        <EmptyState
-          compact
-          icon={<Folders size={20} />}
-          title="No collections yet"
-          action={
-            <Button variant="ghost" onClick={() => onNavigate("organize")}>
-              Go to Organize
-            </Button>
-          }
+      {/* Empty, so it gives way to the file list in short windows, and to
+          pinned folders and recent files once there are some. */}
+      {!home.pins.length && !(recent.length && !searching && !filtering) && (
+        <section
+          className="section home-collections-empty"
+          aria-labelledby="collections-heading"
         >
-          Collections group related files without moving them.
-        </EmptyState>
-      </section>
+          <h2 id="collections-heading" className="section-title">
+            Collections
+          </h2>
+          <EmptyState
+            compact
+            icon={<Folders size={20} />}
+            title="No collections yet"
+            action={
+              <Button variant="ghost" onClick={() => onNavigate("organize")}>
+                Go to Organize
+              </Button>
+            }
+          >
+            Collections group related files without moving them.
+          </EmptyState>
+        </section>
+      )}
 
       {searching && <SearchProblem onNavigate={onNavigate} />}
       {searching && (
@@ -148,7 +195,9 @@ function HomeContents({
             {searching && <Badge>Keyword search</Badge>}
             {documents.length > 0 && (
               <Badge>
-                {documents.length} {documents.length === 1 ? "file" : "files"}
+                {filtering
+                  ? `${documents.length} of ${unfiltered} ${unfiltered === 1 ? "file" : "files"}`
+                  : `${documents.length} ${documents.length === 1 ? "file" : "files"}`}
               </Badge>
             )}
           </>
@@ -159,14 +208,17 @@ function HomeContents({
         </p>
         {openElsewhere && (
           <p className="muted search-kept">
-            “{openElsewhere.name}” is still open, but it doesn't match this
-            search.{" "}
+            “{openElsewhere.name}” is still open, but{" "}
+            {searching ? "it doesn't match this search" : "the filters hide it"}
+            .{" "}
             <button
               type="button"
               className="link-button"
-              onClick={() => onSearch("")}
+              onClick={() =>
+                searching ? onSearch("") : home.setFilters(NO_FILTERS)
+              }
             >
-              Clear search
+              {searching ? "Clear search" : "Clear filters"}
             </button>
           </p>
         )}
@@ -191,6 +243,23 @@ function HomeContents({
                 : undefined
             }
           />
+        ) : filtering && unfiltered > 0 ? (
+          <EmptyState
+            icon={<SearchX size={24} />}
+            title="No files match these filters"
+            action={
+              <Button
+                variant="secondary"
+                onClick={() => home.setFilters(NO_FILTERS)}
+              >
+                Clear filters
+              </Button>
+            }
+          >
+            {unfiltered === 1
+              ? "1 file is hidden by the filters."
+              : `${unfiltered} files are hidden by the filters.`}
+          </EmptyState>
         ) : searching ? (
           <EmptyState icon={<SearchX size={24} />} title="No matching files">
             {workspace.search.searching

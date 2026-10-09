@@ -11,6 +11,13 @@
 - Home as the file browser ([#42](https://github.com/duckycodess/folio/issues/42), [#43](https://github.com/duckycodess/folio/issues/43), ADR 0010). The Files tab is gone. Home lists every file, sorted by path, with a count. Each row has a keyboard-accessible ⋯ menu (Open, Rename…, Move to folder…, Show related), and the document panel has the same menu. Rename and Move use the exact preview, Approve and Undo flow from #22, in a dialog. The search field is only on Home, centred, and ⌘K / Ctrl K from any page opens Home and focuses it. Rows take an optional `renderDetail` slot for #19's search evidence. With the sample files, Rename and Move explain that a folder is needed.
 - Organize flow ([issue #22](https://github.com/duckycodess/folio/issues/22)), desktop only. Analyze re-indexes the open folder, with live progress and Stop, then lists exact duplicates (by content, never moved or deleted) and filename suggestions to tick. The exact preview shows every from → to path from the native plan. Approve echoes that plan's digest and applies it. The result is worded from the per-file outcomes, so a batch that stopped partway never says nothing changed. It shows what was recorded in history and offers a Preview Undo. A refused apply keeps the preview, with Preview again. The Rename form uses the same native plan with a folder open. With the sample files, Organize explains that a folder is needed. Virtual collections are still not available.
 - Search evidence ([issue #19](https://github.com/duckycodess/folio/issues/19)): each Home search result shows how it matched (words in the text or in the name; "Similar meaning" only for semantic results) and up to two excerpts with the query words highlighted, case- and accent-insensitive, plus page labels for PDFs. Selecting an excerpt opens the reader at that highlighted passage. In an open folder, text search uses the persistent index (FTS5 keyword search), merged with file-name matches. An unindexed folder says that only names are searched and offers **Index this folder**, with progress and Stop. A file kept open outside the results is labelled, and a note says that finding files by meaning needs a local AI model.
+- Home filters, pinned folders and recent files ([issue #33](https://github.com/duckycodess/folio/issues/33)):
+  - Folder, File type and Modified filters under the search field combine with the query. A folder includes its subfolders, and files with no recorded time pass only "Any time". The panel shows "N of M files", and an empty result offers Clear filters.
+  - The reader follows the filters as it follows search: a file the filters hide closes the reader, and a labelled note offers Clear filters.
+  - Pinned folders (pin from the Folder filter) are one-tap filters. Recent files lists files opened in Folio on this device. Both are remembered per folder on this device only; a pin is not a permission.
+  - Filters are kept when leaving Home and coming back.
+  - The empty Collections placeholder gives way once pins or recent files exist, so the file list stays on the first screen.
+  - The heading stays "Your workspace", per #43.
 - Keyword filtering (explicitly labelled), actual Markdown-link discovery in fixture text, source content views, and a list of those explicit links with their evidence (Graph view).
 - Tauri folder picker and scoped native listing/TXT/Markdown reading commands.
 - [Frozen cross-track contracts](contracts.md) declared in both `src/domain/contracts.ts` and `src-tauri/src/contracts.rs`: typed failures, stable workspace/document identity, UTF-8 source offsets bound to a document revision, typed relationship evidence, embedding-space fingerprints, provider error/cancellation codes, plans, approvals, per-operation outcomes, history and undo shapes.
@@ -61,6 +68,31 @@ Provider cases are listed as pending, not mocked, in `src/domain/pending.test.ts
 No AI or save completion should be presented until the corresponding native/provider implementation succeeds. Model sizes, installed size, memory targets, and platform support remain subject to measurements.
 
 ## Verification
+
+### Home filters, pins and recent files (2026-10-10, issue #33)
+
+Checked on macOS with Node.js 26.10.0:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 178 passed, 9 todo. The new cases cover:
+  - folder filters including subfolders but not same-prefix folders, and the top level;
+  - type filters;
+  - date filters that never guess a missing time;
+  - combined filters;
+  - the folder list;
+  - recent-file order and limit;
+  - pin toggling.
+- Headless Chrome, with the desktop commands stood in for by a browser mock:
+  - folder "research" shows 1 of 4 files, and adding PDF shows "No files match these filters" with Clear filters;
+  - "Past week" and the pinned-folder chip filter correctly;
+  - recent files appear newest first, labelled "Opened in Folio on this device";
+  - a filter that hides the open file closes the reader and labels it;
+  - filters survive a trip to Graph, and pins and recent files survive a reload;
+  - the first file row is on the first screen at 1280×850 and at 1024×768 with the reader open;
+  - no horizontal scroll at 700px.
+- The filter selects first wrapped their labels around the controls, which gave them names like "FolderAll foldersTop…". The labels now point at the selects with `for`.
+
+Not verified: a real folder through the desktop app, screen readers, and the Tauri webview.
 
 ### Search evidence (2026-10-10, issue #19)
 
