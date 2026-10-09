@@ -298,6 +298,23 @@
   justify-content: space-between;
   gap: var(--space-2);
 }
+.reader-pages {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.reader-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  scroll-margin-top: var(--space-4);
+}
+.page-label {
+  font: var(--text-small);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.02em;
+}
 .source-text {
   margin: 0;
   padding: var(--space-3);
@@ -920,6 +937,128 @@
 .search-kept {
   margin-bottom: var(--space-4);
 }
+
+/* First-run onboarding (#14) */
+.onboarding {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  min-height: 100vh;
+  padding: var(--space-8) var(--space-4);
+  overflow-y: auto;
+  background: var(--color-bg);
+}
+.onboarding-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-4);
+  width: min(640px, 100%);
+  padding: var(--space-8);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+}
+.onboarding-step {
+  font: var(--text-small);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+.onboarding-title {
+  font: var(--text-display);
+  letter-spacing: -0.02em;
+}
+.onboarding-title:focus {
+  outline: none;
+}
+.onboarding-title:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 4px;
+}
+.onboarding-tagline {
+  font: var(--text-heading);
+  font-weight: 400;
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
+}
+.onboarding-points {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+  padding-left: var(--space-5);
+}
+.onboarding-result {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-muted);
+  overflow-wrap: anywhere;
+}
+.onboarding-result .progress {
+  width: 100%;
+}
+.onboarding-actions,
+.onboarding-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+}
+.onboarding-actions {
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+.onboarding-spacer {
+  flex: 1;
+}
+.onboarding-findings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.onboarding-findings > li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+}
+.finding-title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font: var(--text-label);
+  font-weight: 600;
+}
+.finding-files {
+  margin: 0;
+  padding-left: var(--space-5);
+  font: var(--text-small);
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
+.finding-evidence {
+  font: var(--text-small);
+  overflow-wrap: anywhere;
+}
+@media (max-width: 860px) {
+  .onboarding-card {
+    padding: var(--space-5);
+  }
+}
+
 /* Graph: where to start, and confirmed vs suggested connections. */
 .graph-start {
   display: flex;
@@ -1116,6 +1255,63 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
+}
+
+/* Activity (#34) */
+.activity-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.activity-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4) 0;
+  border-top: 1px solid var(--color-border);
+}
+.activity-item:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.activity-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+}
+.activity-heading {
+  flex: 1 1 14rem;
+  min-width: 0;
+}
+.activity-title {
+  font: var(--text-heading);
+}
+.activity-meta {
+  font: var(--text-small);
+  color: var(--color-text-secondary);
+}
+.activity-files {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font: var(--text-small);
+}
+.change-line {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1) var(--space-2);
+  overflow-wrap: anywhere;
+}
+.change-line.is-undone > span:not(.muted) {
+  text-decoration: line-through;
+  color: var(--color-text-secondary);
 }
 
 /* Ask & Act changes: the exact text diff and Ripple passages. */

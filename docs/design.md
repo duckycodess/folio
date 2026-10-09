@@ -173,21 +173,33 @@ The phone frame in the brandbook is a future direction. Phone packaging is outsi
 
 ## Navigation
 
-The brandbook sidebar shows Home · Files · Collections · Graph · Assistant. Folio must keep **Search**, **Organize** and **Summarize** directly reachable without the assistant. Mapping:
+The brandbook sidebar shows Home · Files · Collections · Graph · Assistant. Folio keeps **Search**, **Organize** and **Summarize** reachable without the assistant. The navigation follows [ADR 0011](adr/0011-activity-organize-and-model-lab-in-navigation.md):
 
-| Nav item           | Contains                                                       | SOS role                            |
-| ------------------ | -------------------------------------------------------------- | ----------------------------------- |
-| Home               | The file browser: search, collections, every file, row actions | Search and browse (journey A entry) |
-| Organize           | Collections, analyze, suggestions, duplicates (journey B)      | Organize                            |
-| Graph              | Relationships view                                             | Explore related files               |
-| Assistant          | Ask & Act (journey C)                                          | Supporting route, not the app       |
-| Model Lab (bottom) | Model setup and comparisons                                    | Settings                            |
+| Nav item             | Contains                                                                                     | SOS role                      |
+| -------------------- | -------------------------------------------------------------------------------------------- | ----------------------------- |
+| Home                 | The file browser: search, filters, pinned folders, recent files, file table with row actions | Search (journey A entry)      |
+| Organize             | Collections, analyze, suggestions, duplicates (journey B)                                    | Organize                      |
+| Graph                | Relationships from a file, folder or topic, with evidence                                    | Explore related files         |
+| Ask & Act            | The full-page assistant, Olio (journey C)                                                    | Supporting route, not the app |
+| Activity             | Folio's recorded changes, with safe Undo                                                     | Accountability                |
+| Model Lab (settings) | Model setup and comparisons                                                                  | Settings                      |
 
-There is no separate Files page (#42, ADR 0010). Home is the file browser, like a phone's Files app: every file, each with a ⋯ menu (Open, Rename…, Move to folder…, Show related). The document panel's header has the same menu. Rename and Move use the same exact preview, Approve and Undo as Organize; nothing changes in one click.
+There is no Files tab (#42, ADR 0010). Home is the file browser, like a phone's Files app: every file, each with a ⋯ menu (Open, Rename…, Move to folder…, Show related). The document panel's header has the same menu. Rename and Move use the same exact preview, Approve and Undo as Organize; nothing changes in one click.
 
-Summarize lives in each file's **Summary** tab, with a "Summarize this file" button there, or from Ask & Act (#20). It isn't a row action. Search is only on Home (#43).
+Search appears only on Home, centred under the header, and ⌘K or Ctrl K opens Home from any page (#43). Summarize lives in each file's **Summary** tab, with a "Summarize this file" button there, or from Ask & Act (#20). It isn't a row action.
 
-The brandbook labels this item "Collections". Folio uses **Organize** so the nav names the SOS capabilities (`docs/product.md`); "Collections" is the section heading inside the Organize page.
+**Home layout**, top to bottom:
+
+- the header (Olio and "Your workspace");
+- the centred search field, with the Folder, File type and Modified filters under it;
+- the folder strip;
+- pinned folders and recent files, each shown once there are some;
+- the collections overview, which gives way to pins and recent files;
+- the file table.
+
+The file list stays on the first screen at 1280×850, and at 1024×768 with the reader open (#33). An **Ask Olio** launcher with a dismissible greeting is planned (#37).
+
+The brandbook labels the Organize item "Collections". Folio uses **Organize** so the nav names the SOS capabilities (`docs/product.md`); "Collections" is the section heading inside the Organize page.
 
 Active item: `--sidebar-item-active` background, 3px gold bar on the left edge, `aria-current="page"`.
 
