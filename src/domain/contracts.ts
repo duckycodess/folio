@@ -826,9 +826,11 @@ export interface BenchmarkRecord extends BenchmarkResult {
     name: "llama.cpp" | "onnxruntime";
     version: string;
     /**
-     * Recorded for llama.cpp rows. The device listing is kept as observed:
-     * `gpuOffload: "runtimeDefault"` means Folio passed no offload setting, so
-     * the runtime chose, and it is never read as CPU-only.
+     * Recorded for llama.cpp rows. The device listing is kept as observed.
+     * Model Lab requests CPU-only (`gpuOffload: "disabled"`, with the `flags`
+     * it passed); whether the server honoured it is `cpuOnlyVerified`, read
+     * from the server's own output. `"runtimeDefault"` means Folio passed no
+     * offload setting, so the runtime chose; it is never read as CPU-only.
      */
     backend?: {
       runtimeId: string;

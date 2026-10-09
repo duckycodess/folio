@@ -295,11 +295,11 @@ example with placeholder values, not a measurement.
   `TimedOut` is `timedOut`; start and I/O failures are `runtimeError`.
 - **Runtime backend.** `runtimeDetail.backend` (llama.cpp rows) keeps the
   runtime id, the manifest platform, the `llama-server --list-devices` output as
-  printed and `gpuOffload`. Folio passes no offload setting today, so
-  `gpuOffload` is `runtimeDefault`: the runtime chose, and a listing without a
-  GPU is never read as proof that the CPU was used (macOS builds can offload to
-  the integrated GPU by default). `disabled` is reserved for a lab-only
-  CPU-only setting that has not been added.
+  printed and `gpuOffload`. Model Lab requests CPU-only, so its llama.cpp rows
+  are `disabled`, and `flags` holds what it passed: `--n-gpu-layers 0` and
+  `--device none`. `runtimeDefault` means no offload setting was passed and the
+  runtime chose. A listing without a GPU is never read as proof that the CPU
+  was used (macOS builds can offload to the integrated GPU by default).
 - **Catalog provenance.** `model.catalog` is `product` or `evaluationCandidate`
   and `model.evaluationOnly` is true exactly for a candidate. `model.license` is
   the license the catalog records, not a legal conclusion, and

@@ -62,7 +62,7 @@ pub fn cpu_only_options() -> LabServerOptions {
 
 /// What a record says about the llama.cpp runtime: its exact version, the
 /// device listing and the offload setting Folio asked for. `Disabled` is a
-/// request (`--n-gpu-layers 0`); the backend the server actually reported is
+/// request (`--n-gpu-layers 0 --device none`); the backend the server actually reported is
 /// attached per record from its own output, and a listing without a GPU is not
 /// taken to mean the CPU was used.
 pub fn llama_runtime_detail(
