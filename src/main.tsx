@@ -1,6 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
-// DM Sans: interface, body and labels. Manrope: headings and the wordmark.
+// DM Sans: interface, body and labels. Manrope: headings.
 import "@fontsource/dm-sans/latin-400.css";
 import "@fontsource/dm-sans/latin-500.css";
 import "@fontsource/dm-sans/latin-600.css";

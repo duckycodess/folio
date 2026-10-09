@@ -418,5 +418,110 @@
     "failed",
     "cancelled"
   ],
+  "aiRelationships": {
+    "similarity": {
+      "sourceId": "w:notes/plano.md",
+      "targetId": "w:notes/tala.md",
+      "sourceContentHash": "sha256:d4f31742a4a94c0b9c23d05f222a8e866322dbb550ae686e31f5b3baec5db784",
+      "targetContentHash": "sha256:72810329a83be30c198ff00bb41ec30e0f1f78d3f83c92c010387d96af351cd5",
+      "type": "similarity",
+      "provenance": "embedding",
+      "spaceFingerprint": "folio-space-v1/multilingual-e5-small/r1/int8/384/chunk-text-v1",
+      "score": 0.875,
+      "sourceEvidence": [
+        {
+          "documentId": "w:notes/plano.md",
+          "documentContentHash": "sha256:d4f31742a4a94c0b9c23d05f222a8e866322dbb550ae686e31f5b3baec5db784",
+          "offsetUnit": "utf8Byte",
+          "start": 0,
+          "end": 30,
+          "text": "Ang huling araw ay Oktubre 20."
+        }
+      ],
+      "targetEvidence": [
+        {
+          "documentId": "w:notes/tala.md",
+          "documentContentHash": "sha256:72810329a83be30c198ff00bb41ec30e0f1f78d3f83c92c010387d96af351cd5",
+          "offsetUnit": "utf8Byte",
+          "start": 12,
+          "end": 39,
+          "text": "The deadline is October 20."
+        }
+      ]
+    },
+    "sharedFactCandidate": {
+      "sourceId": "w:notes/plano.md",
+      "targetId": "w:notes/tala.md",
+      "sourceContentHash": "sha256:d4f31742a4a94c0b9c23d05f222a8e866322dbb550ae686e31f5b3baec5db784",
+      "targetContentHash": "sha256:72810329a83be30c198ff00bb41ec30e0f1f78d3f83c92c010387d96af351cd5",
+      "type": "sharedFactCandidate",
+      "provenance": "embedding",
+      "sourceEvidence": [
+        {
+          "documentId": "w:notes/plano.md",
+          "documentContentHash": "sha256:d4f31742a4a94c0b9c23d05f222a8e866322dbb550ae686e31f5b3baec5db784",
+          "offsetUnit": "utf8Byte",
+          "start": 0,
+          "end": 30,
+          "text": "Ang huling araw ay Oktubre 20."
+        }
+      ],
+      "targetEvidence": [
+        {
+          "documentId": "w:notes/tala.md",
+          "documentContentHash": "sha256:72810329a83be30c198ff00bb41ec30e0f1f78d3f83c92c010387d96af351cd5",
+          "offsetUnit": "utf8Byte",
+          "start": 12,
+          "end": 39,
+          "text": "The deadline is October 20."
+        }
+      ]
+    },
+    "coverage": [
+      {
+        "state": "noActiveSpace",
+        "eligibleDocuments": 0,
+        "indexedDocuments": 3,
+        "pairsConsidered": 0,
+        "pairsRemaining": 0,
+        "overflowDocuments": 0
+      },
+      {
+        "state": "partial",
+        "spaceFingerprint": "folio-space-v1/multilingual-e5-small/r1/int8/384/chunk-text-v1",
+        "eligibleDocuments": 3,
+        "indexedDocuments": 3,
+        "pairsConsidered": 1,
+        "pairsRemaining": 2,
+        "overflowDocuments": 0
+      },
+      {
+        "state": "complete",
+        "spaceFingerprint": "folio-space-v1/multilingual-e5-small/r1/int8/384/chunk-text-v1",
+        "eligibleDocuments": 3,
+        "indexedDocuments": 3,
+        "pairsConsidered": 3,
+        "pairsRemaining": 0,
+        "overflowDocuments": 1
+      }
+    ],
+    "coverageStates": [
+      "noActiveSpace",
+      "embeddingIncomplete",
+      "partial",
+      "complete"
+    ],
+    "refreshEnds": [
+      "complete",
+      "budgetExhausted",
+      "cancelled",
+      "spaceChanged"
+    ],
+    "refreshPhases": [
+      "embedding",
+      "admitting",
+      "relationships"
+    ]
+  },
   "offsetUnit": "utf8Byte"
 }

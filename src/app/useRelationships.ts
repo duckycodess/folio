@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import {
   listDuplicates,
   listIndexedDocuments,
-  listRelationships,
+  listRelationshipsWithDiagnostics,
 } from "../adapters/workspace";
 import {
   connectionsFor,
@@ -34,6 +34,8 @@ export interface RelationshipsState {
   failure: FolioError | null;
   /** Index and opened-file relationships, merged without repeats. */
   relationships: Relationship[];
+  /** Malformed native rows dropped at the UI boundary. */
+  invalidRelationshipCount: number;
   duplicates: DuplicateSet[];
   connectionsOf: (documentId: DocumentId) => Connection[];
   /**
@@ -58,6 +60,7 @@ interface IndexSnapshot {
   key: string;
   coverage: "indexed" | "notIndexed" | "failed";
   relationships: Relationship[];
+  invalidRelationshipCount: number;
   duplicates: DuplicateSet[];
   failure: FolioError | null;
 }
@@ -77,15 +80,16 @@ export function useRelationships(
     let active = true;
     Promise.all([
       listIndexedDocuments(folderId),
-      listRelationships(folderId),
+      listRelationshipsWithDiagnostics(folderId),
       listDuplicates(folderId),
     ])
-      .then(([documents, relationships, duplicates]) => {
+      .then(([documents, relationshipListing, duplicates]) => {
         if (!active) return;
         setSnapshot({
           key,
           coverage: documents.length ? "indexed" : "notIndexed",
-          relationships,
+          relationships: relationshipListing.relationships,
+          invalidRelationshipCount: relationshipListing.invalidCount,
           duplicates,
           failure: null,
         });
@@ -96,6 +100,7 @@ export function useRelationships(
           key,
           coverage: "failed",
           relationships: [],
+          invalidRelationshipCount: 0,
           duplicates: [],
           failure: toFolioError(cause),
         });
@@ -151,6 +156,7 @@ export function useRelationships(
     coverage,
     failure: current?.failure ?? null,
     relationships,
+    invalidRelationshipCount: current?.invalidRelationshipCount ?? 0,
     duplicates,
     connectionsOf,
     request,

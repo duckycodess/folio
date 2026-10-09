@@ -41,3 +41,21 @@ const LABELS: Record<LocalAiStatus, string> = {
 export function localAiStatusLabel(models: ModelsController): string {
   return LABELS[localAiStatus(models)];
 }
+
+/**
+ * The selected search model, once it is installed: `id@revision`, or `null`.
+ * The key changes when the selection, its revision or its install state does,
+ * which is when displayed AI connections and coverage must be dropped and read
+ * again (the native core re-resolves the active space on every read).
+ */
+export function searchModelKey(models: ModelsController): string | null {
+  if (models.load !== "ready") return null;
+  const id = models.setup?.selectedEmbedding;
+  if (!id) return null;
+  const row = models.groups
+    .flatMap((group) => group.rows)
+    .find((candidate) => candidate.descriptor.id === id);
+  return row?.state?.status === "installed"
+    ? `${id}@${row.descriptor.revision}`
+    : null;
+}
