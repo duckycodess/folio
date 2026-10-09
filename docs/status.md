@@ -445,6 +445,12 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 
 ## Verification
 
+### Olio launcher always invites you to talk (2026-10-10)
+
+The floating chat's greeting used to be a separate, dismissible bubble. After one dismissal (remembered in `localStorage`) Olio sat in the corner with no visible prompt. The launcher is now the brandkit's single button: an always-visible speech bubble ("Hey, I'm Olio. Talk to me — let's find what you need ↗") pointing at the animated Olio. The bubble's text is the button's accessible name, which passes axe's `label-content-name-mismatch` rule. The dismiss control and its storage key are gone.
+
+Tested locally on macOS in Chromium only: `npm run check`, `npm test`, `npm run build`, and `npx playwright test` (35 passed; the 4 `viewports.spec.ts` failures already on `main` are unchanged). Screenshots checked at 1400px and 600px widths. Not checked in the Tauri window.
+
 ### Window scrolled past the shell on long pages (2026-10-10)
 
 On Model Lab, the window could scroll below the app and show bare background under a short sidebar. The cause was the announcer's visually-hidden live region, which is absolutely positioned at the end of the content but had no positioned ancestor, so it stretched the document to 1663px in an 880px window. `.app` is now `position: relative`, so its `overflow: hidden` clips such regions. `e2e/specs/shell-height.spec.ts` checks that Home, Model Lab, Activity and Organize keep the document exactly one window tall. It fails without the fix (1663 vs 880) and passes with it.

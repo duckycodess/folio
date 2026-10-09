@@ -17,25 +17,6 @@ import { OlioSprite } from "../ui/OlioSprite";
 import { TurnBody, type OpenFile } from "./AskTurns";
 import { ChangeDialog } from "./ChangeDialog";
 
-const GREETING_KEY = "folio.olioChat.greetingDismissed";
-
-// Storage can be missing or throw; the greeting then shows again next time.
-function greetingDismissed(): boolean {
-  try {
-    return window.localStorage.getItem(GREETING_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-function rememberDismissed() {
-  try {
-    window.localStorage.setItem(GREETING_KEY, "1");
-  } catch {
-    // Dismissed for this session only.
-  }
-}
-
 function HistoryList({
   history,
   onOpen,
@@ -99,7 +80,6 @@ export function FloatingOlioChat({
   const announce = useAnnounce();
   const [open, setOpen] = useState(false);
   const [panel, setPanel] = useState<"chat" | "history">("chat");
-  const [greeting, setGreeting] = useState(() => !greetingDismissed());
   const [text, setText] = useState("");
   const [attached, setAttached] = useState<DocumentRecord | null>(null);
   const [changing, setChanging] = useState<OperationProposal | null>(null);
@@ -162,8 +142,6 @@ export function FloatingOlioChat({
   }
 
   function launch() {
-    rememberDismissed();
-    setGreeting(false);
     setOpen(true);
     setPanel("chat");
   }
@@ -216,30 +194,23 @@ export function FloatingOlioChat({
     <div className="olio-chat">
       {!open && (
         <aside className="olio-chat-launcher" aria-label="Olio">
-          {greeting && (
-            <p className="olio-chat-greeting">
-              <strong>Hey, I&rsquo;m Olio.</strong> Let&rsquo;s find what you
-              need.
-              <button
-                type="button"
-                className="icon-button olio-chat-greeting-dismiss"
-                aria-label="Dismiss greeting"
-                onClick={() => {
-                  rememberDismissed();
-                  setGreeting(false);
-                }}
-              >
-                <X size={16} aria-hidden="true" />
-              </button>
-            </p>
-          )}
+          {/* Brandkit launcher: the greeting is part of the button and
+              always shown, so there's always a visible invitation to talk. */}
           <button
             ref={launcherRef}
             type="button"
             className="olio-chat-launcher-button"
-            aria-label="Ask Olio"
             onClick={launch}
           >
+            {/* The bubble's text is the button's name, so what you read is
+                what a screen reader announces. */}
+            <span className="olio-chat-greeting">
+              <strong>Hey, I&rsquo;m Olio.</strong>
+              <span>
+                Talk to me &mdash; let&rsquo;s find what you need
+                <b aria-hidden="true">&#8599;</b>
+              </span>
+            </span>
             <OlioSprite state="idle" size={150} />
           </button>
         </aside>
