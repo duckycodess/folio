@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use folio_core::chunking::{Chunk, InterimTextChunker, TextDocument};
 use folio_core::contracts::{
@@ -710,6 +710,9 @@ struct GenerationStateInner {
     /// Set while the llama.cpp runtime is reinstalled, so no request starts a
     /// server from the directory being replaced.
     runtime_installing: bool,
+    /// Unloads waiting for the holder to release the slot. New requests are
+    /// refused meanwhile, so no second server starts while one is stopping.
+    stopping: usize,
 }
 
 type GenerationState = Arc<Mutex<GenerationStateInner>>;
@@ -942,20 +945,16 @@ fn unload_generation_for_model(
     generation_state: &GenerationState,
     model_id: &str,
 ) -> Result<(), NativeProviderError> {
-    let serving = generation_state
-        .lock()
-        .map_err(|_| NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::IoError,
-            message: "The local generation state is unavailable.".into(),
-            detail: None,
-        })?
-        .slot
-        .as_ref()
-        .is_some_and(|slot| slot.model_id == model_id);
-    if serving {
-        unload_generation_now(generation_state)?;
-    }
-    Ok(())
+    unload_generation_where(
+        generation_state,
+        |inner| {
+            inner
+                .slot
+                .as_ref()
+                .is_some_and(|slot| slot.model_id == model_id)
+        },
+        UNLOAD_WAIT,
+    )
 }
 
 #[tauri::command]
@@ -1024,7 +1023,7 @@ async fn install_runtime(
     let progress_app = app.clone();
     let worker_generation_state = generation_state.clone();
     let result = run_blocking(move || {
-        unload_generation_now(&worker_generation_state)?;
+        unload_generation_within(&worker_generation_state, UNLOAD_WAIT)?;
         model_store(&app)?
             .install_runtime(&runtime_id, &worker_cancel, |progress: DownloadProgress| {
                 let _ = progress_app.emit("folio://runtime-progress", progress);
@@ -1049,6 +1048,13 @@ fn begin_runtime_install(generation_state: &GenerationState) -> Result<(), Nativ
         return Err(NativeProviderError {
             code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
             message: "Stop the running request before reinstalling the local AI runtime.".into(),
+            detail: None,
+        });
+    }
+    if guard.stopping > 0 {
+        return Err(NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
+            message: "The local model is still stopping. Try again in a moment.".into(),
             detail: None,
         });
     }
@@ -1641,6 +1647,13 @@ fn ensure_generation_idle(guard: &GenerationStateInner) -> Result<(), NativeProv
             detail: None,
         });
     }
+    if guard.stopping > 0 {
+        return Err(NativeProviderError {
+            code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
+            message: "The local model is still stopping. Try again in a moment.".into(),
+            detail: None,
+        });
+    }
     Ok(())
 }
 
@@ -1720,13 +1733,9 @@ fn finish_generation(
     Ok(())
 }
 
-#[tauri::command]
-fn cancel_generation(generation_state: State<'_, GenerationState>) -> Result<(), FolioError> {
-    let guard = generation_state.lock().map_err(|_| NativeProviderError {
-        code: folio_core::contracts::ProviderErrorCode::IoError,
-        message: "The local generation state is unavailable.".into(),
-        detail: None,
-    })?;
+/// Asks the holder of the slot to stop. The slot stays held until the holder
+/// releases it, so a new request cannot start a second server meanwhile.
+fn signal_holder_stop(guard: &GenerationStateInner) -> Result<(), NativeProviderError> {
     if let Some(cancel) = guard.active_cancel.as_ref() {
         cancel.store(true, Ordering::Release);
         if let Some(slot) = guard.slot.as_ref() {
@@ -1734,6 +1743,16 @@ fn cancel_generation(generation_state: State<'_, GenerationState>) -> Result<(),
         }
     }
     Ok(())
+}
+
+fn cancel_generation_now(generation_state: &GenerationState) -> Result<(), NativeProviderError> {
+    let guard = lock_generation(generation_state)?;
+    signal_holder_stop(&guard)
+}
+
+#[tauri::command]
+fn cancel_generation(generation_state: State<'_, GenerationState>) -> Result<(), FolioError> {
+    Ok(cancel_generation_now(generation_state.inner())?)
 }
 
 #[tauri::command]
@@ -1896,19 +1915,119 @@ async fn interpret_request(
     .await?)
 }
 
-fn unload_generation_now(generation_state: &GenerationState) -> Result<(), NativeProviderError> {
-    let mut guard = generation_state.lock().map_err(|_| NativeProviderError {
-        code: folio_core::contracts::ProviderErrorCode::IoError,
-        message: "The local generation state is unavailable.".into(),
+/// How long an unload waits for a request or Model Lab run to release the slot.
+const UNLOAD_WAIT: Duration = Duration::from_secs(10);
+const UNLOAD_POLL: Duration = Duration::from_millis(50);
+
+fn generation_still_stopping() -> NativeProviderError {
+    NativeProviderError {
+        code: folio_core::contracts::ProviderErrorCode::GenerationBusy,
+        message: "The local model is still stopping. Try again in a moment.".into(),
         detail: None,
-    })?;
-    if let Some(cancel) = guard.active_cancel.take() {
-        cancel.store(true, Ordering::Release);
+    }
+}
+
+/// Counts an unload as waiting while it exists. Drop it only after the
+/// `MutexGuard` it was created next to is released.
+struct StoppingGuard(GenerationState);
+
+impl Drop for StoppingGuard {
+    fn drop(&mut self) {
+        let mut guard = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        guard.stopping = guard.stopping.saturating_sub(1);
+    }
+}
+
+/// Polls, never holding the lock while it sleeps, until the holder releases
+/// the slot. Returns false if `deadline` passes first.
+fn wait_for_release(
+    generation_state: &GenerationState,
+    deadline: Instant,
+) -> Result<bool, NativeProviderError> {
+    loop {
+        if lock_generation(generation_state)?.active_cancel.is_none() {
+            return Ok(true);
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        std::thread::sleep(UNLOAD_POLL.min(remaining));
+    }
+}
+
+/// Stops the holder of the slot, waits up to `limit` for it to release the
+/// slot, and only then unloads the loaded model. The slot is never freed on
+/// the holder's behalf: if the holder outlasts `limit` this reports busy and
+/// leaves the slot held, so Folio never runs two servers.
+fn unload_generation_where(
+    generation_state: &GenerationState,
+    applies: impl FnOnce(&GenerationStateInner) -> bool,
+    limit: Duration,
+) -> Result<(), NativeProviderError> {
+    let _stopping = {
+        let mut guard = lock_generation(generation_state)?;
+        if !applies(&guard) {
+            return Ok(());
+        }
+        signal_holder_stop(&guard)?;
+        guard.stopping += 1;
+        StoppingGuard(generation_state.clone())
+    };
+    if !wait_for_release(generation_state, Instant::now() + limit)? {
+        return Err(generation_still_stopping());
+    }
+    let mut guard = lock_generation(generation_state)?;
+    if guard.active_cancel.is_some() {
+        return Err(generation_still_stopping());
     }
     if let Some(slot) = guard.slot.take() {
         slot.provider.unload().map_err(native_error)?;
     }
     Ok(())
+}
+
+/// At exit: stops any request or Model Lab run, waits up to `limit` for them to
+/// end, then stops the loaded server even if a holder is still running, so
+/// quitting never leaves a `llama-server` behind. Returns whether everything
+/// ended in time.
+fn shut_down_generation(
+    generation_state: &GenerationState,
+    lab_state: &lab_commands::LabState,
+    limit: Duration,
+) -> bool {
+    let deadline = Instant::now() + limit;
+    let (_stopping, released) = {
+        let Ok(mut guard) = lock_generation(generation_state) else {
+            return false;
+        };
+        let _ = signal_holder_stop(&guard);
+        guard.stopping += 1;
+        let stopping = StoppingGuard(generation_state.clone());
+        drop(guard);
+        let released = wait_for_release(generation_state, deadline).unwrap_or(false);
+        (stopping, released)
+    };
+    let lab_ended = lab_commands::stop_lab_and_wait(
+        lab_state,
+        deadline.saturating_duration_since(Instant::now()),
+    );
+    if let Ok(mut guard) = lock_generation(generation_state) {
+        if let Some(slot) = guard.slot.take() {
+            let _ = slot.provider.unload();
+        }
+    }
+    released && lab_ended
+}
+
+fn unload_generation_within(
+    generation_state: &GenerationState,
+    limit: Duration,
+) -> Result<(), NativeProviderError> {
+    unload_generation_where(generation_state, |_| true, limit)
 }
 
 #[cfg(test)]
@@ -1965,6 +2084,90 @@ mod tests {
         assert!(is_busy(&try_claim_generation(&state)));
         drop(newer);
         assert!(try_claim_generation(&state).is_ok());
+    }
+
+    /// A request that notices its cancel flag and then takes a moment to
+    /// finish, like a provider call unwinding.
+    fn spawn_request(
+        state: &GenerationState,
+        winding_down: Duration,
+    ) -> std::thread::JoinHandle<()> {
+        let claim = try_claim_generation(state).unwrap();
+        std::thread::spawn(move || {
+            while !claim.cancel().load(Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            std::thread::sleep(winding_down);
+            drop(claim);
+        })
+    }
+
+    #[test]
+    fn cancel_leaves_the_slot_held_until_the_holder_releases() {
+        let state = GenerationState::default();
+        let claim = try_claim_generation(&state).unwrap();
+        cancel_generation_now(&state).unwrap();
+        assert!(claim.cancel().load(Ordering::Acquire));
+        assert!(is_busy(&try_claim_generation(&state)));
+        drop(claim);
+        assert!(try_claim_generation(&state).is_ok());
+    }
+
+    #[test]
+    fn unloading_during_a_request_waits_for_the_holder() {
+        let state = GenerationState::default();
+        let holder = spawn_request(&state, Duration::from_millis(80));
+        let started = Instant::now();
+        unload_generation_within(&state, Duration::from_secs(5)).unwrap();
+        assert!(
+            started.elapsed() >= Duration::from_millis(80),
+            "unload returned before the request ended"
+        );
+        holder.join().unwrap();
+        assert_eq!(state.lock().unwrap().stopping, 0);
+        assert!(try_claim_generation(&state).is_ok());
+    }
+
+    #[test]
+    fn a_request_cannot_start_while_an_unload_waits_for_the_holder() {
+        let state = GenerationState::default();
+        let holder = spawn_request(&state, Duration::from_millis(150));
+        let unloader = {
+            let state = state.clone();
+            std::thread::spawn(move || unload_generation_within(&state, Duration::from_secs(5)))
+        };
+        while state.lock().unwrap().stopping == 0 {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(is_busy(&try_claim_generation(&state)));
+        holder.join().unwrap();
+        unloader.join().unwrap().unwrap();
+        assert!(try_claim_generation(&state).is_ok());
+    }
+
+    #[test]
+    fn exit_waits_for_a_request_and_reports_a_stuck_one() {
+        let generation = GenerationState::default();
+        let lab = lab_commands::LabState::default();
+
+        let holder = spawn_request(&generation, Duration::from_millis(80));
+        assert!(shut_down_generation(
+            &generation,
+            &lab,
+            Duration::from_secs(5)
+        ));
+        holder.join().unwrap();
+        assert!(generation.lock().unwrap().active_cancel.is_none());
+
+        // A holder that never releases is reported, not waited on forever.
+        let stuck = try_claim_generation(&generation).unwrap();
+        assert!(!shut_down_generation(
+            &generation,
+            &lab,
+            Duration::from_millis(60)
+        ));
+        assert!(stuck.cancel().load(Ordering::Acquire));
+        assert_eq!(generation.lock().unwrap().stopping, 0);
     }
 
     #[test]
@@ -2086,7 +2289,7 @@ mod tests {
 #[tauri::command]
 async fn unload_generation(generation_state: State<'_, GenerationState>) -> Result<(), FolioError> {
     let generation_state = generation_state.inner().clone();
-    Ok(run_blocking(move || unload_generation_now(&generation_state)).await?)
+    Ok(run_blocking(move || unload_generation_within(&generation_state, UNLOAD_WAIT)).await?)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -2172,14 +2375,16 @@ pub fn run() {
             event,
             tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
         ) {
-            if let Some(generation_state) = app_handle.try_state::<GenerationState>() {
-                let _ = unload_generation_now(generation_state.inner());
-            }
-            // A lab run's server lives in the run's thread, outside the slot.
-            if let Some(lab_state) = app_handle.try_state::<lab_commands::LabState>() {
-                let _ = lab_commands::stop_lab_and_wait(
+            // A lab run's server lives in the run's thread, outside the slot, so
+            // both are waited on.
+            if let (Some(generation_state), Some(lab_state)) = (
+                app_handle.try_state::<GenerationState>(),
+                app_handle.try_state::<lab_commands::LabState>(),
+            ) {
+                let _ = shut_down_generation(
+                    generation_state.inner(),
                     lab_state.inner(),
-                    std::time::Duration::from_secs(10),
+                    UNLOAD_WAIT,
                 );
             }
         }
