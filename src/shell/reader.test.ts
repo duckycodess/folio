@@ -24,13 +24,14 @@ describe("reader document", () => {
     expect(readerDocument("home", plan, listed(notes))).toBe(undefined);
   });
 
-  it("shows files opened from Graph, which lists links rather than results", () => {
+  it("shows files opened from Graph or Ask & Act, which list their own results", () => {
     expect(readerDocument("graph", plan, [])).toBe(plan);
+    expect(readerDocument("assistant", plan, [])).toBe(plan);
   });
 
-  it("keeps the rename form in Organize instead of opening the reader", () => {
+  it("doesn't open the reader over Organize or Model Lab", () => {
     expect(readerDocument("organize", plan, listed(plan))).toBe(undefined);
-    expect(readerDocument("assistant", plan, listed(plan))).toBe(undefined);
+    expect(readerDocument("modelLab", plan, listed(plan))).toBe(undefined);
   });
 });
 

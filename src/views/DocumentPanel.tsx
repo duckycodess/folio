@@ -1,4 +1,4 @@
-import { ArrowLeft, CornerUpLeft, Sparkles, X } from "lucide-react";
+import { ArrowLeft, CornerUpLeft, X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import type { RelationshipsState } from "../app/useRelationships";
 import type { WorkspaceState } from "../app/useWorkspace";
@@ -6,12 +6,11 @@ import { highlightRange, passageState } from "../domain/connections";
 import type { DocumentRecord } from "../domain/contracts";
 import type { ViewId } from "../shell/navigation";
 import { Badge } from "../ui/Badge";
-import { Button } from "../ui/Button";
-import { EmptyState } from "../ui/EmptyState";
 import { FileTypeIcon } from "../ui/FileTypeIcon";
 import { Progress } from "../ui/Progress";
 import { RowMenu, type RowMenuItem } from "../ui/RowMenu";
 import { RelatedList } from "./Connections";
+import { SummaryTab } from "./SummaryTab";
 import { fileKind, formatBytes, formatModified, languageLabel } from "./format";
 
 const TABS = ["Summary", "Details", "Related"] as const;
@@ -181,20 +180,12 @@ export function DocumentPanel({
         tabIndex={0}
       >
         {tab === "Summary" && (
-          <EmptyState
-            icon={<Sparkles size={24} />}
-            title="Summaries need a local AI model"
-            action={
-              <Button
-                variant="secondary"
-                onClick={() => onNavigate("modelLab")}
-              >
-                Open Model Lab
-              </Button>
-            }
-          >
-            You can still read the whole file in Details.
-          </EmptyState>
+          <SummaryTab
+            document={document}
+            workspace={workspace}
+            relations={relations}
+            onNavigate={onNavigate}
+          />
         )}
 
         {tab === "Details" && (

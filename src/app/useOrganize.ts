@@ -50,6 +50,8 @@ export interface OrganizeController {
     document: DocumentRecord,
     change: { name: string } | { folder: string },
   ) => void;
+  /** Creates one new Markdown file, via an exact plan. */
+  previewCreate: (relativePath: string, content: string) => void;
   /** Resends the operations last previewed, for a fresh native plan. */
   previewAgain: () => void;
   /** Approves exactly the plan on screen, then applies it. */
@@ -225,6 +227,16 @@ export function useOrganize(
     },
     previewRelocate: (document, change) =>
       void previewRelocate(document, change),
+    previewCreate: (relativePath, content) =>
+      void preview([
+        {
+          kind: "create",
+          destinationRelativePath: relativePath,
+          mediaType: "text/markdown",
+          content,
+          expectedDestination: "absent",
+        },
+      ]),
     previewAgain: () => {
       if (state.operations.length) void preview(state.operations);
     },

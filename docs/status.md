@@ -8,6 +8,25 @@
 - File table and reader ([issue #17](https://github.com/duckycodess/folio/issues/17)): name, location, type, modified and size columns that drop to fit the space; the reader beside the table (or in place of it below 860px) shows the file's text as read-only, with its full path. The reader never shows a file the current list excludes. In the desktop app, Folio starts with an "Add folder" state (sample files on request); an added folder with no readable files offers "Choose another folder". The browser preview lists sample files and says so.
 - Relationships with evidence ([issue #21](https://github.com/duckycodess/folio/issues/21)): the document panel's Related tab and the Graph view list every connected file. Each entry has its type (link and direction, or exact duplicate), how Folio knows it, the file's original folder, and evidence excerpts that open the source with the passage highlighted. Files opened from Related keep a "Back to" link to the origin. With a folder open, links and duplicates come from the native index (`list_relationships`, `list_duplicates`) merged with links in opened files. If the folder hasn't been indexed, the UI says so; no UI runs the index scan yet. Exact duplicates are also found from content hashes Folio already has. Graph also draws the same connections as a concept map (below). Similarity and shared-fact connections have labels and tests, but no producer yet.
 - Shared error and recovery states ([issue #18](https://github.com/duckycodess/folio/issues/18)): every error code maps to one plain-language message and next step ([error-states.md](error-states.md)), shown through one recovery notice in every workflow. Drafts (the Ask & Act request, rename names per file) survive errors and view changes. Success after opening a folder is shown only once the native core reports it. Each view announces into its own live region. Modals keep Tab inside them. A browser-only practice mode (`?simulate=<code>`) triggers each state in its own flow.
+- Summary tab ([#20](https://github.com/duckycodess/folio/issues/20)), using #15's `summarize_document`.
+  - Each file's Summary tab offers **Summarize this file**. Nothing is generated until it's pressed.
+  - The summary runs in the background and can be cancelled. Only one runs at a time, and other files' tabs say so.
+  - Each point has numbered citations that open the passage highlighted in Details. Uncited points are marked "(no source)" and counted.
+  - The summary is labelled as a generated preview that's not saved or reviewed, with its model and revision. A partial summary says how much of the file it covered. "Not enough information" is shown instead of a summary, and a file that changed afterwards gets a warning.
+  - **Save as new document…** shows the exact Markdown first, then the native create plan, Approve, and the result with Undo. It never overwrites a file. The dialog stays open while the change applies, Done closes it, and focus returns to the button that opened it.
+  - Without a model, the shared recovery notice links to Model Lab. The browser preview says summaries need the desktop app, and sample files say a folder is needed.
+  - Summaries are kept for the session (up to 20 files) in one store that Ask & Act can also write to. Ask & Act doesn't request summaries yet (#36).
+- Ask & Act workspace ([#36](https://github.com/duckycodess/folio/issues/36)), using #15's retrieval, interpretation and answers.
+  - Ask & Act is a full page with Olio. The search scope (the open folder, or one folder inside it) and the index state stay visible. The index state shows prepared files and skipped files with reasons, and labels keyword-only search when there's no search model.
+  - **Find files** runs `semantic_search` and needs no writing model. Each result has the file name, path, a method badge (keyword, semantic, or keyword + semantic, as the native result says), a reason, quoted excerpts that open the passage, and Open file. The reader opens beside Ask & Act.
+  - **Ask Olio** runs `interpret_request`:
+    - questions get cited answers from `answer_question`, or an honest "couldn't find enough";
+    - searches list results;
+    - summaries go to the file's Summary tab (#20), and if several files could match, the user chooses first;
+    - change requests are shown as understood but not previewable here yet, with nothing changed;
+    - clarifications, unsupported requests and unreadable model output say so.
+  - One request runs at a time and can be cancelled. Cancelling and errors keep the request text. Earlier replies stay readable, and replies are kept when leaving Ask & Act until another folder is opened.
+  - With a subfolder scope, questions still use the whole folder, and the page says so.
 - Graph entry points ([#40](https://github.com/duckycodess/folio/issues/40)): Graph starts from all files, one file, a folder (including connections that leave it) or a keyword topic. With a file open, it starts from that file, and opening a file from the list makes it the new start, with keyboard focus moved to the list's new title. A topic with no letters or digits matches nothing. Confirmed connections (links, identical copies) are listed apart from suggested ones (similarity, possible shared facts), which only appear when the index has them. A "Where these files are" panel counts the connected files per folder. That count isn't a written summary: the relationship summary needs a local model and isn't built. Arrow keys, Home and End move between the files in the list.
 - Home as the file browser ([#42](https://github.com/duckycodess/folio/issues/42), [#43](https://github.com/duckycodess/folio/issues/43), ADR 0010). The Files tab is gone. Home lists every file, sorted by path, with a count. Each row has a keyboard-accessible ⋯ menu (Open, Rename…, Move to folder…, Show related), and the document panel has the same menu. Rename and Move use the exact preview, Approve and Undo flow from #22, in a dialog. The search field is only on Home, centred, and ⌘K / Ctrl K from any page opens Home and focuses it. Rows take an optional `renderDetail` slot for #19's search evidence. With the sample files, Rename and Move explain that a folder is needed. In practice mode (`?simulate=<code>`), they show the simulated refusal instead.
 - Organize flow ([issue #22](https://github.com/duckycodess/folio/issues/22)), desktop only. Analyze re-indexes the open folder, with live progress and Stop, then lists exact duplicates (by content, never moved or deleted) and filename suggestions to tick. The exact preview shows every from → to path from the native plan. Approve echoes that plan's digest and applies it. The result is worded from the per-file outcomes, so a batch that stopped partway never says nothing changed. It shows what was recorded in history and offers a Preview Undo. A refused apply keeps the preview, with Preview again. The Rename form uses the same native plan with a folder open. With the sample files, Organize explains that a folder is needed. Virtual collections are still not available.
@@ -127,6 +146,59 @@ Checked on Linux (x86-64 VM, 8 vCPUs, 7 GiB RAM) with Rust 1.99.0 and Node.js 24
 - [CI run 37963735130](https://github.com/duckycodess/folio/actions/runs/37963735130), for this branch after the rebase, passed all three jobs: frontend, `desktop-check (macos-latest)` with 178 native tests passed and 2 ignored, and `desktop-check (windows-latest)` with 169 passed and 2 ignored. Those jobs build the Tauri crate, including `lib.rs` and `folio-core`.
 - `npm run format:check`, `npm run check`, `npm test` (169 passed, 9 todo after the rebase; 165 before it) and `npm run build`: passed. The new cases cover the delete digest against the fixture, preflight of a delete (PDF refused, changed target refused), the Undo preflight for a deletion (free name, occupied name, not recoverable) and the paths it observes, and the Organize preview row and "Deleted 1 file." headline.
 - After review: deleting through a symbolic link (the file, or a folder on the way) and deleting a read-only file are refused, with the file kept, and Undo restores a deleted file's Unix permission bits (`before_mode`, stored by migration 005). Native tests: 182 passed, 2 ignored on Linux, including these three cases.
+
+### Ask & Act workspace (2026-10-10, issue #36)
+
+Checked on macOS with Node.js 26.10.0, on #20's branch (#48 with #15 merged in):
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 181 passed, 9 todo.
+  - New cases in `src/app/askAct.test.ts` cover:
+    - method labels (only embedding results are "semantic");
+    - match reasons;
+    - scope (`research` doesn't include `research-old`);
+    - choosing the summary target;
+    - bounded turns;
+    - proposal wording.
+  - `reader.test.ts` now covers the reader beside Ask & Act.
+- Browser preview: "Ask & Act needs the desktop app".
+- With a **mocked** native core in headless Chromium:
+  - Find listed 3 files with badges, reasons and excerpts, and Open file showed the reader beside Ask & Act;
+  - a question gave a cited answer, and a citation opened the highlighted passage;
+  - an ambiguous summary request asked which file;
+  - "Ibuod itong notes" summarized `notes 1.md`, and Open Summary tab showed it;
+  - a rename proposal and a file-selection request each said nothing was changed;
+  - a clarification and an unsupported request were each answered in words;
+  - Cancel kept the request text, and all 9 replies stayed;
+  - skipped files were listed;
+  - replies survived opening a file and going back at 700px, and visiting Home and returning;
+  - with no writing model, Ask Olio linked to Model Lab while Find still worked;
+  - nothing scrolls sideways at 700px.
+
+Not verified: real models (interpretation accuracy and Taglish requests are still pending in #15), searching several authorized folders at once (Folio opens one folder at a time), and screen readers. At narrow widths, closing the reader from Ask & Act moves focus to the top of the page.
+
+### Summary tab (2026-10-10, issue #20)
+
+Checked on macOS with Node.js 26.10.0, on #48 with #15 (`FOLIO-4`) merged in:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 174 passed, 9 todo. New cases in `src/app/summaries.test.ts` cover:
+  - the store (one entry per file, the running file, a bound that never drops a running summary, subscribers);
+  - staleness by revision;
+  - partial coverage;
+  - saved-file names that never reuse an existing name;
+  - the saved Markdown (generated label, model, local date, numbered sources, "Partial summary").
+- Browser preview: "Summaries need the desktop app".
+- With a **mocked** native core in headless Chromium:
+  - Summarize then Cancel showed "Summary cancelled. Nothing was saved.";
+  - while one summary ran, another file's button was disabled with an explanation, and the result was there on returning;
+  - a citation opened Details with the passage highlighted;
+  - Save as new document showed the exact Markdown, previewed `Create | New file | school/plan summary.md`, saved, and the file was listed;
+  - with no model, the notice linked to Model Lab;
+  - a partial summary said "It covers about 8% of the file";
+  - nothing scrolls sideways at 700px.
+
+Not verified: a real model's summaries, which #15 still marks "Not reviewed"; cancellation against llama.cpp; Filipino and Taglish output; screen readers.
 
 ### Home filters, pins and recent files (2026-10-10, issue #33)
 
