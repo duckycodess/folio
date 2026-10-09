@@ -144,6 +144,13 @@
 - Headless Edge, browser preview with sample files: Shift+F10 on a focused node opens the menu with all four actions disabled and the reason; Enter on a disabled item opens nothing; Escape returns focus to the node and a second Escape deselects; a right-click on a node that wasn't open opens its menu; reopening the file doesn't reopen the menu; Home's ⋯ menu is unchanged. No page errors.
 - **Not checked:** an actual delete, rename, move or edit from the map against the real native core (only sample files in the browser preview), screen readers, and the Tauri app. Writes only after approval, stale previews being refused and Undo of a deletion are covered by #44's native tests; this PR reuses that plan flow.
 
+PR #72 review follow-up (2026-10-10, Linux, Node.js 24.15.0):
+
+- Activity counts `historyRequired` after-write failures as changed without Undo, including the first operation and partial batches. Missing legacy outcomes stay unknown rather than being labelled "Nothing changed". Reversing the recoverable entries does not label an unrecoverable write undone.
+- Older-page results, errors and loading-state updates are ignored after a folder change, reload or unmount. Paging failures appear beside the loaded batches with retry, and retry clears the old error.
+- Five new domain regressions pass; the complete frontend suite has 333 passed and 9 existing todo. Type checks and the production build passed.
+- A temporary Chromium harness exercised the actual Activity hook/view with controlled action adapters: six regressions passed for late page success/failure after a folder switch, a stale page finishing during a new page after reload, visible paging errors and retry, a first-operation `historyRequired` result, and unknown legacy outcomes. No browser exceptions occurred. These verify UI state, not native fault injection, the Tauri window or screen readers.
+
 ## Pending
 
 Model-generated Ripple explanations and similarity/shared-fact discovery (issues #4 and #8), creating folders during moves, UI use of the native index and actions (the current UI still searches loaded content), live file watching, multi-folder workspaces, native packaging, and real Model Lab results remain pending. Issue #4 on `FOLIO-4` carries multilingual embedding, semantic search, local generation, grounded summaries/answers, model/runtime setup and proposal-only interpretation through its own interim in-memory chunking and vector index; it does not yet read #3's persistent index, and its proposals are not yet connected to #5's native plan/apply path.

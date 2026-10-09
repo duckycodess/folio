@@ -57,6 +57,7 @@ export function useActivity(
   const [undoPartial, setUndoPartial] = useState(false);
   const [undoResult, dispatch] = useReducer(actionReducer<UndoReport>, IDLE);
   const request = useRef(0);
+  const listingRequest = useRef(0);
 
   // Another folder: nothing from the previous folder's Undo carries over.
   useEffect(() => {
@@ -70,47 +71,54 @@ export function useActivity(
   }, [folderId]);
 
   useEffect(() => {
+    const current = ++listingRequest.current;
+    setLoadingOlder(false);
+    setHasOlder(false);
+    setFailure(null);
     if (!folderId) {
       setStatus("idle");
       setBatches([]);
       return;
     }
-    let active = true;
     setStatus("loading");
-    setFailure(null);
     listActivity(folderId, PAGE)
       .then((recorded) => {
-        if (!active) return;
+        if (current !== listingRequest.current) return;
         setBatches(fromActivity(recorded));
         setHasOlder(recorded.length === PAGE);
         setStatus("ready");
       })
       .catch((cause) => {
-        if (!active) return;
+        if (current !== listingRequest.current) return;
         setFailure(toFolioError(cause));
         setStatus("failed");
       });
     return () => {
-      active = false;
+      listingRequest.current++;
     };
   }, [folderId, generation]);
 
-  const reload = useCallback(() => setGeneration((value) => value + 1), []);
+  const reload = useCallback(() => {
+    listingRequest.current++;
+    setGeneration((value) => value + 1);
+  }, []);
 
   async function loadOlder() {
     const last = batches.at(-1);
     if (!folderId || !last || loadingOlder) return;
     const forFolder = folderId;
+    const current = listingRequest.current;
     setLoadingOlder(true);
+    setFailure(null);
     try {
       const recorded = await listActivity(forFolder, PAGE, last.planId);
-      if (workspace.workspace?.id !== forFolder) return;
+      if (current !== listingRequest.current) return;
       setBatches((current) => [...current, ...fromActivity(recorded)]);
       setHasOlder(recorded.length === PAGE);
     } catch (cause) {
-      setFailure(toFolioError(cause));
+      if (current === listingRequest.current) setFailure(toFolioError(cause));
     } finally {
-      setLoadingOlder(false);
+      if (current === listingRequest.current) setLoadingOlder(false);
     }
   }
 
