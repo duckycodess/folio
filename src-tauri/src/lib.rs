@@ -1533,6 +1533,8 @@ enum GenerationHolder {
     Interpretation,
     RelationshipSummary,
     ImpactExplanation,
+    /// Organize's suggested collection names and file names (#78).
+    OrganizeSuggestions,
     ModelLab,
 }
 
@@ -1545,6 +1547,7 @@ impl GenerationHolder {
             Self::Interpretation => "interpretation",
             Self::RelationshipSummary => "relationshipSummary",
             Self::ImpactExplanation => "impactExplanation",
+            Self::OrganizeSuggestions => "organizeSuggestions",
             Self::ModelLab => "modelLab",
         }
     }
@@ -1556,6 +1559,7 @@ impl GenerationHolder {
             Self::Interpretation => "Folio is reading another request.",
             Self::RelationshipSummary => "Folio is summarizing connections in Graph.",
             Self::ImpactExplanation => "Folio is explaining a related file in a preview.",
+            Self::OrganizeSuggestions => "Folio is naming suggestions in Organize.",
             Self::ModelLab => "Model Lab is measuring models.",
         }
     }
@@ -2954,7 +2958,7 @@ fn generate_in_run<T>(
         return Ok(None);
     }
     // The lease gives the slot back when it is dropped, on every path.
-    let lease = acquire_generation(app, generation_state)?;
+    let lease = acquire_generation(app, generation_state, GenerationHolder::OrganizeSuggestions)?;
     Ok(run.hold(&lease.claim.cancel).then(|| work(lease.provider.as_ref(), lease.claim.cancel.as_ref())))
 }
 
