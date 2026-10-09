@@ -36,7 +36,16 @@
     ]
   },
   "embeddingModelId": "contract-example-embedding",
-  "runtimeDetail": { "name": "llama.cpp", "version": "contract-example" },
+  "runtimeDetail": {
+    "name": "llama.cpp",
+    "version": "contract-example",
+    "backend": {
+      "runtimeId": "contract-example-runtime",
+      "platform": "contract-example-platform",
+      "deviceListing": "contract example listing, not a real device",
+      "gpuOffload": "runtimeDefault"
+    }
+  },
   "host": {
     "os": "contract-example-os",
     "osVersion": null,

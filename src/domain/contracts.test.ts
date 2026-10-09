@@ -312,6 +312,14 @@ describe("Model Lab record contract (issue #8)", () => {
     expect(isBenchmarkRecord(withoutReason)).toBe(false);
   });
 
+  it("keeps the runtime backend as observed and never assumes CPU", () => {
+    const record = benchmarkRecord as unknown as BenchmarkRecord;
+    const backend = record.runtimeDetail.backend;
+    expect(backend?.gpuOffload).toBe("runtimeDefault");
+    expect(backend?.deviceListing).toEqual(expect.any(String));
+    expect(JSON.stringify(backend)).not.toMatch(/cpu-only|cpuOnly/i);
+  });
+
   it("allows an in-process retrieval row to have no server settings", () => {
     const retrieval = {
       ...benchmarkRecord,

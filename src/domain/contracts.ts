@@ -770,7 +770,22 @@ export interface BenchmarkRecord extends BenchmarkResult {
   };
   /** Retrieval rows: the same as `model.id`. */
   embeddingModelId: string;
-  runtimeDetail: { name: "llama.cpp" | "onnxruntime"; version: string };
+  runtimeDetail: {
+    name: "llama.cpp" | "onnxruntime";
+    version: string;
+    /**
+     * Recorded for llama.cpp rows. The device listing is kept as observed:
+     * `gpuOffload: "runtimeDefault"` means Folio passed no offload setting, so
+     * the runtime chose, and it is never read as CPU-only.
+     */
+    backend?: {
+      runtimeId: string;
+      platform: string;
+      deviceListing: string | null;
+      unavailableReason?: string;
+      gpuOffload: "runtimeDefault" | "disabled";
+    };
+  };
   /** `installedRamBytes` is installed capacity, never usage. */
   host: {
     os: string;

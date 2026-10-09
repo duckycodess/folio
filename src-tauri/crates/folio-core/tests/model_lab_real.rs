@@ -7,8 +7,10 @@
 //! harness itself ran and recorded what it should.
 
 use folio_core::error::CoreResult;
-use folio_core::lab::host::{host_info, llama_server_version, onnxruntime_version};
-use folio_core::lab::native::{model_ref, open_embedding, StoreGeneratorFactory};
+use folio_core::lab::host::{host_info, onnxruntime_version};
+use folio_core::lab::native::{
+    llama_runtime_detail, model_ref, open_embedding, StoreGeneratorFactory,
+};
 use folio_core::lab::runner::{
     system_clock_ms, EmbeddingSubject, LabProgress, LabRunner, OsMemoryProbe, RunEnd,
 };
@@ -72,10 +74,7 @@ fn model_lab_real_run() -> CoreResult<()> {
     let factory = StoreGeneratorFactory {
         data_dir: data_dir.clone(),
         executable: executable.clone(),
-        runtime: RuntimeDetail {
-            name: RuntimeName::LlamaCpp,
-            version: llama_server_version(&executable)?,
-        },
+        runtime: llama_runtime_detail(&store, &runtime_id, &executable)?,
         threads,
     };
     let workspaces = LabWorkspaces::new(&data_dir);
@@ -92,6 +91,7 @@ fn model_lab_real_run() -> CoreResult<()> {
             runtime: RuntimeDetail {
                 name: RuntimeName::OnnxRuntime,
                 version: onnxruntime_version(),
+                backend: None,
             },
             provider: &provider,
         },

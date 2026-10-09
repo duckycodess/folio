@@ -254,6 +254,13 @@ example with placeholder values, not a measurement.
   An unavailable peak is `null` with `unavailableReason`.
   `peakProcessRamBytes` is the generation-process entry for generation tasks,
   the Folio-process entry for retrieval, or `null`.
+- **Runtime backend.** `runtimeDetail.backend` (llama.cpp rows) keeps the
+  runtime id, the manifest platform, the `llama-server --list-devices` output as
+  printed and `gpuOffload`. Folio passes no offload setting today, so
+  `gpuOffload` is `runtimeDefault`: the runtime chose, and a listing without a
+  GPU is never read as proof that the CPU was used (macOS builds can offload to
+  the integrated GPU by default). `disabled` is reserved for a lab-only
+  CPU-only setting that has not been added.
 - **Sizes.** `modelFileBytes` equals `modelDiskBytes`: the model's own files.
   It is not an installed size. `host.installedRamBytes` is installed capacity,
   not usage.

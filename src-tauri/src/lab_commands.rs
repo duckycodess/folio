@@ -11,8 +11,10 @@ use folio_core::contracts::{
     ModelDescriptor, ModelInstallStatus, ModelRole, NativeProviderError, ProviderErrorCode,
 };
 use folio_core::generation::GenerationProvider;
-use folio_core::lab::host::{host_info, llama_server_version, onnxruntime_version};
-use folio_core::lab::native::{model_ref, open_embedding, StoreGeneratorFactory};
+use folio_core::lab::host::{host_info, onnxruntime_version};
+use folio_core::lab::native::{
+    llama_runtime_detail, model_ref, open_embedding, StoreGeneratorFactory,
+};
 use folio_core::lab::runner::{
     system_clock_ms, EmbeddingSubject, LabProgress, LabRunner, OsMemoryProbe, RunEnd,
 };
@@ -216,7 +218,7 @@ fn execute_lab(
     let executable = store
         .verified_runtime_executable(runtime_id_for_host())
         .map_err(native_error)?;
-    let runtime_version = llama_server_version(&executable)?;
+    let llama_runtime = llama_runtime_detail(&store, runtime_id_for_host(), &executable)?;
     let embedding_descriptor = store.model(&request.embedding_model_id)?.clone();
     let provider = open_embedding(&store, &embedding_descriptor)?;
     let threads = std::thread::available_parallelism()
@@ -233,10 +235,7 @@ fn execute_lab(
     let factory = StoreGeneratorFactory {
         data_dir: data_dir.clone(),
         executable,
-        runtime: RuntimeDetail {
-            name: RuntimeName::LlamaCpp,
-            version: runtime_version,
-        },
+        runtime: llama_runtime,
         threads,
     };
     let emit = |progress: &LabProgress| {
@@ -252,6 +251,7 @@ fn execute_lab(
             runtime: RuntimeDetail {
                 name: RuntimeName::OnnxRuntime,
                 version: onnxruntime_version(),
+                backend: None,
             },
             provider: &provider,
         },

@@ -138,11 +138,41 @@ pub struct ModelRef {
     pub files: Vec<ModelFileRef>,
 }
 
+/// What the runtime was asked to do about a GPU. `RuntimeDefault` means Folio
+/// passed no offload setting, so the runtime chose; it is never read as CPU-only.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum GpuOffload {
+    #[serde(rename = "runtimeDefault")]
+    RuntimeDefault,
+    /// Folio forced all layers onto the CPU.
+    #[serde(rename = "disabled")]
+    Disabled,
+}
+
+/// The backend facts a runtime reports about itself, kept as observed. The
+/// absence of a GPU in a device listing is not evidence that inference ran on
+/// the CPU, and a platform without a discrete GPU may still offload.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RuntimeBackend {
+    pub runtime_id: String,
+    /// The manifest's platform label for the runtime build.
+    pub platform: String,
+    /// `llama-server --list-devices`, as printed; None when it could not be read.
+    pub device_listing: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
+    pub gpu_offload: GpuOffload,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeDetail {
     pub name: RuntimeName,
     pub version: String,
+    /// Recorded for llama.cpp rows; the in-process ONNX row has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<RuntimeBackend>,
 }
 
 /// `installed_ram_bytes` is installed capacity, never usage.
@@ -393,6 +423,30 @@ mod tests {
         record.validate().unwrap();
         assert_eq!(record.server_settings, None);
         assert_eq!(serde_json::to_value(&record).unwrap(), value);
+    }
+
+    #[test]
+    fn the_backend_is_kept_as_observed_and_never_assumed_to_be_cpu() {
+        let record = golden();
+        let backend = record
+            .runtime_detail
+            .backend
+            .as_ref()
+            .expect("golden has a backend");
+        assert_eq!(backend.gpu_offload, GpuOffload::RuntimeDefault);
+        assert!(backend.device_listing.is_some());
+
+        let mut value: Value = serde_json::from_str(GOLDEN).unwrap();
+        value["runtimeDetail"]["backend"]["gpuOffload"] = Value::from("cpu");
+        assert!(serde_json::from_value::<BenchmarkRecord>(value).is_err());
+
+        let mut value: Value = serde_json::from_str(GOLDEN).unwrap();
+        value["runtimeDetail"]
+            .as_object_mut()
+            .unwrap()
+            .remove("backend");
+        let without: BenchmarkRecord = serde_json::from_value(value).unwrap();
+        assert!(without.runtime_detail.backend.is_none());
     }
 
     #[test]

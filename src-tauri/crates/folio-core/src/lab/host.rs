@@ -173,11 +173,9 @@ pub fn hardware_summary(host: &HostInfo) -> String {
     )
 }
 
-/// The exact `llama-server --version` output of the verified executable. The
-/// version prints to stderr or stdout depending on the build, so both are kept.
-pub fn llama_server_version(executable: &Path) -> CoreResult<String> {
+fn combined_output(executable: &Path, argument: &str) -> CoreResult<String> {
     let mut command = Command::new(executable);
-    command.arg("--version");
+    command.arg(argument);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -197,11 +195,35 @@ pub fn llama_server_version(executable: &Path) -> CoreResult<String> {
         }
     }
     if text.is_empty() {
-        return Err(CoreError::Message(
-            "llama-server --version printed nothing".into(),
-        ));
+        return Err(CoreError::Message(format!(
+            "llama-server {argument} printed nothing"
+        )));
     }
     Ok(text)
+}
+
+/// The exact `llama-server --version` output of the verified executable. The
+/// version prints to stderr or stdout depending on the build, so both are kept.
+pub fn llama_server_version(executable: &Path) -> CoreResult<String> {
+    combined_output(executable, "--version")
+}
+
+const MAX_DEVICE_LISTING: usize = 2000;
+
+/// Keeps a device listing as observed, bounded so a record cannot grow without
+/// limit. Truncation is marked, not silent.
+pub fn bound_device_listing(listing: &str) -> String {
+    if listing.chars().count() <= MAX_DEVICE_LISTING {
+        return listing.to_string();
+    }
+    let kept: String = listing.chars().take(MAX_DEVICE_LISTING).collect();
+    format!("{kept} [truncated]")
+}
+
+/// `llama-server --list-devices`, as printed. This is an observation of what
+/// the runtime can see, not proof of what a request used.
+pub fn llama_server_devices(executable: &Path) -> CoreResult<String> {
+    combined_output(executable, "--list-devices").map(|text| bound_device_listing(&text))
 }
 
 /// ONNX Runtime as linked into this build, with the `ort` crate version.
@@ -300,6 +322,18 @@ mod tests {
     }
 
     #[test]
+    fn a_long_device_listing_is_bounded_and_says_so() {
+        assert_eq!(bound_device_listing("Metal: Apple M1"), "Metal: Apple M1");
+        let long = "x".repeat(MAX_DEVICE_LISTING + 5);
+        let bounded = bound_device_listing(&long);
+        assert!(bounded.ends_with(" [truncated]"));
+        assert_eq!(
+            bounded.chars().count(),
+            MAX_DEVICE_LISTING + " [truncated]".len()
+        );
+    }
+
+    #[test]
     fn the_prompt_fingerprint_is_stable_and_covers_the_templates() {
         let first = prompt_fingerprint();
         assert_eq!(first.len(), 64);
@@ -310,5 +344,6 @@ mod tests {
     fn a_missing_server_executable_is_an_error_not_a_version() {
         let missing = Path::new("this-llama-server-does-not-exist");
         assert!(llama_server_version(missing).is_err());
+        assert!(llama_server_devices(missing).is_err());
     }
 }

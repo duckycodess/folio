@@ -5,7 +5,10 @@ use crate::contracts::{ModelDescriptor, ProviderErrorCode};
 use crate::embeddings::{OrtE5Provider, DEFAULT_BATCH_SIZE, DEFAULT_MAX_TOKENS};
 use crate::error::{CoreError, CoreResult, NativeProviderErrorError};
 use crate::generation::LlamaServerProvider;
-use crate::lab::record::{ModelFileRef, ModelRef, RuntimeDetail};
+use crate::lab::host::{llama_server_devices, llama_server_version};
+use crate::lab::record::{
+    GpuOffload, ModelFileRef, ModelRef, RuntimeBackend, RuntimeDetail, RuntimeName,
+};
 use crate::lab::runner::{GeneratorFactory, GeneratorHandle};
 use crate::models::ModelStore;
 use std::path::PathBuf;
@@ -28,6 +31,33 @@ pub fn model_ref(descriptor: &ModelDescriptor) -> ModelRef {
             })
             .collect(),
     }
+}
+
+/// What a record says about the llama.cpp runtime: its exact version and the
+/// backend facts the runtime reports. Folio passes no GPU-offload setting, so
+/// `gpuOffload` is `runtimeDefault`; a device listing that shows no GPU is not
+/// taken to mean the CPU was used.
+pub fn llama_runtime_detail(
+    store: &ModelStore,
+    runtime_id: &str,
+    executable: &std::path::Path,
+) -> CoreResult<RuntimeDetail> {
+    let descriptor = store.runtime(runtime_id)?;
+    let (device_listing, unavailable_reason) = match llama_server_devices(executable) {
+        Ok(listing) => (Some(listing), None),
+        Err(error) => (None, Some(error.to_string())),
+    };
+    Ok(RuntimeDetail {
+        name: RuntimeName::LlamaCpp,
+        version: llama_server_version(executable)?,
+        backend: Some(RuntimeBackend {
+            runtime_id: runtime_id.to_string(),
+            platform: descriptor.platform.clone(),
+            device_listing,
+            unavailable_reason,
+            gpu_offload: GpuOffload::RuntimeDefault,
+        }),
+    })
 }
 
 /// Opens one verified generation model at a time against the verified runtime.
@@ -136,6 +166,7 @@ mod tests {
             runtime: RuntimeDetail {
                 name: RuntimeName::LlamaCpp,
                 version: "test".into(),
+                backend: None,
             },
             threads: 1,
         };

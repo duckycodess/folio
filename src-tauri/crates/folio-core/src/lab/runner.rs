@@ -919,6 +919,7 @@ mod tests {
                 runtime: RuntimeDetail {
                     name: RuntimeName::LlamaCpp,
                     version: "scripted-llama".into(),
+                    backend: None,
                 },
                 generator: Box::new(ScriptedGenerator {
                     id: model_id.to_string(),
@@ -1012,6 +1013,7 @@ mod tests {
                 runtime: RuntimeDetail {
                     name: RuntimeName::OnnxRuntime,
                     version: "scripted-ort".into(),
+                    backend: None,
                 },
                 provider: &harness.embedder,
             },
@@ -1256,6 +1258,7 @@ mod tests {
                 runtime: RuntimeDetail {
                     name: RuntimeName::OnnxRuntime,
                     version: "scripted-ort".into(),
+                    backend: None,
                 },
                 provider: &harness.embedder,
             },
