@@ -796,3 +796,56 @@
   text-align: left;
   vertical-align: top;
 }
+
+/* Graph: where to start, and confirmed vs suggested connections. */
+.graph-start {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+.choice-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.choice {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  font: var(--text-body);
+}
+.graph-start-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  max-width: 32rem;
+}
+.graph-lists {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.graph-list-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0;
+  font: var(--text-label);
+}
+.folder-spread {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  list-style: none;
+}
+.folder-spread li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
