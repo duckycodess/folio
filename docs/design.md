@@ -247,7 +247,7 @@ Active item: `--sidebar-item-active` background, 3px gold bar on the left edge, 
 
 - _Text diff_: a table with Before and After line numbers. Removed lines have a `−` marker in `--color-danger` on `--color-danger-bg`; added lines a `+` marker in `--color-success` on `--color-surface-muted` with a 3px success bar. Each marker also has a spoken "Removed"/"Added" label, so color is never the only signal. A diff too large to compute shows the full new text instead.
 - _Needs review_: Ripple candidates are cards with a "Needs review" badge, the path, the reason, how Folio knows, and the passages as quotes. Only model or embedding provenance adds an "AI" badge. Never word a candidate as updated.
-- File action dialogs use the wide modal (`modal-wide`, 760px) and can't be closed while a change is being saved.
+- The Edit text dialog uses the wide modal (`modal-wide`, 760px) and can't be closed while a change is being saved.
 
 **Notices and errors**: follow #18. Inline notice = icon + plain-language message + one action; danger uses `--color-danger` text on `--color-danger-bg`.
 
