@@ -312,6 +312,24 @@ describe("Model Lab record contract (issue #8)", () => {
     expect(isBenchmarkRecord(withoutReason)).toBe(false);
   });
 
+  it("labels an evaluation candidate and keeps the flag consistent", () => {
+    const record = benchmarkRecord as unknown as BenchmarkRecord;
+    expect(record.model.catalog).toBe("product");
+    expect(record.model.evaluationOnly).toBe(false);
+    const candidate: BenchmarkRecord = {
+      ...record,
+      model: {
+        ...record.model,
+        catalog: "evaluationCandidate",
+        evaluationOnly: true,
+        licenseNote: "Unsettled: publisher metadata conflicts.",
+      },
+    };
+    expect(candidate.model.evaluationOnly).toBe(
+      candidate.model.catalog === "evaluationCandidate",
+    );
+  });
+
   it("keeps the runtime backend as observed and never assumes CPU", () => {
     const record = benchmarkRecord as unknown as BenchmarkRecord;
     const backend = record.runtimeDetail.backend;

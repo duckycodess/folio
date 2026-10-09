@@ -33,7 +33,10 @@
         "sha256": "2222222222222222222222222222222222222222222222222222222222222222",
         "bytes": 1000
       }
-    ]
+    ],
+    "catalog": "product",
+    "evaluationOnly": false,
+    "license": "contract-example-license"
   },
   "embeddingModelId": "contract-example-embedding",
   "runtimeDetail": {

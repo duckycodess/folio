@@ -964,6 +964,15 @@ mod tests {
                 sha256: "0".repeat(64),
                 bytes,
             }],
+            // The scripted factory treats ids starting "candidate-" as evaluation candidates.
+            catalog: if id.starts_with("candidate-") {
+                crate::lab::record::ModelCatalog::EvaluationCandidate
+            } else {
+                crate::lab::record::ModelCatalog::Product
+            },
+            evaluation_only: id.starts_with("candidate-"),
+            license: None,
+            license_note: None,
         }
     }
 
@@ -1191,6 +1200,39 @@ mod tests {
         assert!(generator.saw_cache_prompt_off.load(Ordering::SeqCst));
         assert_eq!(lab.take_requests(), 2);
         assert_eq!(lab.take_requests(), 0);
+    }
+
+    #[test]
+    fn records_say_whether_a_measured_model_is_an_evaluation_candidate() {
+        let harness = harness();
+        let mut sink = MemorySink::default();
+        let cancel = AtomicBool::new(false);
+        let (result, _) = run_with(&harness, &["model-a", "candidate-x"], &cancel, &mut sink);
+        result.unwrap();
+        let generation: Vec<&BenchmarkRecord> = sink
+            .records
+            .iter()
+            .filter(|record| record.task != BenchmarkTask::Retrieval)
+            .collect();
+        assert!(!generation.is_empty());
+        for record in generation {
+            let candidate = record.model_id == "candidate-x";
+            assert_eq!(
+                record.model.evaluation_only, candidate,
+                "{}",
+                record.model_id
+            );
+        }
+        for record in sink
+            .records
+            .iter()
+            .filter(|r| r.task == BenchmarkTask::Retrieval)
+        {
+            assert!(
+                !record.model.evaluation_only,
+                "the embedding model is a product model"
+            );
+        }
     }
 
     #[test]

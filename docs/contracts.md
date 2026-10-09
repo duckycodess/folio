@@ -261,6 +261,11 @@ example with placeholder values, not a measurement.
   GPU is never read as proof that the CPU was used (macOS builds can offload to
   the integrated GPU by default). `disabled` is reserved for a lab-only
   CPU-only setting that has not been added.
+- **Catalog provenance.** `model.catalog` is `product` or `evaluationCandidate`
+  and `model.evaluationOnly` is true exactly for a candidate. `model.license` is
+  the license the catalog records, not a legal conclusion, and
+  `model.licenseNote` carries a caveat such as conflicting publisher metadata.
+  A measured candidate is not thereby supported or recommended.
 - **Sizes.** `modelFileBytes` equals `modelDiskBytes`: the model's own files.
   It is not an installed size. `host.installedRamBytes` is installed capacity,
   not usage.

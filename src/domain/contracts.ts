@@ -767,6 +767,17 @@ export interface BenchmarkRecord extends BenchmarkResult {
     revision: string;
     quantization: string;
     files: { path: string; sha256: string; bytes: number }[];
+    /**
+     * An evaluation candidate is not a supported model; measuring it says
+     * nothing about promoting it.
+     */
+    catalog: "product" | "evaluationCandidate";
+    /** True exactly when `catalog` is `evaluationCandidate`. */
+    evaluationOnly: boolean;
+    /** The license the catalog records, not a legal conclusion. */
+    license?: string;
+    /** A caveat on that license, such as conflicting publisher metadata. */
+    licenseNote?: string;
   };
   /** Retrieval rows: the same as `model.id`. */
   embeddingModelId: string;

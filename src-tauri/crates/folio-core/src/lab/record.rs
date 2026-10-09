@@ -127,6 +127,16 @@ pub struct ModelFileRef {
     pub bytes: u64,
 }
 
+/// Which catalog a measured model came from. An evaluation candidate is not a
+/// supported model: measuring it says nothing about promoting it.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ModelCatalog {
+    #[serde(rename = "product")]
+    Product,
+    #[serde(rename = "evaluationCandidate")]
+    EvaluationCandidate,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelRef {
@@ -136,6 +146,15 @@ pub struct ModelRef {
     pub revision: String,
     pub quantization: String,
     pub files: Vec<ModelFileRef>,
+    pub catalog: ModelCatalog,
+    /// True exactly for an evaluation candidate.
+    pub evaluation_only: bool,
+    /// The license the catalog records, as recorded, not a legal conclusion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license: Option<String>,
+    /// A caveat on that license, e.g. conflicting publisher metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license_note: Option<String>,
 }
 
 /// What the runtime was asked to do about a GPU. `RuntimeDefault` means Folio
@@ -324,6 +343,11 @@ impl BenchmarkRecord {
         if self.model_disk_bytes != self.model_file_bytes {
             return Err(invalid("modelDiskBytes must equal modelFileBytes"));
         }
+        if self.model.evaluation_only != (self.model.catalog == ModelCatalog::EvaluationCandidate) {
+            return Err(invalid(
+                "evaluationOnly must be true exactly for an evaluation candidate",
+            ));
+        }
         if self.context_tokens != self.conditions.n_ctx {
             return Err(invalid("contextTokens must equal conditions.nCtx"));
         }
@@ -411,6 +435,27 @@ mod tests {
         record.validate().expect("golden record is valid");
         let original: Value = serde_json::from_str(GOLDEN).unwrap();
         assert_eq!(serde_json::to_value(&record).unwrap(), original);
+    }
+
+    #[test]
+    fn an_evaluation_candidate_is_labelled_as_one_in_every_record() {
+        let mut record = golden();
+        assert_eq!(record.model.catalog, ModelCatalog::Product);
+        assert!(!record.model.evaluation_only);
+
+        record.model.catalog = ModelCatalog::EvaluationCandidate;
+        assert!(
+            record.validate().is_err(),
+            "the flag must agree with the catalog"
+        );
+        record.model.evaluation_only = true;
+        record.model.license_note = Some("Unsettled: metadata conflicts.".into());
+        record.validate().unwrap();
+
+        let value = serde_json::to_value(&record).unwrap();
+        assert_eq!(value["model"]["catalog"], "evaluationCandidate");
+        assert_eq!(value["model"]["evaluationOnly"], true);
+        assert!(serde_json::from_value::<BenchmarkRecord>(value).is_ok());
     }
 
     #[test]

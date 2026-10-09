@@ -5,16 +5,19 @@ use crate::contracts::{ModelDescriptor, ProviderErrorCode};
 use crate::embeddings::{OrtE5Provider, DEFAULT_BATCH_SIZE, DEFAULT_MAX_TOKENS};
 use crate::error::{CoreError, CoreResult, NativeProviderErrorError};
 use crate::generation::LlamaServerProvider;
+use crate::lab::candidates::{self, candidate_store, is_candidate_id};
 use crate::lab::host::{llama_server_devices, llama_server_version};
 use crate::lab::record::{
-    GpuOffload, ModelFileRef, ModelRef, RuntimeBackend, RuntimeDetail, RuntimeName,
+    GpuOffload, ModelCatalog, ModelFileRef, ModelRef, RuntimeBackend, RuntimeDetail, RuntimeName,
 };
 use crate::lab::runner::{GeneratorFactory, GeneratorHandle};
 use crate::models::ModelStore;
 use std::path::PathBuf;
 
-/// The pinned identity a record keeps for a model.
-pub fn model_ref(descriptor: &ModelDescriptor) -> ModelRef {
+/// The pinned identity a record keeps for a model, with the catalog it came
+/// from. A candidate's own license caveat travels with it.
+pub fn model_ref_in(descriptor: &ModelDescriptor, catalog: ModelCatalog) -> ModelRef {
+    let candidate = catalog == ModelCatalog::EvaluationCandidate;
     ModelRef {
         id: descriptor.id.clone(),
         role: descriptor.role.clone(),
@@ -30,7 +33,20 @@ pub fn model_ref(descriptor: &ModelDescriptor) -> ModelRef {
                 bytes: file.bytes,
             })
             .collect(),
+        catalog,
+        evaluation_only: candidate,
+        license: Some(descriptor.license.clone()),
+        license_note: if candidate {
+            candidates::license_note(&descriptor.id)
+        } else {
+            None
+        },
     }
+}
+
+/// A product model's identity.
+pub fn model_ref(descriptor: &ModelDescriptor) -> ModelRef {
+    model_ref_in(descriptor, ModelCatalog::Product)
 }
 
 /// What a record says about the llama.cpp runtime: its exact version and the
@@ -60,7 +76,8 @@ pub fn llama_runtime_detail(
     })
 }
 
-/// Opens one verified generation model at a time against the verified runtime.
+/// Opens one verified generation model at a time against the verified runtime,
+/// from the product store or, for an evaluation candidate, its isolated store.
 pub struct StoreGeneratorFactory {
     pub data_dir: PathBuf,
     pub executable: PathBuf,
@@ -70,9 +87,17 @@ pub struct StoreGeneratorFactory {
 
 impl GeneratorFactory for StoreGeneratorFactory {
     fn open(&self, model_id: &str) -> CoreResult<GeneratorHandle> {
-        let store = ModelStore::new(&self.data_dir)?;
+        // Candidate ids never collide with product ids, so the id picks the store.
+        let (store, catalog) = if is_candidate_id(model_id) {
+            (
+                candidate_store(&self.data_dir)?,
+                ModelCatalog::EvaluationCandidate,
+            )
+        } else {
+            (ModelStore::new(&self.data_dir)?, ModelCatalog::Product)
+        };
         let verified = store.verified_model_file(model_id)?;
-        let model = model_ref(&verified.descriptor);
+        let model = model_ref_in(&verified.descriptor, catalog);
         let provider =
             LlamaServerProvider::from_verified_model(&self.executable, verified, self.threads)?;
         Ok(GeneratorHandle {
@@ -153,6 +178,50 @@ mod tests {
         assert_eq!(model.files.len(), descriptor.files.len());
         assert_eq!(model.files[0].sha256, descriptor.files[0].sha256);
         assert_eq!(model.files[0].bytes, descriptor.files[0].bytes);
+    }
+
+    #[test]
+    fn a_candidate_ref_is_labelled_and_carries_its_license_caveat() {
+        let descriptor =
+            candidates::candidate_descriptor("gemma-sea-lion-v4.5-e2b-q4-k-m").unwrap();
+        let model = model_ref_in(&descriptor, ModelCatalog::EvaluationCandidate);
+        assert_eq!(model.catalog, ModelCatalog::EvaluationCandidate);
+        assert!(model.evaluation_only);
+        assert_eq!(model.license.as_deref(), Some("mit"));
+        assert!(model.license_note.unwrap().contains("Unsettled"));
+
+        let qwen = candidates::candidate_descriptor("qwen3.5-2b-q4-k-m").unwrap();
+        let plain = model_ref_in(&qwen, ModelCatalog::EvaluationCandidate);
+        assert!(plain.evaluation_only && plain.license_note.is_none());
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = ModelStore::new(dir.path()).unwrap();
+        let product = model_ref(&first_of(&store, ModelRole::Generation));
+        assert_eq!(product.catalog, ModelCatalog::Product);
+        assert!(!product.evaluation_only && product.license_note.is_none());
+    }
+
+    #[test]
+    fn candidates_open_from_their_own_store_and_stay_closed_until_installed() {
+        let dir = tempfile::tempdir().unwrap();
+        let factory = StoreGeneratorFactory {
+            data_dir: dir.path().to_path_buf(),
+            executable: dir.path().join("llama-server"),
+            runtime: RuntimeDetail {
+                name: RuntimeName::LlamaCpp,
+                version: "test".into(),
+                backend: None,
+            },
+            threads: 1,
+        };
+        match factory.open("qwen3.5-0.8b-q4-k-m") {
+            Err(CoreError::Provider(failure)) => {
+                assert_eq!(failure.code, ProviderErrorCode::ModelNotInstalled)
+            }
+            other => panic!("expected ModelNotInstalled, got {:?}", other.map(|_| ())),
+        }
+        // Nothing is created in the product models folder.
+        assert!(!dir.path().join("models").exists());
     }
 
     #[test]
