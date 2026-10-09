@@ -27,13 +27,16 @@ pub const KEYWORD_TIEBREAK_WEIGHT: f32 = 0.01;
 /// cannot say "no evidence" on its own. The gate therefore also requires the
 /// best chunk to stand out from the median of the whole indexed space.
 ///
-/// PROVISIONAL, UNCALIBRATED: both values are placeholders that leave
-/// behaviour unchanged until they are set from the development calibration
-/// queries (`tests/dev_calibration.json`), never from the acceptance cases.
-pub const GATE_MIN_TOP_COSINE: f32 = MIN_SEMANTIC_SCORE;
-pub const GATE_MIN_MARGIN: f32 = 0.0;
-/// Below this many indexed chunks a median says little, so only the floor
-/// applies.
+/// PROVISIONAL (Q5-Q7 style). Set from the development calibration queries in
+/// `tests/dev_calibration.json` only, never from the acceptance cases, using
+/// R8 run 37949760186 (E5 int8 `761b726d`, title/path passage context). Rule:
+/// the lowest three-decimal value in the interval that maximizes related
+/// passes minus unrelated passes. On that data the margins overlap (related
+/// minimum 0.0262, unrelated maximum 0.0304): the gate passes 7 of 8 related
+/// and 0 of 6 unrelated development queries. Recalibrate when the embedding
+/// space, chunking or corpus changes.
+pub const GATE_MIN_TOP_COSINE: f32 = 0.813;
+pub const GATE_MIN_MARGIN: f32 = 0.031;
 pub const GATE_MIN_CHUNKS_FOR_MARGIN: usize = 5;
 const BM25_K1: f32 = 1.2;
 const BM25_B: f32 = 0.75;
