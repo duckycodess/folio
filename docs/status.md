@@ -9,6 +9,7 @@
 - Relationships with evidence ([issue #21](https://github.com/duckycodess/folio/issues/21)): the document panel's Related tab and the Graph view list every connected file. Each entry has its type (link and direction, or exact duplicate), how Folio knows it, the file's original folder, and evidence excerpts that open the source with the passage highlighted. Files opened from Related keep a "Back to" link to the origin. With a folder open, links and duplicates come from the native index (`list_relationships`, `list_duplicates`) merged with links in opened files. If the folder hasn't been indexed, the UI says so; no UI runs the index scan yet. Exact duplicates are also found from content hashes Folio already has. The list is the only Graph view; there is no drawn graph. Similarity and shared-fact connections have labels and tests, but no producer yet.
 - Shared error and recovery states ([issue #18](https://github.com/duckycodess/folio/issues/18)): every error code maps to one plain-language message and next step ([error-states.md](error-states.md)), shown through one recovery notice in every workflow. Drafts (the Ask & Act request, rename names per file) survive errors and view changes. Success after opening a folder is shown only once the native core reports it. Each view announces into its own live region. Modals keep Tab inside them. A browser-only practice mode (`?simulate=<code>`) triggers each state in its own flow.
 - Organize flow ([issue #22](https://github.com/duckycodess/folio/issues/22)), desktop only. Analyze re-indexes the open folder, with live progress and Stop, then lists exact duplicates (by content, never moved or deleted) and filename suggestions to tick. The exact preview shows every from → to path from the native plan. Approve echoes that plan's digest and applies it. The result is worded from the per-file outcomes, so a batch that stopped partway never says nothing changed. It shows what was recorded in history and offers a Preview Undo. A refused apply keeps the preview, with Preview again. The Rename form uses the same native plan with a folder open. With the sample files, Organize explains that a folder is needed. Virtual collections are still not available.
+- Shared plan review and file action dialogs ([issue #45](https://github.com/duckycodess/folio/issues/45), second PR), desktop only and **not yet reachable from any screen**. One reducer and hook (`planAction.ts`, `usePlanAction.ts`) carry a single native plan through exact preview → approve → apply → result → Undo preview → Undo, ignoring late replies. Shared components (`src/views/PlanReview.tsx`): the plan table and Undo dialog (Organize now uses them, unchanged), a line diff with before/after line numbers and +/− markers with spoken labels, the full new text when a diff is too large to compute, a Ripple list with a "Needs review" badge, paths, passages and how Folio knows (links and identical copies are never labelled AI), and the apply result. Edit text (TXT/Markdown) reads the file's current text and hash, keeps the file's CRLF line endings, and asks the native core for the plan without impacts so it computes Ripple. Rename and Move use the same plan flow; Move offers only folders that already hold files. Sample files, the browser preview and PDFs say why changes aren't available. The Graph node actions that open these dialogs are the next PR.
 - Keyword filtering (explicitly labelled), actual Markdown-link discovery in fixture text, source content views, and a list of those explicit links with their evidence (Graph view).
 - Tauri folder picker and scoped native listing/TXT/Markdown reading commands.
 - [Frozen cross-track contracts](contracts.md) declared in both `src/domain/contracts.ts` and `src-tauri/src/contracts.rs`: typed failures, stable workspace/document identity, UTF-8 source offsets bound to a document revision, typed relationship evidence, embedding-space fingerprints, provider error/cancellation codes, plans, approvals, per-operation outcomes, history and undo shapes.
@@ -84,6 +85,26 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 8-GB measurement is claimed here.
 
 ## Verification
+
+### Shared plan review and Edit text (2026-10-10, issue #45)
+
+Checked on Linux with Node.js 24.15.0, on top of #41:
+
+- `npm run format:check`, `npm run check` and `npm run build`: passed.
+- `npm test`: 190 passed, 9 todo (158 passed before this change). New cases cover:
+  - line diffs: identical text has no hunks, a replaced line with line numbers, Filipino and multibyte text, a missing or added final line break, a change only to a line ending, separate hunks, and giving up on a diff too large to compute instead of approximating;
+  - restoring CRLF (and mixed) line endings after a textarea, with unedited text returned byte for byte;
+  - Ripple grouping, with links and identical copies never classified as inferred or AI;
+  - the plan action: no apply without a native plan on screen, late replies ignored, a refused apply keeping the preview and needing a fresh one, a result only from the native report for the apply in flight, an Undo conflict changing nothing and claiming nothing undone, Undo offered only for saved changes;
+  - availability (desktop app and a user folder, PDFs only opened), rename name checks, move destinations, and the rename and move operations.
+- The dialogs in headless Chromium, mounted in a throwaway harness (not committed) with a **mocked** native core injected as `window.__TAURI_INTERNALS__`:
+  - Edit text: nothing but `read_document` and `prepare_plan` before approval; the edit of a CRLF file was sent with its CRLF endings; `prepare_plan` received no impacts; the diff showed one removed and one added line; Ripple showed "Needs review", the 25-cap note, one AI badge (for the model's shared-fact candidate) and never "updated"; the approval echoed the shown plan's id and digest; "Saved 1 change." only after the report; a conflicting Undo preview listed the blocking file with Undo disabled;
+  - a refused approval kept the diff with Approve disabled and Preview again; when the file had changed, Preview again kept the draft, said so, and the next preview pinned the new hash;
+  - closing and reopening kept the draft;
+  - Rename refused a `.pdf` name before preview and kept the typed name on "Change the name"; Move listed only existing folders and sent a move into `notes/`;
+  - sample files and a PDF showed the reason instead of a form.
+
+Not verified: the real native core (all of the above used the mock), a real CRLF file on Windows, screen readers, and dark mode. The dialogs are not wired into any screen yet.
 
 ### Organize flow (2026-10-09, issue #22)
 
