@@ -113,3 +113,28 @@ describe("the Organize flow", () => {
     expect(state.error?.code).toBe("destinationExists");
   });
 });
+
+describe("stopping and starting over", () => {
+  it("keeps a stopped analysis stopped even if the scan had already finished", () => {
+    const state = run(
+      { type: "analyzeStarted", request: 1 },
+      { type: "stopAnalyze", request: 2 },
+      // The scan finished just before Stop took effect.
+      { type: "analyzed", request: 1, suggestions: SUGGESTIONS },
+    );
+    expect(state.stage).toBe("idle");
+    expect(state.suggestions).toBeNull();
+  });
+
+  it("drops an apply that was still running when the flow started over", () => {
+    const state = run(
+      ...toPreview,
+      { type: "applyStarted", request: 3 },
+      // A different folder was opened, or the user pressed Done.
+      { type: "reset", request: 4 },
+      { type: "applied", request: 3, report: REPORT },
+    );
+    expect(state.stage).toBe("idle");
+    expect(state.report).toBeNull();
+  });
+});

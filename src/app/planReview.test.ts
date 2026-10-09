@@ -192,3 +192,56 @@ describe("Undo", () => {
     ).toEqual(["notes/2026-a.md is no longer there."]);
   });
 });
+
+describe("a change saved without its Undo record", () => {
+  // The native core reports `historyRequired` only after the file changed.
+  function afterWrite(
+    statuses: OperationOutcome["status"][],
+    failedAt: number,
+  ): ApplyReport {
+    const base = report(statuses, {}, "failed");
+    return {
+      ...base,
+      batch: {
+        ...base.batch,
+        outcomes: base.batch.outcomes.map((outcome) =>
+          outcome.operationIndex === failedAt
+            ? {
+                ...outcome,
+                error: {
+                  code: "historyRequired",
+                  message:
+                    "The file was changed, but Folio could not record how to undo it.",
+                },
+              }
+            : outcome,
+        ),
+      },
+    };
+  }
+
+  it("never says nothing changed when the only failure followed a write", () => {
+    const summary = summarizeApply(
+      PLAN,
+      afterWrite(["failed", "notStarted", "notStarted"], 0),
+    );
+    expect(summary.tone).toBe("partial");
+    expect(`${summary.headline} ${summary.details.join(" ")}`).not.toMatch(
+      /No file was changed/,
+    );
+    expect(summary.headline).toMatch(/^Saved 1 of 3 changes\./);
+    expect(summary.details.join(" ")).toMatch(/Keep a copy/);
+    // Nothing that changed can be undone: its history wasn't recorded.
+    expect(summary.undoable).toBe(false);
+  });
+
+  it("counts it with the earlier changes, which stay undoable", () => {
+    const summary = summarizeApply(
+      PLAN,
+      afterWrite(["succeeded", "failed", "notStarted"], 1),
+    );
+    expect(summary.headline).toMatch(/^Saved 2 of 3 changes\./);
+    expect(summary.details.join(" ")).toMatch(/Earlier changes were kept/);
+    expect(summary.undoable).toBe(true);
+  });
+});
