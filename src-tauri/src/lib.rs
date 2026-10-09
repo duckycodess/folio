@@ -142,7 +142,18 @@ async fn choose_workspace(
     state: State<'_, Folio>,
     index_state: State<'_, IndexState>,
 ) -> Result<Option<WorkspaceInfo>, FolioError> {
-    let Some(folder) = app.dialog().file().blocking_pick_folder() else {
+    // `blocking_pick_folder` blocks its calling thread until the user
+    // answers the dialog. Run it on a dedicated thread (like every other
+    // blocking call in this file) so it doesn't tie up an async runtime
+    // worker thread — on a second pick, held onto an already-busy worker,
+    // that starved every other pending command and made the whole window
+    // look frozen until the dialog closed.
+    let picked = blocking({
+        let app = app.clone();
+        move || app.dialog().file().blocking_pick_folder()
+    })
+    .await?;
+    let Some(folder) = picked else {
         return Ok(None);
     };
     let path = folder
@@ -668,7 +679,7 @@ async fn organization_suggestions(
     .await
 }
 
-/* ------------------------------------------- virtual collections (#78, ADR 0015) */
+/* ------------------------------------------- virtual collections (#78, ADR 0016) */
 
 #[tauri::command]
 async fn list_collections(state: State<'_, Folio>, workspace_id: String) -> Result<Vec<VirtualCollection>, FolioError> {
@@ -1905,6 +1916,106 @@ async fn interpret_request(
     .await?)
 }
 
+/// The running Organize suggestion request (#78). A new request supersedes it
+/// and waits for it to end, and Stop ends it: before it takes the generation
+/// slot, or by cancelling the generation it holds. Stop never cancels another
+/// feature's generation.
+#[derive(Clone, Default)]
+struct SuggestionRuns {
+    current: Arc<Mutex<Option<SuggestionRun>>>,
+    /// Held for a whole request, so one ends before the next starts.
+    serial: Arc<Mutex<()>>,
+}
+
+struct SuggestionRun {
+    stop: Arc<AtomicBool>,
+    /// The generation this run holds, once it has the slot.
+    generation: Option<Arc<AtomicBool>>,
+}
+
+fn stop_suggestion_run(runs: &SuggestionRuns, generation_state: &GenerationState) {
+    let Some(run) = runs.current.lock().ok().and_then(|mut current| current.take()) else { return };
+    run.stop.store(true, Ordering::Release);
+    let Some(generation) = run.generation else { return };
+    if let Ok(guard) = generation_state.lock() {
+        if guard.active_cancel.as_ref().is_some_and(|active| Arc::ptr_eq(active, &generation)) {
+            generation.store(true, Ordering::Release);
+            if let Some(slot) = guard.slot.as_ref() {
+                let _ = slot.provider.cancel_active();
+            }
+        }
+    }
+}
+
+/// Stops the previous run and registers a new one; drop the guard to end it.
+fn begin_suggestion_run<'a>(runs: &'a SuggestionRuns, generation_state: &GenerationState) -> SuggestionRunGuard<'a> {
+    stop_suggestion_run(runs, generation_state);
+    let stop = Arc::new(AtomicBool::new(false));
+    if let Ok(mut current) = runs.current.lock() {
+        *current = Some(SuggestionRun { stop: stop.clone(), generation: None });
+    }
+    SuggestionRunGuard { runs, stop }
+}
+
+struct SuggestionRunGuard<'a> {
+    runs: &'a SuggestionRuns,
+    stop: Arc<AtomicBool>,
+}
+
+impl SuggestionRunGuard<'_> {
+    fn stopped(&self) -> bool {
+        self.stop.load(Ordering::Acquire)
+    }
+
+    /// Records the generation this run now holds. False if the run was stopped
+    /// meanwhile, in which case the caller gives the slot back unused.
+    fn hold(&self, generation: &Arc<AtomicBool>) -> bool {
+        if let Ok(mut current) = self.runs.current.lock() {
+            if let Some(run) = current.as_mut().filter(|run| Arc::ptr_eq(&run.stop, &self.stop)) {
+                run.generation = Some(generation.clone());
+            }
+        }
+        !self.stopped()
+    }
+}
+
+impl Drop for SuggestionRunGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut current) = self.runs.current.lock() {
+            if current.as_ref().is_some_and(|run| Arc::ptr_eq(&run.stop, &self.stop)) {
+                *current = None;
+            }
+        }
+    }
+}
+
+fn suggestion_stopped() -> FolioError {
+    error(ErrorCode::Cancelled, "These suggestions were stopped.")
+}
+
+/// Runs `work` with the generation slot inside a suggestion run. `Ok(None)`
+/// when the run was stopped before the work could start.
+fn generate_in_run<T>(
+    app: &AppHandle,
+    generation_state: &GenerationState,
+    run: &SuggestionRunGuard<'_>,
+    work: impl FnOnce(&dyn GenerationProvider, &AtomicBool) -> T,
+) -> Result<Option<T>, NativeProviderError> {
+    if run.stopped() {
+        return Ok(None);
+    }
+    let (provider, cancel) = acquire_generation(app, generation_state)?;
+    let result = run.hold(&cancel).then(|| work(provider.as_ref(), cancel.as_ref()));
+    finish_generation(generation_state, &cancel)?;
+    Ok(result)
+}
+
+/// Stops the running Organize suggestions, and only their own generation.
+#[tauri::command]
+fn stop_suggestions(runs: State<'_, SuggestionRuns>, generation_state: State<'_, GenerationState>) {
+    stop_suggestion_run(runs.inner(), generation_state.inner());
+}
+
 /// Organize's suggested collections. Groups need only the embedding model;
 /// names need the generation model too, and are display text the user may edit.
 #[derive(Serialize)]
@@ -1931,13 +2042,20 @@ async fn suggest_collections(
     index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
     generation_state: State<'_, GenerationState>,
+    runs: State<'_, SuggestionRuns>,
     workspace_id: String,
 ) -> Result<CollectionSuggestions, FolioError> {
     let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
     let index_state = index_state.inner().clone();
     let embedding_state = embedding_state.inner().clone();
     let generation_state = generation_state.inner().clone();
+    let runs = runs.inner().clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
+        let run = begin_suggestion_run(&runs, &generation_state);
+        let _serial = runs.serial.lock().map_err(|_| unavailable_state())?;
+        if run.stopped() {
+            return Err(suggestion_stopped());
+        }
         let snapshot = ensure_snapshot(&app, &embedding_state, &root, &index_state)?;
         let Some(space) = snapshot.embedding_space.as_ref() else {
             return Ok(CollectionSuggestions {
@@ -1960,20 +2078,18 @@ async fn suggest_collections(
         let (naming, naming_error) = if groups.is_empty() {
             ("notNeeded", None)
         } else {
-            match acquire_generation(&app, &generation_state) {
+            match generate_in_run(&app, &generation_state, &run, |provider, cancel| folio_core::collections::name_groups(provider, &mut groups, cancel)) {
                 Err(failure) if failure.code == folio_core::contracts::ProviderErrorCode::ModelNotInstalled => ("generationModelMissing", None),
                 Err(failure) => ("failed", Some(FolioError::from(failure))),
-                Ok((provider, cancel)) => {
-                    let named = folio_core::collections::name_groups(provider.as_ref(), &mut groups, cancel.as_ref());
-                    finish_generation(&generation_state, &cancel)?;
-                    match named {
-                        Ok(NamingOutcome::Named) => ("named", None),
-                        Ok(NamingOutcome::Cancelled) => ("cancelled", None),
-                        Err(failure) => ("failed", Some(FolioError::from(native_error(failure)))),
-                    }
-                }
+                Ok(None) => return Err(suggestion_stopped()),
+                Ok(Some(Ok(NamingOutcome::Named))) => ("named", None),
+                Ok(Some(Ok(NamingOutcome::Cancelled))) => ("cancelled", None),
+                Ok(Some(Err(failure))) => ("failed", Some(FolioError::from(native_error(failure)))),
             }
         };
+        if run.stopped() {
+            return Err(suggestion_stopped());
+        }
         Ok(CollectionSuggestions {
             status: "grouped",
             space_fingerprint: Some(folio_core::retrieval::space_fingerprint(space)),
@@ -2091,6 +2207,40 @@ mod tests {
     use std::fs;
 
     #[test]
+    fn stopping_suggestions_cancels_only_their_own_generation() {
+        let runs = SuggestionRuns::default();
+        let generation_state = GenerationState::default();
+        let unrelated = Arc::new(AtomicBool::new(false));
+        generation_state.lock().unwrap().active_cancel = Some(unrelated.clone());
+
+        // Stopped before it took the slot: the unrelated generation keeps running.
+        let first = begin_suggestion_run(&runs, &generation_state);
+        stop_suggestion_run(&runs, &generation_state);
+        assert!(first.stopped());
+        assert!(!unrelated.load(Ordering::Acquire));
+        assert!(!first.hold(&Arc::new(AtomicBool::new(false))), "a stopped run gives the slot back unused");
+        drop(first);
+
+        // Holding the slot: Stop cancels exactly that generation.
+        let ours = Arc::new(AtomicBool::new(false));
+        generation_state.lock().unwrap().active_cancel = Some(ours.clone());
+        let second = begin_suggestion_run(&runs, &generation_state);
+        assert!(second.hold(&ours));
+        stop_suggestion_run(&runs, &generation_state);
+        assert!(ours.load(Ordering::Acquire) && second.stopped());
+        drop(second);
+
+        // A new run supersedes the one before it.
+        let third = begin_suggestion_run(&runs, &generation_state);
+        let fourth = begin_suggestion_run(&runs, &generation_state);
+        assert!(third.stopped() && !fourth.stopped());
+        drop(third);
+        assert!(runs.current.lock().unwrap().is_some(), "ending a superseded run leaves the new one registered");
+        drop(fourth);
+        assert!(runs.current.lock().unwrap().is_none());
+    }
+
+    #[test]
     fn corpus_loading_skips_and_reports_unreadable_text() {
         let root = tempfile::tempdir().unwrap();
         fs::write(root.path().join("valid.md"), "valid content").unwrap();
@@ -2194,6 +2344,7 @@ mod tests {
             ("IndexState", TypeId::of::<IndexState>()),
             ("EmbeddingState", TypeId::of::<EmbeddingState>()),
             ("GenerationState", TypeId::of::<GenerationState>()),
+            ("SuggestionRuns", TypeId::of::<SuggestionRuns>()),
             ("InstallState", TypeId::of::<InstallState>()),
             ("LabState", TypeId::of::<lab_commands::LabState>()),
             ("Folio", TypeId::of::<Folio>()),
@@ -2253,6 +2404,7 @@ pub fn run() {
         .manage(IndexState::default())
         .manage(EmbeddingState::default())
         .manage(GenerationState::default())
+        .manage(SuggestionRuns::default())
         .manage(InstallState::default())
         // Each managed state must be its own type (see
         // `every_managed_state_has_its_own_type`).
@@ -2302,6 +2454,7 @@ pub fn run() {
             add_collection_members,
             remove_collection_members,
             suggest_collections,
+            stop_suggestions,
             suggest_file_changes,
             list_models,
             verify_model,

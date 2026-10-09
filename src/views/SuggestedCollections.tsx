@@ -1,4 +1,5 @@
 import { Sparkles } from "lucide-react";
+import { useEffect, useRef } from "react";
 import type { CollectionsController } from "../app/useCollections";
 import {
   keepProblem,
@@ -26,6 +27,11 @@ export function SuggestedCollections({
   onStop?: () => void;
 }) {
   const { suggestions } = collections;
+  const stopped = useRef<HTMLParagraphElement>(null);
+  // The Stop button is gone once stopped; focus goes to what happened instead.
+  useEffect(() => {
+    if (suggestions.status === "stopped") stopped.current?.focus();
+  }, [suggestions.status]);
   if (suggestions.status === "idle") return null;
 
   return (
@@ -50,6 +56,12 @@ export function SuggestedCollections({
             </Button>
           </div>
         </div>
+      )}
+
+      {suggestions.status === "stopped" && (
+        <p ref={stopped} tabIndex={-1} className="muted">
+          Grouping stopped. Analyze again to group files by meaning.
+        </p>
       )}
 
       {suggestions.status === "failed" && suggestions.error && (

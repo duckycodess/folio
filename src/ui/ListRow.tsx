@@ -30,6 +30,12 @@ interface ListRowProps {
  * The main button of a file row. It opens the file; the row's other controls
  * (an actions menu) sit beside it, so it is a list of buttons rather than a
  * listbox, whose options can't contain controls.
+ *
+ * A single click already opens the file — `onDoubleClick` also calls
+ * `onSelect` so a fast double click (the familiar file-manager gesture)
+ * reliably opens it too, instead of landing on whatever native double-click
+ * side effect (such as text selection) the second click would otherwise
+ * trigger.
  */
 export function ListRow({
   icon,
@@ -55,6 +61,10 @@ export function ListRow({
       data-document-id={dataId}
       className={`list-row${selected ? " is-selected" : ""}`}
       onClick={onSelect}
+      onDoubleClick={(event) => {
+        event.preventDefault();
+        onSelect();
+      }}
       title={tooltip ?? (subtitle ? `${title}\n${subtitle}` : title)}
     >
       <span className="list-row-main">

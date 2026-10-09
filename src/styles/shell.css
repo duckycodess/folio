@@ -71,7 +71,7 @@
 }
 .wordmark {
   padding: 0 var(--space-3);
-  font: 800 2rem/1 var(--font-sans);
+  font: 800 2rem/1 var(--font-heading);
   letter-spacing: -0.04em;
 }
 .wordmark-short {
@@ -146,6 +146,12 @@
   flex: none;
   border-radius: 50%;
   background: var(--sidebar-text-muted);
+}
+.status-pill[data-status="ready"] .status-dot {
+  background: var(--color-success-dot);
+}
+.status-pill[data-status="unavailable"] .status-dot {
+  background: var(--color-danger);
 }
 
 /* Main column */

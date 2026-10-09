@@ -2006,6 +2006,10 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
       return undefined;
     },
 
+    async stop_suggestions() {
+      return undefined;
+    },
+
     async list_collections(args) {
       assertWorkspace(String(args.workspaceId));
       return Array.from(collections.values()).reverse().map(collectionView);

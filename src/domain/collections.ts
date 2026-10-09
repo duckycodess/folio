@@ -22,6 +22,14 @@ export function nameProblem(raw: string): string | null {
   // Control characters (C0, DEL and C1) are refused natively too.
   if (/[\u0000-\u001f\u007f-\u009f]/u.test(name))
     return "Remove the control characters from the name.";
+  // So are invisible formatting characters, such as bidirectional overrides,
+  // which would make the name display differently from its text.
+  if (
+    /[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/u.test(
+      name,
+    )
+  )
+    return "Remove the invisible formatting characters from the name.";
   return null;
 }
 
