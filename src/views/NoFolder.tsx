@@ -2,13 +2,14 @@ import { FolderPlus } from "lucide-react";
 import type { WorkspaceState } from "../app/useWorkspace";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
-import { Olio } from "../ui/Olio";
 
-/** The desktop app before any folder is added. */
+/**
+ * The desktop app before any folder is added. No Olio here: the floating
+ * launcher is the view's one Olio now (#66).
+ */
 export function NoFolder({ workspace }: { workspace: WorkspaceState }) {
   return (
     <EmptyState
-      illustration={<Olio pose="waving" size={160} />}
       title="Add a folder to get started"
       action={
         <div className="empty-state-actions">
@@ -31,18 +32,10 @@ export function NoFolder({ workspace }: { workspace: WorkspaceState }) {
   );
 }
 
-/** A chosen folder with nothing Folio can read. */
-export function EmptyFolder({
-  workspace,
-  showOlio,
-}: {
-  workspace: WorkspaceState;
-  /** Off where the view already shows Olio elsewhere (one per view). */
-  showOlio: boolean;
-}) {
+/** A chosen folder with nothing Folio can read. No Olio: see `NoFolder`. */
+export function EmptyFolder({ workspace }: { workspace: WorkspaceState }) {
   return (
     <EmptyState
-      illustration={showOlio && <Olio pose="peeking" size={160} />}
       title="This folder has no files Folio can read"
       action={
         <Button

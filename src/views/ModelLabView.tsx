@@ -13,7 +13,6 @@ import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { Modal } from "../ui/Modal";
 import { Notice } from "../ui/Notice";
-import { Olio } from "../ui/Olio";
 import { Panel } from "../ui/Panel";
 import { Progress } from "../ui/Progress";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
@@ -110,10 +109,8 @@ export function ModelLabView() {
 
       {models.load === "desktopOnly" ? (
         <Panel title="Local AI models">
-          <EmptyState
-            illustration={<Olio pose="sleeping" size={160} />}
-            title="Model setup works in the desktop app"
-          >
+          {/* No Olio here: the floating launcher is the view's one Olio (#66). */}
+          <EmptyState title="Model setup works in the desktop app">
             This preview can't download or run models. Browsing, keyword search
             and reading files work without one.
           </EmptyState>

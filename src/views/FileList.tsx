@@ -1,10 +1,19 @@
 import {
   useId,
+  useLayoutEffect,
   useState,
+  type CSSProperties,
   type FocusEvent,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
+import {
+  fileColumnsTemplate,
+  NAME_MIN_WIDTH,
+  nameColumnWidth,
+  visibleColumns,
+} from "../app/fileColumns";
+import { useElementWidth } from "../app/useElementWidth";
 import type { DocumentRecord, SearchResult } from "../domain/contracts";
 import { FileTypeIcon } from "../ui/FileTypeIcon";
 import { ListRow } from "../ui/ListRow";
@@ -32,8 +41,10 @@ interface FileListProps {
 
 /**
  * The file table: name, location, type, modified and size. Columns drop out
- * as the table narrows (see `.file-table` in components.css), and the location
- * moves under the name.
+ * one at a time, in priority order (size, then modified, then type, then
+ * location — see `../app/fileColumns.ts`), as the table's own width shrinks,
+ * so the name is never the column that gets crushed (#67). Once location
+ * drops, it moves under the name instead.
  *
  * Arrow keys, Home and End move between rows; Enter or Space opens one. The
  * single Tab stop follows the focused row, so Tab and Shift+Tab come back to
@@ -57,6 +68,46 @@ export function FileList({
   const [focusedId, setFocusedId] = useState<string>();
   const detailPrefix = useId();
   const byId = new Map(results?.map((result) => [result.document.id, result]));
+  // Falls back to showing every column until the first measurement lands.
+  const [tableRef, tableWidth, table] = useElementWidth<HTMLDivElement>(1200);
+  // What a row's grid can't use (its padding and the ⋯ menu), and the room
+  // the longest name needs. Neither depends on which columns show, so
+  // measuring them after each render settles at once.
+  const [fit, setFit] = useState({ chrome: 32, name: NAME_MIN_WIDTH });
+  useLayoutEffect(() => {
+    const row = table?.querySelector<HTMLElement>(".list-row");
+    if (!table || !row) return;
+    const style = getComputedStyle(row);
+    const grid =
+      row.clientWidth -
+      parseFloat(style.paddingLeft) -
+      parseFloat(style.paddingRight);
+    const chrome = Math.round(table.clientWidth - grid);
+    let longest = 0;
+    for (const title of table.querySelectorAll<HTMLElement>(
+      ".list-row-title",
+    )) {
+      const main = title.closest(".list-row-main");
+      const indent = main
+        ? title.getBoundingClientRect().left - main.getBoundingClientRect().left
+        : 0;
+      longest = Math.max(longest, indent + title.scrollWidth);
+    }
+    const name = nameColumnWidth(Math.ceil(longest));
+    setFit((previous) =>
+      previous.chrome === chrome && previous.name === name
+        ? previous
+        : { chrome, name },
+    );
+  });
+  const shown = visibleColumns(tableWidth - fit.chrome, fit.name);
+  const showLocationColumn = shown.includes("location");
+  const showType = shown.includes("type");
+  const showModified = shown.includes("modified");
+  const showSize = shown.includes("size");
+  const columnsStyle = {
+    "--file-columns": fileColumnsTemplate(shown),
+  } as CSSProperties;
 
   function onFocus(event: FocusEvent<HTMLUListElement>) {
     const row = (event.target as HTMLElement).closest<HTMLElement>(
@@ -95,14 +146,20 @@ export function FileList({
       : documents[0]?.id;
 
   return (
-    <div className={`file-table${actions ? " has-actions" : ""}`}>
+    <div
+      ref={tableRef}
+      className={`file-table${actions ? " has-actions" : ""}${showLocationColumn ? "" : " file-table-compact"}`}
+      style={columnsStyle}
+    >
       {/* Visual column headings; each row's spoken name carries the same facts. */}
       <div className="file-table-head" aria-hidden="true">
         <span className="file-col-name">Name</span>
-        <span className="file-col-location">Location</span>
-        <span className="file-col-type">Type</span>
-        <span className="file-col-modified">Modified</span>
-        <span className="file-col-size">Size</span>
+        {showLocationColumn && (
+          <span className="file-col-location">Location</span>
+        )}
+        {showType && <span className="file-col-type">Type</span>}
+        {showModified && <span className="file-col-modified">Modified</span>}
+        {showSize && <span className="file-col-size">Size</span>}
       </div>
       <ul
         className="file-list"
@@ -134,27 +191,35 @@ export function FileList({
                   subtitle={location}
                   cells={
                     <>
-                      <span className="file-col-location">{location}</span>
-                      <span className="file-col-type">{kind}</span>
+                      {showLocationColumn && (
+                        <span className="file-col-location">{location}</span>
+                      )}
+                      {showType && (
+                        <span className="file-col-type">{kind}</span>
+                      )}
                       {/* The heading row is hidden from assistive tech, so a
                           date carries its column in words that are spoken,
                           not shown. */}
-                      <span className="file-col-modified tabular">
-                        {modified ? (
-                          <>
-                            <span className="visually-hidden">modified </span>
-                            {modified}
-                          </>
-                        ) : (
-                          <>
-                            <span aria-hidden="true">—</span>
-                            <span className="visually-hidden">
-                              no modified date
-                            </span>
-                          </>
-                        )}
-                      </span>
-                      <span className="file-col-size tabular">{size}</span>
+                      {showModified && (
+                        <span className="file-col-modified tabular">
+                          {modified ? (
+                            <>
+                              <span className="visually-hidden">modified </span>
+                              {modified}
+                            </>
+                          ) : (
+                            <>
+                              <span aria-hidden="true">—</span>
+                              <span className="visually-hidden">
+                                no modified date
+                              </span>
+                            </>
+                          )}
+                        </span>
+                      )}
+                      {showSize && (
+                        <span className="file-col-size tabular">{size}</span>
+                      )}
                     </>
                   }
                   tooltip={document.relativePath}

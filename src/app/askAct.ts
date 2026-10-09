@@ -25,7 +25,13 @@ export type AskOutcome =
   | { type: "unsupported"; reason: string }
   | { type: "unreadable" }
   /** A change to another file than the one the user chose; never previewed. */
-  | { type: "otherFile"; proposal: OperationProposal; chosen: DocumentRecord };
+  | { type: "otherFile"; proposal: OperationProposal; chosen: DocumentRecord }
+  /**
+   * The browser-preview mock only (#66): a fabricated reply, always shown
+   * labelled "Practice replies — not a model". Never produced by a real
+   * adapter, and never bundled into the desktop app's behavior.
+   */
+  | { type: "practice"; reply: string; streaming: boolean };
 
 export interface AskTurn {
   id: number;
