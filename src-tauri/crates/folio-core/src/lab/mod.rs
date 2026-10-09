@@ -5,6 +5,7 @@
 
 pub mod record;
 pub mod sink;
+pub mod suite;
 
 pub use record::*;
 pub use sink::{LabSink, MemorySink};
