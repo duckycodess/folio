@@ -278,7 +278,7 @@ Olio is a yellow folder-owl with ivory face mask, black eyes and wings, and oran
 
 ### Assets
 
-The source sheets are in `olio-asset-pack.zip`: `olio-main-design.png`, `olio-angles-and-actions.png` and `olio-more-actions.png`. The pack is kept outside Git and is ignored by `.gitignore` until the team decides whether source sheets belong in the repository; get it from the design owner and do not commit it.
+The source sheets are in `docs/assets/olio-asset-pack.zip`: `olio-main-design.png`, `olio-angles-and-actions.png` and `olio-more-actions.png`. The pack is committed so everyone works from the same sheets; replace it in place when the design owner sends a new version.
 
 The twelve poses in the table below are cleaned and sliced into `src/assets/olio/olio-<pose>-<px>.png`:
 
