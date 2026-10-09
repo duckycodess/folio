@@ -15,6 +15,7 @@ import shutil
 import sys
 
 MANIFEST = os.path.join("src-tauri", "resources", "model-manifest.json")
+CANDIDATES = os.path.join("src-tauri", "resources", "model-evaluation-candidates.json")
 
 
 def fail(message):
@@ -26,6 +27,13 @@ def main():
     manifest = json.load(open(MANIFEST, encoding="utf-8"))
     models = {m["id"]: m for m in manifest["models"]}
     runtimes = {r["id"]: r for r in manifest["runtimes"]}
+    # Evaluation-only candidates: measurable by name, never supported models.
+    candidates = {
+        m["id"]: m
+        for m in json.load(open(CANDIDATES, encoding="utf-8"))["models"]
+    }
+    if set(models) & set(candidates):
+        fail("A candidate id is also a product model id.")
 
     embedding = os.environ["LAB_EMBEDDING"].strip()
     generation = [i.strip() for i in os.environ["LAB_MODELS"].split(",") if i.strip()]
@@ -38,8 +46,12 @@ def main():
     if embedding not in models or models[embedding]["role"] != "embedding":
         fail(f"{embedding!r} is not an embedding model in the pinned manifest.")
     for model_id in generation:
-        if model_id not in models or models[model_id]["role"] != "generation":
-            fail(f"{model_id!r} is not a generation model in the pinned manifest.")
+        known = models.get(model_id) or candidates.get(model_id)
+        if known is None or known["role"] != "generation":
+            fail(
+                f"{model_id!r} is not a generation model in the pinned manifest "
+                "or the evaluation-candidate catalog."
+            )
     if runtime_id not in runtimes:
         fail(f"{runtime_id!r} is not a runtime in the pinned manifest.")
 
@@ -47,7 +59,14 @@ def main():
         return sum(f["bytes"] for f in item["files"])
 
     rows = [("embedding model", embedding, size(models[embedding]))]
-    rows += [("generation model", i, size(models[i])) for i in generation]
+    rows += [
+        (
+            "generation model (evaluation candidate)" if i in candidates else "generation model",
+            i,
+            size(candidates[i] if i in candidates else models[i]),
+        )
+        for i in generation
+    ]
     rows.append(("llama.cpp runtime archive", runtime_id, size(runtimes[runtime_id])))
     total = sum(r[2] for r in rows)
 
@@ -61,6 +80,15 @@ def main():
     ]
     lines += [f"| {kind} | `{item}` | {n:,} |" for kind, item, n in rows]
     lines.append(f"| **total** | | **{total:,}** |")
+
+    notes = [
+        f"- `{i}` is an evaluation-only candidate: not supported, not recommended, unmeasured. "
+        + candidates[i].get("licenseNote", "")
+        for i in generation
+        if i in candidates
+    ]
+    if notes:
+        lines += [""] + notes
 
     data_dir = os.environ["LAB_DATA_DIR"]
     os.makedirs(data_dir, exist_ok=True)

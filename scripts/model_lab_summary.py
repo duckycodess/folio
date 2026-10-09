@@ -21,6 +21,20 @@ def peak(record):
     return "; ".join(parts) or "unavailable"
 
 
+def offload(record):
+    backend = (record["runtimeDetail"] or {}).get("backend")
+    if not backend:
+        return "n/a (in-process)"
+    done = backend.get("gpuLayersOffloaded")
+    total = backend.get("layersTotal")
+    seen = "not reported" if done is None else f"{done}/{total} layers on GPU"
+    return f'asked {backend["gpuOffload"]}; server {seen}'
+
+
+def catalog(record):
+    return "evaluation candidate" if record["model"]["evaluationOnly"] else "product"
+
+
 def outcome(record):
     if record["correctness"] is None:
         return "Not reviewed" if record["task"] == "summary" else "not graded"
@@ -47,14 +61,14 @@ def main(path):
         "Peaks are process-lifetime peaks, not per-task memory.",
         "",
         "| Task | Case | Model | Request | Start ms | Task ms | Outcome (labels) | Peak memory |",
-        "| --- | --- | --- | --- | ---: | ---: | --- | --- |",
+        "| --- | --- | --- | --- | --- | ---: | ---: | --- | --- | --- |",
     ]
     for r in data["records"]:
         position = "first after restart" if r["cold"] else "immediate repeat"
         start = r["timing"]["processStartMs"]
         lines.append(
-            f'| {r["task"]} | {r["caseId"]} | `{r["modelId"]}` | {position} | '
-            f'{"n/a" if start is None else start} | {r["taskDurationMs"]} | {outcome(r)} | {peak(r)} |'
+            f'| {r["task"]} | {r["caseId"]} | `{r["modelId"]}` | {catalog(r)} | {position} | '
+            f'{"n/a" if start is None else start} | {r["taskDurationMs"]} | {outcome(r)} | {offload(r)} | {peak(r)} |'
         )
     text = "\n".join(lines) + "\n"
     print(text)
