@@ -1,6 +1,6 @@
 # Design system: Golden Daylight
 
-Folio's visual direction is **Golden Daylight**: warm ivory surfaces, a charcoal sidebar, gold reserved for primary actions and brand moments, Inter for all UI text, and **Olio** — a folder-shaped owl — as the mascot. This document turns the brandbook into rules for the replacement UI (#6, #16 and the tickets that build on it).
+Folio's visual direction is **Golden Daylight**: white surfaces, a charcoal sidebar, gold reserved for primary actions and brand moments, Inter for all UI text, and **Olio** — a folder-shaped owl — as the mascot. This document turns the brandbook into rules for the replacement UI (#6, #16 and the tickets that build on it).
 
 ![Golden Daylight brandbook](assets/brandbook-golden-daylight.jpg)
 
@@ -23,14 +23,14 @@ The brandbook is a direction, not a spec of shipped features. Its screens contai
 | `--brand-gold`      | Gold      | `#F5BF18` | Primary button fill, active nav indicator, brand dots, folder icons    |
 | `--brand-sunflower` | Sunflower | `#FFDA2D` | Primary button hover, highlights                                       |
 | `--brand-honey`     | Honey     | `#E9A817` | Primary button pressed, illustration shading                           |
-| `--brand-ivory`     | Ivory     | `#FFFCF3` | App canvas                                                             |
+| `--brand-ivory`     | Ivory     | `#FFFCF3` | Sidebar text, dark-theme text, Olio's dark-mode disc                   |
 | `--brand-charcoal`  | Charcoal  | `#20231F` | Primary text, sidebar background, text on gold, focus ring on light UI |
 
 ### Semantic tokens (light theme)
 
 | Token                    | Value     | Use                                                  |
 | ------------------------ | --------- | ---------------------------------------------------- |
-| `--color-bg`             | `#FFFCF3` | Window canvas                                        |
+| `--color-bg`             | `#FFFFFF` | Window canvas (white, not the brandbook's ivory)     |
 | `--color-surface`        | `#FFFFFF` | Cards, tables, panels, inputs                        |
 | `--color-surface-muted`  | `#FAF7EE` | Table header, hovered rows, secondary panels         |
 | `--color-selected`       | `#FFF6D6` | Selected row and selected card background            |
@@ -55,20 +55,20 @@ The brandbook is a direction, not a spec of shipped features. Its screens contai
 
 ### Contrast rules
 
-Measured with the WCAG 2.x formula:
+Measured with the WCAG 2.x formula on the white canvas and surfaces:
 
 | Pair                  | Ratio   | Allowed for                                                    |
 | --------------------- | ------- | -------------------------------------------------------------- |
-| Charcoal on ivory     | 15.49:1 | All text                                                       |
+| Charcoal on white     | 15.89:1 | All text                                                       |
 | Charcoal on gold      | 9.34:1  | Button labels and icons on gold                                |
-| `#5C5F59` on ivory    | 6.33:1  | Secondary text                                                 |
-| `#6B6E68` on ivory    | 5.05:1  | Tertiary text and placeholders                                 |
-| `#8A6500` on ivory    | 5.19:1  | Links                                                          |
+| `#5C5F59` on white    | 6.49:1  | Secondary text                                                 |
+| `#6B6E68` on white    | 5.18:1  | Tertiary text and placeholders                                 |
+| `#8A6500` on white    | 5.33:1  | Links                                                          |
 | `#B8BAB4` on charcoal | 8.11:1  | Sidebar muted text                                             |
 | Gold on charcoal      | 9.34:1  | Active indicator and focus ring in sidebar                     |
-| `#8A8C86` on ivory    | 3.31:1  | Control borders only — **never text**                          |
-| **Gold on ivory**     | 1.66:1  | **Decoration only** — never text, focus or a meaningful border |
-| **Honey on ivory**    | 2.03:1  | **Decoration only**                                            |
+| `#8A8C86` on white    | 3.40:1  | Control borders only — **never text**                          |
+| **Gold on white**     | 1.70:1  | **Decoration only** — never text, focus or a meaningful border |
+| **Honey on white**    | 2.08:1  | **Decoration only**                                            |
 
 Never put white text on gold. Never rely on color alone: status dots, collection dots and badges always have a text label.
 
@@ -118,7 +118,7 @@ Dark-theme contrast, measured with the same formula:
 | `#FFFCF3` / `#B8BAB4` on sidebar-active `#2A2D28` | 13.61 / 7.13:1 | Active nav item                |
 | Gold on sidebar `#111310` / active `#2A2D28`      | 10.98 / 8.21:1 | Sidebar indicator and focus    |
 
-Define dark values under `@media (prefers-color-scheme: dark)` and a `data-theme="dark"` override. Any new token or pair must be added to both contrast tables.
+Define dark values under `@media (prefers-color-scheme: dark)` and a `data-theme="dark"` override. The sidebar's **Theme** switch cycles System → Light → Dark. System follows the OS. The choice is remembered on this device (`src/app/theme.ts`) and applied before the first render. Any new token or pair must be added to both contrast tables.
 
 ## Typography
 
@@ -222,7 +222,7 @@ Active item: `--sidebar-item-active` background, 3px gold bar on the left edge, 
 
 ## Icons
 
-Outline icons on a 24px grid, 1.5–2px rounded strokes, charcoal on light surfaces — the brandbook set matches **Lucide**. Install `lucide-react` from npm so icons are bundled; no icon CDN. Icon-only buttons need an `aria-label` and a tooltip. File-type icons (PDF, Markdown, text) may use their recognizable colors at 20–24px.
+Outline icons on a 24px grid, 1.5–2px rounded strokes, charcoal on light surfaces — the brandbook set matches **Lucide**. Install `lucide-react` from npm so icons are bundled; no icon CDN. Icon-only buttons need an `aria-label` and a tooltip. File types use coloured tiles at 20–24px, as in the brandbook: PDF red (`--file-pdf`), plain text blue (`--file-text`), and Markdown charcoal in light mode and ivory in dark mode. Each tile has a white or charcoal Lucide glyph at ≥4.5:1. The tiles are ≥3:1 against the page and panel surfaces in both themes, but in dark mode the PDF and text tiles drop below that on hovered and selected rows (down to 2.62:1). That's acceptable because they're decorative: the file name and type text carry the meaning. Brightening them would push the white glyphs below 4.5:1. Brand logos (Acrobat, Word, Notion) are not used.
 
 ## Olio, the mascot
 
@@ -232,12 +232,13 @@ Olio is a yellow folder-owl with ivory face mask, black eyes and wings, and oran
 
 The source sheets are in `olio-asset-pack.zip`: `olio-main-design.png`, `olio-angles-and-actions.png` and `olio-more-actions.png`. The pack is kept outside Git and is ignored by `.gitignore` until the team decides whether source sheets belong in the repository; get it from the design owner and do not commit it.
 
-Assets to produce before #16 uses them:
+The twelve poses in the table below are cleaned and sliced into `src/assets/olio/olio-<pose>-<px>.png`:
 
-1. **Olio poses.** The sheets have noisy alpha backgrounds (red and yellow speckle). Clean them and slice each pose into its own transparent PNG or SVG.
-2. Export poses at 1× and 2× for 48, 96 and 160px. Keep each file small; target well under 100 KB per pose.
-3. Store them under `src/assets/olio/` with pose names (`olio-waving.png` and so on).
-4. **Wordmark.** Export the folio wordmark from the brandbook as `src/assets/brand/folio-wordmark.svg`, in a charcoal version for light surfaces and an ivory version for the sidebar.
+- The speckled low-alpha background was removed, interiors made fully opaque and anti-aliased edges kept. The artwork itself is unchanged.
+- Each pose is exported at 96, 192 and 320px: 2× of the 48, 96 and 160px display sizes. There is no separate 1× set, because the source poses are only about 300px and browsers downscale the 2× files well. Every file is under 100 KB.
+- Use them only through the `<Olio pose size>` component (`src/ui/Olio.tsx`). A test fails if a pose is missing at any size.
+
+Still to produce: **the wordmark.** Export the folio wordmark as `src/assets/brand/folio-wordmark.svg`, in a charcoal version for light surfaces and an ivory version for the sidebar. Until then the sidebar shows an interim Inter 800 wordmark.
 
 ### Poses and where they appear
 
@@ -261,6 +262,7 @@ Assets to produce before #16 uses them:
 - Olio is **decorative**: `alt=""` (or `aria-hidden`) because the adjacent text carries the meaning. Never put information only in the mascot's pose.
 - One Olio per view, at most. Never inside tables, menus, toolbars, notices in dense panels or the file reader.
 - Sizes: 48px inline, 96px in page headers and panels, 160px in empty states and onboarding.
+- On dark surfaces Olio sits on an ivory disc (`--olio-backdrop`), because its charcoal wings disappear against the dark theme. Light surfaces have no disc.
 - Errors stay serious: the worried pose accompanies a clear message and recovery action; it never replaces them.
 - Respect `prefers-reduced-motion`: any pose animation (for example a gentle bob while indexing) stops when reduced motion is requested.
 

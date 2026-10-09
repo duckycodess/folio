@@ -1,5 +1,5 @@
-import { FlaskConical } from "lucide-react";
 import { EmptyState } from "../ui/EmptyState";
+import { Olio } from "../ui/Olio";
 import { Panel } from "../ui/Panel";
 
 export function ModelLabView() {
@@ -13,7 +13,7 @@ export function ModelLabView() {
       </header>
       <Panel title="Installed models">
         <EmptyState
-          icon={<FlaskConical size={24} />}
+          illustration={<Olio pose="sleeping" size={160} />}
           title="No local AI model is set up"
         >
           Browsing, keyword search and reading files work without one. Model

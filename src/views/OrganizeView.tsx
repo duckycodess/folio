@@ -1,15 +1,20 @@
-import { ArrowRight, Folders } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 import { useState } from "react";
 import type { WorkspaceState } from "../app/useWorkspace";
 import type { DocumentRecord } from "../domain/contracts";
 import { Button } from "../ui/Button";
 import { EmptyState } from "../ui/EmptyState";
 import { Modal } from "../ui/Modal";
+import { Olio } from "../ui/Olio";
 import { Panel } from "../ui/Panel";
+import { listedSelection } from "../shell/reader";
 import { FileList } from "./FileList";
 
 export function OrganizeView({ workspace }: { workspace: WorkspaceState }) {
-  const selected = workspace.selected;
+  // Like the reader, ignore a chosen file that the current search leaves out,
+  // and offer only files the search includes.
+  const selected = listedSelection(workspace.selected, workspace.results);
+  const choices = workspace.results.map((result) => result.document);
 
   return (
     <div className="view">
@@ -21,7 +26,10 @@ export function OrganizeView({ workspace }: { workspace: WorkspaceState }) {
       </header>
 
       <Panel title="Collections">
-        <EmptyState icon={<Folders size={24} />} title="No collections yet">
+        <EmptyState
+          illustration={<Olio pose="organizing" size={96} />}
+          title="No collections yet"
+        >
           Collections group related files without moving or copying them.
           Creating collections isn't available in this version yet.
         </EmptyState>
@@ -50,7 +58,7 @@ export function OrganizeView({ workspace }: { workspace: WorkspaceState }) {
             <p className="muted">Choose a file to rename.</p>
             <FileList
               label="Files to rename"
-              documents={workspace.documents}
+              documents={choices}
               selectedId={undefined}
               onSelect={workspace.selectDocument}
             />

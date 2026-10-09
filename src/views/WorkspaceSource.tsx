@@ -1,4 +1,4 @@
-import { FolderOpen } from "lucide-react";
+import { FolderOpen, FolderPlus } from "lucide-react";
 import type { WorkspaceState } from "../app/useWorkspace";
 import { Button } from "../ui/Button";
 
@@ -24,11 +24,11 @@ export function WorkspaceSource({ workspace }: { workspace: WorkspaceState }) {
       </div>
       <Button
         variant={sample ? "primary" : "secondary"}
-        icon={<FolderOpen size={18} />}
+        icon={sample ? <FolderPlus size={18} /> : <FolderOpen size={18} />}
         disabled={!workspace.nativeAvailable || workspace.busy}
         onClick={workspace.selectFolder}
       >
-        {sample ? "Choose folder" : "Change folder"}
+        {sample ? "Add folder" : "Change folder"}
       </Button>
     </div>
   );
