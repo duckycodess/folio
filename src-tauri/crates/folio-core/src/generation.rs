@@ -244,6 +244,18 @@ impl LlamaServerProvider {
             thread::sleep(Duration::from_millis(100));
         }
     }
+
+    pub fn cancel_active(&self) -> CoreResult<()> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| CoreError::Message("Generation runtime state is unavailable.".into()))?;
+        if let Some(mut running) = state.running.take() {
+            let _ = running.child.kill();
+            let _ = running.child.wait();
+        }
+        Ok(())
+    }
 }
 
 impl GenerationProvider for LlamaServerProvider {
@@ -372,18 +384,6 @@ impl GenerationProvider for LlamaServerProvider {
             ));
         }
         parse_json_text(&generated)
-    }
-
-    pub fn cancel_active(&self) -> CoreResult<()> {
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| CoreError::Message("Generation runtime state is unavailable.".into()))?;
-        if let Some(mut running) = state.running.take() {
-            let _ = running.child.kill();
-            let _ = running.child.wait();
-        }
-        Ok(())
     }
 
     fn unload(&self) -> CoreResult<()> {
