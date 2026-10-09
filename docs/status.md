@@ -445,6 +445,12 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 
 ## Verification
 
+### Window scrolled past the shell on long pages (2026-10-10)
+
+On Model Lab, the window could scroll below the app and show bare background under a short sidebar. The cause was the announcer's visually-hidden live region, which is absolutely positioned at the end of the content but had no positioned ancestor, so it stretched the document to 1663px in an 880px window. `.app` is now `position: relative`, so its `overflow: hidden` clips such regions. `e2e/specs/shell-height.spec.ts` checks that Home, Model Lab, Activity and Organize keep the document exactly one window tall. It fails without the fix (1663 vs 880) and passes with it.
+
+Tested locally on macOS in Chromium only: `npm run check`, `npm test`, `npm run build`, and `npx playwright test` (35 passed). The 4 `viewports.spec.ts` failures already on `main` are unchanged. Not checked in the Tauri window.
+
 ### Brandkit logo, tokens and selected file (2026-10-10)
 
 The sidebar's interim text wordmark is replaced by the brandkit's gold eye wordmark (`src/assets/brand/folio-wordmark.png`, cut from `folio-transparent-versions.png`) with the motto "Search. Organize. Summarize". The icon rail shows the wordmark at 48px without the motto. The app now uses the brandkit's ivory `#FAF9F5` canvas, `#232620` text, `#E8E9E2` dividers, 222px sidebar, 68px white header and 36px gutters, and the selected file row is solid gold. The brandkit's muted `#7A7E75` was not adopted because it fails AA (3.93:1 on the canvas). The floating chat's greeting now uses the brandkit copy and sits in a labelled `aside` landmark, which fixes an axe `region` violation on `main`.
