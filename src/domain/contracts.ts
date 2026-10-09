@@ -823,6 +823,59 @@ export interface BenchmarkRecord extends BenchmarkResult {
   apply: { status: "notRun"; reason: string };
 }
 
+export type BenchmarkRunStatus =
+  "running" | "completed" | "cancelled" | "failed";
+
+/** The summary row of one Model Lab run. */
+export interface BenchmarkRunSummary {
+  runId: string;
+  status: BenchmarkRunStatus;
+  /** The embedding model, then the generation models in the order run. */
+  requestedModelIds: string[];
+  suite: BenchmarkRecord["suite"];
+  corpusSha256: string;
+  host: BenchmarkRecord["host"];
+  serverSettings: NonNullable<BenchmarkRecord["serverSettings"]>;
+  startedAt: number;
+  endedAt: number | null;
+  /** Building the passage index is not a case; its time is kept here. */
+  indexBuildMs: number | null;
+  error?: string;
+  schemaVersion: 1;
+}
+
+/**
+ * A manifest model as Model Lab sees it. `modelFileBytes` is the pinned size
+ * of the model's own files, never an installed size. `runnable` means
+ * installed and hash-verified.
+ */
+export interface LabModel {
+  id: string;
+  role: ModelRole;
+  repo: string;
+  revision: string;
+  quantization: string;
+  modelFileBytes: number;
+  status: ModelInstallStatus;
+  runnable: boolean;
+  selected: boolean;
+}
+
+export interface LabRunRequest {
+  embeddingModelId: string;
+  /** Run one at a time, in this order. Nothing is substituted. */
+  generationModelIds: string[];
+}
+
+/** `folio://lab-progress`. `finished`, `cancelled` and `failed` end a run. */
+export interface LabProgress {
+  runId: string;
+  step: string;
+  caseId: string | null;
+  modelId: string | null;
+  error?: string | null;
+}
+
 /* -------------------------------------------------------- persistent index */
 
 /**
