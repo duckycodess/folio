@@ -169,7 +169,7 @@ const metadata = {
       path.join(root, "src-tauri", "tauri.packaging.conf.json"),
     ),
     iconArtwork: await sha256(
-      path.join(root, "src-tauri", "icons", "source.svg"),
+      path.join(root, "src-tauri", "icons", "source.png"),
     ),
   },
   artifacts,
@@ -192,6 +192,10 @@ await writeFile(
 await copyFile(
   path.join(root, "LICENSE"),
   path.join(outputDir, "Folio-LICENSE.txt"),
+);
+await copyFile(
+  path.join(root, "INSTALL.md"),
+  path.join(outputDir, "INSTALL.md"),
 );
 await writeFile(
   path.join(outputDir, "SHA256SUMS.txt"),

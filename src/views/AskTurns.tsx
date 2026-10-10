@@ -1,4 +1,6 @@
 import {
+  appliedPath,
+  describeApplied,
   describeProposal,
   matchReason,
   methodLabel,
@@ -122,7 +124,8 @@ export function TurnBody({
   onOpen: OpenFile;
   onRetry: () => void;
   onNavigate: (view: ViewId) => void;
-  onPreviewChange: (proposal: OperationProposal) => void;
+  /** `turnId` lets the caller mark the turn applied once the change is made. */
+  onPreviewChange: (proposal: OperationProposal, turnId: number) => void;
 }) {
   if (turn.status === "running")
     return (
@@ -294,13 +297,35 @@ export function TurnBody({
             <Button
               variant="primary"
               disabled={ask.busy}
-              onClick={() => onPreviewChange(outcome.proposal)}
+              onClick={() => onPreviewChange(outcome.proposal, turn.id)}
             >
               Preview change…
             </Button>
             {target && (
               <Button onClick={() => onOpen(target)}>Open {target.name}</Button>
             )}
+          </div>
+        </>
+      );
+    }
+    case "applied": {
+      const path = appliedPath(outcome.proposal);
+      const target = workspace.documents.find(
+        (document) => document.relativePath === path,
+      );
+      return (
+        <>
+          <p>
+            Done: <strong>{describeApplied(outcome.proposal)}</strong>
+          </p>
+          <p className="muted">
+            You can undo this from Activity while the file is unchanged.
+          </p>
+          <div className="ask-result-actions">
+            {target && (
+              <Button onClick={() => onOpen(target)}>Open {target.name}</Button>
+            )}
+            <Button onClick={() => onNavigate("activity")}>Activity</Button>
           </div>
         </>
       );

@@ -155,6 +155,8 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 ### Installers
 
+**To install or run Folio, follow [INSTALL.md](INSTALL.md).** It covers the Windows and macOS installers, the unsigned-app warnings, first-run setup, running from source when an installer won't open, and troubleshooting.
+
 The **Installer preparation** workflow (`.github/workflows/packaging.yml`) is run manually and builds a Windows x64 installer and a macOS Apple Silicon disk image, with SHA-256 checksums. These test builds are not code-signed:
 
 - **Windows:** if SmartScreen appears, choose **More info**, then **Run anyway**.

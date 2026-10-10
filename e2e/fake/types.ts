@@ -66,6 +66,11 @@ export interface FakeNativeOptions {
    */
   modelFilenames?: { path: RelativePath; name: string }[];
   destinations?: { path: RelativePath; folder: RelativePath }[];
+  /**
+   * A rename `interpret_request` proposes in place of the real core's model,
+   * whatever the request says. Without it, the fake reports no model.
+   */
+  interpretRename?: { path: RelativePath; destination: RelativePath };
   /** Pinned manifest metadata only; the fake never installs or runs a model. */
   models?: ModelDescriptor[];
   runtime?: { id: string; version: string; bytes: number };

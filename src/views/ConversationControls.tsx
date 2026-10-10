@@ -2,7 +2,10 @@ import { Check, Pencil, X } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { MAX_TITLE_LENGTH } from "../app/chatStore";
 import type { ConversationSummary } from "../app/useAskAct";
+import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
+import { Modal } from "../ui/Modal";
+import { formatDate } from "./format";
 
 /**
  * A conversation's name with a Rename button. Renaming edits in place: Enter
@@ -143,5 +146,76 @@ export function ConversationHistory({
         </ul>
       )}
     </div>
+  );
+}
+
+/**
+ * Every conversation in this folder, the open one first, in a dialog. Each
+ * row can be renamed in place and opened; opening one closes the dialog.
+ */
+export function ConversationsModal({
+  open,
+  current,
+  history,
+  onOpen,
+  onNew,
+  onRename,
+  onClose,
+}: {
+  open: boolean;
+  /** The conversation on screen, if it has been started. */
+  current: ConversationSummary | null;
+  /** The folder's other conversations, most recent first. */
+  history: ConversationSummary[];
+  onOpen: (id: string) => void;
+  onNew: () => void;
+  onRename: (id: string, title: string) => void;
+  onClose: () => void;
+}) {
+  const all = current ? [current, ...history] : history;
+  return (
+    <Modal
+      open={open}
+      title="Conversations"
+      className="modal-wide"
+      onClose={onClose}
+    >
+      <div className="conversations-modal">
+        <Button variant="secondary" onClick={onNew}>
+          New conversation
+        </Button>
+        {all.length === 0 ? (
+          <p className="muted">No conversations in this folder yet.</p>
+        ) : (
+          <ul className="conversations-modal-list">
+            {all.map((conversation) => {
+              const isCurrent = conversation.id === current?.id;
+              return (
+                <li key={conversation.id} className="conversations-modal-row">
+                  <div className="conversations-modal-text">
+                    <ConversationName
+                      title={conversation.title}
+                      onRename={(title) => onRename(conversation.id, title)}
+                    />
+                    <span className="muted conversations-modal-meta">
+                      {isCurrent && <Badge>Open now</Badge>}
+                      Updated {formatDate(conversation.updatedAt)}
+                    </span>
+                  </div>
+                  {!isCurrent && (
+                    <Button
+                      aria-label={`Open conversation: ${conversation.title}`}
+                      onClick={() => onOpen(conversation.id)}
+                    >
+                      Open
+                    </Button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </Modal>
   );
 }

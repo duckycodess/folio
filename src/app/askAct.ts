@@ -1,4 +1,6 @@
 import type {
+  ApplyReport,
+  UndoReport,
   FileSelectionPurpose,
   InterpretationResult,
   PreparingProgress,
@@ -36,6 +38,8 @@ export type AskOutcome =
   | { type: "clarify"; question: string }
   /** A change Folio understood but can't preview from here yet. */
   | { type: "proposal"; proposal: OperationProposal }
+  /** The proposal was approved and applied, and not undone in its dialog. */
+  | { type: "applied"; proposal: OperationProposal }
   | { type: "unsupported"; reason: string }
   | { type: "unreadable" }
   /** A change to another file than the one the user chose; never previewed. */
@@ -228,6 +232,44 @@ export function targetsChosenFile(
   chosenId: DocumentId,
 ): boolean {
   return proposal.kind === "create" || proposal.documentId === chosenId;
+}
+
+/**
+ * Whether a change dialog left its change in place: every operation applied
+ * and nothing undone before it closed. A partial apply or an Undo keeps the
+ * proposal on offer.
+ */
+export function changeKept(
+  report: ApplyReport | null,
+  undo: UndoReport | null,
+): boolean {
+  const outcomes = report?.batch.outcomes ?? [];
+  return (
+    outcomes.length > 0 &&
+    outcomes.every((outcome) => outcome.status === "succeeded") &&
+    !undo?.undoneEntryIds.length
+  );
+}
+
+/** What an applied proposal did, in the past tense. */
+export function describeApplied(proposal: OperationProposal): string {
+  switch (proposal.kind) {
+    case "edit":
+      return `Edited ${proposal.relativePath}`;
+    case "rename":
+      return `Renamed ${proposal.relativePath} to ${proposal.destinationRelativePath}`;
+    case "move":
+      return `Moved ${proposal.relativePath} to ${proposal.destinationRelativePath}`;
+    case "create":
+      return `Created ${proposal.destinationRelativePath}`;
+  }
+}
+
+/** Where the file an applied proposal touched now lives. */
+export function appliedPath(proposal: OperationProposal): string {
+  return proposal.kind === "edit"
+    ? proposal.relativePath
+    : proposal.destinationRelativePath;
 }
 
 export function describeProposal(proposal: OperationProposal): string {

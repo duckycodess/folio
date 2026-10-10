@@ -54,7 +54,10 @@ export function FloatingOlioChat({
   const [panel, setPanel] = useState<"chat" | "history">("chat");
   const [text, setText] = useState("");
   const [attached, setAttached] = useState<DocumentRecord | null>(null);
-  const [changing, setChanging] = useState<OperationProposal | null>(null);
+  const [changing, setChanging] = useState<{
+    proposal: OperationProposal;
+    turnId: number;
+  } | null>(null);
   const launcherRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -344,7 +347,9 @@ export function FloatingOlioChat({
                             : ask.ask(turn.request, turn.chosen)
                         }
                         onNavigate={onNavigate}
-                        onPreviewChange={setChanging}
+                        onPreviewChange={(proposal, turnId) =>
+                          setChanging({ proposal, turnId })
+                        }
                       />
                     </article>
                   ))
@@ -460,10 +465,13 @@ export function FloatingOlioChat({
 
       {changing && (
         <ChangeDialog
-          proposal={changing}
+          proposal={changing.proposal}
           workspace={workspace}
           relations={relations}
-          onClose={() => setChanging(null)}
+          onClose={(applied) => {
+            if (applied) ask.markApplied(changing.turnId);
+            setChanging(null);
+          }}
         />
       )}
     </div>

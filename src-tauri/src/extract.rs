@@ -127,20 +127,30 @@ fn extract_pdf(bytes: &[u8], stream_limit: usize) -> NativeResult<Extraction> {
         return Err(error(ErrorCode::DocumentNotText, "The PDF has no pages Folio could read."));
     }
     let first_failure = pages.iter().find_map(|(_, page)| page.as_ref().err().cloned());
-    let has_text = pages.iter().any(|(_, page)| page.as_ref().is_ok_and(|text| !text.trim().is_empty()));
+    let had_text = pages.iter().any(|(_, page)| page.as_ref().is_ok_and(|text| !text.trim().is_empty()));
+    let pages: Vec<(u32, Result<String, String>, bool)> = pages
+        .into_iter()
+        .map(|(number, page)| {
+            let blank = page.as_ref().is_ok_and(|text| text.trim().is_empty());
+            (number, page.map(|text| readable_lines(&text)), blank)
+        })
+        .collect();
+    let has_text = pages.iter().any(|(_, page, _)| page.as_ref().is_ok_and(|text| !text.trim().is_empty()));
     if !has_text {
         // A page that failed is not evidence of a scan: only report OCR when every page
         // was read and none had text.
         return match first_failure {
             Some(cause) => Err(error(ErrorCode::DocumentNotText, "The PDF's text could not be extracted.").with_detail("cause", cause)),
+            None if had_text => Ok(Extraction::Unsupported("The PDF's text layer is unreadable: its fonts do not map to real characters.".into())),
             None => Ok(Extraction::Unsupported("No text layer was found. Scanned PDFs need OCR, which Folio does not support.".into())),
         };
     }
     let mut text = String::new();
     let mut ranges = Vec::new();
     let mut skipped_pages = Vec::new();
-    for (number, page) in &pages {
-        let Ok(page_text) = page else {
+    for (number, page, blank) in &pages {
+        // A page whose text was all unreadable counts as not read; a blank page does not.
+        let Some(page_text) = page.as_ref().ok().filter(|text| *blank || !text.trim().is_empty()) else {
             skipped_pages.push(*number);
             continue;
         };
@@ -150,6 +160,38 @@ fn extract_pdf(bytes: &[u8], stream_limit: usize) -> NativeResult<Extraction> {
         ranges.push((Some(*number), start..text.len()));
     }
     Ok(Extraction::Text(ExtractedText { text, pages: ranges, skipped_pages }))
+}
+
+/// Punctuation that ordinary text uses; anything else that is neither a letter, digit
+/// nor whitespace counts against a line's readability.
+const COMMON_PUNCTUATION: &str = ".,;:!?'\"()[]{}-–—/\\&%@#*+=<>|~^$€£¥₱°•·…‘’“”«»_";
+
+/// Whether a PDF text line reads as language rather than glyph codes. A PDF whose fonts
+/// lack a Unicode mapping yields lines such as `&T˛˛˛m)7Wk˛7B_)Z˛#W)7`, which would
+/// otherwise be indexed, embedded and shown as connection evidence.
+fn is_readable_line(line: &str) -> bool {
+    let visible: Vec<char> = line.chars().filter(|ch| !ch.is_whitespace()).collect();
+    if visible.is_empty() { return true; }
+    let odd = visible.iter().filter(|ch| !ch.is_alphanumeric() && !COMMON_PUNCTUATION.contains(**ch)).count();
+    let odd_limit = if visible.len() < 4 { 0.5 } else { 0.25 };
+    if odd as f64 / visible.len() as f64 > odd_limit { return false; }
+    // Latin-script words without vowels ("WBT", "7Wk") are glyph codes once a line has
+    // several of them; short lines of acronyms ("SN BSCS") stay readable.
+    let words: Vec<&str> = line
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|word| word.chars().filter(|ch| ch.is_ascii_alphabetic()).count() >= 2)
+        .collect();
+    if words.len() >= 4 {
+        let voiced = words.iter().filter(|word| word.chars().any(|ch| "aeiouyAEIOUY".contains(ch))).count();
+        let mixed = words.iter().filter(|word| word.chars().any(|ch| ch.is_ascii_digit())).count();
+        if (voiced as f64) < words.len() as f64 * 0.4 || mixed * 2 > words.len() { return false; }
+    }
+    true
+}
+
+/// The page text with unreadable lines removed, so they never reach the index.
+fn readable_lines(text: &str) -> String {
+    text.lines().filter(|line| is_readable_line(line)).collect::<Vec<_>>().join("\n")
 }
 
 /// The line containing `start..end`, without its line ending (LF or CRLF) or
@@ -433,6 +475,38 @@ mod tests {
         assert_eq!(chunks.iter().map(|chunk| chunk.page).collect::<Vec<_>>(), vec![Some(1), Some(2)]);
         assert!(chunks[0].text.contains("Consent guide page one."));
         assert!(chunks[1].text.contains("Pirma bago ang interview."));
+    }
+
+    #[test]
+    fn glyph_codes_are_unreadable_but_ordinary_lines_are_kept() {
+        for garbled in ["&T˛˛˛˛˛m)7Wk˛7B_)Z˛#W)7˛WBT_W]B˛˛˛:•", "&Tm)7Wk 7B_)Z #W)7 WBT_W]B 7Wk", "\u{fffd}\u{fffd}\u{fffd}\u{fffd}", "\u{e001}\u{e002}\u{e003} ab"] {
+            assert!(!is_readable_line(garbled), "{garbled}");
+        }
+        for readable in [
+            "U.P. FORM 5A UNIVERSITY OF THE PHILIPPINES DILIMAN QUEZON CITY",
+            "CLASSES TO BE ADDED AS ADVISED Remarks Checker OK OK OK OK",
+            "Pirma bago ang interview, tapos i-submit na natin sa Oktubre 24.",
+            "SN: 2021-12345 BSCS",
+            "PHP 6,000   PHP 3,200   PHP 12,500",
+            "Name: ____________________  Date: __/__/____",
+            "• Bring your CBC and urinalysis results.",
+            "",
+        ] {
+            assert!(is_readable_line(readable), "{readable}");
+        }
+    }
+
+    #[test]
+    fn unreadable_pdf_lines_are_not_indexed() {
+        assert_eq!(readable_lines("Medical exam results\n&T˛˛˛˛˛m)7Wk˛7B_)Z˛#W)7˛WBT_W]B˛˛˛:•\nfit to work."), "Medical exam results\nfit to work.");
+        let bytes = testpdf::text_pdf(&[&["Medical exam results: fit to work."], &["&Tm)7Wk 7B_)Z #W)7 WBT_W]B 7Wk"]]);
+        let Extraction::Text(extracted) = extract(MediaKind::Pdf, &bytes).unwrap() else { panic!("expected text") };
+        assert!(extracted.text.contains("fit to work"));
+        assert!(!extracted.text.contains("WBT"), "{}", extracted.text);
+        assert_eq!(extracted.skipped_pages, vec![2], "a page of only glyph codes is reported as not read");
+
+        let unreadable = testpdf::text_pdf(&[&["&Tm)7Wk 7B_)Z #W)7 WBT_W]B 7Wk"]]);
+        assert!(matches!(extract(MediaKind::Pdf, &unreadable).unwrap(), Extraction::Unsupported(reason) if reason.contains("unreadable")));
     }
 
     #[test]
