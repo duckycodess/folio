@@ -293,6 +293,50 @@
   overflow-wrap: anywhere;
   cursor: pointer;
 }
+.conversation-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+.conversation-name > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+.conversation-name-text {
+  overflow: hidden;
+  font: var(--text-small);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conversation-name-input {
+  min-height: 32px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font: var(--text-small);
+}
+.olio-chat-conversation {
+  padding: var(--space-1) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
+}
+.ask-conversation-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+.ask-conversation-name {
+  flex: 1;
+  min-width: 0;
+}
+.ask-conversation-history {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
 .olio-chat-history-item:hover {
   background: var(--color-surface-muted);
 }

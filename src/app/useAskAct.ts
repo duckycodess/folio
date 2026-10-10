@@ -39,6 +39,7 @@ import {
   ensureActiveConversation,
   newConversation as startConversation,
   openConversation as activateConversation,
+  renameConversation as renameStoredConversation,
   setConversationScope,
   subscribeChat,
   updateTurnIn,
@@ -126,6 +127,10 @@ export interface AskActController {
   /** The conversation currently open. Both Ask & Act and the floating chat
    * read and write this same id: there is no copy to keep in sync. */
   conversationId: string | null;
+  /** The open conversation's name, given or automatic. */
+  conversationTitle: string;
+  /** A blank name goes back to the automatic one. */
+  renameConversation: (id: string, title: string) => void;
   /** This folder's other conversations, most recent first. */
   history: ConversationSummary[];
   openConversation: (id: string) => void;
@@ -429,6 +434,10 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
     stopRunning: () => cancelGeneration().catch(() => undefined),
     clear: () => conversation && clearTurnsIn(conversation.id),
     conversationId: conversation?.id ?? null,
+    conversationTitle: conversation
+      ? conversationTitle(conversation)
+      : "New conversation",
+    renameConversation: (id, title) => renameStoredConversation(id, title),
     history: conversationsForFolder(snapshot, folderId)
       .filter((c) => c.id !== conversation?.id)
       .map((c) => ({
