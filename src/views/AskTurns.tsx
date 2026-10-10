@@ -2,9 +2,9 @@ import {
   describeProposal,
   matchReason,
   methodLabel,
+  preparingLabel,
   type AskTurn,
 } from "../app/askAct";
-import { requestForFile } from "../app/proposals";
 import type { AskActController } from "../app/useAskAct";
 import type { RelationshipsState } from "../app/useRelationships";
 import type { WorkspaceState } from "../app/useWorkspace";
@@ -137,13 +137,16 @@ export function TurnBody({
         ) : (
           <Progress
             label={
-              turn.action === "find"
+              preparingLabel(ask.progress) ??
+              (turn.action === "find"
                 ? "Looking through your files"
-                : "Olio is working on your request"
+                : "Olio is working on your request")
             }
           />
         )}
-        {turn.action === "ask" && <Button onClick={ask.cancel}>Cancel</Button>}
+        {(turn.action === "ask" || ask.progress) && (
+          <Button onClick={ask.cancel}>Cancel</Button>
+        )}
       </div>
     );
   if (turn.status === "cancelled")
@@ -201,6 +204,12 @@ export function TurnBody({
             <Badge>Generated answer</Badge>
             <Badge>Not reviewed</Badge>
           </div>
+          {outcome.result.chosenFileUnmatched && (
+            <Notice tone="info">
+              Nothing in this file clearly matched your question; this answer is
+              from its opening or closest passages.
+            </Notice>
+          )}
           <CitedSentences
             result={outcome.result}
             byId={byId}
@@ -235,7 +244,9 @@ export function TurnBody({
           <p>
             {outcome.purpose === "summarize"
               ? "Which file should Olio summarize?"
-              : "This could mean several files."}
+              : outcome.purpose === "question"
+                ? "Which file should Olio use?"
+                : "This could mean several files."}
           </p>
           {outcome.purpose === "change" && (
             <p className="muted">
@@ -248,21 +259,13 @@ export function TurnBody({
             query={turn.request}
             onOpen={onOpen}
             onOpenPassage={relations.openPassage}
-            action={
-              outcome.purpose === "summarize"
-                ? {
-                    label: (document) => `Summarize ${document.name}`,
-                    run: (document) => ask.chooseForSummary(turn.id, document),
-                  }
-                : {
-                    label: (document) => `Use ${document.name}`,
-                    run: (document) =>
-                      ask.ask(
-                        requestForFile(turn.request, document.relativePath),
-                        document,
-                      ),
-                  }
-            }
+            action={{
+              label: (document) =>
+                outcome.purpose === "summarize"
+                  ? `Summarize ${document.name}`
+                  : `Use ${document.name}`,
+              run: (document) => ask.chooseFile(turn.id, document),
+            }}
           />
         </>
       );

@@ -1,5 +1,13 @@
 # Implementation status
 
+## PR #108 conflict resolution (2026-10-10)
+
+Merged `main` at `72b685e` into `ai-issues`, then incorporated `ab61436` (launch-scoped chat history), preserving the persistent-index AI path, chosen-file questions and changes, PDF rename/move support, and the newer Ask & Act layout and busy-provider controls. Organize's collection and file suggestions now consume persistent chunks/vectors in the selected stored embedding space instead of calling the removed snapshot index. Selected grouping/destination evidence is revision-checked; filename naming reads at most its bounded candidate set. Organize's Stop cancels its index preparation and its own generation.
+
+Verified on Linux/WSL: `npm run check`, `npm test` (502 passed, 9 todo), `npm run build`, `npm run format:check`, `git diff --check`, and `cargo test --manifest-path src-tauri/Cargo.toml --workspace --quiet` with the rustup toolchain (Folio: 342 passed, 2 ignored; folio-core: 255 passed, 2 ignored; loopback integration: 1 passed; real-model integration suites ignored). New regression coverage checks persisted-vector reuse and revision isolation for Organize, no-model fallback without old vectors, PDF passage revisions/offsets/pages, relocation proposals for PDFs without extractable text with no write, and cancellation during suggestion preparation.
+
+Not verified here: real inference or retrieval/grouping quality, large-folder latency/memory, browser journeys, Windows/macOS execution or packaging. Grouping and destination thresholds remain uncalibrated on the stored embedding space.
+
 ## Issue #46: AI relationships from the persistent index (draft, 2026-10-10)
 
 **Not merge-ready.** Native and frontend code and tests are in place; the
@@ -205,14 +213,14 @@ real-model quality, or target-device resource use.
   - **Preview:** it shows the plan rows, the exact text change in that one file, and Ripple passages in related files, labelled "Needs review" and never changed.
   - **Approve:** Approve and apply uses the shared approval, which echoes the plan digest, then shows the result with Preview Undo.
   - **Dialog:** it can't be dismissed while applying, Done and Close return focus, and Cancel says nothing was changed.
-  - **Ambiguous files:** when several files could match, nothing is planned until the user picks one. Then Olio reads the request again with that file named.
+  - **Ambiguous files:** when several files could match, nothing is planned until the user picks one. Then Olio reads the request again with that file chosen: the file's id goes to `interpret_request` as data, so the change targets it whatever the wording says (issue #88).
 - Ask & Act workspace ([#36](https://github.com/duckycodess/folio/issues/36)), using #15's retrieval, interpretation and answers.
   - Ask & Act is a full page with Olio. The search scope (the open folder, or one folder inside it) and the index state stay visible. The index state shows prepared files and skipped files with reasons, and labels keyword-only search when there's no search model.
   - **Find files** runs `semantic_search` and needs no writing model. Each result has the file name, path, a method badge (keyword, semantic, or keyword + semantic, as the native result says), a reason, quoted excerpts that open the passage, and Open file. The reader opens beside Ask & Act.
   - **Ask Olio** runs `interpret_request`:
-    - questions get cited answers from `answer_question`, or an honest "couldn't find enough";
+    - questions get cited answers from `answer_question`, or an honest "couldn't find enough". A question that names one file (every informative word of its target is in the file's name or path) is answered from that file; one that names several it cannot tell apart asks "Which file should Olio use?"; one that names none is answered from the whole folder (issue #88);
     - searches list results;
-    - summaries go to the file's Summary tab (#20), and if several files could match, the user chooses first;
+    - summaries go to the file's Summary tab (#20) — directly for a file the request names, attached or chosen — and if several files could match, the user chooses first;
     - change requests are shown as understood but not previewable here yet, with nothing changed;
     - clarifications, unsupported requests and unreadable model output say so.
   - One request runs at a time and can be cancelled. Cancelling and errors keep the request text. Earlier replies stay readable, and replies are kept when leaving Ask & Act until another folder is opened.
@@ -278,6 +286,7 @@ real-model quality, or target-device resource use.
 - FTS5 keyword search across unopened documents, returning document id, path and excerpt as `utf8Byte` passages bound to the indexed revision (`documentContentHash`), with page numbers for PDFs. Labelled `keyword`.
 - Follows the [frozen contract](contracts.md): `workspaceId:relativePath` document ids, `sha256:` hashes, `explicitReference` relationships with the raw and resolved link, `folio-space-v1/...` space fingerprints, and `{ code, message, details }` failures. `read_document` now also returns the extracted text of text-based PDFs.
 - Exact-duplicate groups are confirmed by comparing the files byte for byte in blocks, so files of any size are verified; the comparison runs without holding the index.
+- Embedding store for the provider track: registered spaces keyed by model/revision/quantization/dimensions/preprocessing, per-space pending-chunk listing, vector storage with dimension checks, and exact cosine search within one space only. `sync_embeddings` fills the store from pending chunks with the selected local embedding model in a stored-chunk space separate from the snapshot space; stale `chunkChanged`/`chunkMissing` refusals are retried silently, bounded by stale and idle limits. Its initial space probe and each provider batch check Model Lab inside the `EmbeddingState` lock before any provider load: a batch already holding that lock may finish when Lab starts, then the next guarded batch returns `providerBusy` and keeps earlier commits. A vector is stored only while its chunk still holds the text it was computed from (`contentHash`), because chunk ids can be reused after a rescan. Search, answers and interpretation now trigger this fill themselves for only the chunks that lack a vector (issue #92); Model Lab keeps its own in-memory path.
 - Embedding store for the provider track: registered spaces keyed by model/revision/quantization/dimensions/preprocessing, per-space pending-chunk listing, vector storage with dimension checks, and exact cosine search within one space only. `sync_embeddings` fills the store from pending chunks with the selected local embedding model in a stored-chunk space separate from the snapshot space; stale `chunkChanged`/`chunkMissing` refusals are retried silently, bounded by stale and idle limits. Its initial space probe and each provider batch check Model Lab inside the `EmbeddingState` lock before any provider load: a batch already holding that lock may finish when Lab starts, then the next guarded batch returns `providerBusy` and keeps earlier commits. A vector is stored only while its chunk still holds the text it was computed from (`contentHash`), because chunk ids can be reused after a rescan. Live search and Model Lab still use the #4 snapshot path; the existing live `semantic_search` path can reload the product provider during Lab, and #27 does not change that limitation. No UI automatically triggers this fill.
 - Issue #46 reads this persistent store: its active space is the stored space
   `sync_embeddings` registers (never the snapshot title/path space). A local AI
@@ -451,6 +460,7 @@ Not tested: real models, so which files get names or destinations on real vector
 
 ## Pending
 
+Model-generated Ripple explanations and similarity/shared-fact discovery (issues #4 and #8), creating folders during moves, UI use of the native actions, live file watching, multi-folder workspaces, native packaging, and real Model Lab results (the harness exists; no real run has been recorded, see Model Lab below) remain pending. Search, answers and request interpretation read #3's persistent index and #27's stored vectors (issue #92, see "AI context from the persistent index" below); their proposals are not yet connected to #5's native plan/apply path.
 Model-generated Ripple explanations and similarity/shared-fact discovery
 integration (issues #4 and #8/#46), including wiring #46's active-space seam to
 the merged #27 producer, creating folders during moves, UI use of the native
@@ -511,7 +521,7 @@ No AI or save completion should be presented without the corresponding native/pr
 - Quitting during a run cancels it and waits up to 10 seconds for it to end, which stops its llama-server. Before, macOS and Linux could leave the server running.
 - The Model Lab workspace marker is written before the copy, so a failed copy can be replaced.
 - The TypeScript test guard refuses what `BenchmarkRecord::validate` refuses.
-- Not changed: `unload_generation` during a run still frees the generation slot before the lab thread ends. No UI calls it, and the fix belongs with #4's slot handling.
+- `unload_generation` during a run no longer frees the generation slot before the lab thread ends; see "Generation slot release (issue #93)" below.
 - Checked on Linux (WSL, Node.js 24.15.0): `folio-core` 167 passed and 2 ignored, the native library 211 passed and 2 ignored (an existing test needed `LabHold` to implement `Debug`), and `npm run format:check`, `check`, `test` (344 passed, 9 todo) and `build` passed. No real model was run.
 
 ## Remote CI verification after conflict resolution
@@ -582,7 +592,7 @@ of real model quality.
 - `PATH=/home/pandan/.cargo/bin:$PATH cargo test --manifest-path src-tauri/Cargo.toml`: 231 passed, 2 ignored, including the merged Model Lab native suite, the guard-before-load test, the vector-reuse assertion and the strengthened Immediate-transaction handshake.
 - `PATH=/home/pandan/.cargo/bin:$PATH cargo test --manifest-path src-tauri/Cargo.toml -p folio-core`: 168 unit tests passed, 2 ignored; the loopback integration test passed; the real Model Lab run was ignored; 7 real-acceptance tests were ignored because verified local model files were not supplied.
 - `npm run check`: passed. `npm test`: 344 passed, 9 todo, with 9 pending cases skipped. `npm run build`: passed (`tsc --noEmit` plus Vite production build).
-- The precise Model Lab guarantee is limited to `sync_embeddings`: its initial space probe and each provider batch check inside `EmbeddingState` before any provider load. A batch already holding the lock may finish if Lab starts; Lab then unloads the slot and the next sync batch returns `providerBusy`. The existing live `semantic_search` snapshot path can still reload the product provider during Lab, and #27 does not migrate it.
+- The precise Model Lab guarantee is limited to `sync_embeddings`: its initial space probe and each provider batch check inside `EmbeddingState` before any provider load. A batch already holding the lock may finish if Lab starts; Lab then unloads the slot and the next sync batch returns `providerBusy`. `semantic_search`, `answer_question` and `rebuild_index` now use the same guard, so a Lab run makes them `providerBusy` (issue #92).
 - Not verified here: real E5 inference or cross-language model quality, Windows or macOS native execution, the desktop window, packaging, live semantic search over the persistent store, or automatic UI triggering.
 
 ### Adaptive layout and resizable reader (2026-10-10, issue #67)
@@ -896,6 +906,58 @@ Checked on macOS with Node.js 26.10.0, on `main` after #63 and #64:
 - Native (`folio_core::device`): device RAM from `sysctl hw.memsize` on macOS, `GetPhysicallyInstalledSystemMemory` on Windows (the installed RAM, so memory reserved for an integrated GPU still counts; `GlobalMemoryStatusEx` is the fallback) and `/proc/meminfo` on Linux; free space from `statvfs` or `GetDiskFreeSpaceExW`, measured at the nearest existing folder. **Not built on this host** (no Rust toolchain). In CI it compiles on macOS and Windows (`desktop-check`), but its tests (device RAM reported, free space for an existing folder and for one not created yet) run only on Linux, in the `frontend` job's folio-core step, where they passed. The macOS and Windows code paths are compiled there, never run. After Gab's review, the Windows path asks for the installed RAM first; that change was formatted with `rustfmt` but, like the rest of this path, is only compiled in CI and has not been run on a Windows computer.
 
 Not verified: real downloads and the real figures in the Tauri app, an interrupted download or a hash mismatch against the real store (they surface through the shared recovery notice and the "Damaged: download again" state), and screen readers.
+
+### After review: rebuilt on `main` (PR #108)
+
+- **Merged with `main`.** The generation slot is `main`'s (#104, #109), and this branch's own slot code is dropped. Ask & Act keeps `planAsk` together with #105's exact-name rule and `namesOnly`. This branch's ADR is now 0016, because `main`'s 0015 is #101's. The stored-space goldens moved to `title-path-chunk-v2`.
+- **Stale documents are embedded.** A stale document keeps its last good chunks and now gets vectors in the current space, so #101's coverage can complete. Its text still never reaches a prompt: the read paths stay `indexed`-only.
+- **The re-check skips missing files.** A document that a scan removed is skipped, and the others are still re-read.
+- **Ask and the Graph refresh don't block each other.** `fill_vectors` takes the embedding lock only when chunks are pending. When an Ask is filling vectors, the Graph refresh skips embedding (`embeddingSyncRunning`) and runs discovery on what exists; coverage shows the rest as not yet embedded.
+- **Each request has its own Stop.** One token per request, with no shared reset. A Stop before a request starts doesn't affect it, and a Stop reaches every request in flight.
+- **Unmatched chosen-file answers are labelled.** When nothing in a chosen file passes the evidence gate, the answer still uses its opening or closest passages (#88), but it carries `chosenFileUnmatched`. Ask & Act then says so.
+- **Interpretation:**
+  - A file named with its extension (`project-plan.md`, `Sample_Resume.pdf`) is that file.
+  - Names match regardless of case and common accents ("nino" finds `Niño_report.md`; Latin-1 and Latin Extended-A only, because the crate has no Unicode-normalization dependency).
+  - A folder's name doesn't name the files inside it.
+  - More than 5 matching files means the whole folder, not a chooser. A chooser lists the tightest matches first.
+- **Not done:** vectors of the previous stored space aren't deleted. They can't be told apart from the webview-registered snapshot space without a stored-input record, so they only cost disk space.
+- **Checked on Linux (WSL):** native 314 passed / 2 ignored; folio-core 226 passed / 2 ignored; `npm run format:check`, `check`, `test` (477 passed, 9 todo), `build` and `check:bundle` all passed. No real model was run.
+
+### Ask & Act answers from the chosen file (2026-10-10, issue #88)
+
+Testing the desktop app with a real local model (qwen3-0.6b) reported that Ask & Act didn't use the file's contents and never asked which file a question meant. Reading the code found wiring causes before any question of model quality:
+
+- A file the user picked or attached only travelled as `Use this file: <path>` appended to the request. `answer_question` was always called without `documentId`, so the evidence came from the whole folder, and "what does this file say?" usually retrieved nothing, which skips the model entirely. Now the id travels as data to `interpret_request` and `answer_question`, and `requestForFile` is gone.
+- Questions and summaries never went through target resolution, so no question could reach the chooser. Now a question or summary request whose target description names one file (every informative word is in the file's name or path) carries that document; one that names several files it cannot tell apart returns `needsFileSelection` with `purpose` `question` or `summarize`; a topic no file name contains names no file and is answered from the whole folder. The chooser says "Which file should Olio use?" for a question, and picking a file answers directly, without interpreting again.
+- A question about a chosen file skips the evidence gate: its best-ranked passages go into the prompt, or its opening passages when nothing ranks, in reading order. The prompt carries at most eight passages and 6,400 bytes (`MAX_ANSWER_EVIDENCE_BYTES`); the budget also applies to folder-wide questions, because stored chunks can be 1,200 characters.
+- PDFs were left out of every question, search and interpretation until issue #92 moved them onto the index; they are now searchable and answerable. A change to a PDF is refused.
+- Citations only ever pointed at passages in the prompt. Capturing-provider tests now show it: the chosen file's text and its labelled passages are in the request sent to the model, and every citation maps to a passage that was sent (an invented label, or a claim with no real citation, is dropped or left uncited).
+- Checked on Linux (WSL) at the end of issues #93, #92 and #88 together: `cargo test --manifest-path src-tauri/Cargo.toml --workspace` (native library 272 passed, 2 ignored; `folio-core` 185 passed, 2 ignored; the real-model tests stay ignored), `npm run check`, `npm test` (437 passed, 9 todo), `npm run build` and `npm run format:check`. `npm run check` needed `@types/node` installed locally (`npm install --no-save @types/node@22.20.5`; it was missing from `node_modules`). The Playwright suite was not run: the installed Chromium doesn't match this Playwright version, and the e2e fake's `interpret_request`, `answer_question` and `index_status` ignore the arguments this work changed.
+- **Not done: the real-model repro.** No model file or `llama-server` was available here, so whether the file's text reaches a real server, and whether a 0.6B int4 model then answers well, has not been run. The capturing tests prove what Folio sends, not what a model does with it. If answers are still poor with the file's text present, that is a Model Lab measurement (#77), not a wiring bug. There is no runtime prompt dump, on purpose: it would write document text outside the user's folder. The repro for the desktop is: choose a folder with two files whose names share a word, ask a question naming that word (the chooser should appear), pick one, and check the answer cites that file.
+
+### AI context from the persistent index (2026-10-10, issue #92)
+
+`semantic_search`, `answer_question`, `interpret_request` and `rebuild_index` no longer build an in-memory snapshot. `src-tauri/src/evidence.rs` refreshes the persistent index per request (an incremental scan, then an embedding fill for only the chunks missing a vector in the current space, in cancellable batches) and queries it. The decisions and their costs are in ADR 0016.
+
+- Removed: `IndexSnapshot`, `IndexState`, `load_corpus`, `corpus_fingerprint`, `build_snapshot`, `ensure_snapshot` and the snapshot search path. `HybridRetriever` stays in `folio-core` for Model Lab and the real-acceptance tests, and its gate, BM25 and grouping are now plain functions the index path reuses.
+- Stored chunks are embedded with title and path words (`title-path-chunk-v2`); sync skips documents that are not `indexed`. Text-based PDFs are now searchable and answerable, because the index holds them; an edit, rename or move of a PDF is refused ("Text-based PDFs are read-only").
+- Search and answers are `providerBusy` during a Model Lab run; without an embedding model they use FTS5 keyword search labelled `keyword`. A running request shows "Reading your files: x of y" or "Preparing search by meaning: x of y passages" and can be cancelled.
+- `suggest_collections` is not on this branch (it exists on `gab/78-collections`); it still needs to read vectors through `evidence.rs` when it lands, so issue #92's collection criterion stays open.
+- Checked on Linux (WSL), `cargo test --manifest-path src-tauri/Cargo.toml --workspace` and `npm run check`, `npm test`, `npm run build`, `npm run format:check`. The new tests use a deterministic concept embedder (English, Filipino and Taglish word sets), so they test the plumbing: a repeat request on an unchanged folder embeds nothing (the first fills every chunk, the second embeds none); a new embedding space fills separately and the old vectors are never read, and a query embedded in another space is refused; English, Filipino and Taglish requests find the same project documents across languages, and an off-topic request finds nothing; an edited file is never served from its old chunks, including an edit with the same size and modification time (caught by the revision check before the prompt, read again, and the request looks once more so the new revision answers in the same request); unreadable and deleted documents leave no evidence; passage offsets and hashes match the current file; a cancelled fill keeps its committed batches and the next request embeds only the rest; interpretation reads at most eight files.
+- A cancel pressed after the index is prepared and before the generation slot is held is honoured for `answer_question` and `interpret_request`; the cancel flag is shared by requests, so two concurrent requests could cancel or un-cancel each other (the UI runs one at a time).
+- Not measured or verified: real multilingual-e5 quality or the evidence gate's thresholds on the stored space (chunks are 1,200 characters here, not 800, and carry title and path words); retrieval time and memory on a large folder (every stored vector of the space is read per query); real-model answers; a first-run fill on a large folder; Windows or macOS execution; the desktop window.
+
+### Generation slot release (2026-10-10, issue #93)
+
+Only the holder of the generation slot releases it. A request holds the slot through a `GenerationClaim` that gives the slot back when it is dropped, so a provider error or a panic can no longer leave Folio reporting `providerBusy`. A Model Lab run still releases through `finish_lab`; its thread already catches panics.
+
+- Cancel and unload set the holder's cancel flag and stop the loaded server, but leave the slot held. `unload_generation`, removing a model and reinstalling the runtime wait up to 10 seconds for the holder to end, then unload the model. If the holder outlasts that, they return `providerBusy` ("still stopping") and leave the slot held.
+- While an unload waits, new requests, Model Lab runs and runtime installs get `providerBusy`, so a second `llama-server` can't start.
+- Exit waits up to 10 seconds for a request as well as for a Model Lab run, then stops the loaded server whether or not they ended.
+- Removing a model checks and unloads in one critical section, instead of checking, releasing the lock, then unloading.
+- Checked on Linux (WSL): native library tests passed, including a scripted Model Lab run that unload cannot free (the next claim is busy until `finish_lab`, then succeeds), a request that returns an error or panics, an unload that times out, and exit waiting for a request. The tests drive the slot's state, not a real `llama-server`: `GenerationSlot` holds the concrete `LlamaServerProvider`, so "never two servers" is checked through the slot, not by counting processes. No real model was run, and nothing was run on Windows or macOS.
+- `cancel_generation` during a Model Lab run still cancels the run, because both use the same flag.
+- The Groq provider (#94) does not exist on this branch; when it lands its requests need to hold the same claim.
 
 ### Floating Olio chat (2026-10-10, issue #66)
 

@@ -466,6 +466,12 @@ export interface GroundedResult extends GroundedAnswer {
   uncitedSentenceCount: number;
   /** Relationship summaries only: what the native core actually supplied. */
   basis?: SummaryBasis;
+  /**
+   * Answers about a chosen file only: nothing in the file matched the
+   * question, so the answer came from its closest or opening passages.
+   * Absent, never `false`, otherwise.
+   */
+  chosenFileUnmatched?: true;
 }
 
 /**
@@ -562,11 +568,29 @@ export interface SkippedDocument {
   reason: string;
 }
 
-/** Status of the issue #4 provider's interim in-memory retrieval snapshot. */
+/**
+ * `folio://preparing-progress`: an AI request bringing the folder's index up
+ * to date, first reading changed files, then embedding passages that have no
+ * vector yet.
+ */
+export interface PreparingProgress {
+  workspaceId: WorkspaceId;
+  phase: "reading" | "embedding";
+  processed: number;
+  total: number;
+}
+
+/**
+ * What the persistent index holds for a folder, as AI requests use it.
+ * `method` is `hybrid` only when every chunk has a vector in the loaded embedding
+ * model's space; otherwise search is keyword search. `embeddedChunkCount` is
+ * known once a request has loaded the embedding model.
+ */
 export interface ProviderIndexStatus {
   workspaceId?: string;
   documentCount: number;
   chunkCount: number;
+  embeddedChunkCount?: number;
   method: "keyword" | "semantic" | "hybrid";
   spaceFingerprint?: EmbeddingSpaceFingerprint;
   skippedDocuments?: SkippedDocument[];
@@ -691,6 +715,9 @@ export type OperationProposal =
       content: string;
     };
 
+/** Why Folio asks which file is meant. */
+export type FileSelectionPurpose = "change" | "summarize" | "question";
+
 export type InterpretationResult =
   | {
       status: "proposal";
@@ -702,6 +729,8 @@ export type InterpretationResult =
       status: "needsFileSelection";
       candidates: SearchResult[];
       pendingIntent: string;
+      /** What the chosen file is for; an older core omits it (`change`). */
+      purpose?: FileSelectionPurpose;
     }
   | {
       status: "needsClarification";
@@ -712,6 +741,8 @@ export type InterpretationResult =
       status: "nonMutating";
       intent: "search" | "summarize" | "question";
       targetQuery?: string;
+      /** The one file the request names, without its content. */
+      document?: DocumentRecord;
     }
   | { status: "unsupported"; reason: string }
   | { status: "invalidModelOutput"; rawOutputDigest: string };
@@ -1201,6 +1232,9 @@ export type ExplicitReference = Extract<
 export interface PendingChunk {
   chunkId: number;
   documentId: DocumentId;
+  /** The document's title and relative path, embedded in front of `text`. */
+  title: string;
+  relativePath: string;
   text: string;
   contentHash: ContentHash;
 }

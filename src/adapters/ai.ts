@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AiRefreshProgress,
   AiRelationshipCoverage,
@@ -8,6 +8,7 @@ import type {
   DocumentId,
   EmbeddingSpaceFingerprint,
   GroundedResult,
+  PreparingProgress,
   ProviderIndexStatus,
   InterpretationResult,
   SearchResult,
@@ -42,8 +43,10 @@ export function rebuildIndex(
   return call("rebuild_index", { workspaceId });
 }
 
-export function indexStatus(): Promise<ProviderIndexStatus> {
-  return call("index_status");
+export function indexStatus(
+  workspaceId?: string,
+): Promise<ProviderIndexStatus> {
+  return call("index_status", { workspaceId });
 }
 
 export function semanticSearch(
@@ -130,15 +133,15 @@ export function explainImpact(
 }
 
 /**
- * `chosenDocumentId` is the file the user picked for this request: a rename,
- * move or edit then targets it, whatever the model calls the file.
+ * `documentId` is a file the user picked or attached: a change then targets
+ * it directly instead of being resolved from the request's wording.
  */
 export function interpretRequest(
   workspaceId: string,
   text: string,
-  chosenDocumentId?: DocumentId,
+  documentId?: string,
 ): Promise<InterpretationResult> {
-  return call("interpret_request", { workspaceId, text, chosenDocumentId });
+  return call("interpret_request", { workspaceId, text, documentId });
 }
 
 export function unloadGeneration(): Promise<void> {
@@ -147,4 +150,16 @@ export function unloadGeneration(): Promise<void> {
 
 export function cancelGeneration(): Promise<void> {
   return call("cancel_generation");
+}
+
+/**
+ * Progress while a request prepares the folder. Rejects outside the desktop
+ * app, where there is nothing to prepare.
+ */
+export function onPreparingProgress(
+  handler: (progress: PreparingProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<PreparingProgress>("folio://preparing-progress", (event) =>
+    handler(event.payload),
+  );
 }

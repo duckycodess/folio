@@ -10,6 +10,7 @@ mod contracts;
 mod db;
 mod embedding_sync;
 mod error;
+mod evidence;
 mod extract;
 mod identity;
 mod index;
@@ -24,12 +25,11 @@ mod workspace;
 mod writer;
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use folio_core::chunking::{Chunk, InterimTextChunker, TextDocument};
 use folio_core::contracts::{
     DocumentRecord, EmbeddingSpace as ProviderEmbeddingSpace, GroundedResult,
     InterpretationResult, Language, ModelDescriptor, ModelInstallState, ModelInstallStatus,
@@ -42,7 +42,6 @@ use folio_core::generation::{GenerationProvider, LlamaServerProvider};
 use folio_core::grounding;
 use folio_core::interpretation;
 use folio_core::models::{DownloadProgress, ModelStore, RuntimeStatus};
-use folio_core::retrieval::HybridRetriever;
 use rusqlite::Connection;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -62,13 +61,14 @@ use collections::{KeptMember, VirtualCollection};
 use folio_core::collections::{NamingOutcome, SuggestedCollection};
 use organize::{DestinationSuggestion, OrganizationSuggestion, OrganizationSuggestions};
 use plan::PlanRegistry;
-use identity::media_type_for_path;
 use writer::{ApplyReport, RealFileSystem, UndoReport};
 use workspace::{
     DocumentListing, DocumentText, KnownWorkspace, ScopedRoot, WorkspaceInfo, WorkspaceRegistry,
 };
 
 const INDEX_PROGRESS_EVENT: &str = "folio://index-progress";
+/// Reading and embedding progress while an AI request brings the index up to date.
+const PREPARING_PROGRESS_EVENT: &str = "folio://preparing-progress";
 
 /// How long a preview stays current. Approval and application both re-check it.
 const PLAN_LIFETIME_MS: i64 = 5 * 60 * 1000;
@@ -90,6 +90,9 @@ struct Folio {
     /// provider lock across the whole run.
     embedding_sync: Arc<Mutex<()>>,
     cancel_embedding_sync: Arc<AtomicBool>,
+    /// One Stop token per AI request in flight; `cancel_generation` sets them
+    /// all, and a request that starts later gets a fresh one.
+    cancel_ai_request: AiRequestCancels,
     /// One local AI refresh (embedding sync, then relationship discovery) at a time.
     ai_refresh: Arc<Mutex<()>>,
 }
@@ -107,6 +110,7 @@ impl Folio {
             cancel_apply: Arc::new(AtomicBool::new(false)),
             embedding_sync: Arc::new(Mutex::new(())),
             cancel_embedding_sync: Arc::new(AtomicBool::new(false)),
+            cancel_ai_request: AiRequestCancels::default(),
             ai_refresh: Arc::new(Mutex::new(())),
         })
     }
@@ -228,7 +232,6 @@ fn unavailable_state() -> FolioError {
 async fn choose_workspace(
     app: AppHandle,
     state: State<'_, Folio>,
-    index_state: State<'_, IndexState>,
 ) -> Result<Option<WorkspaceInfo>, FolioError> {
     // `blocking_pick_folder` blocks its calling thread until the user
     // answers the dialog. Run it on a dedicated thread (like every other
@@ -249,8 +252,6 @@ async fn choose_workspace(
         .map_err(|cause| error(ErrorCode::WorkspaceUnavailable, cause.to_string()))?;
     let info = state.workspaces.lock().map_err(|_| unavailable_state())?.authorize(&path)?;
     remember_best_effort(&state, &info);
-    // The issue #4 provider snapshot is rebuilt from current files on demand.
-    *index_state.lock().map_err(|_| unavailable_state())? = None;
     Ok(Some(info))
 }
 
@@ -896,6 +897,138 @@ impl embedding_sync::PassageEmbedder for NativePassageEmbedder {
     }
 }
 
+impl evidence::Embedder for NativePassageEmbedder {
+    fn provider_space(&mut self) -> db::NativeResult<Option<ProviderEmbeddingSpace>> {
+        refuse_during_lab(&self.lab_state)?;
+        with_embedding_provider_guarded(
+            &self.app,
+            &self.embedding_state,
+            || refuse_during_lab(&self.lab_state),
+            |provider| Ok(provider.space().clone()),
+        )
+    }
+
+    fn embed_query(
+        &mut self,
+        text: &str,
+        cancel: &AtomicBool,
+    ) -> db::NativeResult<folio_core::embeddings::QueryEmbedding> {
+        with_embedding_provider_guarded(
+            &self.app,
+            &self.embedding_state,
+            || refuse_during_lab(&self.lab_state),
+            |provider| provider.embed_query(text, Some(cancel)).map_err(native_error),
+        )?
+        .ok_or_else(|| {
+            error(
+                ErrorCode::ModelNotInstalled,
+                "The selected embedding model is no longer installed.",
+            )
+            .with_detail("component", "embedding")
+        })
+    }
+}
+
+/// The Stop tokens of the AI requests in flight. Each request owns its token,
+/// so a Stop reaches the requests running when it is pressed and no request
+/// starting later can clear it, or be stopped by it.
+#[derive(Default)]
+struct AiRequestCancels {
+    live: Mutex<Vec<std::sync::Weak<AtomicBool>>>,
+}
+
+impl AiRequestCancels {
+    fn live(&self) -> std::sync::MutexGuard<'_, Vec<std::sync::Weak<AtomicBool>>> {
+        // The list holds only weak tokens; a panic elsewhere left nothing broken.
+        let mut live = self.live.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        live.retain(|token| token.strong_count() > 0);
+        live
+    }
+
+    /// A fresh token for a request starting now.
+    fn register(&self) -> Arc<AtomicBool> {
+        let token = Arc::new(AtomicBool::new(false));
+        self.live().push(Arc::downgrade(&token));
+        token
+    }
+
+    /// Stops every request in flight.
+    fn cancel_all(&self) {
+        for token in self.live().iter().filter_map(std::sync::Weak::upgrade) {
+            token.store(true, Ordering::Release);
+        }
+    }
+
+    #[cfg(test)]
+    fn live_count(&self) -> usize {
+        self.live().len()
+    }
+}
+
+/// Everything one AI request needs to read the persistent index. Cheap to
+/// build on the async side, then moved into the blocking task. Its Stop token
+/// is registered here, when the command starts.
+struct AiRequest {
+    app: AppHandle,
+    root: ScopedRoot,
+    index_path: PathBuf,
+    scanning: Arc<Mutex<()>>,
+    embedding_sync: Arc<Mutex<()>>,
+    cancel: Arc<AtomicBool>,
+    embedding_state: EmbeddingState,
+    lab_state: lab_commands::LabState,
+}
+
+impl AiRequest {
+    fn new(
+        app: &AppHandle,
+        state: &Folio,
+        embedding_state: &EmbeddingState,
+        lab_state: &lab_commands::LabState,
+        workspace_id: &str,
+    ) -> Result<Self, FolioError> {
+        Ok(Self {
+            app: app.clone(),
+            root: ai_boundary::resolve_workspace(state, workspace_id)?,
+            index_path: state.index_path.clone(),
+            scanning: state.scanning.clone(),
+            embedding_sync: state.embedding_sync.clone(),
+            cancel: state.cancel_ai_request.register(),
+            embedding_state: embedding_state.clone(),
+            lab_state: lab_state.clone(),
+        })
+    }
+
+    /// Runs `work` against the folder's persistent index on its own
+    /// connection. The first thing `work` asks of the index brings it up to
+    /// date, reporting `folio://preparing-progress` meanwhile.
+    fn run<R>(
+        self,
+        work: impl FnOnce(&mut evidence::LocalIndex<'_, NativePassageEmbedder>) -> Result<R, FolioError>,
+    ) -> Result<R, FolioError> {
+        let mut conn = db::open(&self.index_path)?;
+        let mut embedder = NativePassageEmbedder {
+            app: self.app.clone(),
+            embedding_state: self.embedding_state.clone(),
+            lab_state: self.lab_state.clone(),
+        };
+        let app = self.app.clone();
+        let mut sink = move |progress: evidence::PreparingProgress| {
+            let _ = app.emit(PREPARING_PROGRESS_EVENT, progress);
+        };
+        let mut index = evidence::LocalIndex::new(
+            &mut conn,
+            &self.root,
+            &self.scanning,
+            &self.embedding_sync,
+            &mut embedder,
+            &self.cancel,
+            &mut sink,
+        );
+        work(&mut index)
+    }
+}
+
 #[tauri::command]
 async fn sync_embeddings(
     app: AppHandle,
@@ -925,6 +1058,22 @@ async fn sync_embeddings(
     .await?)
 }
 
+/// `providerBusy` detail `reason` when another fill (an AI request's, "Prepare
+/// now"'s or another sync's) holds the embedding lock.
+const EMBEDDING_SYNC_RUNNING: &str = "embeddingSyncRunning";
+
+fn lock_embedding_sync(sync_lock: &Mutex<()>) -> Result<std::sync::MutexGuard<'_, ()>, FolioError> {
+    match sync_lock.try_lock() {
+        Ok(guard) => Ok(guard),
+        Err(std::sync::TryLockError::WouldBlock) => Err(error(
+            ErrorCode::ProviderBusy,
+            "Another embedding sync is already running.",
+        )
+        .with_detail("reason", EMBEDDING_SYNC_RUNNING)),
+        Err(std::sync::TryLockError::Poisoned(_)) => Err(unavailable_state()),
+    }
+}
+
 /// #27's persistent fill: load the selected provider's space, register the
 /// stored-chunk space it produces, then embed pending chunks. Shared by the
 /// `sync_embeddings` command and the combined local AI refresh.
@@ -938,16 +1087,7 @@ fn run_embedding_sync(
     workspace_id: String,
 ) -> Result<embedding_sync::EmbeddingSyncSummary, FolioError> {
     refuse_during_lab(&lab_state)?;
-    let _sync_guard = match sync_lock.try_lock() {
-        Ok(guard) => guard,
-        Err(std::sync::TryLockError::WouldBlock) => {
-            return Err(error(
-                ErrorCode::ProviderBusy,
-                "Another embedding sync is already running.",
-            ))
-        }
-        Err(std::sync::TryLockError::Poisoned(_)) => return Err(unavailable_state()),
-    };
+    let _sync_guard = lock_embedding_sync(sync_lock)?;
     cancel.store(false, Ordering::Release);
 
     let provider_space = with_embedding_provider_guarded(
@@ -965,10 +1105,10 @@ fn run_embedding_sync(
     })?;
     let stored_space = embedding_sync::stored_index_space(&provider_space)?;
 
-    let conn = db::open(&index_path)?;
+    let mut conn = db::open(&index_path)?;
     let space_fingerprint = index::register_space(&conn, &stored_space)?;
     let mut store = embedding_sync::IndexChunkStore::new(
-        conn,
+        &mut conn,
         workspace_id.clone(),
         space_fingerprint.clone(),
     );
@@ -1025,6 +1165,34 @@ struct LocalAiRefresh {
     coverage: ai_discovery::RelationshipCoverage,
 }
 
+/// What the embedding phase of `refresh_local_ai_index` did.
+enum EmbeddingPhase {
+    Ran(embedding_sync::EmbeddingSyncSummary),
+    /// No selected, installed search model: browsing and links keep working,
+    /// and coverage says there is no active space.
+    NoModel,
+    /// An AI request or "Prepare now" is filling the same index right now.
+    /// Discovery runs on what is embedded and coverage honestly shows the rest
+    /// as not yet embedded; a later refresh picks it up.
+    Skipped,
+}
+
+fn embedding_phase(
+    result: Result<embedding_sync::EmbeddingSyncSummary, FolioError>,
+) -> Result<EmbeddingPhase, FolioError> {
+    match result {
+        Ok(summary) => Ok(EmbeddingPhase::Ran(summary)),
+        Err(failure) if failure.code == ErrorCode::ModelNotInstalled => Ok(EmbeddingPhase::NoModel),
+        Err(failure)
+            if failure.code == ErrorCode::ProviderBusy
+                && failure.detail("reason") == Some(EMBEDDING_SYNC_RUNNING) =>
+        {
+            Ok(EmbeddingPhase::Skipped)
+        }
+        Err(failure) => Err(failure),
+    }
+}
+
 /// Refreshes Folio's local AI index for a folder: #27's embedding sync, then
 /// progressive relationship discovery in the resulting active space. One
 /// refresh at a time and one Stop (`cancel_local_ai_refresh`) for both phases.
@@ -1067,7 +1235,7 @@ async fn refresh_local_ai_index(
         };
 
         emit("embedding", 0, 0);
-        let embedding = match run_embedding_sync(
+        let embedding = match embedding_phase(run_embedding_sync(
             app.clone(),
             index_path.clone(),
             &sync_lock,
@@ -1075,12 +1243,9 @@ async fn refresh_local_ai_index(
             embedding_state,
             lab_state,
             workspace_id.clone(),
-        ) {
-            Ok(summary) => Some(summary),
-            // No selected, installed search model: browsing and links keep
-            // working, and coverage says there is no active space.
-            Err(failure) if failure.code == ErrorCode::ModelNotInstalled => None,
-            Err(failure) => return Err(failure),
+        ))? {
+            EmbeddingPhase::Ran(summary) => Some(summary),
+            EmbeddingPhase::NoModel | EmbeddingPhase::Skipped => None,
         };
         let mut conn = db::open(&index_path)?;
         let stopped_early = embedding.as_ref().is_some_and(|summary| summary.cancelled);
@@ -1459,24 +1624,6 @@ async fn remove_collection_members(
 
 /* ------------------------------------------------ issue #4 local AI providers */
 
-#[derive(Clone)]
-struct IndexSnapshot {
-    workspace_id: String,
-    /// Path, size and modification time of every text document the snapshot
-    /// was built from. A different listing means the files changed (an
-    /// approved edit, an undo, a scan or an external change), so the snapshot
-    /// is rebuilt instead of citing old text.
-    source_fingerprint: Vec<(String, u64, Option<u64>)>,
-    documents: Vec<DocumentRecord>,
-    chunks: Vec<Chunk>,
-    retriever: HybridRetriever,
-    embedding_space: Option<ProviderEmbeddingSpace>,
-    skipped_documents: Vec<SkippedDocument>,
-}
-
-/// Shared, not cloned per query.
-type IndexState = Arc<Mutex<Option<Arc<IndexSnapshot>>>>;
-
 struct EmbeddingSlot {
     model_id: String,
     revision: String,
@@ -1568,23 +1715,6 @@ impl GenerationHolder {
 type GenerationState = Arc<Mutex<GenerationStateInner>>;
 type InstallState = Arc<Mutex<Option<Arc<AtomicBool>>>>;
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct IndexStatus {
-    workspace_id: Option<String>,
-    document_count: usize,
-    chunk_count: usize,
-    method: String,
-    space_fingerprint: Option<String>,
-    skipped_documents: Vec<SkippedDocument>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SkippedDocument {
-    relative_path: String,
-    reason: String,
-}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1748,15 +1878,6 @@ fn finish_install(
     Ok(())
 }
 
-fn invalidate_index(index_state: &IndexState) -> Result<(), NativeProviderError> {
-    *index_state.lock().map_err(|_| NativeProviderError {
-        code: folio_core::contracts::ProviderErrorCode::IoError,
-        message: "The local index state is unavailable.".into(),
-        detail: None,
-    })? = None;
-    Ok(())
-}
-
 fn unload_embedding(embedding_state: &EmbeddingState) -> Result<(), NativeProviderError> {
     let mut guard = embedding_state.lock().map_err(|_| NativeProviderError {
         code: folio_core::contracts::ProviderErrorCode::IoError,
@@ -1799,7 +1920,6 @@ async fn verify_model(
 #[tauri::command]
 async fn install_model(
     app: AppHandle,
-    index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
     install_state: State<'_, InstallState>,
     model_id: String,
@@ -1807,7 +1927,6 @@ async fn install_model(
     let cancel = begin_install(install_state.inner())?;
     let worker_cancel = cancel.clone();
     let install_state = install_state.inner().clone();
-    let index_state = index_state.inner().clone();
     let embedding_state = embedding_state.inner().clone();
     let progress_app = app.clone();
     let result = run_blocking(move || {
@@ -1821,20 +1940,17 @@ async fn install_model(
     })
     .await;
     finish_install(&install_state, &cancel)?;
-    invalidate_index(&index_state)?;
     Ok(provider_install_state(result?))
 }
 
 #[tauri::command]
 async fn remove_model(
     app: AppHandle,
-    index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
     generation_state: State<'_, GenerationState>,
     install_state: State<'_, InstallState>,
     model_id: String,
 ) -> Result<(), FolioError> {
-    let index_state = index_state.inner().clone();
     let embedding_state = embedding_state.inner().clone();
     let generation_state = generation_state.inner().clone();
     let install_state = install_state.inner().clone();
@@ -1854,7 +1970,6 @@ async fn remove_model(
     })
     .await;
     result?;
-    invalidate_index(&index_state)?;
     Ok(())
 }
 
@@ -1882,14 +1997,12 @@ fn unload_generation_for_model(
 #[tauri::command]
 async fn select_model(
     app: AppHandle,
-    index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
     install_state: State<'_, InstallState>,
     role: ModelRole,
     model_id: String,
 ) -> Result<(), FolioError> {
     let embedding_selection = matches!(&role, ModelRole::Embedding);
-    let index_state = index_state.inner().clone();
     let embedding_state = embedding_state.inner().clone();
     let install_state = install_state.inner().clone();
     let result = run_blocking(move || {
@@ -1908,9 +2021,6 @@ async fn select_model(
     })
     .await;
     result?;
-    if embedding_selection {
-        invalidate_index(&index_state)?;
-    }
     Ok(())
 }
 
@@ -2057,156 +2167,6 @@ fn runtime_id_for_host() -> &'static str {
     }
 }
 
-fn load_corpus(
-    root: &ScopedRoot,
-) -> Result<
-    (
-        Vec<DocumentRecord>,
-        HashMap<String, String>,
-        Vec<Chunk>,
-        Vec<SkippedDocument>,
-    ),
-    FolioError,
-> {
-    let metadata = workspace::list_documents(root)?.documents;
-    let mut documents = Vec::new();
-    let mut contents = HashMap::new();
-    let mut text_documents = Vec::new();
-    let mut page_chunks = Vec::new();
-    let mut skipped_documents = Vec::new();
-    for row in metadata {
-        // A text-based PDF is read through its extracted text; offsets and the
-        // hash are the ones `read_document` reports, so citations open in the reader.
-        if media_type_for_path(&row.relative_path).is_none() {
-            continue;
-        }
-        let document_text = match workspace::read_text(&root.path, &row.relative_path) {
-            Ok(content) => content,
-            Err(reason) => {
-                skipped_documents.push(SkippedDocument {
-                    relative_path: row.relative_path,
-                    reason: reason.to_string(),
-                });
-                continue;
-            }
-        };
-        let content = document_text.content.clone();
-        let record = DocumentRecord {
-            id: row.id.clone(),
-            workspace_id: row.workspace_id.clone(),
-            relative_path: row.relative_path.clone(),
-            name: row.name.clone(),
-            title: folio_core::embeddings::markdown_title(&row.name, &content),
-            language: Language::Unknown,
-            media_type: row.media_type.clone(),
-            size_bytes: document_text.size_bytes,
-            modified_at_ms: document_text.modified_at_ms.or(row.modified_at_ms),
-            content: Some(content.clone()),
-            content_hash: Some(document_text.content_hash),
-        };
-        contents.insert(record.id.clone(), content.clone());
-        if document_text.pages.is_empty() {
-            text_documents.push(TextDocument::new(record.clone(), content));
-        } else {
-            page_chunks.extend(pdf_page_chunks(&record, &content, &document_text.pages)?);
-        }
-        documents.push(record);
-    }
-    let mut chunks = InterimTextChunker::new(text_documents).all_chunks()?;
-    chunks.extend(page_chunks);
-    Ok((documents, contents, chunks, skipped_documents))
-}
-
-/// A PDF's chunks, page by page, so each passage names the one page it is on.
-/// Offsets stay UTF-8 bytes into the whole extracted text.
-fn pdf_page_chunks(record: &DocumentRecord, content: &str, pages: &[workspace::PageRange]) -> Result<Vec<Chunk>, CoreError> {
-    let hash = record.content_hash.as_deref().unwrap_or_default();
-    let mut chunks = Vec::new();
-    for range in pages.iter().filter(|range| range.start <= range.end && range.end <= content.len() && content.is_char_boundary(range.start) && content.is_char_boundary(range.end)) {
-        for mut chunk in folio_core::chunking::chunk_text(&record.id, &content[range.start..range.end], folio_core::chunking::DEFAULT_MAX_CHUNK_BYTES, hash)? {
-            chunk.start += range.start;
-            chunk.end += range.start;
-            chunk.ordinal = chunks.len();
-            chunk.page = Some(range.page);
-            chunks.push(chunk);
-        }
-    }
-    Ok(chunks)
-}
-
-/// PDFs an Ask request can rename or move (never edit), listed without text.
-/// A proposal must carry the file's current revision, so the PDFs whose name
-/// shares a word with the request are hashed; the rest of a large folder is
-/// not read at all, and a request naming one of those gets a clarification.
-fn read_only_rename_targets(
-    root: &ScopedRoot,
-    request: &str,
-    chosen_document_id: Option<&str>,
-) -> Result<Vec<DocumentRecord>, FolioError> {
-    let words = |value: &str| {
-        value
-            .split(|character: char| !character.is_alphanumeric())
-            .filter(|word| word.chars().count() >= 3)
-            .map(str::to_lowercase)
-            .collect::<HashSet<_>>()
-    };
-    let asked = words(request);
-    let mut records = Vec::new();
-    for row in workspace::list_documents(root)?.documents {
-        if row.media_type != "application/pdf" {
-            continue;
-        }
-        let stem = row.name.rsplit_once('.').map_or(row.name.as_str(), |(stem, _)| stem);
-        let content_hash = if chosen_document_id != Some(row.id.as_str()) && words(stem).is_disjoint(&asked) {
-            None
-        } else {
-            workspace::document_hash(&root.path, &row.relative_path).ok()
-        };
-        records.push(DocumentRecord {
-            id: row.id,
-            workspace_id: row.workspace_id,
-            title: row.name.clone(),
-            relative_path: row.relative_path,
-            name: row.name,
-            language: Language::Unknown,
-            media_type: row.media_type,
-            size_bytes: row.size_bytes,
-            modified_at_ms: row.modified_at_ms,
-            content: None,
-            content_hash,
-        });
-    }
-    Ok(records)
-}
-
-fn document_record(
-    root: &ScopedRoot,
-    document_id: &str,
-    relative_path: &str,
-    document_text: &DocumentText,
-    content: &str,
-) -> DocumentRecord {
-    DocumentRecord {
-        id: document_id.into(),
-        workspace_id: root.id.clone(),
-        relative_path: relative_path.into(),
-        name: Path::new(relative_path)
-            .file_name()
-            .and_then(|value| value.to_str())
-            .unwrap_or(relative_path)
-            .into(),
-        title: folio_core::embeddings::markdown_title(relative_path, content),
-        language: grounding::detect_language(content),
-        media_type: media_type_for_path(relative_path)
-            .unwrap_or("text/plain")
-            .into(),
-        size_bytes: document_text.size_bytes,
-        modified_at_ms: document_text.modified_at_ms,
-        content: Some(content.into()),
-        content_hash: Some(document_text.content_hash.clone()),
-    }
-}
-
 fn read_ai_document(root: &ScopedRoot, relative_path: &str) -> Result<DocumentText, FolioError> {
     workspace::read_text(&root.path, relative_path)
 }
@@ -2306,223 +2266,76 @@ where
     })
 }
 
-fn with_embedding_provider<T, F>(
-    app: &AppHandle,
-    embedding_state: &EmbeddingState,
-    work: F,
-) -> Result<Option<T>, FolioError>
-where
-    F: FnOnce(&OrtE5Provider) -> Result<T, NativeProviderError>,
-{
-    with_embedding_provider_guarded(app, embedding_state, || Ok(()), work)
+/// What the persistent index holds for a folder, from SQLite alone: nothing is
+/// read from the files and no model is loaded. `embeddedChunkCount` is known
+/// once a request has loaded the embedding model.
+#[tauri::command]
+async fn index_status(
+    state: State<'_, Folio>,
+    embedding_state: State<'_, EmbeddingState>,
+    workspace_id: Option<String>,
+) -> Result<evidence::IndexStatus, FolioError> {
+    let Some(workspace_id) = workspace_id else {
+        return Ok(evidence::IndexStatus::empty());
+    };
+    state.root(&workspace_id)?;
+    let loaded_space = embedding_state
+        .lock()
+        .map_err(|_| unavailable_state())?
+        .as_ref()
+        .map(|slot| embedding_sync::stored_space_fingerprint(slot.provider.space()))
+        .transpose()?;
+    evidence::status(&*state.index()?, &workspace_id, loaded_space.as_deref())
 }
 
-/// The documents the provider snapshot reads (TXT, Markdown and text-based
-/// PDFs), as (path, size, mtime).
-fn corpus_fingerprint(root: &ScopedRoot) -> Result<Vec<(String, u64, Option<u64>)>, FolioError> {
-    let mut fingerprint = workspace::list_documents(root)?
-        .documents
-        .into_iter()
-        .filter(|row| media_type_for_path(&row.relative_path).is_some())
-        .map(|row| (row.relative_path, row.size_bytes, row.modified_at_ms))
-        .collect::<Vec<_>>();
-    fingerprint.sort();
-    Ok(fingerprint)
-}
-
-fn build_snapshot(
-    app: &AppHandle,
-    embedding_state: &EmbeddingState,
-    root: &ScopedRoot,
-) -> Result<IndexSnapshot, FolioError> {
-    let source_fingerprint = corpus_fingerprint(root)?;
-    let (documents, _contents, chunks, skipped_documents) = load_corpus(root)?;
-    let mut retriever = HybridRetriever::default();
-    let mut embedding_space = None;
-    if let Some((space, vectors)) = with_embedding_provider(app, embedding_state, |provider| {
-        let texts = folio_core::embeddings::passage_embedding_texts(&documents, &chunks);
-        let vectors = provider
-            .embed(&texts, EmbeddingKind::Passage, None)
-            .map_err(native_error)?;
-        Ok((provider.space().clone(), vectors))
-    })? {
-        retriever
-            .vector_index
-            .replace(space.clone(), chunks.clone(), vectors)?;
-        embedding_space = Some(space);
-    }
-    Ok(IndexSnapshot {
-        workspace_id: root.id.clone(),
-        source_fingerprint,
-        documents,
-        chunks,
-        retriever,
-        embedding_space,
-        skipped_documents,
-    })
-}
-
+/// "Prepare now": brings the index up to date (an incremental scan, then an
+/// embedding fill for the chunks that lack a vector) and reports what it holds.
 #[tauri::command]
 async fn rebuild_index(
     app: AppHandle,
     state: State<'_, Folio>,
-    index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
+    lab_state: State<'_, lab_commands::LabState>,
     workspace_id: String,
-) -> Result<IndexStatus, FolioError> {
-    let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
-    let index_state = index_state.inner().clone();
-    let embedding_state = embedding_state.inner().clone();
-    Ok(run_blocking::<_, FolioError, _>(move || {
-        let snapshot = build_snapshot(&app, &embedding_state, &root)?;
-        let status = snapshot_status(&snapshot);
-        *index_state.lock().map_err(|_| NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::IoError,
-            message: "The local index state is unavailable.".into(),
-            detail: None,
-        })? = Some(Arc::new(snapshot));
-        Ok(status)
-    })
-    .await?)
+) -> Result<evidence::IndexStatus, FolioError> {
+    let request = AiRequest::new(
+        &app,
+        state.inner(),
+        embedding_state.inner(),
+        lab_state.inner(),
+        &workspace_id,
+    )?;
+    Ok(run_blocking::<_, FolioError, _>(move || request.run(|index| index.prepare())).await?)
 }
 
-fn snapshot_status(snapshot: &IndexSnapshot) -> IndexStatus {
-    IndexStatus {
-        workspace_id: Some(snapshot.workspace_id.clone()),
-        document_count: snapshot.documents.len(),
-        chunk_count: snapshot.chunks.len(),
-        method: snapshot
-            .embedding_space
-            .as_ref()
-            .map_or_else(|| "keyword".into(), |_| "hybrid".into()),
-        space_fingerprint: snapshot
-            .embedding_space
-            .as_ref()
-            .map(folio_core::retrieval::space_fingerprint),
-        skipped_documents: snapshot.skipped_documents.clone(),
-    }
-}
-
-fn annotate_embedding_space_failure(
-    failure: CoreError,
-    expected: &ProviderEmbeddingSpace,
-    actual: &ProviderEmbeddingSpace,
-) -> CoreError {
-    match failure {
-        CoreError::Provider(mut provider)
-            if provider.code
-                == folio_core::contracts::ProviderErrorCode::EmbeddingSpaceMismatch =>
-        {
-            provider.detail = Some(format!(
-                "expected={};actual={}",
-                folio_core::retrieval::space_fingerprint(expected),
-                folio_core::retrieval::space_fingerprint(actual),
-            ));
-            CoreError::Provider(provider)
-        }
-        other => other,
-    }
-}
-
-#[tauri::command]
-fn index_status(index_state: State<'_, IndexState>) -> Result<IndexStatus, FolioError> {
-    let guard = index_state.lock().map_err(|_| NativeProviderError {
-        code: folio_core::contracts::ProviderErrorCode::IoError,
-        message: "The local index state is unavailable.".into(),
-        detail: None,
-    })?;
-    Ok(guard.as_ref().map_or(
-        IndexStatus {
-            workspace_id: None,
-            document_count: 0,
-            chunk_count: 0,
-            method: "keyword".into(),
-            space_fingerprint: None,
-            skipped_documents: Vec::new(),
-        },
-        |snapshot| snapshot_status(snapshot),
-    ))
-}
-
-fn ensure_snapshot(
-    app: &AppHandle,
-    embedding_state: &EmbeddingState,
-    root: &ScopedRoot,
-    index_state: &IndexState,
-) -> Result<Arc<IndexSnapshot>, FolioError> {
-    let current = corpus_fingerprint(root)?;
-    if let Some(snapshot) = index_state
-        .lock()
-        .map_err(|_| NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::IoError,
-            message: "The local index state is unavailable.".into(),
-            detail: None,
-        })?
-        .as_ref()
-        .filter(|snapshot| {
-            snapshot.workspace_id == root.id && snapshot.source_fingerprint == current
-        })
-        .cloned()
-    {
-        return Ok(snapshot);
-    }
-    let snapshot = Arc::new(build_snapshot(app, embedding_state, root)?);
-    *index_state.lock().map_err(|_| NativeProviderError {
-        code: folio_core::contracts::ProviderErrorCode::IoError,
-        message: "The local index state is unavailable.".into(),
-        detail: None,
-    })? = Some(snapshot.clone());
-    Ok(snapshot)
-}
-
+/// Hybrid semantic search over the persistent index, or FTS5 keyword search
+/// (labelled `keyword`) when no embedding model is selected. Brings the index
+/// up to date first; a Model Lab run makes it `providerBusy`.
 #[tauri::command]
 async fn semantic_search(
     app: AppHandle,
     state: State<'_, Folio>,
-    index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
+    lab_state: State<'_, lab_commands::LabState>,
     workspace_id: String,
     query: String,
     limit: Option<usize>,
 ) -> Result<Vec<ProviderSearchResult>, FolioError> {
-    let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
-    let index_state = index_state.inner().clone();
-    let embedding_state = embedding_state.inner().clone();
+    let request = AiRequest::new(
+        &app,
+        state.inner(),
+        embedding_state.inner(),
+        lab_state.inner(),
+        &workspace_id,
+    )?;
     Ok(run_blocking::<_, FolioError, _>(move || {
-        let snapshot = ensure_snapshot(&app, &embedding_state, &root, &index_state)?;
-        let limit = limit.unwrap_or(10).clamp(1, 50);
-        if snapshot.embedding_space.is_none() {
-            return Ok(snapshot.retriever.keyword(
-                &snapshot.documents,
-                &snapshot.chunks,
+        request.run(|index| {
+            index.search(
                 &query,
-                limit,
-            ));
-        }
-        let query_embedding = with_embedding_provider(&app, &embedding_state, |provider| {
-            provider.embed_query(&query, None).map_err(native_error)
-        })?
-        .ok_or_else(|| NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::ModelNotInstalled,
-            message: "The selected embedding model is no longer installed.".into(),
-            detail: None,
-        })?;
-        Ok(snapshot
-            .retriever
-            .search(
-                &snapshot.documents,
-                &snapshot.chunks,
-                &query,
-                Some(&query_embedding),
-                limit,
+                evidence::Scope::Folder,
+                limit.unwrap_or(10).clamp(1, 50),
             )
-            .map_err(|failure| {
-                annotate_embedding_space_failure(
-                    failure,
-                    snapshot.embedding_space.as_ref().expect("semantic space"),
-                    &query_embedding.space,
-                )
-            })?)
+        })
     })
     .await?)
 }
@@ -2716,13 +2529,9 @@ fn finish_generation(
     Ok(())
 }
 
-#[tauri::command]
-fn cancel_generation(generation_state: State<'_, GenerationState>) -> Result<(), FolioError> {
-    let guard = generation_state.lock().map_err(|_| NativeProviderError {
-        code: folio_core::contracts::ProviderErrorCode::IoError,
-        message: "The local generation state is unavailable.".into(),
-        detail: None,
-    })?;
+/// Asks the holder of the slot to stop. The slot stays held until the holder
+/// releases it, so a new request cannot start a second server meanwhile.
+fn signal_holder_stop(guard: &GenerationStateInner) -> Result<(), NativeProviderError> {
     if let Some(cancel) = guard.active_cancel.as_ref() {
         cancel.store(true, Ordering::Release);
         if let Some(slot) = guard.slot.as_ref() {
@@ -2730,6 +2539,25 @@ fn cancel_generation(generation_state: State<'_, GenerationState>) -> Result<(),
         }
     }
     Ok(())
+}
+
+fn cancel_generation_now(generation_state: &GenerationState) -> Result<(), NativeProviderError> {
+    let guard = generation_state.lock().map_err(|_| NativeProviderError {
+        code: folio_core::contracts::ProviderErrorCode::IoError,
+        message: "The local generation state is unavailable.".into(),
+        detail: None,
+    })?;
+    signal_holder_stop(&guard)
+}
+
+#[tauri::command]
+fn cancel_generation(
+    state: State<'_, Folio>,
+    generation_state: State<'_, GenerationState>,
+) -> Result<(), FolioError> {
+    // The requests may still be reading or embedding, before they hold the slot.
+    state.cancel_ai_request.cancel_all();
+    Ok(cancel_generation_now(generation_state.inner())?)
 }
 
 #[tauri::command]
@@ -2760,41 +2588,40 @@ async fn summarize_document(
     .await?)
 }
 
+/// Answers from passages of the persistent index (all of the folder, or one
+/// document when `document_id` is given). With no evidence the model is never
+/// called.
 #[tauri::command]
 async fn answer_question(
     app: AppHandle,
     state: State<'_, Folio>,
-    index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
+    lab_state: State<'_, lab_commands::LabState>,
     generation_state: State<'_, GenerationState>,
     workspace_id: String,
     question: String,
     document_id: Option<String>,
 ) -> Result<GroundedResult, FolioError> {
     let document_id = ai_boundary::validate_document_filter(&workspace_id, document_id.as_deref())?;
-    let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
-    let index_state = index_state.inner().clone();
-    let embedding_state = embedding_state.inner().clone();
+    let request = AiRequest::new(
+        &app,
+        state.inner(),
+        embedding_state.inner(),
+        lab_state.inner(),
+        &workspace_id,
+    )?;
     let generation_state = generation_state.inner().clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
-        let snapshot = ensure_snapshot(&app, &embedding_state, &root, &index_state)?;
-        let results = search_snapshot(
-            &app,
-            &embedding_state,
-            &snapshot,
-            &question,
-            document_id.as_deref(),
-        )?;
-        let passages = results
-            .into_iter()
-            .filter(|result| {
-                document_id
-                    .as_ref()
-                    .is_none_or(|id| &result.document.id == id)
-            })
-            .flat_map(|result| result.passages)
-            .take(folio_core::generation::MAX_PASSAGES)
-            .collect::<Vec<_>>();
+        let cancel = request.cancel.clone();
+        let evidence::PromptEvidence { passages, matched } = request.run(|index| {
+            index.prompt_evidence(
+                &question,
+                match document_id.as_deref() {
+                    Some(id) => evidence::Scope::Document(id),
+                    None => evidence::Scope::Folder,
+                },
+            )
+        })?;
         if passages.is_empty() {
             return Ok(grounding::answer_question(
                 None,
@@ -2805,95 +2632,84 @@ async fn answer_question(
             )?);
         }
         let lease = acquire_generation(&app, &generation_state, GenerationHolder::Answer)?;
+        if cancel.load(Ordering::Acquire) {
+            return Err(error(ErrorCode::Cancelled, "The request was cancelled."));
+        }
         let result = grounding::answer_question(
             Some(lease.provider.as_ref()),
             &question,
             passages,
             grounding::detect_language(&question),
             lease.claim.cancel.as_ref(),
-        );
-        Ok(result?)
+        )?;
+        Ok(mark_unmatched(result, matched))
     })
     .await?)
 }
 
-fn search_snapshot(
-    app: &AppHandle,
-    embedding_state: &EmbeddingState,
-    snapshot: &IndexSnapshot,
-    query: &str,
-    document_id: Option<&str>,
-) -> Result<Vec<ProviderSearchResult>, FolioError> {
-    let limit = folio_core::generation::MAX_PASSAGES;
-    if snapshot.embedding_space.is_none() {
-        return Ok(snapshot
-            .retriever
-            .keyword(
-                &snapshot.documents,
-                &snapshot.chunks,
-                query,
-                snapshot.chunks.len(),
-            )
-            .into_iter()
-            .filter(|result| document_id.is_none_or(|id| result.document.id == id))
-            .take(limit)
-            .collect());
-    };
-    let query_embedding = with_embedding_provider(app, embedding_state, |provider| {
-        provider.embed_query(query, None).map_err(native_error)
-    })?
-    .ok_or_else(|| NativeProviderError {
-        code: folio_core::contracts::ProviderErrorCode::ModelNotInstalled,
-        message: "The selected embedding model is no longer installed.".into(),
-        detail: None,
-    })?;
-    Ok(snapshot
-        .retriever
-        .search_scoped(
-            &snapshot.documents,
-            &snapshot.chunks,
-            query,
-            Some(&query_embedding),
-            document_id,
-            limit,
-        )
-        .map_err(|failure| {
-            annotate_embedding_space_failure(
-                failure,
-                snapshot.embedding_space.as_ref().expect("semantic space"),
-                &query_embedding.space,
-            )
-        })?)
+/// An answer about a chosen file in which nothing matched the question says
+/// so, so it is not read as a sourced match: its passages were sent because
+/// the user chose the file.
+fn mark_unmatched(mut result: GroundedResult, matched: bool) -> GroundedResult {
+    result.chosen_file_unmatched =
+        !matched && result.kind != folio_core::contracts::GroundedAnswerKind::InsufficientEvidence;
+    result
 }
 
+/// Interprets a request. The model sees the request only; the folder's index is
+/// brought up to date, and then only the few files the target description could
+/// mean are read, to resolve it. `document_id` is a file the user picked or
+/// attached: a change then targets it directly.
 #[tauri::command]
 async fn interpret_request(
     app: AppHandle,
     state: State<'_, Folio>,
+    embedding_state: State<'_, EmbeddingState>,
+    lab_state: State<'_, lab_commands::LabState>,
     generation_state: State<'_, GenerationState>,
     workspace_id: String,
     text: String,
-    // The file the user picked for this request: a rename, move or edit
-    // targets it instead of whatever the model calls the file.
-    chosen_document_id: Option<String>,
+    document_id: Option<String>,
 ) -> Result<InterpretationResult, FolioError> {
-    let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
+    let document_id = ai_boundary::validate_document_filter(&workspace_id, document_id.as_deref())?;
+    let request = AiRequest::new(
+        &app,
+        state.inner(),
+        embedding_state.inner(),
+        lab_state.inner(),
+        &workspace_id,
+    )?;
     let generation_state = generation_state.inner().clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
-        let chosen = chosen_document_id.as_deref();
-        let (mut documents, contents, chunks, _skipped_documents) = load_corpus(&root)?;
-        documents.extend(read_only_rename_targets(&root, &text, chosen)?);
-        let lease = acquire_generation(&app, &generation_state, GenerationHolder::Interpretation)?;
-        let result = interpretation::interpret_request_for_chosen(
-            lease.provider.as_ref(),
-            &text,
-            chosen,
-            &documents,
-            &contents,
-            &chunks,
-            lease.claim.cancel.as_ref(),
-        );
-        Ok(result?)
+        request.run(|index| {
+            // Files first, so the slot isn't held while the index catches up.
+            index.refresh_files()?;
+            let lease = acquire_generation(&app, &generation_state, GenerationHolder::Interpretation)?;
+            // A cancel pressed while the model was being verified and started.
+            index.ensure_not_cancelled()?;
+            let generated = interpretation::generate_intent(
+                lease.provider.as_ref(),
+                &text,
+                lease.claim.cancel.as_ref(),
+            )?;
+            drop(lease);
+            let intent = match generated.intent {
+                Ok(intent) => intent,
+                Err(invalid) => return Ok(invalid),
+            };
+            let corpus = index.interpretation_corpus(
+                intent.target_description.as_deref(),
+                document_id.as_deref(),
+            )?;
+            Ok(interpretation::resolve_model_intent_for(
+                &intent,
+                grounding::detect_language(&text),
+                &corpus.documents,
+                &corpus.contents,
+                &corpus.chunks,
+                document_id.as_deref(),
+            ))
+        })
     })
     .await?)
 }
@@ -2930,11 +2746,25 @@ fn stop_suggestion_run(runs: &SuggestionRuns, generation_state: &GenerationState
 }
 
 /// Stops the previous run and registers a new one; drop the guard to end it.
-fn begin_suggestion_run<'a>(runs: &'a SuggestionRuns, generation_state: &GenerationState) -> SuggestionRunGuard<'a> {
+#[cfg(test)]
+fn begin_suggestion_run<'a>(
+    runs: &'a SuggestionRuns,
+    generation_state: &GenerationState,
+) -> SuggestionRunGuard<'a> {
+    begin_suggestion_run_with_token(runs, generation_state, Arc::new(AtomicBool::new(false)))
+}
+
+fn begin_suggestion_run_with_token<'a>(
+    runs: &'a SuggestionRuns,
+    generation_state: &GenerationState,
+    stop: Arc<AtomicBool>,
+) -> SuggestionRunGuard<'a> {
     stop_suggestion_run(runs, generation_state);
-    let stop = Arc::new(AtomicBool::new(false));
     if let Ok(mut current) = runs.current.lock() {
-        *current = Some(SuggestionRun { stop: stop.clone(), generation: None });
+        *current = Some(SuggestionRun {
+            stop: stop.clone(),
+            generation: None,
+        });
     }
     SuggestionRunGuard { runs, stop }
 }
@@ -3020,47 +2850,85 @@ struct CollectionSuggestions {
 async fn suggest_collections(
     app: AppHandle,
     state: State<'_, Folio>,
-    index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
+    lab_state: State<'_, lab_commands::LabState>,
     generation_state: State<'_, GenerationState>,
     runs: State<'_, SuggestionRuns>,
     workspace_id: String,
 ) -> Result<CollectionSuggestions, FolioError> {
-    let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
-    let index_state = index_state.inner().clone();
-    let embedding_state = embedding_state.inner().clone();
+    let request = AiRequest::new(
+        &app,
+        state.inner(),
+        embedding_state.inner(),
+        lab_state.inner(),
+        &workspace_id,
+    )?;
     let generation_state = generation_state.inner().clone();
     let runs = runs.inner().clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
-        let run = begin_suggestion_run(&runs, &generation_state);
+        let run = begin_suggestion_run_with_token(&runs, &generation_state, request.cancel.clone());
         let _serial = runs.serial.lock().map_err(|_| unavailable_state())?;
         if run.stopped() {
             return Err(suggestion_stopped());
         }
-        let snapshot = ensure_snapshot(&app, &embedding_state, &root, &index_state)?;
-        let Some(space) = snapshot.embedding_space.as_ref() else {
-            return Ok(CollectionSuggestions {
-                status: "embeddingModelMissing",
-                space_fingerprint: None,
-                analyzed_document_count: 0,
-                truncated: false,
+        let grouped = request.run(|index| {
+            let corpus = index.organization_corpus()?;
+            let Some(space) = corpus.space.as_ref() else {
+                return Ok(CollectionSuggestions {
+                    status: "embeddingModelMissing",
+                    space_fingerprint: None,
+                    analyzed_document_count: 0,
+                    truncated: false,
+                    naming: "notNeeded",
+                    naming_error: None,
+                    groups: Vec::new(),
+                });
+            };
+            let (chunks, vectors) = (&corpus.chunks, &corpus.vectors);
+            let (groups, analyzed_document_count, truncated) =
+                folio_core::collections::group_documents(&corpus.documents, chunks, vectors, space)
+                    .map_err(native_error)?;
+            let mut current_groups = Vec::new();
+            for group in groups {
+                let passages = group
+                    .members
+                    .iter()
+                    .map(|member| member.passage.clone())
+                    .collect();
+                if !index.current_passages_only(passages)?.1 {
+                    current_groups.push(group);
+                }
+            }
+            Ok(CollectionSuggestions {
+                status: "grouped",
+                space_fingerprint: Some(folio_core::retrieval::space_fingerprint(space)),
+                analyzed_document_count,
+                truncated,
                 naming: "notNeeded",
                 naming_error: None,
-                groups: Vec::new(),
-            });
-        };
-        let (chunks, vectors) = snapshot.retriever.vector_index.indexed(space).ok_or_else(|| NativeProviderError {
-            code: folio_core::contracts::ProviderErrorCode::EmbeddingSpaceMismatch,
-            message: "The local index has no vectors for the selected embedding model.".into(),
-            detail: None,
+                groups: current_groups,
+            })
         })?;
-        let (mut groups, analyzed_document_count, truncated) =
-            folio_core::collections::group_documents(&snapshot.documents, chunks, vectors, space).map_err(native_error)?;
+        let CollectionSuggestions {
+            status,
+            space_fingerprint,
+            analyzed_document_count,
+            truncated,
+            mut groups,
+            ..
+        } = grouped;
         let (naming, naming_error) = if groups.is_empty() {
             ("notNeeded", None)
         } else {
-            match generate_in_run(&app, &generation_state, &run, |provider, cancel| folio_core::collections::name_groups(provider, &mut groups, cancel)) {
-                Err(failure) if failure.code == folio_core::contracts::ProviderErrorCode::ModelNotInstalled => ("generationModelMissing", None),
+            match generate_in_run(&app, &generation_state, &run, |provider, cancel| {
+                folio_core::collections::name_groups(provider, &mut groups, cancel)
+            }) {
+                Err(failure)
+                    if failure.code
+                        == folio_core::contracts::ProviderErrorCode::ModelNotInstalled =>
+                {
+                    ("generationModelMissing", None)
+                }
                 Err(failure) => ("failed", Some(FolioError::from(failure))),
                 Ok(None) => return Err(suggestion_stopped()),
                 Ok(Some(Ok(NamingOutcome::Named))) => ("named", None),
@@ -3072,8 +2940,8 @@ async fn suggest_collections(
             return Err(suggestion_stopped());
         }
         Ok(CollectionSuggestions {
-            status: "grouped",
-            space_fingerprint: Some(folio_core::retrieval::space_fingerprint(space)),
+            status,
+            space_fingerprint,
             analyzed_document_count,
             truncated,
             naming,
@@ -3113,8 +2981,8 @@ struct FileChangeSuggestions {
 async fn suggest_file_changes(
     app: AppHandle,
     state: State<'_, Folio>,
-    index_state: State<'_, IndexState>,
     embedding_state: State<'_, EmbeddingState>,
+    lab_state: State<'_, lab_commands::LabState>,
     generation_state: State<'_, GenerationState>,
     runs: State<'_, SuggestionRuns>,
     workspace_id: String,
@@ -3125,59 +2993,126 @@ async fn suggest_file_changes(
     // other suggestion may take their paths, and their files aren't sent to the model.
     let (members, titled) = {
         let index = state.index()?;
-        let members = collection_id.as_deref().map(|id| collections::present_member_ids(&index, &root, id)).transpose()?;
+        let members = collection_id
+            .as_deref()
+            .map(|id| collections::present_member_ids(&index, &root, id))
+            .transpose()?;
         (members, organize::filename_suggestions(&index, &root)?)
     };
-    let index_state = index_state.inner().clone();
-    let embedding_state = embedding_state.inner().clone();
+    let request = AiRequest::new(
+        &app,
+        state.inner(),
+        embedding_state.inner(),
+        lab_state.inner(),
+        &workspace_id,
+    )?;
     let generation_state = generation_state.inner().clone();
     let runs = runs.inner().clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
-        let run = begin_suggestion_run(&runs, &generation_state);
+        let run = begin_suggestion_run_with_token(&runs, &generation_state, request.cancel.clone());
         let _serial = runs.serial.lock().map_err(|_| unavailable_state())?;
         if run.stopped() {
             return Err(suggestion_stopped());
         }
-        let snapshot = ensure_snapshot(&app, &embedding_state, &root, &index_state)?;
-        let in_scope = |document: &DocumentRecord| members.as_ref().is_none_or(|members| members.contains(&document.id));
-        let (destination_status, found) = match snapshot.embedding_space.as_ref() {
-            None => ("embeddingModelMissing", Vec::new()),
-            Some(space) => {
-                let (chunks, vectors) = snapshot.retriever.vector_index.indexed(space).ok_or_else(|| NativeProviderError {
-                    code: folio_core::contracts::ProviderErrorCode::EmbeddingSpaceMismatch,
-                    message: "The local index has no vectors for the selected embedding model.".into(),
-                    detail: None,
-                })?;
-                let eligible = |document: &DocumentRecord| in_scope(document) && identity::is_editable_media_type(&document.media_type);
-                ("suggested", folio_core::file_suggestions::suggest_destinations(&snapshot.documents, chunks, vectors, space, &eligible).map_err(native_error)?)
+        let (corpus, destination_status, found, candidates) = request.run(|index| {
+            let corpus = index.organization_corpus()?;
+            let in_scope = |document: &DocumentRecord| {
+                members
+                    .as_ref()
+                    .is_none_or(|members| members.contains(&document.id))
+            };
+            let (destination_status, found) = match corpus.space.as_ref() {
+                None => ("embeddingModelMissing", Vec::new()),
+                Some(space) => {
+                    let (chunks, vectors) = (&corpus.chunks, &corpus.vectors);
+                    let eligible = |document: &DocumentRecord| {
+                        in_scope(document) && identity::is_editable_media_type(&document.media_type)
+                    };
+                    (
+                        "suggested",
+                        folio_core::file_suggestions::suggest_destinations(
+                            &corpus.documents,
+                            chunks,
+                            vectors,
+                            space,
+                            &eligible,
+                        )
+                        .map_err(native_error)?,
+                    )
+                }
+            };
+            let mut current_destinations = Vec::new();
+            for destination in found {
+                let passages = vec![destination.passage.clone(), destination.evidence.clone()];
+                if !index.current_passages_only(passages)?.1 {
+                    current_destinations.push(destination);
+                }
             }
-        };
-        let has_title_name = |document: &DocumentRecord| titled.iter().any(|suggestion| suggestion.document_id == document.id);
-        let candidates = snapshot
-            .documents
-            .iter()
-            .filter(|document| in_scope(document) && folio_core::file_suggestions::needs_a_name(document, has_title_name(document)))
-            .take(folio_core::file_suggestions::MAX_NAMED_FILES)
-            .map(|document| (document.clone(), folio_core::file_suggestions::filename_passages(document, document.content.as_deref().unwrap_or_default())))
-            .collect::<Vec<_>>();
+            let has_title_name = |document: &DocumentRecord| {
+                titled
+                    .iter()
+                    .any(|suggestion| suggestion.document_id == document.id)
+            };
+            let candidates = corpus
+                .documents
+                .iter()
+                .filter(|document| {
+                    in_scope(document)
+                        && folio_core::file_suggestions::needs_a_name(
+                            document,
+                            has_title_name(document),
+                        )
+                })
+                .take(folio_core::file_suggestions::MAX_NAMED_FILES)
+                .filter_map(|document| {
+                    let text = read_ai_document(&root, &document.relative_path).ok()?;
+                    if document.content_hash.as_deref() != Some(text.content_hash.as_str()) {
+                        return None;
+                    }
+                    Some((
+                        document.clone(),
+                        folio_core::file_suggestions::filename_passages(document, &text.content),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            Ok((corpus, destination_status, current_destinations, candidates))
+        })?;
         let (naming, naming_error, names) = if candidates.is_empty() {
             ("notNeeded", None, Vec::new())
         } else {
-            match generate_in_run(&app, &generation_state, &run, |provider, cancel| folio_core::file_suggestions::name_files(provider, &candidates, cancel)) {
-                Err(failure) if failure.code == folio_core::contracts::ProviderErrorCode::ModelNotInstalled => ("generationModelMissing", None, Vec::new()),
+            match generate_in_run(&app, &generation_state, &run, |provider, cancel| {
+                folio_core::file_suggestions::name_files(provider, &candidates, cancel)
+            }) {
+                Err(failure)
+                    if failure.code
+                        == folio_core::contracts::ProviderErrorCode::ModelNotInstalled =>
+                {
+                    ("generationModelMissing", None, Vec::new())
+                }
                 Err(failure) => ("failed", Some(FolioError::from(failure)), Vec::new()),
                 Ok(None) => ("cancelled", None, Vec::new()),
                 Ok(Some((names, Ok(NamingOutcome::Named)))) => ("named", None, names),
                 Ok(Some((names, Ok(NamingOutcome::Cancelled)))) => ("cancelled", None, names),
-                Ok(Some((names, Err(failure)))) => ("failed", Some(FolioError::from(native_error(failure))), names),
+                Ok(Some((names, Err(failure)))) => (
+                    "failed",
+                    Some(FolioError::from(native_error(failure))),
+                    names,
+                ),
             }
         };
         // One set of taken paths across every list, so no two suggestions can
         // target the same new path and be refused together at preview.
-        let mut taken = organize::taken_paths(&snapshot.documents, &titled);
-        let filenames = organize::model_filenames(&root, &snapshot.documents, &names, &mut taken);
-        let destinations = organize::destinations(&root, &snapshot.documents, found, &mut taken);
-        Ok(FileChangeSuggestions { filenames, filename_candidates: candidates.len(), naming, naming_error, destinations, destination_status })
+        let mut taken = organize::taken_paths(&corpus.documents, &titled);
+        let filenames = organize::model_filenames(&root, &corpus.documents, &names, &mut taken);
+        let destinations = organize::destinations(&root, &corpus.documents, found, &mut taken);
+        Ok(FileChangeSuggestions {
+            filenames,
+            filename_candidates: candidates.len(),
+            naming,
+            naming_error,
+            destinations,
+            destination_status,
+        })
     })
     .await?)
 }
@@ -3260,6 +3195,20 @@ fn unload_generation_now_with_limit(
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn stopping_suggestions_also_stops_their_persistent_index_preparation() {
+        let runs = SuggestionRuns::default();
+        let generation = GenerationState::default();
+        let requests = AiRequestCancels::default();
+        let token = requests.register();
+        let run = begin_suggestion_run_with_token(&runs, &generation, token.clone());
+        stop_suggestion_run(&runs, &generation);
+        assert!(token.load(Ordering::Acquire));
+        assert!(run.stopped());
+        let next = requests.register();
+        assert!(!next.load(Ordering::Acquire));
+    }
 
     #[test]
     fn stopping_suggestions_cancels_only_their_own_generation() {
@@ -3434,84 +3383,9 @@ mod tests {
         assert!(claim_free_slot(&generation).is_ok());
     }
 
-    #[test]
-    fn corpus_loading_skips_and_reports_unreadable_text() {
-        let root = tempfile::tempdir().unwrap();
-        fs::write(root.path().join("valid.md"), "valid content").unwrap();
-        fs::write(root.path().join("invalid.md"), [0xff, 0xfe]).unwrap();
 
-        let scoped_root = ScopedRoot {
-            id: "test-workspace".into(),
-            path: root.path().to_path_buf(),
-        };
-        let (documents, contents, chunks, skipped) = load_corpus(&scoped_root).unwrap();
-        assert_eq!(documents.len(), 1);
-        assert_eq!(contents.len(), 1);
-        assert_eq!(chunks.len(), 1);
-        assert_eq!(skipped.len(), 1);
-        assert_eq!(skipped[0].relative_path, "invalid.md");
-        assert!(skipped[0].reason.contains("valid UTF-8"));
-    }
 
-    #[test]
-    fn corpus_loading_reads_text_pdfs_and_markdown_files() {
-        let root = tempfile::tempdir().unwrap();
-        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures/documents");
-        fs::copy(fixtures.join("research/consent-form-guide.pdf"), root.path().join("guide.pdf")).unwrap();
-        fs::write(root.path().join("notes.markdown"), "# Notes\n\nConsent forms are due Friday.").unwrap();
-        fs::write(root.path().join("ignored.docx"), "not a Folio document").unwrap();
-        let scoped_root = ScopedRoot { id: "test-workspace".into(), path: root.path().to_path_buf() };
 
-        let (documents, contents, chunks, skipped) = load_corpus(&scoped_root).unwrap();
-        assert!(skipped.is_empty(), "{:?}", skipped.iter().map(|item| &item.reason).collect::<Vec<_>>());
-        let mut paths = documents.iter().map(|document| (document.relative_path.as_str(), document.media_type.as_str())).collect::<Vec<_>>();
-        paths.sort();
-        assert_eq!(paths, [("guide.pdf", "application/pdf"), ("notes.markdown", "text/markdown")]);
-        let pdf = documents.iter().find(|document| document.relative_path == "guide.pdf").unwrap();
-        let read = workspace::read_text(root.path(), "guide.pdf").unwrap();
-        // The same revision and text the reader shows, so a citation lands in the right place.
-        assert_eq!(pdf.content_hash.as_deref(), Some(read.content_hash.as_str()));
-        assert_eq!(contents[&pdf.id], read.content);
-        for chunk in chunks.iter().filter(|chunk| chunk.document_id == pdf.id) {
-            assert_eq!(&read.content[chunk.start..chunk.end], chunk.text);
-            assert_eq!(chunk.content_hash, read.content_hash);
-            // Each chunk lies on the one page it names, as the reader shows it.
-            let page = read.pages.iter().find(|range| Some(range.page) == chunk.page).expect("a PDF chunk names its page");
-            assert!(page.start <= chunk.start && chunk.end <= page.end);
-        }
-        let passage = &folio_core::grounding::passages_from_chunks(&chunks.iter().filter(|chunk| chunk.document_id == pdf.id).cloned().collect::<Vec<_>>())[0];
-        assert!(passage.page.is_some());
-        assert!(chunks.iter().filter(|chunk| chunk.document_id != pdf.id).all(|chunk| chunk.page.is_none()));
-        assert!(chunks.iter().any(|chunk| chunk.document_id == pdf.id));
-        let fingerprint = corpus_fingerprint(&scoped_root).unwrap();
-        assert_eq!(fingerprint.iter().map(|(path, ..)| path.as_str()).collect::<Vec<_>>(), ["guide.pdf", "notes.markdown"]);
-    }
-
-    #[test]
-    fn summary_record_preserves_the_native_document_id() {
-        let root = ScopedRoot {
-            id: "workspace".into(),
-            path: PathBuf::from("/tmp/workspace"),
-        };
-        let text = DocumentText {
-            content: "# Notes\nPaalala".into(),
-            content_hash: "sha256:observed".into(),
-            size_bytes: 15,
-            modified_at_ms: Some(42),
-            pages: Vec::new(),
-            unreadable_pages: Vec::new(),
-        };
-        let record = document_record(
-            &root,
-            "workspace:notes/paalala.md",
-            "notes/paalala.md",
-            &text,
-            &text.content,
-        );
-        assert_eq!(record.id, "workspace:notes/paalala.md");
-        assert_eq!(record.relative_path, "notes/paalala.md");
-        assert_eq!(record.content_hash.as_deref(), Some("sha256:observed"));
-    }
 
     #[test]
     fn relationship_passages_need_current_hash_utf8_boundaries_and_exact_bytes() {
@@ -3602,13 +3476,87 @@ mod tests {
     }
 
     #[test]
+    fn a_graph_refresh_skips_embedding_while_an_ask_fills_the_index_and_still_discovers() {
+        let sync_lock = Mutex::new(());
+        let held = sync_lock.lock().unwrap();
+        let busy = lock_embedding_sync(&sync_lock).map(|_| ()).unwrap_err();
+        assert_eq!(busy.code, ErrorCode::ProviderBusy);
+        assert_eq!(busy.detail("reason"), Some(EMBEDDING_SYNC_RUNNING));
+        drop(held);
+
+        // The fill elsewhere is not a failure: no summary, discovery goes on.
+        let busy_sync = error(ErrorCode::ProviderBusy, "Another embedding sync is already running.")
+            .with_detail("reason", EMBEDDING_SYNC_RUNNING);
+        assert!(matches!(
+            embedding_phase(Err(busy_sync)),
+            Ok(EmbeddingPhase::Skipped)
+        ));
+        assert!(matches!(
+            embedding_phase(Err(error(ErrorCode::ModelNotInstalled, "none"))),
+            Ok(EmbeddingPhase::NoModel)
+        ));
+        // A Model Lab run is still a real refusal.
+        let lab = error(ErrorCode::ProviderBusy, "lab").with_detail("reason", "modelLabRunning");
+        assert_eq!(embedding_phase(Err(lab)).err().unwrap().code, ErrorCode::ProviderBusy);
+        assert!(lock_embedding_sync(&sync_lock).is_ok());
+    }
+
+    #[test]
+    fn a_stop_before_a_request_starts_leaves_it_running() {
+        let requests = AiRequestCancels::default();
+        requests.cancel_all();
+        let request = requests.register();
+        assert!(!request.load(Ordering::Acquire), "the earlier Stop was for earlier work");
+    }
+
+    #[test]
+    fn a_stop_reaches_every_request_in_flight_and_only_those() {
+        let requests = AiRequestCancels::default();
+        let summary = requests.register();
+        let prepare = requests.register();
+        let finished = requests.register();
+        drop(finished);
+        requests.cancel_all();
+        assert!(summary.load(Ordering::Acquire) && prepare.load(Ordering::Acquire));
+        assert_eq!(requests.live_count(), 2, "finished requests are forgotten");
+
+        let next = requests.register();
+        assert!(!next.load(Ordering::Acquire));
+        assert!(summary.load(Ordering::Acquire), "no reset of another request's Stop");
+    }
+
+    #[test]
+    fn only_an_answer_about_a_chosen_file_nothing_matched_is_marked() {
+        let answer = |kind| folio_core::contracts::GroundedResult {
+            text: "t".into(),
+            sources: vec![],
+            coverage: vec![],
+            model_id: "m".into(),
+            revision: "r".into(),
+            kind,
+            sentences: vec![],
+            coverage_ranges: vec![],
+            uncited_sentence_count: 0,
+            basis: None,
+            chosen_file_unmatched: false,
+        };
+        use folio_core::contracts::GroundedAnswerKind::{Answer, InsufficientEvidence};
+        assert!(mark_unmatched(answer(Answer), false).chosen_file_unmatched);
+        assert!(!mark_unmatched(answer(Answer), true).chosen_file_unmatched);
+        assert!(!mark_unmatched(answer(InsufficientEvidence), false).chosen_file_unmatched);
+        let wire = serde_json::to_value(mark_unmatched(answer(Answer), true)).unwrap();
+        assert!(wire.get("chosenFileUnmatched").is_none(), "absent, never false: {wire}");
+        let wire = serde_json::to_value(mark_unmatched(answer(Answer), false)).unwrap();
+        assert_eq!(wire["chosenFileUnmatched"], true);
+    }
+
+    #[test]
     fn every_managed_state_has_its_own_type() {
         use std::any::TypeId;
         // Tauri keeps one managed state per type, and a second `.manage` of the
         // same type panics before any window opens. Keep this list in step
         // with `run()` and its `setup`.
         let managed = [
-            ("IndexState", TypeId::of::<IndexState>()),
             ("EmbeddingState", TypeId::of::<EmbeddingState>()),
             ("GenerationState", TypeId::of::<GenerationState>()),
             ("SuggestionRuns", TypeId::of::<SuggestionRuns>()),
@@ -3668,7 +3616,6 @@ async fn unload_generation(generation_state: State<'_, GenerationState>) -> Resu
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(IndexState::default())
         .manage(EmbeddingState::default())
         .manage(GenerationState::default())
         .manage(SuggestionRuns::default())

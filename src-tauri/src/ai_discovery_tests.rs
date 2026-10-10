@@ -1095,8 +1095,9 @@ mod integration_with_embedding_sync {
             (CoverageState::EmbeddingIncomplete, 3, 0)
         );
 
+        let mut sync_conn = db::open(&path).unwrap();
         let mut store = IndexChunkStore::new(
-            db::open(&path).unwrap(),
+            &mut sync_conn,
             root.id.clone(),
             fingerprint.clone(),
         );

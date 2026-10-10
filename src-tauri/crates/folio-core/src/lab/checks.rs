@@ -667,6 +667,7 @@ mod tests {
             coverage_ranges: vec![],
             uncited_sentence_count: uncited,
             basis: None,
+            chosen_file_unmatched: false,
         }
     }
 

@@ -5,11 +5,13 @@ import {
   indexStatus,
   interpretRequest,
   isAvailable,
+  onPreparingProgress,
   rebuildIndex,
   semanticSearch,
 } from "../adapters/ai";
 import type {
   DocumentRecord,
+  PreparingProgress,
   ProviderIndexStatus,
   SearchResult,
 } from "../domain/contracts";
@@ -17,9 +19,9 @@ import { toFolioError, type FolioError } from "../domain/errors";
 import { mergeFolderResults } from "../domain/searchEvidence";
 import {
   inScope,
+  planAsk,
   namedFiles,
   summaryTarget,
-  targetsChosenFile,
   type AskOutcome,
   type AskTurn,
 } from "./askAct";
@@ -42,6 +44,32 @@ import { summarize } from "./useSummary";
 import type { WorkspaceState } from "./useWorkspace";
 
 const RESULT_LIMIT = 20;
+
+/**
+ * Follows what a request is doing while it prepares the folder. Returns the
+ * function that stops listening, safe to call before the listener is ready.
+ */
+function watchPreparing(
+  folderId: string,
+  onUpdate: (progress: PreparingProgress) => void,
+): () => void {
+  let stopped = false;
+  let unlisten: (() => void) | undefined;
+  onPreparingProgress((update) => {
+    if (!stopped && update.workspaceId === folderId) onUpdate(update);
+  })
+    .then((stop) => {
+      if (stopped) stop();
+      else unlisten = stop;
+    })
+    .catch(() => {
+      // Progress is a nicety; the request's own result is what counts.
+    });
+  return () => {
+    stopped = true;
+    unlisten?.();
+  };
+}
 
 /**
  * The browser preview's practice replies. `TAURI_ENV_PLATFORM` is set while
@@ -73,6 +101,8 @@ export interface AskActController {
   setScope: (folder: string) => void;
   index: ProviderIndexStatus | null;
   preparing: boolean;
+  /** What the request in flight is preparing, when it is preparing. */
+  progress: PreparingProgress | null;
   indexError: FolioError | null;
   prepare: () => void;
   turns: AskTurn[];
@@ -80,8 +110,12 @@ export interface AskActController {
   find: (request: string) => void;
   /** `chosen` is the file the user picked; a change must target it. */
   ask: (request: string, chosen?: DocumentRecord) => void;
-  /** Summarizes the chosen file of an earlier turn. */
-  chooseForSummary: (turnId: number, document: DocumentRecord) => void;
+  /**
+   * Continues an earlier "which file?" turn with the file the user picked:
+   * summarizes it, answers the question from it, or reads the change request
+   * again for it.
+   */
+  chooseFile: (turnId: number, document: DocumentRecord) => void;
   cancel: () => void;
   /** Stops whatever holds the local model (a summary, Model Lab, …). */
   stopRunning: () => Promise<void>;
@@ -115,6 +149,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
   const turns = conversation?.turns ?? [];
   const [index, setIndex] = useState<ProviderIndexStatus | null>(null);
   const [preparing, setPreparing] = useState(false);
+  const [progress, setProgress] = useState<PreparingProgress | null>(null);
   const [indexError, setIndexError] = useState<FolioError | null>(null);
   const mounted = useRef(true);
 
@@ -131,7 +166,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
     ensureActiveConversation(folderId);
     setIndex(null);
     if (!folderId) return;
-    indexStatus()
+    indexStatus(folderId)
       .then((status) => mounted.current && setIndex(status))
       .catch(() => undefined);
   }, [folderId]);
@@ -166,6 +201,12 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
     });
     const onProgress = (partial: AskOutcome) =>
       updateTurnIn(conversationId, id, { outcome: partial });
+    const stopWatching =
+      desktop && folderId
+        ? watchPreparing(folderId, (update) => {
+            if (mounted.current) setProgress(update);
+          })
+        : undefined;
     try {
       updateTurnIn(conversationId, id, {
         status: "done",
@@ -181,8 +222,10 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
           : { status: "failed", error },
       );
     } finally {
+      stopWatching?.();
+      if (mounted.current) setProgress(null);
       // The first request prepares the folder; show what it prepared.
-      indexStatus()
+      indexStatus(folderId)
         .then((status) => mounted.current && setIndex(status))
         .catch(() => undefined);
     }
@@ -233,20 +276,24 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
     chosen?: DocumentRecord,
   ): Promise<AskOutcome> {
     const meaning = await interpretRequest(folder, request, chosen?.id);
-    switch (meaning.status) {
-      case "nonMutating": {
-        const query = meaning.targetQuery?.trim() || request;
-        if (meaning.intent === "question")
-          return {
-            type: "answer",
-            // The chosen/attached file, if any, scopes retrieval to it —
-            // otherwise the whole folder's passages compete for the answer,
-            // and a file's own passages can be outranked by others' (#88).
-            result: await answerQuestion(folder, request, chosen?.id),
-          };
-        const { results, namesOnly } = await search(folder, query);
-        if (meaning.intent === "search")
-          return { type: "results", query, results, namesOnly };
+    const step = planAsk(meaning, request, chosen, scope);
+    switch (step.kind) {
+      case "answer":
+        return {
+          type: "answer",
+          result: await answerQuestion(folder, request, step.documentId),
+        };
+      case "results": {
+        const { results, namesOnly } = await search(folder, step.query);
+        return { type: "results", query: step.query, results, namesOnly };
+      }
+      case "summarize":
+        void summarize(folder, step.document.id);
+        return { type: "summary", document: step.document };
+      case "findSummaryTarget": {
+        const { results } = await search(folder, step.query);
+        // A request that writes out one file's full name means that file
+        // (#105), among the results the search found.
         const { exact } = namedFiles(workspace.documents, request);
         const target = summaryTarget(
           results,
@@ -263,24 +310,8 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
         void summarize(folder, target.id);
         return { type: "summary", document: target };
       }
-      case "needsFileSelection":
-        return {
-          type: "chooseFile",
-          purpose: "change",
-          candidates: inScope(meaning.candidates, scope),
-        };
-      case "needsClarification":
-        return { type: "clarify", question: meaning.question };
-      case "proposal":
-        // Naming the chosen file in the request doesn't bind the model, so
-        // a change to any other file is refused here, before any preview.
-        if (chosen && !targetsChosenFile(meaning.proposal, chosen.id))
-          return { type: "otherFile", proposal: meaning.proposal, chosen };
-        return { type: "proposal", proposal: meaning.proposal };
-      case "unsupported":
-        return { type: "unsupported", reason: meaning.reason };
-      case "invalidModelOutput":
-        return { type: "unreadable" };
+      case "outcome":
+        return step.outcome;
     }
   }
 
@@ -292,15 +323,25 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
       setConversationScope(ensureActiveConversation(folderId), folder),
     index: index && index.workspaceId === folderId ? index : null,
     preparing,
+    progress,
     indexError,
     prepare: () => {
       if (!folderId || preparing) return;
       setPreparing(true);
       setIndexError(null);
+      const stopWatching = watchPreparing(folderId, (update) => {
+        if (mounted.current) setProgress(update);
+      });
       rebuildIndex(folderId)
         .then((status) => mounted.current && setIndex(status))
         .catch((cause) => mounted.current && setIndexError(toFolioError(cause)))
-        .finally(() => mounted.current && setPreparing(false));
+        .finally(() => {
+          stopWatching();
+          if (mounted.current) {
+            setProgress(null);
+            setPreparing(false);
+          }
+        });
     },
     turns,
     busy,
@@ -324,12 +365,39 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
             : practiceReply(request, onProgress),
         chosen,
       ),
-    chooseForSummary: (turnId, document) => {
+    chooseFile: (turnId, document) => {
       if (!folderId || !conversation) return;
-      void summarize(folderId, document.id);
-      updateTurnIn(conversation.id, turnId, {
-        outcome: { type: "summary", document },
-      });
+      const turn = conversation.turns.find((other) => other.id === turnId);
+      const outcome = turn?.outcome;
+      if (!turn || outcome?.type !== "chooseFile") return;
+      switch (outcome.purpose) {
+        case "summarize":
+          void summarize(folderId, document.id);
+          updateTurnIn(conversation.id, turnId, {
+            outcome: { type: "summary", document },
+          });
+          return;
+        case "question":
+          // The intent is already known; answer from the chosen file.
+          void run(
+            "ask",
+            turn.request,
+            async (folder) => ({
+              type: "answer",
+              result: await answerQuestion(folder, turn.request, document.id),
+            }),
+            document,
+          );
+          return;
+        case "change":
+          void run(
+            "ask",
+            turn.request,
+            (folder) => interpret(folder, turn.request, document),
+            document,
+          );
+          return;
+      }
     },
     cancel: () => void cancelGeneration().catch(() => undefined),
     stopRunning: () => cancelGeneration().catch(() => undefined),

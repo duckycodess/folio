@@ -109,10 +109,11 @@ mod tests {
             stored_space_fingerprint(&provider_space).unwrap()
         );
         assert_ne!(derived_fingerprint, space_fingerprint(&provider_space));
-        // Golden: any drift in a fingerprint input fails loudly.
+        // Golden: any drift in a fingerprint input fails loudly. Changed by
+        // #108's `title-path-chunk-v2` stored input (from `chunk-text-v1`).
         assert_eq!(
             derived.preprocessing_fingerprint,
-            "e72ccaa8652657ee0191868c230f713085c44a46ba8767836484a417c9872e22"
+            "998f0d1653c24a86982f29df9342d3592061d3d1468ef64de422504a3b0218f9"
         );
     }
 

@@ -1,4 +1,7 @@
 import type {
+  FileSelectionPurpose,
+  InterpretationResult,
+  PreparingProgress,
   DocumentId,
   DocumentRecord,
   GroundedResult,
@@ -23,7 +26,7 @@ export type AskOutcome =
   | { type: "summary"; document: DocumentRecord }
   | {
       type: "chooseFile";
-      purpose: "summarize" | "change";
+      purpose: FileSelectionPurpose;
       candidates: SearchResult[];
     }
   | { type: "clarify"; question: string }
@@ -233,5 +236,101 @@ export function describeProposal(proposal: OperationProposal): string {
       return `Move ${proposal.relativePath} to ${proposal.destinationRelativePath}`;
     case "create":
       return `Create ${proposal.destinationRelativePath}`;
+  }
+}
+
+/**
+ * What a request is doing while it prepares the folder, or `undefined` when
+ * there is nothing to say (no work, or a total of zero).
+ */
+export function preparingLabel(
+  progress: PreparingProgress | null | undefined,
+): string | undefined {
+  if (!progress || progress.total <= 0) return undefined;
+  const done = Math.min(progress.processed, progress.total);
+  return progress.phase === "reading"
+    ? `Reading your files: ${done} of ${progress.total}`
+    : `Preparing search by meaning: ${done} of ${progress.total} passages`;
+}
+
+/** What to do next with what Folio understood of a request. */
+export type AskStep =
+  /** Answer a question; `documentId` limits the evidence to one file. */
+  | { kind: "answer"; documentId?: DocumentId }
+  | { kind: "summarize"; document: DocumentRecord }
+  /** Summary of a file the request describes but does not name. */
+  | { kind: "findSummaryTarget"; query: string }
+  | { kind: "results"; query: string }
+  | { kind: "outcome"; outcome: AskOutcome };
+
+/**
+ * Decides the next step for an interpreted request. A file the user picked or
+ * attached always wins over one Folio resolved from the wording, and a
+ * question that names no file is answered from the whole folder, so Folio
+ * asks which file only when the request names files it cannot tell apart.
+ * `scope` limits candidate lists, not a file that was named or chosen.
+ */
+export function planAsk(
+  meaning: InterpretationResult,
+  request: string,
+  chosen: DocumentRecord | undefined,
+  scope: string,
+): AskStep {
+  switch (meaning.status) {
+    case "nonMutating": {
+      const query = meaning.targetQuery?.trim() || request;
+      const document = chosen ?? meaning.document;
+      switch (meaning.intent) {
+        case "question":
+          return { kind: "answer", documentId: document?.id };
+        case "summarize":
+          return document
+            ? { kind: "summarize", document }
+            : { kind: "findSummaryTarget", query };
+        case "search":
+          return { kind: "results", query };
+      }
+    }
+    case "needsFileSelection": {
+      const purpose = meaning.purpose ?? "change";
+      // The user already chose the file; asking again would ignore that.
+      if (chosen && purpose === "question")
+        return { kind: "answer", documentId: chosen.id };
+      if (chosen && purpose === "summarize")
+        return { kind: "summarize", document: chosen };
+      const candidates = inScope(meaning.candidates, scope);
+      // A question whose candidates all lie outside the scope is still a
+      // question about the folder.
+      if (purpose === "question" && candidates.length === 0)
+        return { kind: "answer" };
+      return {
+        kind: "outcome",
+        outcome: { type: "chooseFile", purpose, candidates },
+      };
+    }
+    case "needsClarification":
+      return {
+        kind: "outcome",
+        outcome: { type: "clarify", question: meaning.question },
+      };
+    case "proposal":
+      // Naming the chosen file in the request doesn't bind the model, so a
+      // change to any other file is refused here, before any preview.
+      if (chosen && !targetsChosenFile(meaning.proposal, chosen.id))
+        return {
+          kind: "outcome",
+          outcome: { type: "otherFile", proposal: meaning.proposal, chosen },
+        };
+      return {
+        kind: "outcome",
+        outcome: { type: "proposal", proposal: meaning.proposal },
+      };
+    case "unsupported":
+      return {
+        kind: "outcome",
+        outcome: { type: "unsupported", reason: meaning.reason },
+      };
+    case "invalidModelOutput":
+      return { kind: "outcome", outcome: { type: "unreadable" } };
   }
 }
