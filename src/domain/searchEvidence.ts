@@ -1,4 +1,5 @@
 import type { DocumentRecord, SearchResult } from "./contracts";
+import { highlightTerms, parseSearchQuery } from "./searchQuery";
 
 /**
  * Search results for an open folder: the persistent index's text matches
@@ -62,7 +63,10 @@ function queryTerms(query: string): string[] {
  * but not "explanation".
  */
 export function highlightSegments(text: string, query: string): Segment[] {
-  const terms = queryTerms(query);
+  // With operators, only what the query asks for is marked: `"1_b"` marks
+  // that exact text, never every "1" and "b".
+  const parsed = parseSearchQuery(query);
+  const terms = parsed ? highlightTerms(parsed) : queryTerms(query);
   if (!terms.length || !text) return text ? [{ text, hit: false }] : [];
   // Fold character by character, remembering where each folded character came from.
   let folded = "";
@@ -79,10 +83,17 @@ export function highlightSegments(text: string, query: string): Segment[] {
   const marks = new Array<boolean>(text.length).fill(false);
   const isWord = (char: string | undefined) =>
     char !== undefined && /[\p{L}\p{N}]/u.test(char);
+  const isToken = (char: string | undefined) =>
+    char !== undefined && /[\p{L}\p{N}_]/u.test(char);
   for (const term of terms) {
     let at = folded.indexOf(term);
     while (at !== -1) {
-      if (!isWord(folded[at - 1])) {
+      if (parsed) {
+        // Exact: a whole token, never part of a longer one.
+        const end = at + term.length;
+        if (!isToken(folded[at - 1]) && !isToken(folded[end]))
+          for (let i = origin[at]; i < origin[end]; i++) marks[i] = true;
+      } else if (!isWord(folded[at - 1])) {
         // Extend to the end of the word, so the whole matching word is marked.
         let end = at + term.length;
         while (end < folded.length && isWord(folded[end])) end++;

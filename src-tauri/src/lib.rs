@@ -21,6 +21,7 @@ mod plan;
 #[cfg(test)]
 mod relationship_edges_tests;
 mod ripple;
+mod search_query;
 mod workspace;
 mod writer;
 

@@ -17,6 +17,7 @@ import { Panel } from "../ui/Panel";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
 import { TurnBody, type OpenFile } from "./AskTurns";
 import { ChangeDialog } from "./ChangeDialog";
+import { SearchCheatsheet } from "./SearchCheatsheet";
 
 export type { OpenFile };
 
@@ -40,6 +41,7 @@ export function AssistantView({
 }) {
   const ask = useAskAct(workspace);
   const [changing, setChanging] = useState<OperationProposal | null>(null);
+  const [cheatsheet, setCheatsheet] = useState(false);
   // The dialog unmounts when it closes, so focus goes back to its button here.
   const changeOpener = useRef<Element | null>(null);
   function previewChange(proposal: OperationProposal) {
@@ -251,6 +253,15 @@ export function AssistantView({
               >
                 {index ? "Prepare again" : "Prepare now"}
               </Button>
+              <Button
+                variant="ghost"
+                className="ask-chip"
+                aria-expanded={cheatsheet}
+                aria-controls="search-cheatsheet"
+                onClick={() => setCheatsheet((open) => !open)}
+              >
+                Cheatsheet
+              </Button>
             </div>
             <div className="ask-send">
               <Button disabled={!canSend} onClick={() => send("find")}>
@@ -261,6 +272,16 @@ export function AssistantView({
               </Button>
             </div>
           </div>
+          {cheatsheet && (
+            <SearchCheatsheet
+              id="search-cheatsheet"
+              onUse={(example) =>
+                drafts.setInstruction(
+                  request.trim() ? `${request.trimEnd()} ${example}` : example,
+                )
+              }
+            />
+          )}
         </div>
         <p id="instruction-help" className="field-help ask-status">
           {ask.preparing

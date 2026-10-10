@@ -16,7 +16,10 @@ import type {
   SearchResult,
 } from "../domain/contracts";
 import { toFolioError, type FolioError } from "../domain/errors";
+import { keywordSearch } from "../domain/discovery";
 import { mergeFolderResults } from "../domain/searchEvidence";
+import { hasSearchOperators } from "../domain/searchQuery";
+import { searchIndex } from "../adapters/workspace";
 import {
   inScope,
   planAsk,
@@ -238,10 +241,33 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
   async function search(
     folder: string,
     query: string,
-  ): Promise<{ results: SearchResult[]; namesOnly: boolean }> {
+  ): Promise<{
+    results: SearchResult[];
+    namesOnly?: "noModel" | "notIndexed";
+  }> {
+    // Operators ("1_b", -draft, OR, intitle:, filetype:, in:) are matched
+    // exactly by the folder's text index; search by meaning would loosen them.
+    if (hasSearchOperators(query)) {
+      const local = keywordSearch(workspace.documents, query);
+      let indexed: SearchResult[] = [];
+      let namesOnly: "notIndexed" | undefined;
+      try {
+        indexed = await searchIndex(folder, query, RESULT_LIMIT);
+      } catch {
+        // Not indexed yet: names (and any loaded text) only, and the turn says so.
+        namesOnly = "notIndexed";
+      }
+      return {
+        results: inScope(
+          mergeFolderResults(workspace.documents, indexed, local),
+          scope,
+        ).slice(0, RESULT_LIMIT),
+        namesOnly,
+      };
+    }
     const { named, partial } = namedFiles(workspace.documents, query);
     let indexed: SearchResult[];
-    let namesOnly = false;
+    let namesOnly: "noModel" | undefined;
     try {
       indexed = await semanticSearch(folder, query, RESULT_LIMIT);
     } catch (cause) {
@@ -255,7 +281,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
       )
         throw cause;
       indexed = [];
-      namesOnly = true;
+      namesOnly = "noModel";
     }
     return {
       results: inScope(

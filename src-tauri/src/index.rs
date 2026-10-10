@@ -1080,6 +1080,9 @@ fn excerpt(document_id: &str, document_hash: &str, chunk_text: &str, highlighted
 /// FTS5 keyword search over indexed chunks. Query words are quoted and OR-ed, so document
 /// or query text cannot inject FTS syntax. This is keyword matching, not semantic search.
 pub fn search(conn: &Connection, workspace_id: &str, query: &str, limit: usize) -> NativeResult<Vec<SearchResult>> {
+    if let Some(parsed) = crate::search_query::SearchQuery::parse(query) {
+        return operator_search(conn, workspace_id, &parsed, limit);
+    }
     let terms = query_terms(query);
     if terms.is_empty() { return Ok(Vec::new()); }
     let expression = terms.iter().map(|term| format!("\"{term}\"")).collect::<Vec<_>>().join(" OR ");
@@ -1105,6 +1108,33 @@ pub fn search(conn: &Connection, workspace_id: &str, query: &str, limit: usize) 
         .into_iter()
         .map(|(document_id, score, passages)| Ok(SearchResult { document: get_document(conn, workspace_id, &document_id)?, passages, score, method: "keyword" }))
         .collect()
+}
+
+/// A query with search operators (`"exact"`, `-word`, `OR`, `intitle:`, `filetype:`,
+/// `in:`) is matched exactly against each file's name and indexed text, one file at a
+/// time, instead of OR-ing its words: `"1_b"` must not find `1_c` or `1 b`.
+fn operator_search(conn: &Connection, workspace_id: &str, parsed: &crate::search_query::SearchQuery, limit: usize) -> NativeResult<Vec<SearchResult>> {
+    let limit = limit.clamp(1, 100);
+    let terms = parsed.highlight_terms();
+    let mut documents = conn.prepare(&format!("SELECT {DOCUMENT_COLUMNS} FROM documents WHERE workspace_id = ?1 ORDER BY relative_path"))?;
+    let documents: Vec<IndexedDocument> = documents.query_map([workspace_id], document_from_row)?.collect::<Result<_, _>>()?;
+    let mut chunks = conn.prepare("SELECT chunk_text, start_offset, page FROM chunks WHERE document_id = ?1 ORDER BY ordinal")?;
+    let mut found: Vec<(f64, SearchResult)> = Vec::new();
+    for document in documents {
+        let rows: Vec<(String, i64, Option<u32>)> = chunks.query_map([&document.id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect::<Result<_, _>>()?;
+        let text = rows.iter().map(|(text, _, _)| text.as_str()).collect::<Vec<_>>().join("\n");
+        let file = crate::search_query::Searchable { name: &document.name, title: &document.title, relative_path: &document.relative_path, text: &text };
+        let Some(score) = parsed.score(&file) else { continue };
+        let passages = rows
+            .iter()
+            .filter(|(text, _, _)| parsed.mentions(text))
+            .take(PASSAGES_PER_RESULT)
+            .map(|(text, start, page)| excerpt(&document.id, &document.content_hash, text, "", *start as usize, *page, &terms))
+            .collect();
+        found.push((score, SearchResult { document, passages, score, method: "keyword" }));
+    }
+    found.sort_by(|a, b| b.0.total_cmp(&a.0).then_with(|| a.1.document.relative_path.cmp(&b.1.document.relative_path)));
+    Ok(found.into_iter().take(limit).map(|(_, result)| result).collect())
 }
 
 // ---------------------------------------------------------------- exact duplicates
@@ -1855,10 +1885,28 @@ pub mod tests {
     }
 
     #[test]
+    fn a_quoted_query_finds_only_the_exact_token() {
+        let (folder, mut conn, root) = fixture_workspace();
+        let filler = "Walang kinalaman na pangungusap. ".repeat(20);
+        for (name, code) in [("one-b", "1_b"), ("one-c", "1_c"), ("spaced", "1 b"), ("two-b", "2_b")] {
+            fs::write(folder.path().join(format!("notes/{name}.md")), format!("# Form\n\n{filler}Fill in section {code} first.\n")).unwrap();
+        }
+        scan(&mut conn, &root);
+        let hits = search(&conn, &root.id, "\"1_b\"", 10).unwrap();
+        assert_eq!(paths(&hits), vec!["notes/one-b.md"]);
+        assert!(hits[0].passages[0].text.contains("1_b"), "the excerpt shows the exact match");
+        assert_located(folder.path(), "notes/one-b.md", &hits[0].passages[0]);
+        // Excluding it, and restricting by type and folder, work on the same files.
+        assert!(!paths(&search(&conn, &root.id, "section -\"1_b\"", 10).unwrap()).contains(&"notes/one-b.md"));
+        assert!(search(&conn, &root.id, "\"1_b\" filetype:pdf", 10).unwrap().is_empty());
+        assert_eq!(paths(&search(&conn, &root.id, "\"1_b\" in:notes", 10).unwrap()), vec!["notes/one-b.md"]);
+    }
+
+    #[test]
     fn query_syntax_cannot_break_search() {
         let (_folder, mut conn, root) = fixture_workspace();
         scan(&mut conn, &root);
-        for query in ["\"unbalanced", "deadline OR", "NEAR(a b)", "*", "col:umn", ""] {
+        for query in ["\"unbalanced", "deadline OR", "NEAR(a b)", "*", "col:umn", "", "-", "OR OR", "intitle:", "-\"\"", "in:/"] {
             assert!(search(&conn, &root.id, query, 5).is_ok(), "query {query:?} failed");
         }
     }
