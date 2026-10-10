@@ -424,6 +424,10 @@ After "Use <file>" on Ask & Act's "This could mean several files", a rename such
 - Fixed while verifying: main didn't compile. #87's `generate_in_run` called `acquire_generation` without the holder that #104 added. Organize suggestions now hold the slot as `organizeSuggestions` ("Folio is naming suggestions in Organize"), the same change as #116, so either can merge first.
 - Checked on macOS: `cargo test --manifest-path src-tauri/Cargo.toml --workspace` (all passed; new tests: chosen file with no model target, with an ambiguous or different model target, outside the folder, and with an unknown revision or an unsupported intent), `npm run check`, `npm test` (486 passed, 9 todo) and `npm run build`. Not checked in the desktop app with a real model.
 
+## Ask & Act showed "Rename undefined to undefined"
+
+`OperationProposal` and `InterpretationResult` in `folio-core` used `#[serde(tag, rename_all = "camelCase")]`, which renames only the tags. Their fields went to the UI in snake_case (`relative_path`, `destination_relative_path`, `document_id`, `pending_intent`, `target_query`, `request_language`), so the UI read them as undefined. Both now also set `rename_all_fields = "camelCase"`, as `src-tauri/src/contracts.rs` already did. The golden fixture only covered `needsClarification`, whose fields are single words; `interpretation_fields_use_the_ui_keys` now pins a rename proposal and `targetQuery`. Checked on macOS: `cargo test --manifest-path src-tauri/Cargo.toml --workspace` (all passed). No frontend change. Not checked in the desktop app.
+
 ## Virtual collections (issue #78)
 
 Gab took #78 over from Dann ([ADR 0017](adr/0017-virtual-collections-kept-natively-without-a-plan.md)). This first slice covers suggested and kept collections; model-written filenames and destination suggestions are follow-up PRs.

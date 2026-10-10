@@ -270,7 +270,7 @@ pub struct ModelInstallState {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum OperationProposal {
     Edit {
         document_id: DocumentId,
@@ -299,7 +299,7 @@ pub enum OperationProposal {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(tag = "status", rename_all = "camelCase")]
+#[serde(tag = "status", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum InterpretationResult {
     Proposal {
         proposal: OperationProposal,
@@ -478,5 +478,44 @@ mod contract_tests {
             })
             .unwrap(),
         );
+    }
+
+    /// `rename_all` alone renames only the tags; the fields inside each
+    /// variant must be camelCase too, or the UI reads them as undefined.
+    #[test]
+    fn interpretation_fields_use_the_ui_keys() {
+        let value = serde_json::to_value(InterpretationResult::Proposal {
+            proposal: OperationProposal::Rename {
+                document_id: "doc-1".into(),
+                relative_path: "Exavault/201_Birth Certificate.pdf".into(),
+                observed_content_hash: "hash".into(),
+                destination_relative_path: "Exavault/201.pdf".into(),
+            },
+            request_language: Language::En,
+            exact_duplicate_paths: vec!["copy.pdf".into()],
+        })
+        .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "status": "proposal",
+                "proposal": {
+                    "kind": "rename",
+                    "documentId": "doc-1",
+                    "relativePath": "Exavault/201_Birth Certificate.pdf",
+                    "observedContentHash": "hash",
+                    "destinationRelativePath": "Exavault/201.pdf",
+                },
+                "requestLanguage": "en",
+                "exactDuplicatePaths": ["copy.pdf"],
+            })
+        );
+        let search = serde_json::to_value(InterpretationResult::NonMutating {
+            intent: NonMutatingIntent::Search,
+            target_query: Some("birth certificate".into()),
+            document: None,
+        })
+        .unwrap();
+        assert_eq!(search["targetQuery"], "birth certificate");
     }
 }
