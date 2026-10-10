@@ -120,6 +120,8 @@ export interface AskActController {
    * again for it.
    */
   chooseFile: (turnId: number, document: DocumentRecord) => void;
+  /** Records that a turn's proposed change was applied, so its card stops offering it. */
+  markApplied: (turnId: number) => void;
   cancel: () => void;
   /** Stops whatever holds the local model (a summary, Model Lab, …). */
   stopRunning: () => Promise<void>;
@@ -129,6 +131,8 @@ export interface AskActController {
   conversationId: string | null;
   /** The open conversation's name, given or automatic. */
   conversationTitle: string;
+  /** When the open conversation last changed, or `null` before it starts. */
+  conversationUpdatedAt: number | null;
   /** A blank name goes back to the automatic one. */
   renameConversation: (id: string, title: string) => void;
   /** This folder's other conversations, most recent first. */
@@ -396,6 +400,16 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
             : practiceReply(request, onProgress),
         chosen,
       ),
+    markApplied: (turnId) => {
+      if (!conversation) return;
+      const outcome = conversation.turns.find(
+        (other) => other.id === turnId,
+      )?.outcome;
+      if (outcome?.type !== "proposal") return;
+      updateTurnIn(conversation.id, turnId, {
+        outcome: { type: "applied", proposal: outcome.proposal },
+      });
+    },
     chooseFile: (turnId, document) => {
       if (!folderId || !conversation) return;
       const turn = conversation.turns.find((other) => other.id === turnId);
@@ -437,6 +451,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
     conversationTitle: conversation
       ? conversationTitle(conversation)
       : "New conversation",
+    conversationUpdatedAt: conversation?.updatedAt ?? null,
     renameConversation: (id, title) => renameStoredConversation(id, title),
     history: conversationsForFolder(snapshot, folderId)
       .filter((c) => c.id !== conversation?.id)

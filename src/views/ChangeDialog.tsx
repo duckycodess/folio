@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { preparePassageEdit } from "../adapters/actions";
 import { readNativeDocument } from "../adapters/workspace";
-import { describeProposal } from "../app/askAct";
+import { changeKept, describeProposal } from "../app/askAct";
 import { changedRegion, proposalOperation } from "../app/proposals";
 import { useOrganize } from "../app/useOrganize";
 import type { RelationshipsState } from "../app/useRelationships";
@@ -108,7 +108,8 @@ export function ChangeDialog({
   proposal: OperationProposal;
   workspace: WorkspaceState;
   relations: RelationshipsState;
-  onClose: () => void;
+  /** `applied` is true when every operation was applied and not undone here. */
+  onClose: (applied: boolean) => void;
 }) {
   const organize = useOrganize(workspace, "assistant", relations.refresh);
   const { state } = organize;
@@ -159,6 +160,12 @@ export function ChangeDialog({
     });
   }
 
+  function finish() {
+    const applied = changeKept(state.report, organize.undo.report);
+    organize.done();
+    onClose(applied);
+  }
+
   // The preview is prepared as soon as the dialog opens. If effects run
   // again (React's development checks reset the flow), the newest request
   // wins, so this runs each time too.
@@ -179,8 +186,7 @@ export function ChangeDialog({
       title={describeProposal(proposal)}
       dismissible={state.stage !== "applying"}
       onClose={() => {
-        organize.done();
-        onClose();
+        finish();
       }}
     >
       {state.stage === "result" ? (
@@ -188,8 +194,7 @@ export function ChangeDialog({
           organize={organize}
           heading={heading}
           onDone={() => {
-            organize.done();
-            onClose();
+            finish();
           }}
         />
       ) : state.stage === "preview" || state.stage === "applying" ? (
@@ -215,8 +220,7 @@ export function ChangeDialog({
           error={state.error}
           actions={{ retry: prepare, previewAgain: prepare }}
           onDismiss={() => {
-            organize.done();
-            onClose();
+            finish();
           }}
         />
       ) : started.current ? (
@@ -227,8 +231,7 @@ export function ChangeDialog({
             <Button
               variant="primary"
               onClick={() => {
-                organize.done();
-                onClose();
+                finish();
               }}
             >
               Close

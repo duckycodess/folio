@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
 import type {
+  ApplyReport,
   DocumentRecord,
   InterpretationResult,
   SearchResult,
 } from "../domain/contracts";
 import {
   addTurn,
+  appliedPath,
+  changeKept,
+  describeApplied,
   describeProposal,
   inScope,
   MAX_TURNS,
@@ -469,5 +473,53 @@ describe("summaryTarget with a file written out by name", () => {
       "b.md",
     );
     expect(summaryTarget(candidates, [])).toBeNull();
+  });
+});
+
+describe("an applied change", () => {
+  const rename = {
+    kind: "rename" as const,
+    documentId: "w:VILAR_Resume.pdf",
+    relativePath: "VILAR_Resume.pdf",
+    observedContentHash: "sha256:a",
+    destinationRelativePath: "VILAR.pdf",
+  };
+  function report(...statuses: ("succeeded" | "failed")[]): ApplyReport {
+    return {
+      batch: {
+        planId: "p",
+        planDigest: "sha256:d",
+        startedAt: 1,
+        finishedAt: 2,
+        outcomes: statuses.map((status, operationIndex) => ({
+          operationIndex,
+          status,
+        })),
+        stopReason: statuses.includes("failed") ? "failed" : "completed",
+      },
+      historySettled: true,
+      indexRefreshed: true,
+    };
+  }
+
+  it("is kept only when every operation applied and none was undone", () => {
+    expect(changeKept(report("succeeded"), null)).toBe(true);
+    expect(changeKept(null, null)).toBe(false);
+    expect(changeKept(report("succeeded", "failed"), null)).toBe(false);
+    expect(
+      changeKept(report("succeeded"), {
+        planId: "p",
+        undoneEntryIds: ["h1"],
+        remainingEntryIds: [],
+        indexRefreshed: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("names what was done and where the file is now", () => {
+    expect(describeApplied(rename)).toBe(
+      "Renamed VILAR_Resume.pdf to VILAR.pdf",
+    );
+    expect(appliedPath(rename)).toBe("VILAR.pdf");
   });
 });

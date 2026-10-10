@@ -1994,7 +1994,20 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
     },
 
     async interpret_request() {
-      fail("modelNotInstalled", "No local generation model is installed.");
+      const rename = options.interpretRename;
+      if (!rename)
+        fail("modelNotInstalled", "No local generation model is installed.");
+      return {
+        status: "proposal",
+        requestLanguage: "en",
+        proposal: {
+          kind: "rename",
+          documentId: documentIdFor(rename.path),
+          relativePath: rename.path,
+          observedContentHash: await hashOf(fileAt(rename.path)),
+          destinationRelativePath: rename.destination,
+        },
+      };
     },
 
     async summarize_document() {

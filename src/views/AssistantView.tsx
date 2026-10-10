@@ -18,7 +18,7 @@ import { Panel } from "../ui/Panel";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
 import { TurnBody, type OpenFile } from "./AskTurns";
 import { ChangeDialog } from "./ChangeDialog";
-import { ConversationHistory, ConversationName } from "./ConversationControls";
+import { ConversationName, ConversationsModal } from "./ConversationControls";
 import { SearchCheatsheet } from "./SearchCheatsheet";
 
 export type { OpenFile };
@@ -42,16 +42,20 @@ export function AssistantView({
   onOpenFile: OpenFile;
 }) {
   const ask = useAskAct(workspace);
-  const [changing, setChanging] = useState<OperationProposal | null>(null);
+  const [changing, setChanging] = useState<{
+    proposal: OperationProposal;
+    turnId: number;
+  } | null>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [cheatsheet, setCheatsheet] = useState(false);
   // The dialog unmounts when it closes, so focus goes back to its button here.
   const changeOpener = useRef<Element | null>(null);
-  function previewChange(proposal: OperationProposal) {
+  function previewChange(proposal: OperationProposal, turnId: number) {
     changeOpener.current = document.activeElement;
-    setChanging(proposal);
+    setChanging({ proposal, turnId });
   }
-  function closeChange() {
+  function closeChange(applied: boolean) {
+    if (applied && changing) ask.markApplied(changing.turnId);
     setChanging(null);
     const opener = changeOpener.current;
     if (opener instanceof HTMLElement)
@@ -171,29 +175,35 @@ export function AssistantView({
           variant="ghost"
           className="ask-chip"
           icon={<History size={14} />}
-          aria-expanded={showHistory}
-          aria-controls="ask-conversation-history"
-          onClick={() => setShowHistory((open) => !open)}
+          aria-haspopup="dialog"
+          onClick={() => setShowHistory(true)}
         >
           Conversations
         </Button>
       </div>
-      {showHistory && (
-        <div id="ask-conversation-history" className="ask-conversation-history">
-          <ConversationHistory
-            history={ask.history}
-            onRename={ask.renameConversation}
-            onOpen={(id) => {
-              ask.openConversation(id);
-              setShowHistory(false);
-            }}
-            onNew={() => {
-              ask.newConversation();
-              setShowHistory(false);
-            }}
-          />
-        </div>
-      )}
+      <ConversationsModal
+        open={showHistory}
+        current={
+          ask.conversationId
+            ? {
+                id: ask.conversationId,
+                title: ask.conversationTitle,
+                updatedAt: ask.conversationUpdatedAt ?? Date.now(),
+              }
+            : null
+        }
+        history={ask.history}
+        onRename={ask.renameConversation}
+        onOpen={(id) => {
+          ask.openConversation(id);
+          setShowHistory(false);
+        }}
+        onNew={() => {
+          ask.newConversation();
+          setShowHistory(false);
+        }}
+        onClose={() => setShowHistory(false)}
+      />
 
       {/* Oldest first, newest last, like a chat: the reply lands just above
           the input. */}
@@ -372,7 +382,7 @@ export function AssistantView({
       <div ref={logEnd} aria-hidden="true" />
       {changing && (
         <ChangeDialog
-          proposal={changing}
+          proposal={changing.proposal}
           workspace={workspace}
           relations={relations}
           onClose={closeChange}
