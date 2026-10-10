@@ -1,5 +1,31 @@
 # Implementation status
 
+## Online generation through Groq (#94)
+
+Optional online writing for summaries and answers, off by default (ADR 0018). Gab implemented it on `gab/94-groq`, stacked on #78's `gab/78-collections`.
+
+- `folio_core::hosted::GroqProvider` sits behind the existing `GenerationProvider` boundary. It sends one non-streaming HTTPS request to `https://api.groq.com/openai/v1/chat/completions` with Folio's schema in strict `json_schema` mode, temperature 0 and seed 7. For gpt-oss it adds `reasoning_effort: "low"`, `include_reasoning: false` and 1024 extra completion tokens; for Qwen, `reasoning_effort: "none"`. Only `openai/gpt-oss-20b` (the default), `openai/gpt-oss-120b` and `qwen/qwen3.8-27b` are allowed, because they enforce strict schemas (Groq's docs as of 2026-10-10). Cancel returns within about 100 ms; the abandoned request ends within the 120-second client timeout. Replies are capped at 1 MiB.
+- Results carry `origin: "groq"` and `revision: "hosted"`. A local result's JSON is unchanged. The Summary tab, Ask & Act answers and saved summary files say "Made online by Groq with <model>" (or "Generated online by Groq…") with an "Online · Groq" badge, never "local model".
+- Only `summarize_document` and `answer_question` use it. Interpretation, collection naming and embeddings stay local, so Ask & Act answers reach Groq only when a local writing model is installed too.
+- The key is kept in the OS keychain through `keyring` 3.6.3 (Windows Credential Manager, the macOS Keychain; the Linux kernel keyring for development). It's checked with Groq's model list before it's stored, and is never returned to the webview, written to `settings.json`, or included in an error. `settings.json` keeps `onlineGeneration: { enabled, modelId }`. Turning it on needs a stored key and the consent checkbox; forgetting the key turns it off. A key removed outside Folio is reported, not skipped.
+- An online request takes the same one-at-a-time generation slot, so it's refused while a local request or Model Lab run holds it, and the reverse. It doesn't unload the local model. Cancel stops the local server only when the active request is local.
+- Failures reuse frozen wire codes with `provider: "groq"`: no key → `modelNotInstalled`, refused key or unreachable → `modelLoadFailed`, rate limited → `providerBusy`. `recoveryFor` words them for Groq. Groq's reply body is never forwarded.
+- Model Lab has an "Online writing (optional)" panel (key entry, model, consent, on/off). The floating chat's "Local AI ready" label is unchanged, because Ask & Act still needs the local model to read requests.
+
+Tested on this Linux host (a QEMU virtual CPU without AVX, so the Rust test binaries ran under `qemu-x86_64 -cpu max`):
+
+- `folio-core` lib: 192 passed, 2 ignored. This includes the new hosted-provider tests against a scripted loopback HTTP server (request shape, status mapping with the key never in a message or detail, cut-off and malformed replies, cancel returning promptly, unreachable host, key check, model allowlist, Taglish prompt passed through), the origin stamping test, the contract serialization test and the settings test. The hosted tests also passed in a stand-alone crate run natively.
+- App crate lib: 258 passed, 2 ignored. This includes the online settings and key rules with an in-memory secret store, error mapping, and the shared generation slot.
+- `npm run check`, `npm test` (450 passed), `npm run build`, `npm run check:bundle` and Prettier passed. `npm run test:e2e`: 35 passed, 4 failed. The 4 viewport journeys fail the same way on the base branch (an axe `region` violation on `.olio-chat-greeting`), not because of this change. A temporary journey (not committed) opened the new panel at 1280 and 640 px: no horizontal scroll, no axe violations inside the view, and saving a key against the fake core showed the native error and kept the typed key.
+
+After rebasing onto #87's review fixes (the ADR renumbered to 0017, since #87's collections ADR became 0016; a suggestion Stop now cancels the local server only when the active request is local), the same host gave: `folio-core` 195 passed, app crate 264 passed, `npm test` 454 passed (9 todo), `npm run check`, `npm run build`, `npm run check:bundle` and Prettier passed, and Playwright 36 passed with the same 4 `viewports` failures.
+
+After merging `main` (#93, #113, #102 and others): the ADR is now 0018, because #102's collections ADR took 0017. Online requests use `main`'s generation slot: `claim_online_generation` goes through `lock_free_slot`, so it waits for a stopping holder and is refused while an unload or runtime install is in progress, and it returns a `SlotClaim` that releases the slot on drop and names its holder (`summary` or `answer`) in a busy error. `active_local` stays beside `holder`, so Cancel, a suggestion Stop and an unload interrupt the local server only when the active request is local. On Windows: `npm run check`, `npm test` (501 passed, 9 todo), `npm run build`, `npm run check:bundle` and Prettier on the changed files passed. The Rust tests were not run on this host (its disk was full); CI's `desktop-check` runs them on Windows and macOS.
+
+A second merge of `main` brought in #108 (AI context from the persistent index), #115 and #119. `answer_question` keeps `acquire_writer` and #108's check for a request cancelled while it waited for the slot. The shared-slot test no longer needs `SlotClaim: Debug` (which failed CI's first run), and #108's `mark_unmatched` test sets `origin`. On Windows: `cargo check --tests --workspace`, `npm run check`, `npm test` (529 passed, 9 todo), `npm run build`, `npm run check:bundle` and Prettier on the changed files passed. The Rust tests still ran only in CI.
+
+Not tested: any real request to Groq (that needs a user's key in the desktop app), the keychain on actual Windows or macOS, whether Groq accepts every Folio schema in strict mode in practice, Groq output quality in English, Filipino or Taglish, and the desktop window itself.
+
 ## PR #108 conflict resolution (2026-10-10)
 
 Merged `main` at `72b685e` into `ai-issues`, then incorporated `ab61436` (launch-scoped chat history), preserving the persistent-index AI path, chosen-file questions and changes, PDF rename/move support, and the newer Ask & Act layout and busy-provider controls. Organize's collection and file suggestions now consume persistent chunks/vectors in the selected stored embedding space instead of calling the removed snapshot index. Selected grouping/destination evidence is revision-checked; filename naming reads at most its bounded candidate set. Organize's Stop cancels its index preparation and its own generation.
@@ -400,6 +426,10 @@ After "Use <file>" on Ask & Act's "This could mean several files", a rename such
 - Fixed while verifying: main didn't compile. #87's `generate_in_run` called `acquire_generation` without the holder that #104 added. Organize suggestions now hold the slot as `organizeSuggestions` ("Folio is naming suggestions in Organize"), the same change as #116, so either can merge first.
 - Checked on macOS: `cargo test --manifest-path src-tauri/Cargo.toml --workspace` (all passed; new tests: chosen file with no model target, with an ambiguous or different model target, outside the folder, and with an unknown revision or an unsupported intent), `npm run check`, `npm test` (486 passed, 9 todo) and `npm run build`. Not checked in the desktop app with a real model.
 
+## Ask & Act showed "Rename undefined to undefined"
+
+`OperationProposal` and `InterpretationResult` in `folio-core` used `#[serde(tag, rename_all = "camelCase")]`, which renames only the tags. Their fields went to the UI in snake_case (`relative_path`, `destination_relative_path`, `document_id`, `pending_intent`, `target_query`, `request_language`), so the UI read them as undefined. Both now also set `rename_all_fields = "camelCase"`, as `src-tauri/src/contracts.rs` already did. The golden fixture only covered `needsClarification`, whose fields are single words; `interpretation_fields_use_the_ui_keys` now pins a rename proposal and `targetQuery`. Checked on macOS: `cargo test --manifest-path src-tauri/Cargo.toml --workspace` (all passed). No frontend change. Not checked in the desktop app.
+
 ## Virtual collections (issue #78)
 
 Gab took #78 over from Dann ([ADR 0017](adr/0017-virtual-collections-kept-natively-without-a-plan.md)). This first slice covers suggested and kept collections; model-written filenames and destination suggestions are follow-up PRs.
@@ -547,6 +577,12 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 8-GB measurement is claimed here.
 
 ## Verification
+
+### Graph lost its AI connections after the passage-format update (2026-10-10)
+
+After "Embed stored chunks with their title and path words" changed the stored-chunk space, existing vectors (built under the previous format) are correctly no longer compared with new ones. But the native core then reported `noActiveSpace` even with the search model installed and selected. Graph said "AI connections need the search model and its index" and offered nothing to do. In a real index on macOS, the ADI folder's 66 stored similarity connections were hidden this way (stored space `584fff…`, current `44e4e0…`). `relationship_coverage` and a refresh that ends without a space now report `embeddingIncomplete` when the selected model is installed but its current space isn't built yet. Graph then shows "Still preparing the search index (0 of N files ready)" with **Continue**, which re-embeds the folder and recomputes connections. With no model, or nothing indexed, it is still `noActiveSpace`.
+
+Tested: `cargo test --manifest-path src-tauri/Cargo.toml --lib` on macOS (343 passed, including two new tests), plus a temporary test against a copy of a real index (both affected folders change from `noActiveSpace` to `embeddingIncomplete`). Not yet tested: clicking Continue in the Tauri app to watch the folder re-embed and its connections come back.
 
 ### Consistent page typography, widths and buttons (2026-10-10)
 
@@ -1739,3 +1775,22 @@ Selecting a model was slow, and other installed models often showed "Checking…
 **Destinations:** a rename keeps the file in its own folder and its extension ("rename 201_Barangay Clearance to Police Clearance" → `Police Clearance.pdf` next to it); a move to a bare folder name moves the file into it. Rename targets are also matched by the words of the file name ("my resume" → `VILAR_Resume.pdf`).
 
 **Verified:** `cargo test --manifest-path src-tauri/Cargo.toml --workspace` on macOS (all passed), including new tests for PDF rename proposals, the extension and folder rules, the read-only edit answer, a PDF rename applied with the index following it and Undo restoring the same bytes, a refused type change, the busy holder's message and detail, and the wait for a stopped holder. `npm run check`, `npm test`, `npm run build`. **Not verified:** these flows in the desktop app with a real model; the model's own reading of these requests (it must still return `rename` with the target and destination).
+
+### Search operators and a cheatsheet (2026-10-10)
+
+Search used to OR every word of a query, so `1_b` also found `1_c`, `1 b` and `2_b`. A query that uses an operator is now matched exactly (Google Scholar style); a query without one keeps the plain search.
+
+- `"1_b"`: that exact text as a whole token (case and accents ignored; not `1_c`, `1 b`, `2_b`, `11_b`, `1_bc`). A phrase matches across line breaks.
+- `-draft`, `-"old plan"`: leave out files containing it.
+- `budget OR gastos`: either (capital `OR`; `AND` is the default and may be written).
+- `intitle:`, `filetype:`/`ext:`, `in:`/`folder:`: name or title, extension, folder at any depth. File names read `_` as a separator too, so `intitle:resume` finds `VILAR_Resume.pdf`.
+
+Native: `src-tauri/src/search_query.rs`; `index::search` matches each indexed file's name and text against it instead of FTS when an operator is used. Frontend twin: `src/domain/searchQuery.ts` for name search before indexing, exact highlighting, and Ask's Find (which uses the exact index search, not search by meaning, for operator queries and says when the folder's text isn't indexed). A **Cheatsheet** chip beside Prepare again in Ask & Act lists the operators; choosing one adds it to the request.
+
+**Verified:** `cargo test --manifest-path src-tauri/Cargo.toml --workspace` (grammar tests, and an index test where `"1_b"` finds only the exact file among `1_c`, `1 b` and `2_b`, with exclusion, type and folder filters), `npm run check`, `npm test` (529 passed, including the same grammar cases in TypeScript), `npm run build`, `prettier --check .`. **Not verified:** in the desktop app, or the speed of operator queries on a very large index (each one reads every indexed file's chunks).
+
+### Rename a conversation in the floating chat and in Ask & Act (2026-10-10)
+
+A conversation can be given a name, from both the floating Olio chat and the Ask & Act page; both read the same store (`src/app/chatStore.ts`), so a name given in one shows in the other. The open conversation's name sits above its messages with a Rename (pencil) button that edits in place: Enter or the check saves, Escape or the cross cancels. Each conversation in the history list can be renamed the same way. A blank name goes back to the automatic one (the first request); names are trimmed to 80 characters, kept with the history for the session (ADR 0018), and renaming doesn't move a conversation in the history order. Ask & Act now also has the conversation list itself (a Conversations button), which only the floating chat had.
+
+**Verified:** `npm run check`, `npm test` (533 passed, including store tests for renaming, clearing a name, the length cap, history order and the stored name), `npm run build`, `prettier --check .`. `npm run test:e2e`: 44 passed, 4 failed in `viewports.spec.ts` on an axe `region` violation for `.resize-handle`; the same failure occurs on `origin/main` without this change. **Not verified:** in the desktop app.

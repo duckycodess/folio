@@ -12,6 +12,7 @@ import { Progress } from "../ui/Progress";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
 import { ModelCard } from "./ModelCard";
 import { CompareModels, RecordedResults } from "./ModelLabRuns";
+import { OnlineGenerationPanel } from "./OnlineGenerationPanel";
 
 /**
  * Model setup and Model Lab. Downloads use the pinned manifest's exact sizes
@@ -97,6 +98,7 @@ export function ModelLabView() {
           model takes once installed isn't measured.
         </p>
       )}
+      {models.load !== "desktopOnly" && <OnlineGenerationPanel />}
 
       <CompareModels
         lab={lab}

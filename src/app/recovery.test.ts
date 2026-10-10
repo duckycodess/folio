@@ -24,6 +24,29 @@ describe("recovery wording", () => {
     }
   });
 
+  it("words online generation failures for Groq, not the local model", () => {
+    const cases = [
+      ["modelNotInstalled", { component: "onlineKey" }, "openModelLab"],
+      ["modelLoadFailed", { reason: "keyRejected" }, "openModelLab"],
+      ["modelLoadFailed", { reason: "unreachable" }, "retry"],
+      ["providerBusy", { reason: "rateLimited" }, "retry"],
+    ] as const;
+    for (const [code, details, action] of cases) {
+      const recovery = recoveryFor({
+        code,
+        details: { provider: "groq", ...details },
+      });
+      expect(`${recovery.title} ${recovery.message}`).toMatch(/Groq/);
+      expect(recovery.title).not.toMatch(/local/i);
+      expect(recovery.message).not.toMatch(JARGON);
+      expect(recovery.action?.kind).toBe(action);
+    }
+    // Without the provider detail, the local wording stays.
+    expect(recoveryFor({ code: "modelLoadFailed" }).title).toBe(
+      "The local AI model couldn't start",
+    );
+  });
+
   it("uses plain language, without developer terms or code names", () => {
     for (const [code] of entries)
       for (const stage of STAGES) {

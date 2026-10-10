@@ -16,11 +16,13 @@ mod identity;
 mod index;
 mod lab_commands;
 mod lab_store;
+mod online;
 mod organize;
 mod plan;
 #[cfg(test)]
 mod relationship_edges_tests;
 mod ripple;
+mod search_query;
 mod workspace;
 mod writer;
 
@@ -1250,7 +1252,8 @@ async fn refresh_local_ai_index(
         let mut conn = db::open(&index_path)?;
         let stopped_early = embedding.as_ref().is_some_and(|summary| summary.cancelled);
         let Some(active_space) = active_relationship_space(&app, &conn, None)? else {
-            let coverage = ai_discovery::coverage(&conn, &workspace_id, None)?;
+            let selected = selected_embedding_descriptor_lenient(&app);
+            let coverage = selected_model_coverage(&conn, &workspace_id, selected.as_ref())?;
             return Ok(LocalAiRefresh { workspace_id, embedding, discovery: None, ended: None, coverage });
         };
         if stopped_early {
@@ -1325,8 +1328,43 @@ async fn relationship_coverage(
     state.root(&workspace_id)?;
     let selected = selected_embedding_descriptor_lenient(&app);
     let index = state.index()?;
-    let active = active_space::resolve_installed_descriptor(&index, selected.as_ref())?;
-    ai_discovery::coverage(&index, &workspace_id, active.as_deref())
+    selected_model_coverage(&index, &workspace_id, selected.as_ref())
+}
+
+/// Coverage in the selected model's current space. A ready search model whose
+/// current space has no vectors yet is embedding work still to do, not a
+/// missing model: that happens on first use, and after an update changes how
+/// passages are embedded, because older vectors are never compared with new
+/// ones. Continue (a local AI refresh) then re-embeds the folder.
+fn selected_model_coverage(
+    index: &Connection,
+    workspace_id: &str,
+    selected: Option<&ModelDescriptor>,
+) -> Result<ai_discovery::RelationshipCoverage, FolioError> {
+    let active = active_space::resolve_installed_descriptor(index, selected)?;
+    let coverage = ai_discovery::coverage(index, workspace_id, active.as_deref())?;
+    let model_has_space = match selected {
+        Some(descriptor) => active_space::persistent_space_for_descriptor(descriptor)?.is_some(),
+        None => false,
+    };
+    Ok(awaiting_embedding(coverage, active.is_none() && model_has_space))
+}
+
+/// `noActiveSpace` becomes `embeddingIncomplete` when the selected model is
+/// installed but its space isn't built yet, so the UI offers Continue instead
+/// of saying the search model is missing. A folder with nothing indexed keeps
+/// `noActiveSpace`: there is nothing to embed.
+fn awaiting_embedding(
+    mut coverage: ai_discovery::RelationshipCoverage,
+    ready_model_without_space: bool,
+) -> ai_discovery::RelationshipCoverage {
+    if ready_model_without_space
+        && coverage.state == ai_discovery::CoverageState::NoActiveSpace
+        && coverage.indexed_documents > 0
+    {
+        coverage.state = ai_discovery::CoverageState::EmbeddingIncomplete;
+    }
+    coverage
 }
 
 #[tauri::command]
@@ -1645,6 +1683,9 @@ struct GenerationStateInner {
     /// What holds the slot while `active_cancel` is set, so a request that
     /// finds it busy can say what is running instead of a bare "busy".
     holder: Option<GenerationHolder>,
+    /// The active request runs on the local server in `slot` (not online
+    /// generation), so cancelling it also stops that server's request.
+    active_local: bool,
     /// Set while the llama.cpp runtime is reinstalled, so no request starts a
     /// server from the directory being replaced.
     runtime_installing: bool,
@@ -2361,10 +2402,23 @@ impl SlotClaim {
         let cancel = Arc::new(AtomicBool::new(false));
         guard.active_cancel = Some(cancel.clone());
         guard.holder = Some(holder);
+        guard.active_local = true;
         Self {
             generation_state: generation_state.clone(),
             cancel,
         }
+    }
+
+    /// As `new`, for a request that runs online (ADR 0018) and leaves the
+    /// local server alone.
+    fn online(
+        guard: &mut GenerationStateInner,
+        generation_state: &GenerationState,
+        holder: GenerationHolder,
+    ) -> Self {
+        let claim = Self::new(guard, generation_state, holder);
+        guard.active_local = false;
+        claim
     }
 }
 
@@ -2376,6 +2430,12 @@ impl Drop for SlotClaim {
 
 struct GenerationLease {
     provider: Arc<LlamaServerProvider>,
+    claim: SlotClaim,
+}
+
+/// A lease on whichever provider writes summaries and answers.
+struct WriterLease {
+    provider: Arc<dyn GenerationProvider>,
     claim: SlotClaim,
 }
 
@@ -2509,6 +2569,39 @@ fn acquire_generation(
     Ok(GenerationLease { provider, claim })
 }
 
+/// The provider for summaries and answers: online generation when the user
+/// turned it on (ADR 0018), otherwise the local model. Either way one
+/// generation runs at a time, and an online request leaves the local model
+/// loaded.
+fn acquire_writer(
+    app: &AppHandle,
+    generation_state: &GenerationState,
+    online_state: &online::OnlineState,
+    holder: GenerationHolder,
+) -> Result<WriterLease, NativeProviderError> {
+    let store = model_store(app)?;
+    match online::writer(&store, online_state.secrets())? {
+        Some(groq) => {
+            let claim = claim_online_generation(generation_state, holder)?;
+            Ok(WriterLease { provider: Arc::new(groq), claim })
+        }
+        None => {
+            let lease = acquire_generation(app, generation_state, holder)?;
+            Ok(WriterLease { provider: lease.provider, claim: lease.claim })
+        }
+    }
+}
+
+/// Holds the slot for an online request: the same busy rules as a local one,
+/// but the local server, if loaded, is left alone.
+fn claim_online_generation(
+    generation_state: &GenerationState,
+    holder: GenerationHolder,
+) -> Result<SlotClaim, NativeProviderError> {
+    let mut guard = lock_free_slot(generation_state, STOPPING_HOLDER_WAIT)?;
+    Ok(SlotClaim::online(&mut guard, generation_state, holder))
+}
+
 fn finish_generation(
     generation_state: &GenerationState,
     cancel: &Arc<AtomicBool>,
@@ -2525,6 +2618,7 @@ fn finish_generation(
     {
         guard.active_cancel = None;
         guard.holder = None;
+        guard.active_local = false;
     }
     Ok(())
 }
@@ -2534,8 +2628,12 @@ fn finish_generation(
 fn signal_holder_stop(guard: &GenerationStateInner) -> Result<(), NativeProviderError> {
     if let Some(cancel) = guard.active_cancel.as_ref() {
         cancel.store(true, Ordering::Release);
-        if let Some(slot) = guard.slot.as_ref() {
-            slot.provider.cancel_active().map_err(native_error)?;
+        // An online request stops on the flag alone; the idle local server
+        // is left loaded.
+        if guard.active_local {
+            if let Some(slot) = guard.slot.as_ref() {
+                slot.provider.cancel_active().map_err(native_error)?;
+            }
         }
     }
     Ok(())
@@ -2572,11 +2670,13 @@ async fn summarize_document(
     let root = ai_boundary::resolve_workspace(state.inner(), &workspace_id)?;
     let generation_state = generation_state.inner().clone();
     Ok(run_blocking::<_, FolioError, _>(move || {
+        let online_state = app.state::<online::OnlineState>();
         let document_text = read_ai_document(&root, &relative_path)?;
         let content = document_text.content.clone();
         let passages =
             grounding::summary_passages(&document_id, &content, &document_text.content_hash);
-        let lease = acquire_generation(&app, &generation_state, GenerationHolder::Summary)?;
+        let lease =
+            acquire_writer(&app, &generation_state, &online_state, GenerationHolder::Summary)?;
         let result = grounding::summarize_document(
             lease.provider.as_ref(),
             passages,
@@ -2631,7 +2731,9 @@ async fn answer_question(
                 &AtomicBool::new(false),
             )?);
         }
-        let lease = acquire_generation(&app, &generation_state, GenerationHolder::Answer)?;
+        let online_state = app.state::<online::OnlineState>();
+        let lease =
+            acquire_writer(&app, &generation_state, &online_state, GenerationHolder::Answer)?;
         if cancel.load(Ordering::Acquire) {
             return Err(error(ErrorCode::Cancelled, "The request was cancelled."));
         }
@@ -2738,8 +2840,10 @@ fn stop_suggestion_run(runs: &SuggestionRuns, generation_state: &GenerationState
     if let Ok(guard) = generation_state.lock() {
         if guard.active_cancel.as_ref().is_some_and(|active| Arc::ptr_eq(active, &generation)) {
             generation.store(true, Ordering::Release);
-            if let Some(slot) = guard.slot.as_ref() {
-                let _ = slot.provider.cancel_active();
+            if guard.active_local {
+                if let Some(slot) = guard.slot.as_ref() {
+                    let _ = slot.provider.cancel_active();
+                }
             }
         }
     }
@@ -3169,8 +3273,10 @@ fn unload_generation_now_with_limit(
             // a read returns. The slot stays claimed until the holder releases
             // it, so no second server can start meanwhile.
             cancel.store(true, Ordering::Release);
-            if let Some(slot) = guard.slot.as_ref() {
-                let _ = slot.provider.cancel_active();
+            if guard.active_local {
+                if let Some(slot) = guard.slot.as_ref() {
+                    let _ = slot.provider.cancel_active();
+                }
             }
         } else {
             if let Some(slot) = guard.slot.take() {
@@ -3453,6 +3559,38 @@ mod tests {
         assert!(lenient_descriptor(Ok(None)).is_none());
     }
 
+    fn no_space_coverage(indexed: usize) -> ai_discovery::RelationshipCoverage {
+        ai_discovery::RelationshipCoverage {
+            state: ai_discovery::CoverageState::NoActiveSpace,
+            space_fingerprint: None,
+            eligible_documents: 0,
+            indexed_documents: indexed,
+            pairs_considered: 0,
+            pairs_remaining: 0,
+            overflow_documents: 0,
+        }
+    }
+
+    #[test]
+    fn a_ready_model_with_an_unbuilt_space_asks_to_continue_not_for_a_model() {
+        let coverage = awaiting_embedding(no_space_coverage(20), true);
+        assert_eq!(coverage.state, ai_discovery::CoverageState::EmbeddingIncomplete);
+        assert_eq!((coverage.eligible_documents, coverage.indexed_documents), (0, 20));
+        assert_eq!(coverage.space_fingerprint, None);
+    }
+
+    #[test]
+    fn no_model_or_nothing_indexed_still_means_no_active_space() {
+        assert_eq!(
+            awaiting_embedding(no_space_coverage(20), false).state,
+            ai_discovery::CoverageState::NoActiveSpace
+        );
+        assert_eq!(
+            awaiting_embedding(no_space_coverage(0), true).state,
+            ai_discovery::CoverageState::NoActiveSpace
+        );
+    }
+
     #[test]
     fn a_refresh_leaves_out_the_phases_that_did_not_run() {
         let refresh = LocalAiRefresh {
@@ -3533,6 +3671,7 @@ mod tests {
             coverage: vec![],
             model_id: "m".into(),
             revision: "r".into(),
+            origin: folio_core::contracts::GenerationOrigin::Local,
             kind,
             sentences: vec![],
             coverage_ranges: vec![],
@@ -3560,6 +3699,7 @@ mod tests {
             ("EmbeddingState", TypeId::of::<EmbeddingState>()),
             ("GenerationState", TypeId::of::<GenerationState>()),
             ("SuggestionRuns", TypeId::of::<SuggestionRuns>()),
+            ("OnlineState", TypeId::of::<online::OnlineState>()),
             ("InstallState", TypeId::of::<InstallState>()),
             ("LabState", TypeId::of::<lab_commands::LabState>()),
             ("Folio", TypeId::of::<Folio>()),
@@ -3569,6 +3709,32 @@ mod tests {
                 assert_ne!(id, other_id, "{name} and {other} are the same type");
             }
         }
+    }
+
+    #[test]
+    fn local_and_online_generation_share_one_slot() {
+        let state = GenerationState::default();
+        // A local request holds the slot.
+        let local = claim_free_slot(&state).unwrap();
+        assert!(state.lock().unwrap().active_local);
+        let busy = claim_online_generation(&state, GenerationHolder::Summary).err().unwrap();
+        assert_eq!(
+            busy.code,
+            folio_core::contracts::ProviderErrorCode::GenerationBusy
+        );
+        let stale = local.cancel.clone();
+        drop(local);
+
+        let online = claim_online_generation(&state, GenerationHolder::Summary).unwrap();
+        assert!(!state.lock().unwrap().active_local);
+        assert!(claim_free_slot(&state).is_err());
+        // A stale finish from another request doesn't release it.
+        finish_generation(&state, &stale).unwrap();
+        assert!(state.lock().unwrap().active_cancel.is_some());
+        drop(online);
+        let guard = state.lock().unwrap();
+        assert!(guard.active_cancel.is_none());
+        assert!(!guard.active_local);
     }
 
     #[test]
@@ -3619,6 +3785,7 @@ pub fn run() {
         .manage(EmbeddingState::default())
         .manage(GenerationState::default())
         .manage(SuggestionRuns::default())
+        .manage(online::OnlineState::default())
         .manage(InstallState::default())
         // Each managed state must be its own type (see
         // `every_managed_state_has_its_own_type`).
@@ -3694,6 +3861,10 @@ pub fn run() {
             interpret_request,
             cancel_generation,
             unload_generation,
+            online::online_generation_status,
+            online::save_online_key,
+            online::forget_online_key,
+            online::set_online_generation,
             lab_commands::lab_models,
             lab_commands::install_lab_candidate,
             lab_commands::remove_lab_candidate,

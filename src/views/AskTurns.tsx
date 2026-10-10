@@ -5,6 +5,7 @@ import {
   preparingLabel,
   type AskTurn,
 } from "../app/askAct";
+import { isOnline, madeBy } from "../app/generatedBy";
 import type { AskActController } from "../app/useAskAct";
 import type { RelationshipsState } from "../app/useRelationships";
 import type { WorkspaceState } from "../app/useWorkspace";
@@ -173,8 +174,9 @@ export function TurnBody({
         <>
           {outcome.namesOnly && (
             <Notice tone="info">
-              Searched file names only: the local search model isn't set up yet,
-              so the files' text wasn't searched.
+              {outcome.namesOnly === "notIndexed"
+                ? "Searched file names only: this folder's text isn't indexed yet, so the exact search couldn't read it. Index the folder from Home to search its text."
+                : "Searched file names only: the local search model isn't set up yet, so the files' text wasn't searched."}
             </Notice>
           )}
           <p className="muted">
@@ -203,6 +205,7 @@ export function TurnBody({
           <div className="summary-head">
             <Badge>Generated answer</Badge>
             <Badge>Not reviewed</Badge>
+            {isOnline(outcome.result) && <Badge>Online · Groq</Badge>}
           </div>
           {outcome.result.chosenFileUnmatched && (
             <Notice tone="info">
@@ -216,8 +219,8 @@ export function TurnBody({
             onOpen={relations.openPassage}
           />
           <p className="muted">
-            Made by the local model {outcome.result.modelId}. Each point links
-            to the passage it came from.
+            {madeBy(outcome.result)}. Each point links to the passage it came
+            from.
           </p>
         </div>
       );

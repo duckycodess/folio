@@ -1,4 +1,4 @@
-use crate::contracts::ProviderErrorCode;
+use crate::contracts::{GenerationOrigin, ProviderErrorCode};
 use crate::error::{CoreError, CoreResult, NativeProviderErrorError};
 use crate::models::VerifiedModelFile;
 use reqwest::blocking::Client;
@@ -66,6 +66,10 @@ pub trait GenerationProvider: Send + Sync {
         cancel: &AtomicBool,
     ) -> CoreResult<Value>;
     fn unload(&self) -> CoreResult<()>;
+    /// Where this provider generates text. Only the online provider overrides it.
+    fn origin(&self) -> GenerationOrigin {
+        GenerationOrigin::Local
+    }
 }
 
 struct RunningServer {

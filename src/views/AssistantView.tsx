@@ -1,3 +1,4 @@
+import { History } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { preparingLabel } from "../app/askAct";
 import { folderChoices } from "../app/fileActions";
@@ -17,6 +18,8 @@ import { Panel } from "../ui/Panel";
 import { RecoveryNotice } from "../ui/RecoveryNotice";
 import { TurnBody, type OpenFile } from "./AskTurns";
 import { ChangeDialog } from "./ChangeDialog";
+import { ConversationHistory, ConversationName } from "./ConversationControls";
+import { SearchCheatsheet } from "./SearchCheatsheet";
 
 export type { OpenFile };
 
@@ -40,6 +43,8 @@ export function AssistantView({
 }) {
   const ask = useAskAct(workspace);
   const [changing, setChanging] = useState<OperationProposal | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
+  const [cheatsheet, setCheatsheet] = useState(false);
   // The dialog unmounts when it closes, so focus goes back to its button here.
   const changeOpener = useRef<Element | null>(null);
   function previewChange(proposal: OperationProposal) {
@@ -148,6 +153,48 @@ export function AssistantView({
         </div>
       </header>
 
+      {/* The same conversations as the floating chat, named and renamed here too. */}
+      <div className="ask-conversation-bar">
+        {ask.conversationId ? (
+          <ConversationName
+            className="ask-conversation-name"
+            title={ask.conversationTitle}
+            onRename={(title) =>
+              ask.conversationId &&
+              ask.renameConversation(ask.conversationId, title)
+            }
+          />
+        ) : (
+          <span className="muted">New conversation</span>
+        )}
+        <Button
+          variant="ghost"
+          className="ask-chip"
+          icon={<History size={14} />}
+          aria-expanded={showHistory}
+          aria-controls="ask-conversation-history"
+          onClick={() => setShowHistory((open) => !open)}
+        >
+          Conversations
+        </Button>
+      </div>
+      {showHistory && (
+        <div id="ask-conversation-history" className="ask-conversation-history">
+          <ConversationHistory
+            history={ask.history}
+            onRename={ask.renameConversation}
+            onOpen={(id) => {
+              ask.openConversation(id);
+              setShowHistory(false);
+            }}
+            onNew={() => {
+              ask.newConversation();
+              setShowHistory(false);
+            }}
+          />
+        </div>
+      )}
+
       {/* Oldest first, newest last, like a chat: the reply lands just above
           the input. */}
       <section className="ask-log" aria-label="Olio's replies">
@@ -251,6 +298,15 @@ export function AssistantView({
               >
                 {index ? "Prepare again" : "Prepare now"}
               </Button>
+              <Button
+                variant="ghost"
+                className="ask-chip"
+                aria-expanded={cheatsheet}
+                aria-controls="search-cheatsheet"
+                onClick={() => setCheatsheet((open) => !open)}
+              >
+                Cheatsheet
+              </Button>
             </div>
             <div className="ask-send">
               <Button disabled={!canSend} onClick={() => send("find")}>
@@ -261,6 +317,16 @@ export function AssistantView({
               </Button>
             </div>
           </div>
+          {cheatsheet && (
+            <SearchCheatsheet
+              id="search-cheatsheet"
+              onUse={(example) =>
+                drafts.setInstruction(
+                  request.trim() ? `${request.trimEnd()} ${example}` : example,
+                )
+              }
+            />
+          )}
         </div>
         <p id="instruction-help" className="field-help ask-status">
           {ask.preparing

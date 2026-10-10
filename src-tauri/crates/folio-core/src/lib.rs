@@ -16,6 +16,7 @@ pub mod facts;
 pub mod file_suggestions;
 pub mod generation;
 pub mod grounding;
+pub mod hosted;
 pub mod interpretation;
 pub mod lab;
 pub mod models;

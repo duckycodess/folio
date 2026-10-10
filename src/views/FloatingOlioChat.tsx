@@ -10,7 +10,7 @@ import {
 import { PRACTICE_LABEL } from "../adapters/mockChat";
 import { folderChoices } from "../app/fileActions";
 import { matchSlashCommands, parseCommand } from "../app/commands";
-import { useAskAct, type ConversationSummary } from "../app/useAskAct";
+import { useAskAct } from "../app/useAskAct";
 import type { RelationshipsState } from "../app/useRelationships";
 import type { WorkspaceState } from "../app/useWorkspace";
 import type { DocumentRecord, OperationProposal } from "../domain/contracts";
@@ -22,41 +22,7 @@ import { trapTabWithin } from "../ui/Modal";
 import { OlioSprite } from "../ui/OlioSprite";
 import { TurnBody, type OpenFile } from "./AskTurns";
 import { ChangeDialog } from "./ChangeDialog";
-
-function HistoryList({
-  history,
-  onOpen,
-  onNew,
-}: {
-  history: ConversationSummary[];
-  onOpen: (id: string) => void;
-  onNew: () => void;
-}) {
-  return (
-    <div className="olio-chat-history">
-      <Button variant="secondary" onClick={onNew}>
-        New conversation
-      </Button>
-      {history.length === 0 ? (
-        <p className="muted">No earlier conversations in this folder yet.</p>
-      ) : (
-        <ul className="olio-chat-history-list">
-          {history.map((conversation) => (
-            <li key={conversation.id}>
-              <button
-                type="button"
-                className="olio-chat-history-item"
-                onClick={() => onOpen(conversation.id)}
-              >
-                {conversation.title}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </div>
-  );
-}
+import { ConversationHistory, ConversationName } from "./ConversationControls";
 
 /**
  * The floating Olio launcher and its compact chat, on every view except
@@ -285,8 +251,9 @@ export function FloatingOlioChat({
           </header>
 
           {panel === "history" ? (
-            <HistoryList
+            <ConversationHistory
               history={ask.history}
+              onRename={ask.renameConversation}
               onOpen={(id) => {
                 ask.openConversation(id);
                 setPanel("chat");
@@ -298,6 +265,16 @@ export function FloatingOlioChat({
             />
           ) : (
             <>
+              {ask.conversationId && (
+                <ConversationName
+                  className="olio-chat-conversation"
+                  title={ask.conversationTitle}
+                  onRename={(title) =>
+                    ask.conversationId &&
+                    ask.renameConversation(ask.conversationId, title)
+                  }
+                />
+              )}
               <div
                 ref={messagesRef}
                 className={`olio-chat-messages${turns.length > 0 ? " has-turns" : ""}`}

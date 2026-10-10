@@ -1,6 +1,7 @@
 import { Sparkles } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { isAvailable as aiAvailable } from "../adapters/ai";
+import { isOnline, madeBy } from "../app/generatedBy";
 import {
   coveredPercent,
   isStale,
@@ -176,11 +177,11 @@ function SummaryResult({
           {result.kind === "partialSummary" ? "Partial summary" : "Summary"}
         </Badge>
         <Badge>Generated preview, not saved</Badge>
+        {isOnline(result) && <Badge>Online · Groq</Badge>}
       </div>
       <p className="muted">
-        Made by the local model {result.modelId} (revision{" "}
-        {result.revision.slice(0, 12)}). Not reviewed for accuracy: each point
-        links to the passage it came from.
+        {madeBy(result, true)}. Not reviewed for accuracy: each point links to
+        the passage it came from.
         {result.kind === "partialSummary" &&
           (covered !== null
             ? ` It covers about ${covered}% of the file.`

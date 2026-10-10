@@ -51,13 +51,24 @@ pub struct ModelManifest {
     pub runtimes: Vec<RuntimeDescriptor>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     embedding_model_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     generation_model_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    online_generation: Option<OnlineGenerationSettings>,
+}
+
+/// The user's choice about online generation (ADR 0018). The key is never
+/// kept here: it lives in the operating system's keychain.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OnlineGenerationSettings {
+    pub enabled: bool,
+    pub model_id: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -395,11 +406,19 @@ impl ModelStore {
         Ok(if settings_path.exists() {
             serde_json::from_str::<ModelSettings>(&fs::read_to_string(&settings_path)?)?
         } else {
-            ModelSettings {
-                embedding_model_id: None,
-                generation_model_id: None,
-            }
+            ModelSettings::default()
         })
+    }
+
+    /// Online generation as the user left it; `None` until they first set it.
+    pub fn online_generation(&self) -> CoreResult<Option<OnlineGenerationSettings>> {
+        Ok(self.read_settings()?.online_generation)
+    }
+
+    pub fn set_online_generation(&self, online: Option<OnlineGenerationSettings>) -> CoreResult<()> {
+        let mut settings = self.read_settings()?;
+        settings.online_generation = online;
+        self.write_settings(&settings)
     }
 
     fn write_settings(&self, settings: &ModelSettings) -> CoreResult<()> {
@@ -1637,5 +1656,29 @@ mod tests {
         assert_eq!(store.manifest().schema_version, 1);
         assert!(store.model("multilingual-e5-small-int8").is_ok());
         assert!(store.runtime("llama-b11524-ubuntu-x64").is_ok());
+    }
+
+    #[test]
+    fn online_generation_is_kept_beside_the_model_choice() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = store(temp.path(), descriptor(b"m"));
+        // Settings written before online generation existed read as "never set".
+        fs::write(
+            temp.path().join("settings.json"),
+            r#"{"generationModelId":"test-model"}"#,
+        )
+        .unwrap();
+        assert_eq!(store.online_generation().unwrap(), None);
+
+        let online = OnlineGenerationSettings {
+            enabled: true,
+            model_id: "openai/gpt-oss-20b".into(),
+        };
+        store.set_online_generation(Some(online.clone())).unwrap();
+        assert_eq!(store.online_generation().unwrap(), Some(online));
+        assert_eq!(
+            store.selected_model(ModelRole::Generation).unwrap().as_deref(),
+            Some("test-model")
+        );
     }
 }

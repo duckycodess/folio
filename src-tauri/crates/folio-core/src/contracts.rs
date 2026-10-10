@@ -112,6 +112,26 @@ pub struct GroundedAnswer {
     pub coverage: Vec<DocumentId>,
     pub model_id: String,
     pub revision: String,
+    /// Where the text was generated. Absent on the wire for the local model,
+    /// so results stored before online generation still read as local.
+    #[serde(default, skip_serializing_if = "GenerationOrigin::is_local")]
+    pub origin: GenerationOrigin,
+}
+
+/// Where generated text came from: the local model, or the optional online
+/// generation the user turned on (ADR 0018).
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GenerationOrigin {
+    #[default]
+    Local,
+    Groq,
+}
+
+impl GenerationOrigin {
+    pub fn is_local(&self) -> bool {
+        *self == Self::Local
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -122,6 +142,8 @@ pub struct GroundedResult {
     pub coverage: Vec<DocumentId>,
     pub model_id: String,
     pub revision: String,
+    #[serde(default, skip_serializing_if = "GenerationOrigin::is_local")]
+    pub origin: GenerationOrigin,
     pub kind: GroundedAnswerKind,
     pub sentences: Vec<GroundedSentence>,
     pub coverage_ranges: Vec<CoverageEntry>,
@@ -176,6 +198,14 @@ pub enum ProviderErrorCode {
     IoError,
     /// A generation request exceeded its total time budget.
     TimedOut,
+    /// Online generation is on but no key is stored.
+    OnlineKeyMissing,
+    /// The online service refused the stored key.
+    OnlineKeyRejected,
+    /// The online service couldn't be reached or failed on its side.
+    OnlineUnavailable,
+    /// The online service asked Folio to slow down.
+    OnlineRateLimited,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -430,6 +460,7 @@ mod contract_tests {
                 coverage: vec!["fixtures:projects/submission-checklist.md".into()],
                 model_id: "qwen3-0.6b-q4".into(),
                 revision: "revision-a".into(),
+                origin: GenerationOrigin::Local,
                 kind: GroundedAnswerKind::FileSummary,
                 sentences: vec![GroundedSentence {
                     text: "Community Learning Project is due October 20.".into(),
@@ -453,6 +484,22 @@ mod contract_tests {
     }
 
     #[test]
+    fn only_an_online_result_names_its_origin() {
+        let local: GroundedResult = serde_json::from_str(
+            &std::fs::read_to_string(format!("{GOLDEN_ROOT}/grounded-answer.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(local.origin, GenerationOrigin::Local);
+        assert!(serde_json::to_value(&local).unwrap().get("origin").is_none());
+
+        let online = GroundedResult {
+            origin: GenerationOrigin::Groq,
+            ..local
+        };
+        assert_eq!(serde_json::to_value(&online).unwrap()["origin"], "groq");
+    }
+
+    #[test]
     fn interpretation_union_round_trips() {
         round_trip(
             "interpretation-result",
@@ -462,5 +509,44 @@ mod contract_tests {
             })
             .unwrap(),
         );
+    }
+
+    /// `rename_all` alone renames only the tags; the fields inside each
+    /// variant must be camelCase too, or the UI reads them as undefined.
+    #[test]
+    fn interpretation_fields_use_the_ui_keys() {
+        let value = serde_json::to_value(InterpretationResult::Proposal {
+            proposal: OperationProposal::Rename {
+                document_id: "doc-1".into(),
+                relative_path: "Exavault/201_Birth Certificate.pdf".into(),
+                observed_content_hash: "hash".into(),
+                destination_relative_path: "Exavault/201.pdf".into(),
+            },
+            request_language: Language::En,
+            exact_duplicate_paths: vec!["copy.pdf".into()],
+        })
+        .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "status": "proposal",
+                "proposal": {
+                    "kind": "rename",
+                    "documentId": "doc-1",
+                    "relativePath": "Exavault/201_Birth Certificate.pdf",
+                    "observedContentHash": "hash",
+                    "destinationRelativePath": "Exavault/201.pdf",
+                },
+                "requestLanguage": "en",
+                "exactDuplicatePaths": ["copy.pdf"],
+            })
+        );
+        let search = serde_json::to_value(InterpretationResult::NonMutating {
+            intent: NonMutatingIntent::Search,
+            target_query: Some("birth certificate".into()),
+            document: None,
+        })
+        .unwrap();
+        assert_eq!(search["targetQuery"], "birth certificate");
     }
 }

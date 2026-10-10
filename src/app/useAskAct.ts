@@ -16,7 +16,10 @@ import type {
   SearchResult,
 } from "../domain/contracts";
 import { toFolioError, type FolioError } from "../domain/errors";
+import { keywordSearch } from "../domain/discovery";
 import { mergeFolderResults } from "../domain/searchEvidence";
+import { hasSearchOperators } from "../domain/searchQuery";
+import { searchIndex } from "../adapters/workspace";
 import {
   inScope,
   planAsk,
@@ -36,6 +39,7 @@ import {
   ensureActiveConversation,
   newConversation as startConversation,
   openConversation as activateConversation,
+  renameConversation as renameStoredConversation,
   setConversationScope,
   subscribeChat,
   updateTurnIn,
@@ -123,6 +127,10 @@ export interface AskActController {
   /** The conversation currently open. Both Ask & Act and the floating chat
    * read and write this same id: there is no copy to keep in sync. */
   conversationId: string | null;
+  /** The open conversation's name, given or automatic. */
+  conversationTitle: string;
+  /** A blank name goes back to the automatic one. */
+  renameConversation: (id: string, title: string) => void;
   /** This folder's other conversations, most recent first. */
   history: ConversationSummary[];
   openConversation: (id: string) => void;
@@ -238,10 +246,33 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
   async function search(
     folder: string,
     query: string,
-  ): Promise<{ results: SearchResult[]; namesOnly: boolean }> {
+  ): Promise<{
+    results: SearchResult[];
+    namesOnly?: "noModel" | "notIndexed";
+  }> {
+    // Operators ("1_b", -draft, OR, intitle:, filetype:, in:) are matched
+    // exactly by the folder's text index; search by meaning would loosen them.
+    if (hasSearchOperators(query)) {
+      const local = keywordSearch(workspace.documents, query);
+      let indexed: SearchResult[] = [];
+      let namesOnly: "notIndexed" | undefined;
+      try {
+        indexed = await searchIndex(folder, query, RESULT_LIMIT);
+      } catch {
+        // Not indexed yet: names (and any loaded text) only, and the turn says so.
+        namesOnly = "notIndexed";
+      }
+      return {
+        results: inScope(
+          mergeFolderResults(workspace.documents, indexed, local),
+          scope,
+        ).slice(0, RESULT_LIMIT),
+        namesOnly,
+      };
+    }
     const { named, partial } = namedFiles(workspace.documents, query);
     let indexed: SearchResult[];
-    let namesOnly = false;
+    let namesOnly: "noModel" | undefined;
     try {
       indexed = await semanticSearch(folder, query, RESULT_LIMIT);
     } catch (cause) {
@@ -255,7 +286,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
       )
         throw cause;
       indexed = [];
-      namesOnly = true;
+      namesOnly = "noModel";
     }
     return {
       results: inScope(
@@ -403,6 +434,10 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
     stopRunning: () => cancelGeneration().catch(() => undefined),
     clear: () => conversation && clearTurnsIn(conversation.id),
     conversationId: conversation?.id ?? null,
+    conversationTitle: conversation
+      ? conversationTitle(conversation)
+      : "New conversation",
+    renameConversation: (id, title) => renameStoredConversation(id, title),
     history: conversationsForFolder(snapshot, folderId)
       .filter((c) => c.id !== conversation?.id)
       .map((c) => ({
