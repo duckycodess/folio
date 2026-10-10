@@ -2,7 +2,7 @@
 
 The **Installer preparation** workflow is manual (`workflow_dispatch`). Its narrow targets are Windows x64 (`x86_64-pc-windows-msvc`, NSIS setup executable) and Apple Silicon macOS (`aarch64-apple-darwin`, DMG). Intel macOS and Windows ARM64 are not covered by this slice. A new dispatch workflow must first exist on the default branch; until that human merge, installer build results remain pending. Once available, open GitHub Actions, select the workflow and choose the commit/branch to prepare. It does not run on ordinary UI pull requests and does not publish GitHub Releases.
 
-`src-tauri/tauri.packaging.conf.json` is an explicit CLI override; the default `tauri.conf.json` still has bundling disabled. Only Cargo registry/Git downloads are cached; generated targets and installers are never restored from cache. The collector refuses existing installers before a build and requires one fresh output matching the recorded commit, target and start time. The packaging workflow derives icons from the committed source SVG into the ignored native target directory. It builds with the npm/Cargo lockfiles, records actual tool versions, and uploads the installer with SHA-256 checksums and `build-metadata.json`. Downloads expire after seven days; record the exact run and commit before sharing a demo artifact.
+`src-tauri/tauri.packaging.conf.json` is an explicit CLI override; the default `tauri.conf.json` still has bundling disabled. Only Cargo registry/Git downloads are cached; generated targets and installers are never restored from cache. The collector refuses existing installers before a build and requires one fresh output matching the recorded commit, target and start time. The packaging workflow derives icons from the committed source PNG into the ignored native target directory. It builds with the npm/Cargo lockfiles, records actual tool versions, and uploads the installer with SHA-256 checksums and `build-metadata.json`. Downloads expire after seven days; record the exact run and commit before sharing a demo artifact.
 
 These are preparation artifacts, not a verified consumer release. Windows installers have no Authenticode signature. macOS apps use a credential-free ad-hoc signature (`signingIdentity: "-"`), with no Apple-authenticated identity or notarization. They can be blocked by operating-system security checks; stop and record the exact message instead of disabling security controls. Credentials, signing identities, release publication and updater packaging are outside this slice.
 
@@ -12,7 +12,7 @@ Local preparation uses an actual target host with the documented Tauri prerequis
 
 ```bash
 npm ci
-npm run tauri -- icon src-tauri/icons/source.svg --output src-tauri/target/packaging-icons
+npm run tauri -- icon src-tauri/icons/source.png --output src-tauri/target/packaging-icons
 # Windows x64:
 npm run tauri -- build --ci --config src-tauri/tauri.packaging.conf.json --target x86_64-pc-windows-msvc --bundles nsis -- --locked
 # Apple Silicon macOS:

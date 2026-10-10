@@ -57,7 +57,7 @@ jobs:
           cargo --version > "$RUNNER_TEMP/cargo-version.txt"
           npm run --silent tauri -- --version > "$RUNNER_TEMP/tauri-version.txt"
       - name: Generate installer icons from the committed artwork
-        run: npm run tauri -- icon src-tauri/icons/source.svg --output src-tauri/target/packaging-icons
+        run: npm run tauri -- icon src-tauri/icons/source.png --output src-tauri/target/packaging-icons
       # A restored cache may hold an earlier run's installer. Remove it so the
       # next step's check still proves the uploaded one was built here.
       - name: Clear installers from a restored cache

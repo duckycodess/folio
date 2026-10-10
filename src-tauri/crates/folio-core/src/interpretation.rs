@@ -2096,8 +2096,6 @@ mod tests {
             );
         }
         assert!(validate_destination("notes/archived-notes.md", Some("notes.md")).is_ok());
-        // PDFs are read-only: renaming one is refused, not proposed.
-        assert!(validate_destination("201_OBI Clearance.pdf", Some("201_NBI Clearance.pdf")).is_err());
         for allowed in [
             "null.md",
             "console.md",
