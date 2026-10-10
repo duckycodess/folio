@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { preparingLabel } from "../app/askAct";
 import { folderChoices } from "../app/fileActions";
 import type { Drafts } from "../app/drafts";
 import { useAskAct } from "../app/useAskAct";
@@ -263,11 +264,12 @@ export function AssistantView({
         </div>
         <p id="instruction-help" className="field-help ask-status">
           {ask.preparing
-            ? "Preparing this folder for search…"
+            ? (preparingLabel(ask.progress) ??
+              "Preparing this folder for search…")
             : index
               ? `${index.documentCount} files prepared for ${
                   index.method === "keyword"
-                    ? "keyword search only (no search model)"
+                    ? "keyword search for now (no search model, or it has not read this folder yet)"
                     : "search by meaning"
                 }.${
                   index.skippedDocuments?.length

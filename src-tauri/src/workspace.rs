@@ -321,6 +321,18 @@ pub fn document_hash(root: &Path, relative: &str) -> Result<String, FolioError> 
     Ok(content_hash(&bytes))
 }
 
+/// The current hash of a document, read with the index's own size limits, so
+/// re-checking the documents behind a prompt can never read an unbounded file.
+pub fn bounded_document_hash(root: &Path, relative: &str) -> Result<String, FolioError> {
+    let path = resolve_document(root, relative)?;
+    let limit = if media_type_for_path(relative) == Some("application/pdf") {
+        extract::MAX_PDF_BYTES
+    } else {
+        MAX_TEXT_BYTES
+    };
+    Ok(content_hash(&read_bounded(&path, limit)?))
+}
+
 /// The canonical root, or `workspaceUnavailable` when the folder is gone or unreadable.
 pub fn available_root(path: &Path) -> Result<PathBuf, FolioError> {
     let unavailable = || {

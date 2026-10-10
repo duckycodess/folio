@@ -95,6 +95,8 @@ _Avoid_: A current search result, a deleted document.
 **Check Again**: Asking Folio to read a document that could not be read, without waiting for Local Sync's next attempt.
 _Avoid_: Treating a document Folio cannot read yet as permanently unreadable.
 
+**Chosen File**: The file the user picked from a list, or attached to a request, so a question, summary or change is about that file and Folio does not have to guess which one is meant.
+
 **Model Lab**: The settings area for choosing local models and inspecting actual task measurements.
 _Avoid_: Fabricated benchmarks or the main product identity.
 

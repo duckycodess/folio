@@ -100,9 +100,16 @@ embedding sync, then progressive discovery, reporting `folio://ai-refresh-progre
 `EmbeddingSyncSummary`, `discovery` this run's counts, and `ended` why it
 stopped (`complete`, `budgetExhausted`, `cancelled`, `spaceChanged`); each is
 absent, never `null`, when that phase didn't run. `cancel_local_ai_refresh`
-stops both phases and keeps completed work.
+stops both phases and keeps completed work. When an AI request or "Prepare
+now" is already embedding the folder, the refresh doesn't fail: it skips its
+embedding phase (`embedding` absent), runs discovery on what is embedded, and
+`coverage` shows the rest as not yet embedded.
 `GroundedResult.basis` (`{ connections, files, incomplete }`, relationship
 summaries only) is the native count of what the model was given.
+`GroundedResult.chosenFileUnmatched` (`true`, answers about a chosen file only;
+absent otherwise) means nothing in that file passed the evidence gate or the
+keyword floor for the question: the file's closest or opening passages were
+sent because the user chose it, so the answer is not a sourced match.
 
 A Ripple `ImpactCandidate` may carry the `relationshipType` and `provenance` of
 the relationship that connected it to the edited document. Both are optional
@@ -137,18 +144,53 @@ Lab state while holding `EmbeddingState`, before any embedding provider load.
 If Lab starts while a sync holds that lock, the current provider batch may
 finish; Lab then waits to unload the slot, and the sync's next guarded batch
 returns `providerBusy` with `details.reason = "modelLabRunning"`. Batches
-already committed remain. Existing snapshot `semantic_search` can still
-reload the product embedding provider during a Lab run; that is the
-pre-existing #8 limitation, and #27 does not migrate live search to this
-persistent store. Cancellation keeps already committed batches and reports
-their cumulative counts. Persistent chunks use the separate `chunk-text-v1`
+already committed remain. Cancellation keeps already committed batches and reports
+their cumulative counts. Persistent chunks use the separate `title-path-chunk-v2`
 stored space, so these vectors are not comparable to the title/path snapshot
-space. No UI trigger is implied by these commands. The native index owns the
+space. `semantic_search`, `answer_question`, `interpret_request` and
+`rebuild_index` trigger the same fill themselves, for only the chunks that
+lack a vector (see below). The native index owns the
 all-or-nothing
 `Immediate` transaction that rechecks each chunk hash before storing vectors;
 the retry loop only filters the returned `ChunkVector` batch and never
 recomputes a hash. This additive contract is for TJ review.
 
+## AI requests read the persistent index
+
+`semantic_search(workspaceId, query, limit?)`, `answer_question(workspaceId,
+question, documentId?)`, `interpret_request(workspaceId, text, documentId?)` and
+`rebuild_index(workspaceId)` first bring the folder's persistent index up to
+date: an incremental scan (files whose size and modification time are unchanged
+are not read), then an embedding fill for the chunks that have no vector in the
+current stored space, in cancellable batches. While they do, they emit
+`folio://preparing-progress` (`PreparingProgress`: `workspaceId`, `phase`
+`reading` | `embedding`, `processed`, `total`). `cancel_generation` stops that
+work too. Then they query: only documents with status `indexed` are read;
+passages carry `documents.content_hash`, and the documents behind the passages
+that go into an answer prompt are hashed again, so a passage of an older
+revision is dropped. A query embedded in a different space than the stored
+vectors is refused (`embeddingSpaceMismatch`). Without a selected embedding
+model, search is FTS5 keyword search and results are labelled `keyword`. During
+a Model Lab run, `semantic_search`, `answer_question` and `rebuild_index`
+return `providerBusy` (`details.reason` = `modelLabRunning`);
+`interpret_request` reads no vectors and is unaffected. `index_status(workspaceId?)`
+reads SQLite only: `documentCount`, `chunkCount`, `embeddedChunkCount` (known
+once the embedding model is loaded), `method` (`hybrid` only when every chunk has a
+vector in the loaded model's space) and `skippedDocuments`. `PendingChunk`
+additionally carries `title` and `relativePath`, which the fill embeds in front
+of the chunk text.
+
+`interpret_request(workspaceId, text, documentId?)` takes the file the user
+picked or attached. A change then targets that file whatever the description
+says; a chosen file missing from the index asks for clarification, and a PDF is
+`unsupported`. `InterpretationResult` additionally carries
+`nonMutating.document` (the one file a question or summary names, without its
+content) and `needsFileSelection.purpose` (`change`, `summarize` or `question`;
+absent means `change`). A question or summary names a file when every
+informative word of its target description is in the file's name or path.
+`answer_question(workspaceId, question, documentId)` skips the evidence gate for
+that file: its best-ranked passages go in, or its opening passages when nothing
+ranks, within eight passages and 6,400 bytes, in reading order.
 Issue #46 stores AI relationship rows with `spaceFingerprint` and, for
 `similarity`, `score`; link rows have neither. The native discovery refresh
 reads only vectors from the requested persistent `space_id`, and hides or
@@ -167,7 +209,9 @@ Embedding and generation stay behind separate interfaces. An adapter rejects
 with `modelNotInstalled`, `modelLoadFailed`, `providerBusy`, `cancelled` or
 `contextOverflow`. Aborting the request's `signal` rejects with `cancelled`.
 One generative request runs at a time; a second concurrent request is
-`providerBusy`. A run either returns an answer or reports
+`providerBusy`. Cancelling or unloading signals the holder but leaves the slot
+held until the holder ends; an unload waits up to 10 seconds, then reports
+`providerBusy` instead of freeing it. A run either returns an answer or reports
 `insufficientEvidence` — it does not invent one.
 
 ## Local AI provider results (issue #4)

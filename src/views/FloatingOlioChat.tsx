@@ -10,7 +10,6 @@ import {
 import { PRACTICE_LABEL } from "../adapters/mockChat";
 import { folderChoices } from "../app/fileActions";
 import { matchSlashCommands, parseCommand } from "../app/commands";
-import { requestForFile } from "../app/proposals";
 import { useAskAct, type ConversationSummary } from "../app/useAskAct";
 import type { RelationshipsState } from "../app/useRelationships";
 import type { WorkspaceState } from "../app/useWorkspace";
@@ -191,13 +190,12 @@ export function FloatingOlioChat({
       // Without an argument, summarize the attached or open file.
       const file = attached ?? currentFile;
       if (command.args) ask.ask(`Summarize ${command.args}`);
-      else if (file)
-        ask.ask(requestForFile("Summarize this file", file.relativePath), file);
+      else if (file) ask.ask("Summarize this file", file);
       else ask.ask("Summarize this file");
     } else if (attached) {
-      // The attached file binds the request: a change to any other file is
-      // refused before a preview.
-      ask.ask(requestForFile(typed, attached.relativePath), attached);
+      // The attached file binds the request: questions use it, and a change
+      // to any other file is refused before a preview.
+      ask.ask(typed, attached);
     } else {
       ask.ask(typed);
     }

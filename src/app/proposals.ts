@@ -81,8 +81,3 @@ export function changedRegion(
     clippedEnd: contextEnd < previous.length,
   };
 }
-
-/** The request to send again once the user has named the file. */
-export function requestForFile(request: string, relativePath: string): string {
-  return `${request.trim()}\n\nUse this file: ${relativePath}`;
-}

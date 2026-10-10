@@ -361,6 +361,57 @@ fn summarize_from(
     ))
 }
 
+/// The most passage text one answer prompt carries. A 4,096-token context
+/// holds the instructions, the question, the passages and up to 512 output
+/// tokens; Filipino and Taglish text costs more tokens per byte than English,
+/// so the budget is bytes, set so that eight 800-byte passages still fit.
+pub const MAX_ANSWER_EVIDENCE_BYTES: usize = 6_400;
+
+/// The leading passages that fit `MAX_PASSAGES` and the byte budget, in the
+/// order given. The first passage is always kept: a single large passage is
+/// still evidence, and an oversize one is refused later by size, not dropped.
+pub fn fit_evidence_budget(passages: Vec<SourcePassage>) -> Vec<SourcePassage> {
+    let mut used = 0_usize;
+    let mut kept = Vec::new();
+    for passage in passages {
+        if kept.len() >= crate::generation::MAX_PASSAGES {
+            break;
+        }
+        let size = passage.text.len();
+        if !kept.is_empty() && used + size > MAX_ANSWER_EVIDENCE_BYTES {
+            break;
+        }
+        used += size;
+        kept.push(passage);
+    }
+    kept
+}
+
+/// The evidence for a question about one file the user chose: its passages in
+/// rank order up to the budget, or, when nothing ranked (a vague "what does
+/// this file say?"), the file's opening passages. Returned in reading order.
+/// The user's choice stands in for the evidence gate, so a chosen file always
+/// reaches the model; whether it answers is the model's and the citations'
+/// job.
+pub fn chosen_document_passages(
+    ranked: Vec<SourcePassage>,
+    in_reading_order: Vec<SourcePassage>,
+) -> Vec<SourcePassage> {
+    let mut seen = std::collections::HashSet::new();
+    let candidates = if ranked.is_empty() {
+        in_reading_order
+    } else {
+        ranked
+    };
+    let unique = candidates
+        .into_iter()
+        .filter(|passage| seen.insert((passage.start, passage.end)))
+        .collect();
+    let mut kept = fit_evidence_budget(unique);
+    kept.sort_by_key(|passage| passage.start);
+    kept
+}
+
 /// Answer from already retrieved passages. With no evidence this function
 /// returns without invoking the provider, which keeps an unsupported question
 /// from becoming a hallucinated answer.
@@ -663,6 +714,7 @@ fn build_answer(
         coverage_ranges,
         uncited_sentence_count,
         basis: None,
+        chosen_file_unmatched: false,
     }
 }
 
@@ -683,6 +735,7 @@ fn insufficient_answer(
         coverage_ranges,
         uncited_sentence_count: 0,
         basis: None,
+        chosen_file_unmatched: false,
     }
 }
 
@@ -1104,6 +1157,57 @@ mod tests {
         }
     }
 
+    /// Records the messages it is asked to send, then replies with a script.
+    struct CapturingProvider {
+        sent: Mutex<Vec<Vec<ChatMessage>>>,
+        reply: Value,
+    }
+
+    impl CapturingProvider {
+        fn replying(reply: Value) -> Self {
+            Self {
+                sent: Mutex::new(Vec::new()),
+                reply,
+            }
+        }
+
+        fn prompt(&self) -> String {
+            self.sent
+                .lock()
+                .unwrap()
+                .iter()
+                .flatten()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+    }
+
+    impl GenerationProvider for CapturingProvider {
+        fn model_id(&self) -> &str {
+            "capturing-test-model"
+        }
+
+        fn revision(&self) -> &str {
+            "test"
+        }
+
+        fn generate_json(
+            &self,
+            _schema: &Value,
+            messages: &[ChatMessage],
+            _budget: &GenerationBudget,
+            _cancel: &AtomicBool,
+        ) -> CoreResult<Value> {
+            self.sent.lock().unwrap().push(messages.to_vec());
+            Ok(self.reply.clone())
+        }
+
+        fn unload(&self) -> CoreResult<()> {
+            Ok(())
+        }
+    }
+
     /// Records the messages it was sent, then answers with no sentences.
     struct RecordingProvider {
         sent: Mutex<Vec<String>>,
@@ -1135,6 +1239,152 @@ mod tests {
         fn unload(&self) -> CoreResult<()> {
             Ok(())
         }
+    }
+
+    fn chosen_file_passages() -> Vec<SourcePassage> {
+        [
+            "Ang huling araw ng pagpasa ay October 20.",
+            "Kailangan ang ulat, presentasyon, at demonstrasyon.",
+            "May 12 boluntaryong estudyante sa panayam.",
+        ]
+        .iter()
+        .enumerate()
+        .map(|(index, text)| {
+            let mut found = passage(index * 100, text);
+            found.document_id = "notes/tala-sa-proyekto.md".into();
+            found
+        })
+        .collect()
+    }
+
+    #[test]
+    fn the_chosen_files_text_is_in_the_prompt_the_model_receives() {
+        let passages = chosen_file_passages();
+        let provider = CapturingProvider::replying(json!({
+            "sentences": [{"text": "Ang huling araw ay October 20.", "citations": ["C1"]}],
+            "insufficientEvidence": false
+        }));
+        answer_question(
+            Some(&provider),
+            "Kailan ang huling araw?",
+            passages.clone(),
+            Language::Fil,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let prompt = provider.prompt();
+        for (index, passage) in passages.iter().enumerate() {
+            assert!(
+                prompt.contains(&passage.text),
+                "passage {index} is in the prompt"
+            );
+            assert!(
+                prompt.contains(&format!(
+                    "[C{} document=notes/tala-sa-proyekto.md start={} end={}",
+                    index + 1,
+                    passage.start,
+                    passage.end
+                )),
+                "its label names the file and offsets: {prompt}"
+            );
+        }
+        assert_eq!(provider.sent.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn every_citation_in_an_answer_points_at_a_passage_that_was_sent() {
+        let passages = chosen_file_passages();
+        // The model cites a real label, an invented one, and repeats a
+        // sentence it never saw as a bare, uncited claim.
+        let provider = CapturingProvider::replying(json!({
+            "sentences": [
+                {"text": "Ang huling araw ay October 20.", "citations": ["C1", "C99"]},
+                {"text": "The budget is 650 pesos for transport.", "citations": ["C7"]},
+                {"text": "May 12 boluntaryong estudyante sa panayam.", "citations": []}
+            ],
+            "insufficientEvidence": false
+        }));
+        let answer = answer_question(
+            Some(&provider),
+            "Ano ang nasa file?",
+            passages.clone(),
+            Language::Fil,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let prompt = provider.prompt();
+        let sent = |passage: &SourcePassage| prompt.contains(&passage.text);
+        for source in &answer.sources {
+            assert!(
+                passages
+                    .iter()
+                    .any(|sent_passage| same_passage(sent_passage, source))
+                    && sent(source),
+                "{source:?} was never sent"
+            );
+        }
+        for sentence in &answer.sentences {
+            for citation in &sentence.citations {
+                assert!(
+                    passages
+                        .iter()
+                        .any(|sent_passage| same_passage(sent_passage, citation)),
+                    "a citation to text the model never saw: {citation:?}"
+                );
+            }
+        }
+        // A claim whose only citation was invented is kept as uncited, counted,
+        // and left out of the answer text: it cites nothing the model saw.
+        let invented = answer
+            .sentences
+            .iter()
+            .find(|sentence| sentence.text.contains("650 pesos"))
+            .expect("kept, but uncited");
+        assert!(invented.citations.is_empty());
+        assert!(!answer.text.contains("650 pesos"));
+        assert!(!prompt.contains("650 pesos"), "that text was never sent");
+        assert!(answer.uncited_sentence_count >= 1);
+        assert_eq!(answer.kind, GroundedAnswerKind::Answer);
+    }
+
+    #[test]
+    fn the_evidence_budget_keeps_the_leading_passages_that_fit() {
+        let big = "x".repeat(1_200);
+        let many = (0..10)
+            .map(|index| passage(index * 2_000, &big))
+            .collect::<Vec<_>>();
+        let kept = fit_evidence_budget(many);
+        assert_eq!(kept.len(), 5, "five 1,200-byte passages fit in 6,400 bytes");
+        assert!(kept.iter().map(|p| p.text.len()).sum::<usize>() <= MAX_ANSWER_EVIDENCE_BYTES);
+
+        let huge = passage(0, &"y".repeat(MAX_ANSWER_EVIDENCE_BYTES + 100));
+        assert_eq!(
+            fit_evidence_budget(vec![huge.clone(), passage(9_000, "z")]),
+            vec![huge]
+        );
+
+        let small = (0..12)
+            .map(|index| passage(index * 10, "short"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            fit_evidence_budget(small).len(),
+            crate::generation::MAX_PASSAGES
+        );
+    }
+
+    #[test]
+    fn a_chosen_file_with_nothing_ranked_still_sends_its_opening_passages_in_order() {
+        let opening = chosen_file_passages();
+        let sent = chosen_document_passages(Vec::new(), opening.clone());
+        assert_eq!(sent, opening);
+
+        // Ranked passages win, repeated spans are sent once, and the result is
+        // in reading order whatever the ranking was.
+        let ranked = vec![opening[2].clone(), opening[0].clone(), opening[2].clone()];
+        let sent = chosen_document_passages(ranked, opening.clone());
+        assert_eq!(sent, vec![opening[0].clone(), opening[2].clone()]);
+
+        assert!(chosen_document_passages(Vec::new(), Vec::new()).is_empty());
     }
 
     #[test]

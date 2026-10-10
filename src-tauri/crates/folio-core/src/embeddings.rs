@@ -23,10 +23,11 @@ pub const EMBEDDING_IDLE_UNLOAD: Duration = Duration::from_secs(5 * 60);
 /// query naming a document ("plano ng proyekto", "project plan") can match
 /// it across languages. Part of the embedding-space fingerprint.
 pub const PASSAGE_CONTEXT_VERSION: &str = "title-path-v1";
-/// Persisted chunks are embedded from their stored text only. This is a
-/// separate input contract from the snapshot path, which adds title and path
-/// context before embedding.
-pub const STORED_CHUNK_INPUT_VERSION: &str = "chunk-text-v1";
+/// Persisted chunks are embedded with their document title and path words in
+/// front of the chunk text (`title-path-v1` context), like the interim
+/// snapshot path did. Bumped from `chunk-text-v1`, which embedded the chunk
+/// text alone, so those vectors are never compared with these.
+pub const STORED_CHUNK_INPUT_VERSION: &str = "title-path-chunk-v2";
 
 /// Derive the embedding space used by vectors persisted for native index
 /// chunks. The provider identity is retained, while the input contract is
@@ -132,16 +133,21 @@ pub fn passage_embedding_text(document: Option<&DocumentRecord>, chunk: &Chunk) 
     let Some(document) = document else {
         return chunk.text.clone();
     };
-    let stem = document
-        .relative_path
+    stored_passage_text(&document.title, &document.relative_path, &chunk.text)
+}
+
+/// The embedding input for a chunk held by the persistent index: title, the
+/// words of the relative path (without its extension), then the chunk text.
+pub fn stored_passage_text(title: &str, relative_path: &str, text: &str) -> String {
+    let stem = relative_path
         .rsplit_once('.')
-        .map_or(document.relative_path.as_str(), |(stem, _)| stem);
+        .map_or(relative_path, |(stem, _)| stem);
     let path_words = stem
         .split(|character: char| !character.is_alphanumeric())
         .filter(|word| !word.is_empty())
         .collect::<Vec<_>>()
         .join(" ");
-    format!("{}\n{}\n{}", document.title.trim(), path_words, chunk.text)
+    format!("{}\n{}\n{}", title.trim(), path_words, text)
 }
 
 /// Embedding inputs for `chunks`, aligned by index.
@@ -691,7 +697,8 @@ mod tests {
         );
         assert_eq!(
             stored_chunk_space(&space).preprocessing_fingerprint,
-            "e72ccaa8652657ee0191868c230f713085c44a46ba8767836484a417c9872e22"
+            // `title-path-chunk-v2` (#108); was e72ccaa8… for `chunk-text-v1`.
+            "998f0d1653c24a86982f29df9342d3592061d3d1468ef64de422504a3b0218f9"
         );
     }
 
@@ -718,6 +725,38 @@ mod tests {
         let mut changed = provider.clone();
         changed.revision = "next-revision".into();
         assert_ne!(stored, stored_chunk_space(&changed));
+    }
+
+    #[test]
+    fn the_stored_input_version_separates_title_and_path_vectors_from_text_only_ones() {
+        let provider = EmbeddingSpace {
+            model_id: "e5".into(),
+            revision: "r1".into(),
+            quantization: "int8".into(),
+            dimensions: 384,
+            preprocessing_fingerprint: "provider-input".into(),
+        };
+        let mut hasher = Sha256::new();
+        hasher.update(b"folio-stored-chunk\nchunk-text-v1\n");
+        hasher.update(provider.preprocessing_fingerprint.as_bytes());
+        let text_only = hex::encode(hasher.finalize());
+        assert_ne!(
+            stored_chunk_space(&provider).preprocessing_fingerprint,
+            text_only,
+            "vectors embedded from chunk text alone live in another space"
+        );
+    }
+
+    #[test]
+    fn stored_passage_text_matches_the_snapshot_input() {
+        assert_eq!(
+            stored_passage_text(
+                " Plano ng proyekto ",
+                "notes/tala-sa-proyekto.md",
+                "Huling araw"
+            ),
+            "Plano ng proyekto\nnotes tala sa proyekto\nHuling araw"
+        );
     }
 
     #[test]

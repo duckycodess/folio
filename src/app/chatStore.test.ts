@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { folioError } from "../domain/errors";
 import { MAX_TURNS } from "./askAct";
 import {
@@ -7,10 +7,12 @@ import {
   conversationTitle,
   deserializeChatState,
   EMPTY_STATE,
+  load,
   MAX_CONVERSATIONS,
   MAX_STORED_CHARS,
   pruned,
   serializeChatState,
+  STORAGE_KEY,
   withActiveId,
   withNewConversation,
   withScope,
@@ -225,5 +227,41 @@ describe("persistence round-trip", () => {
     expect(deserializeChatState('{"conversations": "nope"}')).toEqual(
       EMPTY_STATE,
     );
+  });
+});
+
+function memoryStorage(entries: Record<string, string> = {}) {
+  const items = new Map(Object.entries(entries));
+  return {
+    getItem: (key: string) => items.get(key) ?? null,
+    setItem: (key: string, value: string) => void items.set(key, value),
+    removeItem: (key: string) => void items.delete(key),
+    has: (key: string) => items.has(key),
+  };
+}
+
+describe("history across launches", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const stored = serializeChatState(
+    withNewConversation(EMPTY_STATE, "workspace-1", "").state,
+  );
+
+  it("starts a new launch empty and deletes history an older version kept", () => {
+    const local = memoryStorage({ [STORAGE_KEY]: stored });
+    vi.stubGlobal("window", {
+      localStorage: local,
+      sessionStorage: memoryStorage(),
+    });
+    expect(load()).toEqual(EMPTY_STATE);
+    expect(local.has(STORAGE_KEY)).toBe(false);
+  });
+
+  it("keeps this launch's history when the window reloads", () => {
+    vi.stubGlobal("window", {
+      localStorage: memoryStorage(),
+      sessionStorage: memoryStorage({ [STORAGE_KEY]: stored }),
+    });
+    expect(load().conversations).toHaveLength(1);
   });
 });
