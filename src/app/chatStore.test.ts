@@ -10,12 +10,14 @@ import {
   load,
   MAX_CONVERSATIONS,
   MAX_STORED_CHARS,
+  MAX_TITLE_LENGTH,
   pruned,
   serializeChatState,
   STORAGE_KEY,
   withActiveId,
   withNewConversation,
   withScope,
+  withTitle,
   withTurnAdded,
   withTurnsCleared,
   withTurnUpdated,
@@ -263,5 +265,50 @@ describe("history across launches", () => {
       sessionStorage: memoryStorage({ [STORAGE_KEY]: stored }),
     });
     expect(load().conversations).toHaveLength(1);
+  });
+});
+
+describe("renaming a conversation", () => {
+  function started() {
+    const { state, id } = withNewConversation(EMPTY_STATE, "folder", "");
+    const { state: withTurn } = withTurnAdded(state, id, {
+      request: "Find my budget notes",
+      action: "find",
+      status: "done",
+    });
+    return { state: withTurn, id };
+  }
+
+  it("uses the given name instead of the first request", () => {
+    const { state, id } = started();
+    const renamed = withTitle(state, id, "  Budget   2025 ");
+    const conversation = renamed.conversations.find((c) => c.id === id)!;
+    expect(conversationTitle(conversation)).toBe("Budget 2025");
+  });
+
+  it("goes back to the automatic name when the name is cleared", () => {
+    const { state, id } = started();
+    const cleared = withTitle(withTitle(state, id, "Budget"), id, "   ");
+    const conversation = cleared.conversations.find((c) => c.id === id)!;
+    expect(conversationTitle(conversation)).toBe("Find my budget notes");
+  });
+
+  it("keeps names short and doesn't move the conversation in the history", () => {
+    const { state, id } = started();
+    const before = state.conversations.find((c) => c.id === id)!.updatedAt;
+    const renamed = withTitle(state, id, "x".repeat(200));
+    const conversation = renamed.conversations.find((c) => c.id === id)!;
+    expect(conversation.title).toHaveLength(MAX_TITLE_LENGTH);
+    expect(conversation.updatedAt).toBe(before);
+  });
+
+  it("keeps the name in the stored history", () => {
+    const { state, id } = started();
+    const restored = deserializeChatState(
+      serializeChatState(withTitle(state, id, "Budget 2025")),
+    );
+    expect(
+      conversationTitle(restored.conversations.find((c) => c.id === id)!),
+    ).toBe("Budget 2025");
   });
 });

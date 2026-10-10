@@ -14,6 +14,8 @@ export interface Conversation {
   turns: AskTurn[];
   next: number;
   updatedAt: number;
+  /** A name the user gave it; without one it is named after its first request. */
+  title?: string;
 }
 
 export interface ChatState {
@@ -84,8 +86,12 @@ export function activeConversation(
   return conversationsForFolder(state, folderId)[0];
 }
 
-/** A short label for the history list, from the conversation's first turn. */
+/** The longest name a conversation can be given. */
+export const MAX_TITLE_LENGTH = 80;
+
+/** Its given name, or a short label from its first turn. */
 export function conversationTitle(conversation: Conversation): string {
+  if (conversation.title) return conversation.title;
   const first = conversation.turns[0]?.request.trim();
   if (!first) return "New conversation";
   return first.length > 60 ? `${first.slice(0, 60)}…` : first;
@@ -134,6 +140,26 @@ function withConversation(
     conversations: state.conversations.map((conversation) =>
       conversation.id === id
         ? { ...change(conversation), updatedAt: Date.now() }
+        : conversation,
+    ),
+  };
+}
+
+/**
+ * Renames a conversation. A blank name goes back to the automatic one.
+ * Renaming doesn't count as activity, so the history order stays put.
+ */
+export function withTitle(
+  state: ChatState,
+  id: string,
+  title: string,
+): ChatState {
+  const name = title.replace(/\s+/gu, " ").trim().slice(0, MAX_TITLE_LENGTH);
+  return {
+    ...state,
+    conversations: state.conversations.map((conversation) =>
+      conversation.id === id
+        ? { ...conversation, title: name || undefined }
         : conversation,
     ),
   };
@@ -264,6 +290,10 @@ function reviveConversations(raw: unknown): Conversation[] {
       updatedAt:
         typeof item.updatedAt === "number" ? item.updatedAt : Date.now(),
       turns: reviveTurns(item.turns),
+      title:
+        typeof item.title === "string" && item.title.trim()
+          ? item.title.trim().slice(0, MAX_TITLE_LENGTH)
+          : undefined,
     }));
 }
 
@@ -356,6 +386,10 @@ export function newConversation(
 
 export function openConversation(id: string) {
   update((s) => withActiveId(s, id));
+}
+
+export function renameConversation(id: string, title: string) {
+  update((s) => withTitle(s, id, title));
 }
 
 export function setConversationScope(id: string, scope: string) {
