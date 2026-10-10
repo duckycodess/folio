@@ -6,6 +6,7 @@ import type {
 } from "./contracts";
 import { normalizeRelativePath } from "./identity";
 import { passageFromUtf16Range } from "./offsets";
+import { parseSearchQuery, scoreFile, type SearchQuery } from "./searchQuery";
 
 const PASSAGE_LEAD = 40;
 const PASSAGE_LENGTH = 200;
@@ -37,6 +38,8 @@ export function keywordSearch(
   documents: DocumentRecord[],
   query: string,
 ): SearchResult[] {
+  const parsed = parseSearchQuery(query);
+  if (parsed) return operatorSearch(documents, parsed);
   const terms = [...new Set(words(query))];
   return documents
     .map((document) => {
@@ -71,6 +74,40 @@ export function keywordSearch(
       (a, b) =>
         b.score - a.score || a.document.name.localeCompare(b.document.name),
     );
+}
+
+/**
+ * A query with search operators, matched exactly against each file's name and
+ * whatever text is loaded. Name matches carry no passage.
+ */
+function operatorSearch(
+  documents: DocumentRecord[],
+  parsed: SearchQuery,
+): SearchResult[] {
+  return documents
+    .map((document) => ({
+      document,
+      score: scoreFile(parsed, {
+        name: document.name,
+        title: document.title,
+        relativePath: document.relativePath,
+        text: document.content,
+      }),
+    }))
+    .filter(
+      (result): result is { document: DocumentRecord; score: number } =>
+        result.score !== null,
+    )
+    .sort(
+      (a, b) =>
+        b.score - a.score || a.document.name.localeCompare(b.document.name),
+    )
+    .map(({ document, score }) => ({
+      document,
+      score,
+      method: "keyword" as const,
+      passages: [],
+    }));
 }
 
 function linkedPath(sourcePath: string, link: string): string | undefined {

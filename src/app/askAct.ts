@@ -18,8 +18,12 @@ export type AskOutcome =
       type: "results";
       query: string;
       results: SearchResult[];
-      /** Only file names were searched: the index couldn't answer. */
-      namesOnly?: boolean;
+      /**
+       * Only file names were searched: there is no search model yet
+       * (`noModel`), or this folder's text isn't indexed for an exact search
+       * (`notIndexed`).
+       */
+      namesOnly?: "noModel" | "notIndexed";
     }
   | { type: "answer"; result: GroundedResult }
   /** The file's summary is running in its Summary tab. */

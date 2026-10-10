@@ -1743,3 +1743,16 @@ Selecting a model was slow, and other installed models often showed "Checking…
 **Destinations:** a rename keeps the file in its own folder and its extension ("rename 201_Barangay Clearance to Police Clearance" → `Police Clearance.pdf` next to it); a move to a bare folder name moves the file into it. Rename targets are also matched by the words of the file name ("my resume" → `VILAR_Resume.pdf`).
 
 **Verified:** `cargo test --manifest-path src-tauri/Cargo.toml --workspace` on macOS (all passed), including new tests for PDF rename proposals, the extension and folder rules, the read-only edit answer, a PDF rename applied with the index following it and Undo restoring the same bytes, a refused type change, the busy holder's message and detail, and the wait for a stopped holder. `npm run check`, `npm test`, `npm run build`. **Not verified:** these flows in the desktop app with a real model; the model's own reading of these requests (it must still return `rename` with the target and destination).
+
+### Search operators and a cheatsheet (2026-10-10)
+
+Search used to OR every word of a query, so `1_b` also found `1_c`, `1 b` and `2_b`. A query that uses an operator is now matched exactly (Google Scholar style); a query without one keeps the plain search.
+
+- `"1_b"`: that exact text as a whole token (case and accents ignored; not `1_c`, `1 b`, `2_b`, `11_b`, `1_bc`). A phrase matches across line breaks.
+- `-draft`, `-"old plan"`: leave out files containing it.
+- `budget OR gastos`: either (capital `OR`; `AND` is the default and may be written).
+- `intitle:`, `filetype:`/`ext:`, `in:`/`folder:`: name or title, extension, folder at any depth. File names read `_` as a separator too, so `intitle:resume` finds `VILAR_Resume.pdf`.
+
+Native: `src-tauri/src/search_query.rs`; `index::search` matches each indexed file's name and text against it instead of FTS when an operator is used. Frontend twin: `src/domain/searchQuery.ts` for name search before indexing, exact highlighting, and Ask's Find (which uses the exact index search, not search by meaning, for operator queries and says when the folder's text isn't indexed). A **Cheatsheet** chip beside Prepare again in Ask & Act lists the operators; choosing one adds it to the request.
+
+**Verified:** `cargo test --manifest-path src-tauri/Cargo.toml --workspace` (grammar tests, and an index test where `"1_b"` finds only the exact file among `1_c`, `1 b` and `2_b`, with exclusion, type and folder filters), `npm run check`, `npm test` (529 passed, including the same grammar cases in TypeScript), `npm run build`, `prettier --check .`. **Not verified:** in the desktop app, or the speed of operator queries on a very large index (each one reads every indexed file's chunks).

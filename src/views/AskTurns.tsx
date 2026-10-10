@@ -173,8 +173,9 @@ export function TurnBody({
         <>
           {outcome.namesOnly && (
             <Notice tone="info">
-              Searched file names only: the local search model isn't set up yet,
-              so the files' text wasn't searched.
+              {outcome.namesOnly === "notIndexed"
+                ? "Searched file names only: this folder's text isn't indexed yet, so the exact search couldn't read it. Index the folder from Home to search its text."
+                : "Searched file names only: the local search model isn't set up yet, so the files' text wasn't searched."}
             </Notice>
           )}
           <p className="muted">
