@@ -169,7 +169,7 @@ const metadata = {
       path.join(root, "src-tauri", "tauri.packaging.conf.json"),
     ),
     iconArtwork: await sha256(
-      path.join(root, "src-tauri", "icons", "source.svg"),
+      path.join(root, "src-tauri", "icons", "source.png"),
     ),
   },
   artifacts,
