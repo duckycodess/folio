@@ -240,7 +240,7 @@ pub struct ModelInstallState {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum OperationProposal {
     Edit {
         document_id: DocumentId,
@@ -269,7 +269,7 @@ pub enum OperationProposal {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(tag = "status", rename_all = "camelCase")]
+#[serde(tag = "status", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum InterpretationResult {
     Proposal {
         proposal: OperationProposal,
@@ -353,6 +353,37 @@ mod contract_tests {
                 "detail": "generation"
             })
         );
+    }
+
+    #[test]
+    fn proposal_fields_reach_the_frontend_in_camel_case() {
+        let result = InterpretationResult::Proposal {
+            proposal: OperationProposal::Rename {
+                document_id: "workspace:201_NBI Clearance.pdf".into(),
+                relative_path: "201_NBI Clearance.pdf".into(),
+                observed_content_hash: "sha256:a".into(),
+                destination_relative_path: "201_OBI Clearance.pdf".into(),
+            },
+            request_language: Language::En,
+            exact_duplicate_paths: vec!["copy/201_NBI Clearance.pdf".into()],
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "status": "proposal",
+                "proposal": {
+                    "kind": "rename",
+                    "documentId": "workspace:201_NBI Clearance.pdf",
+                    "relativePath": "201_NBI Clearance.pdf",
+                    "observedContentHash": "sha256:a",
+                    "destinationRelativePath": "201_OBI Clearance.pdf"
+                },
+                "requestLanguage": "en",
+                "exactDuplicatePaths": ["copy/201_NBI Clearance.pdf"]
+            })
+        );
+        assert_eq!(serde_json::from_value::<InterpretationResult>(json).unwrap(), result);
     }
 
     #[test]

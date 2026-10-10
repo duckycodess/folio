@@ -1,0 +1,5 @@
+Reading list for the thesis group
+
+1. LLDA annual water quality reports, 2019 to 2024
+2. Studies on fishpen density and dissolved oxygen
+3. Our summary of sources: [Literature Review](../thesis/literature-review.md)
