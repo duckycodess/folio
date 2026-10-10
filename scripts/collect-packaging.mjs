@@ -193,6 +193,10 @@ await copyFile(
   path.join(root, "LICENSE"),
   path.join(outputDir, "Folio-LICENSE.txt"),
 );
+await copyFile(
+  path.join(root, "INSTALL.md"),
+  path.join(outputDir, "INSTALL.md"),
+);
 await writeFile(
   path.join(outputDir, "SHA256SUMS.txt"),
   `${artifacts.map(({ file, sha256: hash }) => `${hash}  ${file}`).join("\n")}\n`,
