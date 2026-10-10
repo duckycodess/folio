@@ -7,8 +7,8 @@
 
 use crate::chunking::Chunk;
 use crate::contracts::{
-    CoverageEntry, CoverageRange, GroundedAnswerKind, GroundedResult, GroundedSentence, Language,
-    OffsetUnit, SourcePassage,
+    CoverageEntry, CoverageRange, GenerationOrigin, GroundedAnswerKind, GroundedResult,
+    GroundedSentence, Language, OffsetUnit, SourcePassage,
 };
 use crate::error::{CoreError, CoreResult, NativeProviderErrorError};
 use crate::generation::{
@@ -227,6 +227,24 @@ pub fn summarize_document(
     language: Language,
     cancel: &AtomicBool,
 ) -> CoreResult<GroundedResult> {
+    summarize_from(provider, passages, language, cancel).map(|result| stamped(provider, result))
+}
+
+/// Results name where they were generated, so an online summary is never
+/// shown as the local model's.
+fn stamped(provider: &dyn GenerationProvider, result: GroundedResult) -> GroundedResult {
+    GroundedResult {
+        origin: provider.origin(),
+        ..result
+    }
+}
+
+fn summarize_from(
+    provider: &dyn GenerationProvider,
+    passages: Vec<SourcePassage>,
+    language: Language,
+    cancel: &AtomicBool,
+) -> CoreResult<GroundedResult> {
     if passages.is_empty() {
         return Ok(insufficient_answer(
             provider.model_id(),
@@ -408,6 +426,17 @@ pub fn answer_question(
     let Some(provider) = provider else {
         return Ok(insufficient_answer("none", "none", Vec::new()));
     };
+    answer_from(provider, question, passages, language, cancel)
+        .map(|result| stamped(provider, result))
+}
+
+fn answer_from(
+    provider: &dyn GenerationProvider,
+    question: &str,
+    passages: Vec<SourcePassage>,
+    language: Language,
+    cancel: &AtomicBool,
+) -> CoreResult<GroundedResult> {
     if passages.is_empty() {
         return Ok(insufficient_answer(
             provider.model_id(),
@@ -679,6 +708,7 @@ fn build_answer(
         coverage: coverage_ids(&coverage_ranges),
         model_id: model_id.into(),
         revision: revision.into(),
+        origin: GenerationOrigin::Local,
         kind,
         sentences,
         coverage_ranges,
@@ -699,6 +729,7 @@ fn insufficient_answer(
         coverage: coverage_ids(&coverage_ranges),
         model_id: model_id.into(),
         revision: revision.into(),
+        origin: GenerationOrigin::Local,
         kind: GroundedAnswerKind::InsufficientEvidence,
         sentences: Vec::new(),
         coverage_ranges,
@@ -1594,6 +1625,70 @@ mod tests {
         assert_eq!(answer.sentences[0].citations, vec![supplied[1].clone()]);
         assert!(answer.sentences[1].citations.is_empty());
         assert_eq!(answer.uncited_sentence_count, 1);
+    }
+
+    /// The scripted provider, reporting itself as online generation.
+    struct OnlineScripted(ScriptedProvider);
+
+    impl GenerationProvider for OnlineScripted {
+        fn model_id(&self) -> &str {
+            "openai/gpt-oss-20b"
+        }
+
+        fn revision(&self) -> &str {
+            "hosted"
+        }
+
+        fn generate_json(
+            &self,
+            schema: &Value,
+            messages: &[ChatMessage],
+            budget: &GenerationBudget,
+            cancel: &AtomicBool,
+        ) -> CoreResult<Value> {
+            self.0.generate_json(schema, messages, budget, cancel)
+        }
+
+        fn unload(&self) -> CoreResult<()> {
+            Ok(())
+        }
+
+        fn origin(&self) -> GenerationOrigin {
+            GenerationOrigin::Groq
+        }
+    }
+
+    #[test]
+    fn online_answers_and_summaries_say_where_they_were_generated() {
+        let supplied = vec![passage(0, "Ang deadline ay October 20.")];
+        let online = OnlineScripted(ScriptedProvider::new(vec![json!({
+            "sentences": [{"text": "Ang deadline ay October 20.", "citations": ["C1"]}],
+            "insufficientEvidence": false
+        })]));
+        let answer = answer_question(
+            Some(&online),
+            "Kailan ang deadline?",
+            supplied.clone(),
+            Language::Fil,
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(answer.kind, GroundedAnswerKind::Answer);
+        assert_eq!(answer.origin, GenerationOrigin::Groq);
+        assert_eq!(answer.model_id, "openai/gpt-oss-20b");
+
+        // No evidence never calls the service, but still says which one was chosen.
+        let empty = OnlineScripted(ScriptedProvider::new(Vec::new()));
+        let summary =
+            summarize_document(&empty, Vec::new(), Language::Mixed, &AtomicBool::new(false))
+                .unwrap();
+        assert_eq!(summary.origin, GenerationOrigin::Groq);
+        assert_eq!(empty.0.calls.load(Ordering::Relaxed), 0);
+
+        let local = ScriptedProvider::new(Vec::new());
+        let summary =
+            summarize_document(&local, Vec::new(), Language::En, &AtomicBool::new(false)).unwrap();
+        assert_eq!(summary.origin, GenerationOrigin::Local);
     }
 
     #[test]

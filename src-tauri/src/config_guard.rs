@@ -2,7 +2,9 @@
 //!
 //! The webview must never be handed general filesystem access, and the app must
 //! not reach the network for fonts, analytics or hosted inference. Both are
-//! configuration decisions, so they are checked as configuration.
+//! configuration decisions, so they are checked as configuration. Optional
+//! online generation (ADR 0018) runs only in native code, so the webview's
+//! content security policy stays on the device.
 
 #[cfg(test)]
 mod tests {

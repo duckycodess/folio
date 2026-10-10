@@ -313,10 +313,60 @@ const BUSY_HOLDER: Record<string, string> = {
  * The wording and next step for any failure, known code or not. `stage`
  * matters only for change-related codes; see `RecoveryStage`.
  */
+/**
+ * Online generation (ADR 0018) reuses the provider codes with
+ * `provider: "groq"`; its failures are worded for Groq, never for a local
+ * model that wasn't involved.
+ */
+const ONLINE_RECOVERY: Record<string, Recovery> = {
+  onlineKey: {
+    tone: "warning",
+    title: "Online writing needs a Groq key",
+    message:
+      "Online writing is on, but no Groq key is saved. Add one in Model Lab, or turn online writing off there to use the local model. Your request is kept.",
+    action: OPEN_MODEL_LAB,
+    flow: "assistant",
+  },
+  keyRejected: {
+    tone: "danger",
+    title: "Groq refused the key",
+    message:
+      "Check the key in Model Lab, or turn online writing off there to use the local model. Your request is kept.",
+    action: OPEN_MODEL_LAB,
+    flow: "assistant",
+  },
+  unreachable: {
+    tone: "warning",
+    title: "Folio couldn't reach Groq",
+    message:
+      "Check your internet connection and try again, or turn online writing off in Model Lab to use the local model. Your request is kept.",
+    action: TRY_AGAIN,
+    flow: "assistant",
+  },
+  rateLimited: {
+    tone: "info",
+    title: "Groq is busy right now",
+    message:
+      "Groq asked Folio to slow down, or the key's limit was reached. Try again in a moment. Your request is kept.",
+    action: TRY_AGAIN,
+    flow: "assistant",
+  },
+};
+
+function onlineRecovery(
+  error: Pick<FolioError, "code"> & Partial<Pick<FolioError, "details">>,
+): Recovery | undefined {
+  const details = error.details;
+  if (details?.provider !== "groq") return undefined;
+  return ONLINE_RECOVERY[details.component ?? details.reason ?? ""];
+}
+
 export function recoveryFor(
   error: Pick<FolioError, "code"> & Partial<Pick<FolioError, "details">>,
   stage: RecoveryStage = "refused",
 ): Recovery {
+  const online = onlineRecovery(error);
+  if (online) return online;
   const base = RECOVERY[error.code] ?? RECOVERY.internal;
   const holder = error.details?.holder;
   if (error.code === "providerBusy" && holder && BUSY_HOLDER[holder])

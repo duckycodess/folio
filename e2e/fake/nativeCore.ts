@@ -114,6 +114,15 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
 
   /* ------------------------------------------------------------- utilities */
 
+  function onlineStatus() {
+    return {
+      enabled: false,
+      modelId: "openai/gpt-oss-20b",
+      models: ["openai/gpt-oss-20b", "openai/gpt-oss-120b", "qwen/qwen3.8-27b"],
+      keyStored: false,
+    };
+  }
+
   function fail(
     code: FolioErrorCode,
     message: string,
@@ -1917,6 +1926,32 @@ export function installFakeNativeCore(options: FakeNativeOptions): void {
         deviceMemoryBytes: null,
         availableDiskBytes: null,
       };
+    },
+
+    // Online generation (ADR 0018) is off, with no key: the fake core has no
+    // network, so it never pretends a key was checked with Groq.
+    async online_generation_status() {
+      return onlineStatus();
+    },
+
+    async save_online_key() {
+      fail("modelLoadFailed", "The test core can't reach Groq.", {
+        provider: "groq",
+        reason: "unreachable",
+      });
+    },
+
+    async forget_online_key() {
+      return onlineStatus();
+    },
+
+    async set_online_generation(args) {
+      if (args.enabled)
+        fail("modelNotInstalled", "No Groq key is saved.", {
+          provider: "groq",
+          component: "onlineKey",
+        });
+      return onlineStatus();
     },
 
     async runtime_status(args): Promise<RuntimeStatus> {

@@ -712,6 +712,26 @@ describe("the browser-journey fake native core", () => {
     expect(summary.total).toBeLessThan(fixtureCorpus().length);
   });
 
+  it("keeps online generation off and never claims a key was checked", async () => {
+    expect(await call("online_generation_status")).toMatchObject({
+      enabled: false,
+      keyStored: false,
+    });
+    expect(
+      await rejection("save_online_key", { key: "not-a-real-key" }),
+    ).toMatchObject({
+      code: "modelLoadFailed",
+      details: { provider: "groq", reason: "unreachable" },
+    });
+    expect(
+      await rejection("set_online_generation", {
+        enabled: true,
+        modelId: "openai/gpt-oss-20b",
+        consent: true,
+      }),
+    ).toMatchObject({ details: { provider: "groq", component: "onlineKey" } });
+  });
+
   it("rejects with the plain wire failure shape, for any injected code", async () => {
     const failure = {
       code: "documentTooLarge" as const,

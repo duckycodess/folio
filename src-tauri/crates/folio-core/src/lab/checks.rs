@@ -662,6 +662,7 @@ mod tests {
             coverage: vec![],
             model_id: "m".into(),
             revision: "r".into(),
+            origin: Default::default(),
             kind: GroundedAnswerKind::FileSummary,
             sentences,
             coverage_ranges: vec![],

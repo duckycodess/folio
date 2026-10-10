@@ -453,7 +453,12 @@ export interface GroundedAnswer {
   coverage: DocumentId[];
   modelId: string;
   revision: string;
+  /** Absent for the local model; `"groq"` for online generation (ADR 0018). */
+  origin?: GenerationOrigin;
 }
+
+/** Where generated text came from. */
+export type GenerationOrigin = "local" | "groq";
 
 /**
  * Issue #4's additive result shape. It remains structurally assignable to the
@@ -553,6 +558,19 @@ export interface ModelSetup {
   deviceMemoryBytes: number | null;
   /** Free space on the disk that holds Folio's models. */
   availableDiskBytes: number | null;
+}
+
+/**
+ * Optional online generation (ADR 0018). The key never crosses back to the
+ * webview; only whether one is stored.
+ */
+export interface OnlineGenerationStatus {
+  enabled: boolean;
+  /** The Groq model used when enabled. */
+  modelId: string;
+  /** Groq models Folio allows: those that enforce a strict JSON schema. */
+  models: string[];
+  keyStored: boolean;
 }
 
 /** One file of a model or runtime download (`folio://model-progress`). */

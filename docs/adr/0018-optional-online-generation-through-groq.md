@@ -1,0 +1,15 @@
+# Allow optional online generation through Groq for summaries and answers, off by default
+
+No pinned local writing model has yet passed #4's acceptance on real Windows or macOS hardware, and the team wants summaries and answers to work in the meantime (#94). ADR 0002 keeps Folio's core offline, and AGENTS.md avoids hosted inference in the core app. This ADR makes one narrow exception: **online generation**, an opt-in provider that writes summaries and answers through Groq's API with the user's own key. It is off by default, and the offline path is unchanged.
+
+Only `summarize_document` and `answer_question` use it. Reading Ask & Act requests (interpretation), naming suggested collections and every embedding stay local. Ask & Act always reads the request first, so its answers reach Groq only when a local writing model is also installed; the Summary tab works with Groq alone. This keeps the hosted surface to display-only text with citations. A proposal that changes files still comes only from the local model and still needs an exact preview and approval.
+
+When it is on, Groq receives the passages Folio selected for that request (the same bounded excerpts the local model would get: at most 8, each limited in size), the question, the chosen model id and Folio's fixed prompt. Whole files, the folder list, paths beyond those inside cited passages, embeddings, request interpretation and the key's storage location are never sent. Passages stay marked as untrusted data in the prompt, and the output goes through the same citation checks as local output; it can't authorize a filesystem action.
+
+The key is entered once in Model Lab, checked with Groq's model list, and stored only in the operating system's keychain (Windows Credential Manager, macOS Keychain). It is never written to `settings.json`, SQLite, logs, error details or fixtures, and never sent back to the webview. No key ships with the app. Turning online generation on requires a stored key and an explicit acknowledgement that passages are sent to Groq; forgetting the key turns it off.
+
+Nothing falls back silently in either direction. With online generation on, a missing or refused key, no connection or a rate limit is reported as a Groq problem, and the user can turn it off to use the local model. With it off, Folio never contacts Groq. Results say where they were made (`origin: "groq"`, labelled "Made online by Groq"); a local result's wire shape is unchanged.
+
+Only Groq models that enforce a strict JSON schema are allowed (`openai/gpt-oss-20b` by default, `openai/gpt-oss-120b`, `qwen/qwen3.8-27b`), because citation validation depends on the schema. Hosted models have no pinned revision Folio can verify, so results record the revision as `hosted`. Online quality is measured separately from the local models and never presented as an offline result.
+
+Decided on 2026-10-10 for issue #94: opt-in and off by default, summaries and answers only, `openai/gpt-oss-20b` as the default. Gab implements it, helping Dann's AI track.
