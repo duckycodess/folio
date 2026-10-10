@@ -1,7 +1,9 @@
 import { Folders, SearchX } from "lucide-react";
 import { useMemo, type Ref } from "react";
+import type { CollectionsController } from "../app/useCollections";
 import type { HomeState } from "../app/useHome";
 import type { WorkspaceState } from "../app/useWorkspace";
+import { membersLabel } from "../domain/collections";
 import {
   foldersOf,
   hasFilters,
@@ -26,6 +28,8 @@ import { WorkspaceSource } from "./WorkspaceSource";
 
 interface HomeViewProps {
   workspace: WorkspaceState;
+  /** Kept collections, listed above the files. */
+  collections: CollectionsController;
   onNavigate: (view: ViewId) => void;
   /** The search field, so ⌘K / Ctrl K can focus it from any page. */
   searchRef: Ref<HTMLInputElement>;
@@ -100,6 +104,7 @@ export function HomeView(props: HomeViewProps) {
 
 function HomeContents({
   workspace,
+  collections,
   onNavigate,
   fileActions,
   onOpenPassage,
@@ -149,30 +154,52 @@ function HomeContents({
         <RecentFiles documents={recent} onOpen={workspace.selectDocument} />
       )}
 
-      {/* Empty, so it gives way to the file list in short windows, and to
-          pinned folders and recent files once there are some. */}
-      {!home.pins.length && !(recent.length && !searching && !filtering) && (
-        <section
-          className="section home-collections-empty"
-          aria-labelledby="collections-heading"
-        >
+      {collections.collections.length > 0 && !searching && !filtering && (
+        <section className="section" aria-labelledby="collections-heading">
           <h2 id="collections-heading" className="section-title">
             Collections
           </h2>
-          <EmptyState
-            compact
-            icon={<Folders size={20} />}
-            title="No collections yet"
-            action={
-              <Button variant="ghost" onClick={() => onNavigate("organize")}>
-                Go to Organize
-              </Button>
-            }
-          >
-            Collections group related files without moving them.
-          </EmptyState>
+          <ul className="home-collections">
+            {collections.collections.map((collection) => (
+              <li key={collection.id} className="home-collection">
+                <Folders size={16} aria-hidden="true" />
+                <span className="home-collection-name">{collection.name}</span>
+                <span className="muted">{membersLabel(collection)}</span>
+              </li>
+            ))}
+          </ul>
+          <Button variant="ghost" onClick={() => onNavigate("organize")}>
+            Manage collections in Organize
+          </Button>
         </section>
       )}
+
+      {/* Empty, so it gives way to the file list in short windows, and to
+          pinned folders and recent files once there are some. */}
+      {!collections.collections.length &&
+        !home.pins.length &&
+        !(recent.length && !searching && !filtering) && (
+          <section
+            className="section home-collections-empty"
+            aria-labelledby="collections-heading"
+          >
+            <h2 id="collections-heading" className="section-title">
+              Collections
+            </h2>
+            <EmptyState
+              compact
+              icon={<Folders size={20} />}
+              title="No collections yet"
+              action={
+                <Button variant="ghost" onClick={() => onNavigate("organize")}>
+                  Go to Organize
+                </Button>
+              }
+            >
+              Collections group related files without moving them.
+            </EmptyState>
+          </section>
+        )}
 
       {searching && <SearchProblem onNavigate={onNavigate} />}
       {searching && (

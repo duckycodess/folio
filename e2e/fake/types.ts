@@ -52,9 +52,29 @@ export interface FakeNativeOptions {
   skipped: FakeSkippedEntry[];
   /** `choose_workspace` resolves to `null`, as a dismissed picker does. */
   dismissFolderPicker: boolean;
+  /**
+   * Groups `suggest_collections` returns, standing in for the real core's
+   * embedding and generation models. Without them the fake reports that no
+   * embedding model is set up. A test double: it exercises the UI's handling
+   * of suggestions, never grouping or naming quality.
+   */
+  collectionGroups?: FakeCollectionGroup[];
+  /**
+   * What `suggest_file_changes` returns in place of the real core's models: a
+   * name a model would write for a file, and a folder its files would be
+   * closer to. Without `destinations`, the fake reports no embedding model.
+   */
+  modelFilenames?: { path: RelativePath; name: string }[];
+  destinations?: { path: RelativePath; folder: RelativePath }[];
   /** Pinned manifest metadata only; the fake never installs or runs a model. */
   models?: ModelDescriptor[];
   runtime?: { id: string; version: string; bytes: number };
+}
+
+/** One canned suggested collection: its files, and the name a model would write. */
+export interface FakeCollectionGroup {
+  paths: RelativePath[];
+  name?: string;
 }
 
 /** A failure to inject into the next (or every) call of one command. */

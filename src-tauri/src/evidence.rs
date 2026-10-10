@@ -199,6 +199,16 @@ pub(crate) struct PromptEvidence {
 #[derive(Clone)]
 struct SpaceInUse {
     fingerprint: String,
+    descriptor: ProviderEmbeddingSpace,
+}
+
+/// A request-local view of persisted organization evidence, never a cached
+/// second index. Chunks and vectors are aligned and belong to `space` only.
+pub(crate) struct OrganizationCorpus {
+    pub documents: Vec<DocumentRecord>,
+    pub chunks: Vec<Chunk>,
+    pub vectors: Vec<Vec<f32>>,
+    pub space: Option<ProviderEmbeddingSpace>,
 }
 
 pub(crate) struct LocalIndex<'a, E: Embedder> {
@@ -381,7 +391,10 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
         // request never queues behind a Graph refresh's or another request's
         // fill just to find that out.
         if embedded >= total {
-            return Ok(SpaceInUse { fingerprint });
+            return Ok(SpaceInUse {
+                fingerprint,
+                descriptor: folio_core::embeddings::stored_chunk_space(&provider),
+            });
         }
         let _syncing = lock_unless_cancelled(self.embedding_sync, self.cancel)?;
         // Whoever held the lock may have filled some or all of it meanwhile.
@@ -414,7 +427,36 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
                 return Err(cancelled());
             }
         }
-        Ok(SpaceInUse { fingerprint })
+        Ok(SpaceInUse {
+            fingerprint,
+            descriptor: folio_core::embeddings::stored_chunk_space(&provider),
+        })
+    }
+
+    pub(crate) fn organization_corpus(&mut self) -> NativeResult<OrganizationCorpus> {
+        let space = self.ensure_embedded()?;
+        self.ensure_not_cancelled()?;
+        let documents = index::list_documents(self.conn, &self.root.id)?
+            .iter()
+            .filter(|document| document.status == "indexed")
+            .map(record_of)
+            .collect();
+        let mut chunks = Vec::new();
+        let mut vectors = Vec::new();
+        if let Some(space) = &space {
+            for (stored, vector) in
+                index::embedded_chunks(self.conn, &self.root.id, &space.fingerprint)?
+            {
+                chunks.push(chunk_of(&stored, &stored.passage.document_content_hash));
+                vectors.push(vector);
+            }
+        }
+        Ok(OrganizationCorpus {
+            documents,
+            chunks,
+            vectors,
+            space: space.map(|space| space.descriptor),
+        })
     }
 
     /// "Prepare now": files, then vectors, then what the index holds.
@@ -713,7 +755,7 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
     /// and modification time), and re-reads those documents so the next request
     /// starts from the current text. Bounded: at most the documents behind the
     /// passages, each read under the index's own size limit.
-    fn current_passages_only(
+    pub(crate) fn current_passages_only(
         &mut self,
         passages: Vec<SourcePassage>,
     ) -> NativeResult<(Vec<SourcePassage>, bool)> {
@@ -770,6 +812,20 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
             .filter(|document| document.status == "indexed")
             .map(|document| record_of(&document))
             .collect::<Vec<_>>();
+        // A PDF without extractable text can still be renamed or moved. Its
+        // bytes are hashed only if it becomes a target below.
+        for row in workspace::list_documents(self.root)?.documents {
+            if row.media_type != "application/pdf" || documents.iter().any(|document| document.id == row.id) {
+                continue;
+            }
+            documents.push(DocumentRecord {
+                id: row.id, workspace_id: row.workspace_id,
+                title: row.name.clone(), name: row.name,
+                relative_path: row.relative_path, language: Language::Unknown,
+                media_type: row.media_type, size_bytes: row.size_bytes,
+                modified_at_ms: row.modified_at_ms, content: None, content_hash: None,
+            });
+        }
         let terms = target_description
             .map(retrieval::query_terms)
             .unwrap_or_default();
@@ -809,9 +865,15 @@ impl<'a, E: Embedder> LocalIndex<'a, E> {
         let mut contents = HashMap::new();
         let mut chunks = Vec::new();
         for id in chosen {
+            self.ensure_not_cancelled()?;
             let Some(record) = documents.iter_mut().find(|record| record.id == id) else {
                 continue;
             };
+            if record.media_type == "application/pdf" {
+                // A relocation needs the file's revision, even if extraction
+                // fails. Editing a PDF is refused by the resolver.
+                record.content_hash = workspace::bounded_document_hash(&self.root.path, &record.relative_path).ok();
+            }
             // The file now, not the index's copy of it. A file that cannot be
             // read has no content, so a proposal for it asks to try again.
             let Ok(text) = workspace::read_text(&self.root.path, &record.relative_path) else {
@@ -843,6 +905,7 @@ fn chunk_of(stored: &StoredChunk, document_hash: &str) -> Chunk {
     Chunk {
         document_id: passage.document_id.clone(),
         ordinal: stored.ordinal,
+        page: passage.page,
         start: passage.start,
         end: passage.end,
         text: passage.text.clone(),
@@ -1067,6 +1130,164 @@ mod tests {
             .skipped_documents
             .iter()
             .any(|skipped| skipped.relative_path == "notes/broken.md"));
+    }
+
+    #[test]
+    fn organize_reuses_persisted_vectors_and_isolates_model_revisions() {
+        let mut harness = Harness::fixtures();
+        let mut first = ConceptEmbedder::new("r1");
+        let corpus = harness
+            .request(&mut first, |index| index.organization_corpus())
+            .0
+            .unwrap();
+        assert!(!corpus.chunks.is_empty());
+        assert_eq!(corpus.chunks.len(), corpus.vectors.len());
+        let fingerprint = retrieval::space_fingerprint(corpus.space.as_ref().unwrap());
+        assert_eq!(
+            fingerprint,
+            embedding_sync::stored_space_fingerprint(&concept_space("r1")).unwrap()
+        );
+        let total = first.passages_embedded;
+        let again = harness
+            .request(&mut first, |index| index.organization_corpus())
+            .0
+            .unwrap();
+        assert_eq!(first.passages_embedded, total);
+        assert_eq!(again.vectors, corpus.vectors);
+        assert!(again
+            .documents
+            .iter()
+            .all(|document| document.content.is_none()));
+
+        // Poison the old space. A new model revision must fill and read its
+        // own rows rather than accidentally using those vectors.
+        harness
+            .conn
+            .execute(
+                "UPDATE embeddings SET vector = zeroblob(length(vector)) WHERE space_id = ?1",
+                [&fingerprint],
+            )
+            .unwrap();
+        let mut second = ConceptEmbedder::new("r2");
+        let revised = harness
+            .request(&mut second, |index| index.organization_corpus())
+            .0
+            .unwrap();
+        assert_eq!(second.passages_embedded, total);
+        assert_eq!(revised.vectors, corpus.vectors);
+        assert_ne!(
+            retrieval::space_fingerprint(revised.space.as_ref().unwrap()),
+            fingerprint
+        );
+        folio_core::collections::group_documents(
+            &revised.documents,
+            &revised.chunks,
+            &revised.vectors,
+            revised.space.as_ref().unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn organize_without_a_model_keeps_metadata_but_no_old_vectors() {
+        let mut harness = Harness::fixtures();
+        let mut embedder = ConceptEmbedder::new("r1");
+        harness
+            .request(&mut embedder, |index| index.prepare())
+            .0
+            .unwrap();
+        embedder.installed = false;
+        let corpus = harness
+            .request(&mut embedder, |index| index.organization_corpus())
+            .0
+            .unwrap();
+        assert!(!corpus.documents.is_empty());
+        assert!(corpus.space.is_none());
+        assert!(corpus.vectors.is_empty());
+        assert!(corpus.chunks.is_empty());
+    }
+
+    #[test]
+    fn an_unextractable_pdf_can_be_a_chosen_rename_target_without_text() {
+        let mut harness = Harness::fixtures();
+        harness.write("ids/clearance.pdf", "%PDF not extractable");
+        let mut embedder = ConceptEmbedder::new("r1");
+        let id = crate::identity::document_id(&harness.root.id, "ids/clearance.pdf");
+        let corpus = harness
+            .request(&mut embedder, |index| {
+                index.interpretation_corpus(None, Some(&id))
+            })
+            .0
+            .unwrap();
+        let document = corpus
+            .documents
+            .iter()
+            .find(|document| document.id == id)
+            .unwrap();
+        assert_eq!(
+            document.content_hash.as_deref(),
+            Some(crate::identity::content_hash(b"%PDF not extractable").as_str())
+        );
+        assert!(!corpus.contents.contains_key(&id));
+        let intent = folio_core::interpretation::ModelIntent {
+            intent: folio_core::interpretation::IntentKind::Rename,
+            target_description: None,
+            find: None,
+            replace: None,
+            destination: Some("renamed clearance".into()),
+            new_content: None,
+            clarification: None,
+        };
+        let result = folio_core::interpretation::resolve_model_intent_for(
+            &intent,
+            Language::En,
+            &corpus.documents,
+            &corpus.contents,
+            &corpus.chunks,
+            Some(&id),
+        );
+        assert!(
+            matches!(result, folio_core::contracts::InterpretationResult::Proposal {
+            proposal: folio_core::contracts::OperationProposal::Rename { destination_relative_path, .. }, ..
+        } if destination_relative_path == "ids/renamed clearance.pdf")
+        );
+        assert!(harness.folder.path().join("ids/clearance.pdf").exists());
+        assert!(!harness
+            .folder
+            .path()
+            .join("ids/renamed clearance.pdf")
+            .exists());
+    }
+
+    #[test]
+    fn persistent_pdf_passages_keep_reader_revisions_offsets_and_pages() {
+        let mut harness = Harness::fixtures();
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures/documents/research/consent-form-guide.pdf");
+        fs::copy(fixture, harness.folder.path().join("guide.pdf")).unwrap();
+        let read = workspace::read_text(&harness.root.path, "guide.pdf").unwrap();
+        let id = crate::identity::document_id(&harness.root.id, "guide.pdf");
+        let mut embedder = ConceptEmbedder::new("r1");
+        let corpus = harness
+            .request(&mut embedder, |index| index.organization_corpus())
+            .0
+            .unwrap();
+        let chunks = corpus
+            .chunks
+            .iter()
+            .filter(|chunk| chunk.document_id == id)
+            .collect::<Vec<_>>();
+        assert!(!chunks.is_empty());
+        for chunk in chunks {
+            assert_eq!(chunk.content_hash, read.content_hash);
+            assert_eq!(chunk.text, read.content[chunk.start..chunk.end]);
+            let page = read
+                .pages
+                .iter()
+                .find(|range| Some(range.page) == chunk.page)
+                .unwrap();
+            assert!(page.start <= chunk.start && chunk.end <= page.end);
+        }
     }
 
     #[test]

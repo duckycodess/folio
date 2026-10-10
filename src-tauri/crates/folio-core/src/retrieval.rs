@@ -96,6 +96,15 @@ impl VectorIndex {
             .map_or(0, |indexed| indexed.chunks.len())
     }
 
+    /// The chunks and vectors indexed for exactly this space, if any. Vectors
+    /// of other spaces are never returned with them.
+    pub fn indexed(&self, space: &EmbeddingSpace) -> Option<(&[Chunk], &[Vec<f32>])> {
+        self.spaces
+            .get(&embedding_space_id(space))
+            .filter(|indexed| &indexed.space == space)
+            .map(|indexed| (indexed.chunks.as_slice(), indexed.vectors.as_slice()))
+    }
+
     pub fn search(&self, query: &QueryEmbedding, limit: usize) -> CoreResult<Vec<(Chunk, f32)>> {
         self.search_scoped(query, None, limit)
     }

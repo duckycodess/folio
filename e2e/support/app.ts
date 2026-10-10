@@ -52,10 +52,16 @@ export async function installFake(
     });
 }
 
-export const test = base.extend<{ folio: Page; onboardingCompleted: boolean }>({
+export const test = base.extend<{
+  folio: Page;
+  onboardingCompleted: boolean;
+  /** Fake options for a whole describe block, e.g. canned collection groups. */
+  fakeOptions: Partial<FakeNativeOptions>;
+}>({
   onboardingCompleted: [true, { option: true }],
-  folio: async ({ page, onboardingCompleted }, use) => {
-    await installFake(page, {}, onboardingCompleted);
+  fakeOptions: [{}, { option: true }],
+  folio: async ({ page, onboardingCompleted, fakeOptions }, use) => {
+    await installFake(page, fakeOptions, onboardingCompleted);
     await page.goto("/");
     await use(page);
   },

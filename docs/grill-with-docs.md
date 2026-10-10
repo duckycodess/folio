@@ -25,6 +25,21 @@ This records the already completed Folio interview on 2026-10-09. The user autho
 | 18 — Organization       | Automatic analysis and virtual grouping; approved physical file changes.                                            |
 | Workflow correction     | Keep SOS and all three image workflows. Individual summaries and Organize are core features.                        |
 
+## Organize virtual collections (2026-10-10, issue #78)
+
+Gab takes #78 from Dann, and Dann reviews the model parts. Rationale: [ADR 0017](adr/0017-virtual-collections-kept-natively-without-a-plan.md).
+
+| Question        | Decision                                                                                                          |
+| --------------- | ----------------------------------------------------------------------------------------------------------------- |
+| First slice     | Suggested collections only. Model filenames and destinations are follow-up PRs.                                   |
+| Embeddings      | #4's in-memory snapshot vectors, within one space. Switch to persistent vectors when #27/#46 write them.          |
+| Keeping         | Stored natively without a plan, approval or Activity entry; no file changes.                                      |
+| Members         | Follow Folio's own rename/move/delete/undo; outside changes leave a missing member; never re-matched by hash.     |
+| Naming          | Local model, members' main language, cited, editable; no generation model means no name until the user types one. |
+| Overlap         | Kept collections may share documents; one analysis's suggestions don't.                                           |
+| Organize target | A kept collection can be analyzed; duplicates and filename suggestions are limited to its members.                |
+| UI              | Built in the same PR; Louise reviews.                                                                             |
+
 ## Technical decisions delegated to implementation
 
 Choose Tauri 2 + React/TypeScript with a small native Rust core, SQLite/FTS5, and separate local embedding/generation adapters. This choice favors the installation target and shared desktop shell. Validate native builds immediately; retain a frontend development preview to keep UI work unblocked.

@@ -1283,6 +1283,13 @@ export interface UndoReport {
   indexRefreshed: boolean;
 }
 
+/** Which local model wrote a suggestion, and the passages it was based on. */
+export interface GeneratedBy {
+  citations: SourcePassage[];
+  modelId: string;
+  revision: string;
+}
+
 /** An Organization Suggestion for a filename; `operation` still needs a preview and approval. */
 export interface OrganizationSuggestion {
   documentId: DocumentId;
@@ -1290,10 +1297,111 @@ export interface OrganizationSuggestion {
   suggestedRelativePath: RelativePath;
   reason: string;
   operation: FileOperation;
+  /** Present only when the local model wrote the name; title-based names have none. */
+  generated?: GeneratedBy;
+}
+
+/** A move into an existing folder whose files are closer in meaning (#78). */
+export interface DestinationSuggestion {
+  documentId: DocumentId;
+  relativePath: RelativePath;
+  suggestedRelativePath: RelativePath;
+  /** `""` is the top of the folder. */
+  folder: RelativePath;
+  reason: string;
+  similarity: number;
+  currentSimilarity: number;
+  /** The file's passage closest to the suggested folder. */
+  passage: SourcePassage;
+  /** The passage in the suggested folder closest to the file. */
+  evidence: SourcePassage;
+  provenance: "embedding";
+  spaceFingerprint: string;
+  operation: FileOperation;
+}
+
+/** Renames and moves from the local models; each still needs a preview and approval. */
+export interface FileChangeSuggestions {
+  filenames: OrganizationSuggestion[];
+  /** Files with generic names and no title-based name that the model was asked to name. */
+  filenameCandidates: number;
+  naming: CollectionNaming;
+  namingError?: FolioErrorPayload;
+  destinations: DestinationSuggestion[];
+  destinationStatus: "suggested" | "embeddingModelMissing";
 }
 
 /** Duplicate groups are evidence only: nothing is moved or deleted because of them. */
 export interface OrganizationSuggestions {
   duplicateGroups: DuplicateGroup[];
   filenames: OrganizationSuggestion[];
+}
+
+/* -------------------------------------------- virtual collections (#78, ADR 0017) */
+
+/** One file of a suggested collection, with the revision the analysis read. */
+export interface SuggestedMember {
+  documentId: DocumentId;
+  relativePath: RelativePath;
+  title: string;
+  contentHash: ContentHash;
+  /** The member's passage closest to what the group has in common. */
+  passage: SourcePassage;
+  /** Similarity to the group's centre, in [0, 1]. */
+  similarity: number;
+}
+
+/** A name the local model wrote, citing the passages it was based on. */
+export interface GeneratedCollectionName {
+  text: string;
+  citations: SourcePassage[];
+  modelId: string;
+  revision: string;
+}
+
+/** Files grouped by meaning within one embedding space. Nothing is kept until the user keeps it. */
+export interface SuggestedCollection {
+  id: string;
+  members: SuggestedMember[];
+  cohesion: number;
+  provenance: "embedding";
+  spaceFingerprint: string;
+  name?: GeneratedCollectionName;
+}
+
+export type CollectionNaming =
+  "named" | "cancelled" | "generationModelMissing" | "failed" | "notNeeded";
+
+export interface CollectionSuggestions {
+  status: "grouped" | "embeddingModelMissing";
+  spaceFingerprint?: string;
+  analyzedDocumentCount: number;
+  /** More files than one analysis compares; the rest were not analyzed. */
+  truncated: boolean;
+  naming: CollectionNaming;
+  namingError?: FolioErrorPayload;
+  groups: SuggestedCollection[];
+}
+
+export interface CollectionMember {
+  documentId: DocumentId;
+  relativePath: RelativePath;
+  /** Renamed, moved or deleted outside Folio; never re-found by guessing. */
+  missing: boolean;
+}
+
+/** A named group of document references. Its files stay where they are. */
+export interface VirtualCollection {
+  id: string;
+  workspaceId: WorkspaceId;
+  name: string;
+  createdAt: number;
+  updatedAt: number;
+  members: CollectionMember[];
+}
+
+/** A member to keep, with the revision the analysis read. */
+export interface KeptMember {
+  documentId: DocumentId;
+  expectedContentHash: ContentHash;
 }

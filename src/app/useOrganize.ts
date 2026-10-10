@@ -4,6 +4,7 @@ import {
   approvePlan,
   listHistory,
   organizationSuggestions,
+  suggestFileChanges,
   preparePlan,
   previewUndo,
   undoPlan,
@@ -23,7 +24,9 @@ import type {
   UndoReport,
 } from "../domain/contracts";
 import { folioError, toFolioError, type FolioError } from "../domain/errors";
+import { stopSuggestions } from "../adapters/collections";
 import {
+  chosenOperations,
   ORGANIZE_START,
   organizeFlow,
   type OrganizeState,
@@ -40,11 +43,29 @@ export interface UndoState {
 
 export interface OrganizeController {
   state: OrganizeState;
-  /** Re-index the folder (with progress), then ask for suggestions. */
-  analyze: () => void;
+  /**
+   * Re-index the folder (with progress), then ask for suggestions: for the
+   * whole folder, or only for the members of the target collection. Resolves
+   * true once suggestions are on screen.
+   */
+  analyze: () => Promise<boolean>;
+  /** The collection being analyzed, or `null` for the whole folder. */
+  target: string | null;
+  setTarget: (collectionId: string | null) => void;
   /** Stops indexing; work already indexed is kept. */
   cancelAnalyze: () => void;
-  toggle: (documentId: string) => void;
+  /** Chooses or drops one suggestion, by `suggestionKey`. */
+  toggle: (key: string) => void;
+  /**
+   * Asks the local models for renames and moves (for the target collection's
+   * files, or the whole folder). Resolves once they arrive, fail or stop.
+   */
+  suggestWithModel: () => Promise<void>;
+  /**
+   * Stops the local models' suggestions natively, and only theirs. The names
+   * already written and the moves found so far still arrive.
+   */
+  stopAssist: () => void;
   previewChosen: () => void;
   /** Renames a file in place, or moves it to another folder, via an exact plan. */
   previewRelocate: (
@@ -95,7 +116,10 @@ export function useOrganize(
   const [state, dispatch] = useReducer(organizeFlow, ORGANIZE_START);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [undo, setUndo] = useState<UndoState>(NO_UNDO);
+  const [target, setTarget] = useState<string | null>(null);
   const next = useRef(0);
+  // The local models' suggestions run beside the plan flow, with their own count.
+  const assistNext = useRef(0);
   const folderId = workspace.workspace?.id;
 
   // A different folder starts the flow over.
@@ -103,6 +127,7 @@ export function useOrganize(
     dispatch({ type: "reset", request: ++next.current });
     setHistory([]);
     setUndo(NO_UNDO);
+    setTarget(null);
   }, [folderId]);
 
   function noFolder(request: number) {
@@ -116,10 +141,13 @@ export function useOrganize(
     });
   }
 
-  async function analyze() {
+  async function analyze(): Promise<boolean> {
     const request = ++next.current;
     dispatch({ type: "analyzeStarted", request });
-    if (!folderId) return noFolder(request);
+    if (!folderId) {
+      noFolder(request);
+      return false;
+    }
     const stop = await onIndexProgress((progress) => {
       if (progress.workspaceId === folderId)
         dispatch({ type: "progress", request, progress });
@@ -128,12 +156,17 @@ export function useOrganize(
       const scan = await scanWorkspace(folderId);
       if (scan.cancelled) {
         dispatch({ type: "analyzeCancelled", request });
-        return;
+        return false;
       }
-      const suggestions = await organizationSuggestions(folderId);
+      const suggestions = await organizationSuggestions(
+        folderId,
+        target ?? undefined,
+      );
       dispatch({ type: "analyzed", request, suggestions });
+      return next.current === request;
     } catch (cause) {
       dispatch({ type: "failed", request, error: toFolioError(cause) });
+      return false;
     } finally {
       stop?.();
     }
@@ -142,6 +175,18 @@ export function useOrganize(
   function cancelAnalyze() {
     dispatch({ type: "stopAnalyze", request: ++next.current });
     void cancelIndexing().catch(() => undefined);
+  }
+
+  async function suggestWithModel() {
+    const request = ++assistNext.current;
+    dispatch({ type: "assistStarted", request });
+    if (!folderId) return;
+    try {
+      const result = await suggestFileChanges(folderId, target ?? undefined);
+      dispatch({ type: "assisted", request, result });
+    } catch (cause) {
+      dispatch({ type: "assistFailed", request, error: toFolioError(cause) });
+    }
   }
 
   async function preview(operations: FileOperation[]) {
@@ -247,13 +292,24 @@ export function useOrganize(
 
   return {
     state,
-    analyze: () => void analyze(),
+    analyze,
+    target,
+    setTarget: (collectionId) => {
+      setTarget(collectionId);
+      // Suggestions for another target would be misleading: start over.
+      dispatch({ type: "reset", request: ++next.current });
+    },
     cancelAnalyze,
-    toggle: (documentId) => dispatch({ type: "toggle", documentId }),
+    toggle: (key) => dispatch({ type: "toggle", key }),
+    suggestWithModel,
+    stopAssist: () => {
+      if (state.assist.status !== "working") return;
+      // The stopped request's reply still lands, with what it already found.
+      dispatch({ type: "assistStopped" });
+      void stopSuggestions().catch(() => undefined);
+    },
     previewChosen: () => {
-      const operations = (state.suggestions?.filenames ?? [])
-        .filter((item) => state.chosen.includes(item.documentId))
-        .map((item) => item.operation);
+      const operations = chosenOperations(state);
       if (operations.length) void preview(operations);
     },
     previewRelocate: (document, change) =>

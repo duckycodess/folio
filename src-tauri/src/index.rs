@@ -1416,6 +1416,39 @@ fn chunk_from_row(row: &Row<'_>) -> rusqlite::Result<StoredChunk> {
 
 const CHUNK_COLUMNS: &str = "c.chunk_id, c.document_id, d.content_hash, c.chunk_text, c.start_offset, c.end_offset, c.page, c.ordinal";
 
+/// Organization reads paired chunks and vectors from one registered space.
+/// Stale and failed files never contribute evidence to a generated suggestion.
+pub(crate) fn embedded_chunks(
+    conn: &Connection,
+    workspace_id: &str,
+    fingerprint: &str,
+) -> NativeResult<Vec<(StoredChunk, Vec<f32>)>> {
+    let dimensions = space_dimensions(conn, fingerprint)?;
+    let mut statement = conn.prepare(&format!(
+        "SELECT {CHUNK_COLUMNS}, e.vector FROM embeddings e JOIN chunks c ON c.chunk_id = e.chunk_id JOIN documents d ON d.id = c.document_id WHERE e.space_id = ?1 AND d.workspace_id = ?2 AND d.status = 'indexed' ORDER BY d.relative_path, c.ordinal"
+    ))?;
+    let rows = statement.query_map(params![fingerprint, workspace_id], |row| {
+        Ok((chunk_from_row(row)?, row.get::<_, Vec<u8>>(8)?))
+    })?;
+    let mut paired = Vec::new();
+    for row in rows {
+        let (chunk, blob) = row?;
+        if blob.len() != dimensions * 4 {
+            return Err(error(
+                ErrorCode::EmbeddingSpaceMismatch,
+                "A stored vector has the wrong dimensions.",
+            ));
+        }
+        let vector = blob
+            .chunks_exact(4)
+            .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+            .collect::<Vec<_>>();
+        check_vector(&vector, dimensions)?;
+        paired.push((chunk, vector));
+    }
+    Ok(paired)
+}
+
 /// The chunks with these ids, as passages bound to their document's indexed revision. Chunks of
 /// documents that are no longer `indexed`, and ids that no longer exist, are left out.
 pub fn stored_chunks(conn: &Connection, workspace_id: &str, chunk_ids: &[i64]) -> NativeResult<Vec<StoredChunk>> {

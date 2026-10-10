@@ -5,6 +5,7 @@ import type {
   ApplyReport,
   Approval,
   DocumentId,
+  FileChangeSuggestions,
   FileOperation,
   HistoryEntry,
   ImpactCandidate,
@@ -157,11 +158,32 @@ export function preparePassageEdit(
   });
 }
 
-/** Duplicate groups (evidence only) and filename suggestions with their rename operations. */
+/**
+ * Duplicate groups (evidence only) and filename suggestions with their rename
+ * operations: for the whole folder, or only for one collection's members.
+ */
 export function organizationSuggestions(
   workspaceId: WorkspaceId,
+  collectionId?: string,
 ): Promise<OrganizationSuggestions> {
   return call<OrganizationSuggestions>("organization_suggestions", {
     workspaceId,
+    collectionId,
+  });
+}
+
+/**
+ * Renames for files with generic names (local generation model) and moves into
+ * existing folders whose files are closer in meaning (local embedding model).
+ * Stop with `stopSuggestions`: a request stopped after the folder was read
+ * resolves with the moves and the names written so far (`naming: "cancelled"`).
+ */
+export function suggestFileChanges(
+  workspaceId: WorkspaceId,
+  collectionId?: string,
+): Promise<FileChangeSuggestions> {
+  return call<FileChangeSuggestions>("suggest_file_changes", {
+    workspaceId,
+    collectionId,
   });
 }

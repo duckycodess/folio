@@ -781,6 +781,7 @@ mod tests {
             start: 0,
             end: 8,
             content_hash: "sha256:00".into(),
+            page: None,
         };
         assert_eq!(
             passage_embedding_text(Some(&document), &chunk),

@@ -51,9 +51,9 @@
   --font-sans:
     "DM Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-heading: "Manrope", var(--font-sans);
-  --text-display: 700 2rem/2.5rem var(--font-heading);
-  --text-title: 600 1.25rem/1.75rem var(--font-heading);
-  --text-heading: 600 1rem/1.5rem var(--font-heading);
+  --text-display: 800 2.125rem/2.5rem var(--font-heading);
+  --text-title: 700 1.25rem/1.75rem var(--font-heading);
+  --text-heading: 700 1rem/1.5rem var(--font-heading);
   --text-body: 400 0.875rem/1.25rem var(--font-sans);
   --text-label: 500 0.875rem/1.25rem var(--font-sans);
   --text-small: 400 0.75rem/1rem var(--font-sans);
@@ -75,6 +75,8 @@
   --radius-pill: 999px;
 
   --topbar-height: 68px;
+  --content-max-width: 1080px;
+  --launcher-clearance: 184px;
   --page-gutter: 36px;
 
   --shadow-float: 0 8px 24px rgb(32 35 31 / 0.12);

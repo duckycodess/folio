@@ -75,7 +75,7 @@ pub fn passages_from_chunks(chunks: &[Chunk]) -> Vec<SourcePassage> {
             start: chunk.start,
             end: chunk.end,
             text: chunk.text.clone(),
-            page: None,
+            page: chunk.page,
         })
         .collect()
 }
@@ -708,7 +708,7 @@ fn insufficient_answer(
     }
 }
 
-fn render_untrusted_passages(passages: &[SourcePassage], offset: usize) -> String {
+pub(crate) fn render_untrusted_passages(passages: &[SourcePassage], offset: usize) -> String {
     passages
         .iter()
         .enumerate()
@@ -746,7 +746,7 @@ fn escape_untrusted_metadata(text: &str) -> String {
     .replace("SOURCE_END", "SOURCE_END_ESCAPED")
 }
 
-fn labels_for_group(passages: &[SourcePassage], offset: usize) -> HashMap<String, SourcePassage> {
+pub(crate) fn labels_for_group(passages: &[SourcePassage], offset: usize) -> HashMap<String, SourcePassage> {
     passages
         .iter()
         .enumerate()
@@ -941,7 +941,7 @@ fn validate_passage_sizes(passages: &[SourcePassage]) -> CoreResult<()> {
     Ok(())
 }
 
-fn parse_output<T: for<'de> Deserialize<'de>>(value: Value) -> CoreResult<T> {
+pub(crate) fn parse_output<T: for<'de> Deserialize<'de>>(value: Value) -> CoreResult<T> {
     serde_json::from_value(value).map_err(|error| {
         CoreError::Provider(NativeProviderErrorError::new(
             crate::contracts::ProviderErrorCode::InvalidModelOutput,
@@ -950,7 +950,7 @@ fn parse_output<T: for<'de> Deserialize<'de>>(value: Value) -> CoreResult<T> {
     })
 }
 
-fn is_cancelled(error: &CoreError) -> bool {
+pub(crate) fn is_cancelled(error: &CoreError) -> bool {
     matches!(
         error,
         CoreError::Provider(provider)
@@ -972,7 +972,7 @@ fn same_passage(left: &SourcePassage, right: &SourcePassage) -> bool {
         && left.end == right.end
 }
 
-fn language_name(language: &Language) -> &'static str {
+pub(crate) fn language_name(language: &Language) -> &'static str {
     match language {
         Language::En => "English",
         Language::Fil => "Filipino",
