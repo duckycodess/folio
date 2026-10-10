@@ -50,6 +50,14 @@ export type GraphNavigationEvent =
   | { type: "select"; id: string | null }
   | { type: "graphChanged"; previous: NavigationMap; map: NavigationMap };
 
+/**
+ * Opens the focused file's actions: Shift+F10 or the context-menu key, as in
+ * file managers. Escape then closes the menu, and a second Escape deselects.
+ */
+export function isActionsKey(event: { key: string; shiftKey: boolean }) {
+  return (event.key === "F10" && event.shiftKey) || event.key === "ContextMenu";
+}
+
 /** Keys the reducer handles; the view prevents their default action. */
 export const NAVIGATION_KEYS = new Set([
   "ArrowUp",
