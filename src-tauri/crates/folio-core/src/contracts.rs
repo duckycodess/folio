@@ -119,7 +119,7 @@ pub struct GroundedAnswer {
 }
 
 /// Where generated text came from: the local model, or the optional online
-/// generation the user turned on (ADR 0017).
+/// generation the user turned on (ADR 0018).
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum GenerationOrigin {
@@ -148,6 +148,21 @@ pub struct GroundedResult {
     pub sentences: Vec<GroundedSentence>,
     pub coverage_ranges: Vec<CoverageEntry>,
     pub uncited_sentence_count: u32,
+    /// What a relationship summary was built from; absent for other results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub basis: Option<SummaryBasis>,
+}
+
+/// The connections and files a relationship summary was actually given, as
+/// counted by the native core, and whether that is everything.
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SummaryBasis {
+    pub connections: u32,
+    pub files: u32,
+    /// True when AI review wasn't finished, or connections or passages were
+    /// left out to fit the prompt.
+    pub incomplete: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -156,6 +171,8 @@ pub enum GroundedAnswerKind {
     FileSummary,
     PartialSummary,
     Answer,
+    RelationshipSummary,
+    ImpactExplanation,
     InsufficientEvidence,
 }
 
@@ -404,6 +421,7 @@ mod contract_tests {
                     complete: true,
                 }],
                 uncited_sentence_count: 0,
+                basis: None,
             })
             .unwrap(),
         );

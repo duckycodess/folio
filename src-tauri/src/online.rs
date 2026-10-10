@@ -1,4 +1,4 @@
-//! Optional online generation through Groq (ADR 0017).
+//! Optional online generation through Groq (ADR 0018).
 //!
 //! Off by default. The user's key lives only in the operating system's
 //! keychain; `settings.json` keeps whether it is on and which model. When it is

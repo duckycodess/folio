@@ -318,6 +318,71 @@ export type Relationship =
       confidence?: number;
     });
 
+/** Result of a bounded refresh over vectors already persisted for one space. */
+export interface AiRelationshipRefresh {
+  workspaceId: WorkspaceId;
+  /** Absent until the selected installed embedding model has a persistent space. */
+  spaceFingerprint?: EmbeddingSpaceFingerprint;
+  documentsCompared: number;
+  relationshipsCreated: number;
+  cancelled: boolean;
+}
+
+/**
+ * How much of the folder Folio has compared for AI connections in the active
+ * search model's index. `complete` means every pair of currently embedded
+ * files was compared; it says nothing about how many connections exist.
+ */
+export type AiCoverageState =
+  "noActiveSpace" | "embeddingIncomplete" | "partial" | "complete";
+
+export interface AiRelationshipCoverage {
+  state: AiCoverageState;
+  spaceFingerprint?: EmbeddingSpaceFingerprint;
+  /** Indexed files with a vector for every passage in the active space. */
+  eligibleDocuments: number;
+  indexedDocuments: number;
+  pairsConsidered: number;
+  pairsRemaining: number;
+  /** Files whose stored candidate connections were truncated. */
+  overflowDocuments: number;
+}
+
+export type AiRefreshPhase = "embedding" | "admitting" | "relationships";
+
+export interface AiRefreshProgress {
+  workspaceId: WorkspaceId;
+  phase: AiRefreshPhase;
+  tiles: number;
+  pairsCompleted: number;
+}
+
+/** Why a discovery run stopped; completed work is kept in every case. */
+export type AiRefreshEnd =
+  "complete" | "budgetExhausted" | "cancelled" | "spaceChanged";
+
+/** What one discovery run did. Counts are this run's, not cumulative. */
+export interface AiDiscoveryProgress {
+  admitted: number;
+  tiles: number;
+  comparisons: number;
+  /** Comparisons plus clause-feature work: what the run budget counts. */
+  work: number;
+  pairsCompleted: number;
+  edgesStored: number;
+}
+
+export interface LocalAiRefresh {
+  workspaceId: WorkspaceId;
+  /** The embedding phase's summary; absent when it didn't run. */
+  embedding?: EmbeddingSyncSummary;
+  /** The discovery run's progress; absent when it didn't run. */
+  discovery?: AiDiscoveryProgress;
+  /** Absent when no search model is ready. */
+  ended?: AiRefreshEnd;
+  coverage: AiRelationshipCoverage;
+}
+
 /* ------------------------------------------------------------- embeddings */
 
 export interface EmbeddingSpace {
@@ -356,7 +421,12 @@ export interface GenerationRequest {
 }
 
 export type GroundedAnswerKind =
-  "fileSummary" | "partialSummary" | "answer" | "insufficientEvidence";
+  | "fileSummary"
+  | "partialSummary"
+  | "answer"
+  | "relationshipSummary"
+  | "impactExplanation"
+  | "insufficientEvidence";
 
 export interface GroundedSentence {
   text: string;
@@ -383,7 +453,7 @@ export interface GroundedAnswer {
   coverage: DocumentId[];
   modelId: string;
   revision: string;
-  /** Absent for the local model; `"groq"` for online generation (ADR 0017). */
+  /** Absent for the local model; `"groq"` for online generation (ADR 0018). */
   origin?: GenerationOrigin;
 }
 
@@ -399,6 +469,18 @@ export interface GroundedResult extends GroundedAnswer {
   sentences: GroundedSentence[];
   coverageRanges: CoverageEntry[];
   uncitedSentenceCount: number;
+  /** Relationship summaries only: what the native core actually supplied. */
+  basis?: SummaryBasis;
+}
+
+/**
+ * The connections and files a relationship summary was given, counted by the
+ * native core. `incomplete` also covers unfinished AI review.
+ */
+export interface SummaryBasis {
+  connections: number;
+  files: number;
+  incomplete: boolean;
 }
 
 /** A model run either answers from evidence or reports that it has none. */
@@ -473,7 +555,7 @@ export interface ModelSetup {
 }
 
 /**
- * Optional online generation (ADR 0017). The key never crosses back to the
+ * Optional online generation (ADR 0018). The key never crosses back to the
  * webview; only whether one is stored.
  */
 export interface OnlineGenerationStatus {
@@ -1185,6 +1267,13 @@ export interface UndoReport {
   indexRefreshed: boolean;
 }
 
+/** Which local model wrote a suggestion, and the passages it was based on. */
+export interface GeneratedBy {
+  citations: SourcePassage[];
+  modelId: string;
+  revision: string;
+}
+
 /** An Organization Suggestion for a filename; `operation` still needs a preview and approval. */
 export interface OrganizationSuggestion {
   documentId: DocumentId;
@@ -1192,6 +1281,38 @@ export interface OrganizationSuggestion {
   suggestedRelativePath: RelativePath;
   reason: string;
   operation: FileOperation;
+  /** Present only when the local model wrote the name; title-based names have none. */
+  generated?: GeneratedBy;
+}
+
+/** A move into an existing folder whose files are closer in meaning (#78). */
+export interface DestinationSuggestion {
+  documentId: DocumentId;
+  relativePath: RelativePath;
+  suggestedRelativePath: RelativePath;
+  /** `""` is the top of the folder. */
+  folder: RelativePath;
+  reason: string;
+  similarity: number;
+  currentSimilarity: number;
+  /** The file's passage closest to the suggested folder. */
+  passage: SourcePassage;
+  /** The passage in the suggested folder closest to the file. */
+  evidence: SourcePassage;
+  provenance: "embedding";
+  spaceFingerprint: string;
+  operation: FileOperation;
+}
+
+/** Renames and moves from the local models; each still needs a preview and approval. */
+export interface FileChangeSuggestions {
+  filenames: OrganizationSuggestion[];
+  /** Files with generic names and no title-based name that the model was asked to name. */
+  filenameCandidates: number;
+  naming: CollectionNaming;
+  namingError?: FolioErrorPayload;
+  destinations: DestinationSuggestion[];
+  destinationStatus: "suggested" | "embeddingModelMissing";
 }
 
 /** Duplicate groups are evidence only: nothing is moved or deleted because of them. */
@@ -1200,7 +1321,7 @@ export interface OrganizationSuggestions {
   filenames: OrganizationSuggestion[];
 }
 
-/* -------------------------------------------- virtual collections (#78, ADR 0016) */
+/* -------------------------------------------- virtual collections (#78, ADR 0017) */
 
 /** One file of a suggested collection, with the revision the analysis read. */
 export interface SuggestedMember {

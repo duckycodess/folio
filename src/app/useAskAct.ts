@@ -14,8 +14,10 @@ import type {
   SearchResult,
 } from "../domain/contracts";
 import { toFolioError, type FolioError } from "../domain/errors";
+import { mergeFolderResults } from "../domain/searchEvidence";
 import {
   inScope,
+  namedFiles,
   summaryTarget,
   targetsChosenFile,
   type AskOutcome,
@@ -81,6 +83,8 @@ export interface AskActController {
   /** Summarizes the chosen file of an earlier turn. */
   chooseForSummary: (turnId: number, document: DocumentRecord) => void;
   cancel: () => void;
+  /** Stops whatever holds the local model (a summary, Model Lab, …). */
+  stopRunning: () => Promise<void>;
   clear: () => void;
   /** The conversation currently open. Both Ask & Act and the floating chat
    * read and write this same id: there is no copy to keep in sync. */
@@ -184,11 +188,43 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
     }
   }
 
+  /**
+   * The index's matches, with files the request names by file name first:
+   * the index scores only file text, so it can't find a file by its name.
+   */
   async function search(
     folder: string,
     query: string,
-  ): Promise<SearchResult[]> {
-    return inScope(await semanticSearch(folder, query, RESULT_LIMIT), scope);
+  ): Promise<{ results: SearchResult[]; namesOnly: boolean }> {
+    const { named, partial } = namedFiles(workspace.documents, query);
+    let indexed: SearchResult[];
+    let namesOnly = false;
+    try {
+      indexed = await semanticSearch(folder, query, RESULT_LIMIT);
+    } catch (cause) {
+      // Only "no search model yet" falls back to names, and the turn says
+      // so. Any other failure (I/O, a mismatched space) is reported, never
+      // hidden behind name matches that look like a full search.
+      const error = toFolioError(cause);
+      if (
+        error.code !== "modelNotInstalled" ||
+        (!named.length && !partial.length)
+      )
+        throw cause;
+      indexed = [];
+      namesOnly = true;
+    }
+    return {
+      results: inScope(
+        mergeFolderResults(
+          workspace.documents,
+          [...named, ...indexed],
+          partial,
+        ),
+        scope,
+      ).slice(0, RESULT_LIMIT),
+      namesOnly,
+    };
   }
 
   async function interpret(
@@ -196,7 +232,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
     request: string,
     chosen?: DocumentRecord,
   ): Promise<AskOutcome> {
-    const meaning = await interpretRequest(folder, request);
+    const meaning = await interpretRequest(folder, request, chosen?.id);
     switch (meaning.status) {
       case "nonMutating": {
         const query = meaning.targetQuery?.trim() || request;
@@ -208,10 +244,16 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
             // and a file's own passages can be outranked by others' (#88).
             result: await answerQuestion(folder, request, chosen?.id),
           };
-        const results = await search(folder, query);
+        const { results, namesOnly } = await search(folder, query);
         if (meaning.intent === "search")
-          return { type: "results", query, results };
-        const target = summaryTarget(results);
+          return { type: "results", query, results, namesOnly };
+        const { exact } = namedFiles(workspace.documents, request);
+        const target = summaryTarget(
+          results,
+          exact.filter((document) =>
+            results.some((result) => result.document.id === document.id),
+          ),
+        );
         if (!target)
           return {
             type: "chooseFile",
@@ -268,7 +310,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
           ? {
               type: "results",
               query: request.trim(),
-              results: await search(folder, request),
+              ...(await search(folder, request)),
             }
           : practiceReply(request, onProgress),
       ),
@@ -290,6 +332,7 @@ export function useAskAct(workspace: WorkspaceState): AskActController {
       });
     },
     cancel: () => void cancelGeneration().catch(() => undefined),
+    stopRunning: () => cancelGeneration().catch(() => undefined),
     clear: () => conversation && clearTurnsIn(conversation.id),
     conversationId: conversation?.id ?? null,
     history: conversationsForFolder(snapshot, folderId)

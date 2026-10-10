@@ -24,16 +24,20 @@ export function RecoveryNotice({
   onDismiss,
 }: RecoveryNoticeProps) {
   const recovery = recoveryFor(error, stage);
-  const run = recovery.action && actions[recovery.action.kind];
+  let action = recovery.action;
+  // A screen that can't stop other work still offers its plain retry.
+  if (action?.kind === "stopAndRetry" && !actions.stopAndRetry && actions.retry)
+    action = { kind: "retry", label: "Try again" };
+  const run = action && actions[action.kind];
   return (
     <Notice
       tone={recovery.tone}
       action={
         (run || onDismiss) && (
           <div className="notice-actions">
-            {run && recovery.action && (
+            {run && action && (
               <Button variant="secondary" onClick={run}>
-                {recovery.action.label}
+                {action.label}
               </Button>
             )}
             {onDismiss && (

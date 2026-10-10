@@ -349,6 +349,59 @@ error_codes = [
     "contextOverflow", "embeddingSpaceMismatch", "evidenceInvalid", "internal",
 ]
 
+# ---------------------------------------------------- AI relationships (#46) ---
+# Written from docs/contracts.md. Evidence offsets are UTF-8 bytes; the score
+# is exactly representable in f32 so both languages print it identically.
+def ai_passage(document_id, text, start):
+    return {
+        "documentId": document_id,
+        "documentContentHash": content_hash("body of " + document_id),
+        "offsetUnit": "utf8Byte",
+        "start": start,
+        "end": start + len(text.encode("utf-8")),
+        "text": text,
+    }
+
+ai_space = "folio-space-v1/multilingual-e5-small/r1/int8/384/chunk-text-v1"
+ai_a, ai_b = "w:notes/plano.md", "w:notes/tala.md"
+ai_relationships = {
+    "similarity": {
+        "sourceId": ai_a,
+        "targetId": ai_b,
+        "sourceContentHash": content_hash("body of " + ai_a),
+        "targetContentHash": content_hash("body of " + ai_b),
+        "type": "similarity",
+        "provenance": "embedding",
+        "spaceFingerprint": ai_space,
+        "score": 0.875,
+        "sourceEvidence": [ai_passage(ai_a, "Ang huling araw ay Oktubre 20.", 0)],
+        "targetEvidence": [ai_passage(ai_b, "The deadline is October 20.", 12)],
+    },
+    "sharedFactCandidate": {
+        "sourceId": ai_a,
+        "targetId": ai_b,
+        "sourceContentHash": content_hash("body of " + ai_a),
+        "targetContentHash": content_hash("body of " + ai_b),
+        "type": "sharedFactCandidate",
+        "provenance": "embedding",
+        "sourceEvidence": [ai_passage(ai_a, "Ang huling araw ay Oktubre 20.", 0)],
+        "targetEvidence": [ai_passage(ai_b, "The deadline is October 20.", 12)],
+    },
+    "coverage": [
+        {"state": "noActiveSpace", "eligibleDocuments": 0, "indexedDocuments": 3,
+         "pairsConsidered": 0, "pairsRemaining": 0, "overflowDocuments": 0},
+        {"state": "partial", "spaceFingerprint": ai_space, "eligibleDocuments": 3,
+         "indexedDocuments": 3, "pairsConsidered": 1, "pairsRemaining": 2,
+         "overflowDocuments": 0},
+        {"state": "complete", "spaceFingerprint": ai_space, "eligibleDocuments": 3,
+         "indexedDocuments": 3, "pairsConsidered": 3, "pairsRemaining": 0,
+         "overflowDocuments": 1},
+    ],
+    "coverageStates": ["noActiveSpace", "embeddingIncomplete", "partial", "complete"],
+    "refreshEnds": ["complete", "budgetExhausted", "cancelled", "spaceChanged"],
+    "refreshPhases": ["embedding", "admitting", "relationships"],
+}
+
 bundle = {
     "identity": identity,
     "offsets": {"cases": offsets, "invalid": offsets_invalid},
@@ -359,6 +412,7 @@ bundle = {
     "errorCodes": error_codes,
     "operationStatuses": ["succeeded", "failed", "cancelled", "notStarted"],
     "batchStopReasons": ["completed", "failed", "cancelled"],
+    "aiRelationships": ai_relationships,
     "offsetUnit": "utf8Byte",
 }
 

@@ -6,7 +6,7 @@ Folio's visual direction is **Golden Daylight**: white surfaces, a charcoal side
 
 The brandbook is a direction, not a spec of shipped features. Its screens contain illustrative files and features; [Product truth](#product-truth-in-the-mockups) lists where the MVP must differ. Product rules in `AGENTS.md` and `docs/product.md` win over this document.
 
-A second, newer reference, the Folio brandkit (`docs/assets/Folio-Brandkit/`, not committed — ask the design owner), supplied the typography above and the floating chat's mascot animation (see [Assets](#assets)). Its interactive mockup also uses a few layout values this app does not: a 222px sidebar (this app's is 240px, sized for the adaptive layout in #67), a 68px fixed header (this app's topbar height follows its content), and an ivory `#FAF9F5` canvas (this app measures its contrast ratios against white — see [Contrast rules](#contrast-rules)). Reconciling those needs a real pass against the contrast table and the #67 breakpoint math, not a drive-by change, so they are intentionally left as-is for now.
+A second, newer reference, the Folio brandkit (`docs/assets/Folio-Brandkit/`, not committed — ask the design owner), supplied the typography above, the logo, and the floating chat's mascot animation (see [Assets](#assets)). The app follows its layout and colour tokens: a 222px sidebar, a 68px white header with 36px page gutters, an ivory `#FAF9F5` canvas with white cards, `#232620` text and `#E8E9E2` dividers, and a solid-gold selected file. One deliberate exception: the brandkit's muted text `#7A7E75` is 3.93:1 on the canvas and 4.14:1 on white, below AA, so muted and tertiary text keep `#5C5F59` and `#6B6E68` (6.16:1 and 4.92:1 on the canvas). The brandkit asks for exactly this check ("verify contrast… especially muted text").
 
 ## Principles
 
@@ -135,21 +135,21 @@ Define dark values under `@media (prefers-color-scheme: dark)` and a `data-theme
 
 ## Typography
 
-**Manrope** for headings (`--text-display`, `--text-title`, `--text-heading`, the wordmark) and **DM Sans** for interface text (`--text-body`, `--text-label`, `--text-small`), per the Folio brandkit (`docs/assets/Folio-Brandkit/`). Both are bundled with the app via `@fontsource/manrope` and `@fontsource/dm-sans`. Never load fonts from Google Fonts or another CDN — the app must work offline; this differs from the brandkit's own interactive mockup, which is a disposable web demo and loads them remotely.
+**Manrope** for headings (`--text-display`, `--text-title`, `--text-heading`) and **DM Sans** for interface text (`--text-body`, `--text-label`, `--text-small`), per the Folio brandkit (`docs/assets/Folio-Brandkit/`). Both are bundled with the app via `@fontsource/manrope` and `@fontsource/dm-sans`. Never load fonts from Google Fonts or another CDN — the app must work offline; this differs from the brandkit's own interactive mockup, which is a disposable web demo and loads them remotely.
 
-The **folio wordmark** is a custom heavy rounded logotype, not Manrope. Use it only as an SVG asset (`src/assets/brand/folio-wordmark.svg`, still to be exported — see [Assets](#assets)); do not try to recreate it with CSS.
+The **folio wordmark** is the brandkit's gold rounded logotype with black eyes, not Manrope. The sidebar shows `src/assets/brand/folio-wordmark.png` (the gold row of the brandkit's `folio-transparent-versions.png`, transparent, 534×191) at 178px wide, with the motto **Search. Organize. Summarize** centred 9px beneath it in 10px DM Sans. The icon rail keeps the whole wordmark at 48px and drops the motto. Do not recreate the wordmark with CSS or a font; replace the PNG with an SVG if the design owner exports one.
 
-| Token             | Size / line height                   | Weight  | Use                                                  |
-| ----------------- | ------------------------------------ | ------- | ---------------------------------------------------- |
-| `--text-display`  | 32 / 40                              | 700     | Page title ("Your workspace")                        |
-| `--text-title`    | 20 / 28                              | 600     | Panel title (file name in the detail panel)          |
-| `--text-heading`  | 16 / 24                              | 600     | Section headings ("Smart collections", "Key points") |
-| `--text-body`     | 14 / 20                              | 400     | Body, table cells, summaries                         |
-| `--text-label`    | 14 / 20                              | 500     | Buttons, nav items, tabs                             |
-| `--text-small`    | 12 / 16                              | 400–500 | Metadata, badges, captions — minimum size            |
-| `--text-overline` | 12 / 16, +0.12em tracking, uppercase | 500     | Rare section labels only                             |
+| Token             | Size / line height                               | Weight  | Use                                                  |
+| ----------------- | ------------------------------------------------ | ------- | ---------------------------------------------------- |
+| `--text-display`  | 34 / 40, −0.032em (28 / 36 when short or narrow) | 800     | Every page title, the same on every page             |
+| `--text-title`    | 20 / 28                                          | 700     | Panel title (file name in the detail panel)          |
+| `--text-heading`  | 16 / 24                                          | 700     | Section headings ("Smart collections", "Key points") |
+| `--text-body`     | 14 / 20                                          | 400     | Body, table cells, summaries                         |
+| `--text-label`    | 14 / 20                                          | 500     | Buttons, nav items, tabs                             |
+| `--text-small`    | 12 / 16                                          | 400–500 | Metadata, badges, captions — minimum size            |
+| `--text-overline` | 12 / 16, +0.12em tracking, uppercase             | 500     | Rare section labels only                             |
 
-The tagline style under the page title ("Everything in its place.") uses `--text-heading` at weight 400 with `0.04em` letter spacing in `--color-text-secondary`. No text below 12px. Use `font-variant-numeric: tabular-nums` for sizes, dates and counts in tables.
+The tagline under every page title ("Everything in its place.") is DM Sans 15px / 1.6 in `--color-text-secondary`, with no added tracking (brandkit `.sub`). Page content, notices included, shares one `--content-max-width` (1080px), and the page leaves `--launcher-clearance` (184px) at the bottom so the floating Olio never covers the last control. Checkboxes and radios use `accent-color: var(--color-focus)`. No text below 12px. Use `font-variant-numeric: tabular-nums` for sizes, dates and counts in tables.
 
 ## Spacing, radius and elevation
 
@@ -163,7 +163,7 @@ Desktop window, three regions as in the brandbook:
 
 | Region  | Width                                 | Content                                                         |
 | ------- | ------------------------------------- | --------------------------------------------------------------- |
-| Sidebar | 240px, or a 64px icon rail            | Wordmark, navigation, local AI status at the bottom             |
+| Sidebar | 222px, or a 64px icon rail            | Wordmark and motto, navigation, local AI status at the bottom   |
 | Main    | Flexible, min 420px beside the reader | Breadcrumb, page header, global search, collections, file table |
 | Reader  | Resizable, 320px to 60% of the window | Selected file: tabs Summary · Details · Related, actions        |
 
@@ -220,7 +220,7 @@ Active item: `--sidebar-item-active` background, 3px gold bar on the left edge, 
 - _Primary_: gold fill, charcoal label, optional leading icon ("+ New"). Hover sunflower, pressed honey, disabled 40% opacity with `not-allowed`. One primary button per view.
 - _Secondary_: white fill, 1px `--color-border-strong`, charcoal label ("Open").
 - _Ghost/row action_: no border until hover ("✦ Summarize" in the table row).
-- Minimum hit area 32px high (40px for primary).
+- Every button is 36px high, primary included, so buttons side by side line up; primary is told apart by its gold fill. Button groups (`.form-actions`, `.panel-actions`) keep an 8px gap.
 
 **Search field**
 
@@ -238,7 +238,7 @@ Active item: `--sidebar-item-active` background, 3px gold bar on the left edge, 
 
 - Tabs: Recent · Starred · All files.
 - Columns: checkbox, type icon + name, collection badge, modified, size, actions (`⋯`). Sortable headers show a sort icon and `aria-sort`.
-- Selected row uses `--color-selected` plus `aria-selected="true"`, and is never only a color change for keyboard users (focus ring on the row).
+- The selected file row is solid brand gold `#F5BF18` with charcoal text in both themes (brandkit). Inside it, secondary text becomes `#4E471E` (5.5:1 on gold), and the focus ring and links become charcoal (9.34:1). The row also gets a 3px honey edge and a semibold name, so selection is never only a colour change. Other selected states (cards, segmented controls) keep `--color-selected`.
 - Long names truncate with an ellipsis; the full name and path are available on hover and in the detail panel.
 
 **Collection badge**: pill, `--color-surface-muted` background, 8px colored dot + text label.

@@ -751,4 +751,22 @@ describe("the browser-journey fake native core", () => {
     });
     expect(refusal).not.toBeInstanceOf(Error);
   });
+
+  it("reports no active AI space and refuses a refresh while no search model is installed", async () => {
+    const coverage = await call<{
+      state: string;
+      eligibleDocuments: number;
+      indexedDocuments: number;
+    }>("relationship_coverage", { workspaceId: WORKSPACE_ID });
+    expect(coverage.state).toBe("noActiveSpace");
+    expect(coverage.eligibleDocuments).toBe(0);
+    expect(coverage.indexedDocuments).toBeGreaterThan(0);
+    expect(
+      (await rejection("refresh_local_ai_index", { workspaceId: WORKSPACE_ID }))
+        .code,
+    ).toBe("modelNotInstalled");
+    expect((await rejection("summarize_relationships")).code).toBe(
+      "modelNotInstalled",
+    );
+  });
 });

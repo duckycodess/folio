@@ -62,7 +62,7 @@ struct ModelSettings {
     online_generation: Option<OnlineGenerationSettings>,
 }
 
-/// The user's choice about online generation (ADR 0017). The key is never
+/// The user's choice about online generation (ADR 0018). The key is never
 /// kept here: it lives in the operating system's keychain.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]

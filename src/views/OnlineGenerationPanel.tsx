@@ -6,7 +6,7 @@ import { Panel } from "../ui/Panel";
 import { Progress } from "../ui/Progress";
 
 /**
- * Optional online writing through Groq (ADR 0017), off by default. Only
+ * Optional online writing through Groq (ADR 0018), off by default. Only
  * summaries and answers use it; the key is checked and kept by the native
  * core and never shown again.
  */

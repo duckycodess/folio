@@ -21,7 +21,6 @@
   opacity: 0.45;
 }
 .button-primary {
-  min-height: 40px;
   background: var(--brand-gold);
   color: var(--color-text-on-gold);
 }
@@ -151,6 +150,7 @@
 }
 .panel-title {
   font: var(--text-heading);
+  letter-spacing: -0.01em;
 }
 .panel-actions {
   display: flex;
@@ -181,9 +181,24 @@
 .file-row:hover {
   background: var(--color-surface-muted);
 }
+/* Brandkit: the selected file is solid gold with charcoal text in both
+   themes. Text tokens are re-pointed inside the row so every pair keeps
+   ≥4.5:1 on gold (docs/design.md). */
 .file-row:has(.list-row.is-selected) {
-  background: var(--color-selected);
-  box-shadow: inset 3px 0 0 var(--brand-gold);
+  --color-text: var(--brand-charcoal);
+  --color-text-secondary: #4e471e;
+  --color-text-tertiary: #4e471e;
+  --color-link: var(--brand-charcoal);
+  --color-focus: var(--brand-charcoal);
+  --color-border-strong: var(--brand-charcoal);
+  --color-surface-muted: rgb(255 255 255 / 0.4);
+  --color-selected: #fcebb0;
+  background: var(--brand-gold);
+  color: var(--color-text);
+  box-shadow: inset 3px 0 0 var(--brand-honey);
+}
+.file-row:has(.list-row.is-selected) .list-row-title {
+  font-weight: 600;
 }
 .file-row-line {
   display: flex;

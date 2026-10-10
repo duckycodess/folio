@@ -59,6 +59,13 @@ export interface FakeNativeOptions {
    * of suggestions, never grouping or naming quality.
    */
   collectionGroups?: FakeCollectionGroup[];
+  /**
+   * What `suggest_file_changes` returns in place of the real core's models: a
+   * name a model would write for a file, and a folder its files would be
+   * closer to. Without `destinations`, the fake reports no embedding model.
+   */
+  modelFilenames?: { path: RelativePath; name: string }[];
+  destinations?: { path: RelativePath; folder: RelativePath }[];
   /** Pinned manifest metadata only; the fake never installs or runs a model. */
   models?: ModelDescriptor[];
   runtime?: { id: string; version: string; bytes: number };

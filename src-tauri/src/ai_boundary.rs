@@ -88,7 +88,13 @@ pub(crate) fn provider_failure(failure: NativeProviderError) -> FolioError {
         ProviderErrorCode::RuntimeStartFailed => {
             error(ErrorCode::ModelLoadFailed, message).with_detail("reason", "runtimeStartFailed")
         }
-        ProviderErrorCode::GenerationBusy => error(ErrorCode::ProviderBusy, message),
+        ProviderErrorCode::GenerationBusy => {
+            let mut result = error(ErrorCode::ProviderBusy, message);
+            if let Some(holder) = detail {
+                result = result.with_detail("holder", holder);
+            }
+            result
+        }
         ProviderErrorCode::Cancelled => error(ErrorCode::Cancelled, message),
         ProviderErrorCode::ContextLimit => error(ErrorCode::ContextOverflow, message),
         ProviderErrorCode::EmbeddingSpaceMismatch => {
@@ -122,7 +128,7 @@ pub(crate) fn provider_failure(failure: NativeProviderError) -> FolioError {
             }
             result
         }
-        // Online generation (ADR 0017) reuses the frozen codes; `provider`
+        // Online generation (ADR 0018) reuses the frozen codes; `provider`
         // tells the UI to word the recovery for Groq. Groq's reply body is
         // never forwarded.
         ProviderErrorCode::OnlineKeyMissing => error(ErrorCode::ModelNotInstalled, message)
@@ -165,6 +171,7 @@ pub(crate) fn core_failure(failure: CoreError) -> FolioError {
         CoreError::Json(failure) => {
             error(ErrorCode::Internal, failure.to_string()).with_detail("reportedCode", "ioError")
         }
+        CoreError::Cancelled => error(ErrorCode::Cancelled, "The work was stopped."),
         CoreError::Archive(message) | CoreError::Message(message) => {
             error(ErrorCode::Internal, message).with_detail("reportedCode", "ioError")
         }

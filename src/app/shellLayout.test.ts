@@ -66,8 +66,8 @@ describe("computeShellLayout without a reader", () => {
   });
 
   it("collapses to the icon rail only once the main area would be squeezed", () => {
-    expect(computeShellLayout(719, false).sidebarMode).toBe("rail");
-    expect(computeShellLayout(720, false).sidebarMode).toBe("full");
+    expect(computeShellLayout(701, false).sidebarMode).toBe("rail");
+    expect(computeShellLayout(702, false).sidebarMode).toBe("full");
   });
 
   it("reports no reader", () => {

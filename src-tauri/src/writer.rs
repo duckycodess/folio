@@ -806,9 +806,19 @@ mod tests {
         FileOperation::Create { destination_relative_path: path.into(), media_type: "text/markdown".into(), content: content.into(), expected_destination: DestinationState::Absent }
     }
 
+    /// Registers the embedding space under which a test seeds AI relationship rows.
+    fn test_space(conn: &Connection) -> String {
+        index::register_space(conn, &index::EmbeddingSpace { model_id: "m".into(), revision: "1".into(), quantization: "q".into(), dimensions: 2, preprocessing_fingerprint: "p".into() }).unwrap()
+    }
+
     /// The command sequence the UI drives: prepare, preflight, approve, gate, apply.
     fn approved(conn: &Connection, root: &ScopedRoot, registry: &mut PlanRegistry, operations: Vec<FileOperation>) -> (ActionPlan, Approval) {
-        let impacts = ripple::plan_impacts(conn, root, &operations).unwrap();
+        approved_in(conn, root, registry, operations, None)
+    }
+
+    /// Like `approved`, with Ripple reading AI rows of `active_space`.
+    fn approved_in(conn: &Connection, root: &ScopedRoot, registry: &mut PlanRegistry, operations: Vec<FileOperation>, active_space: Option<&str>) -> (ActionPlan, Approval) {
+        let impacts = ripple::plan_impacts(conn, root, &operations, active_space).unwrap();
         // Each test plan gets its own creation time, as plans prepared in separate sessions would.
         let created = NOW - 1000 + CREATED.fetch_add(1, Ordering::SeqCst) % 1000;
         let plan = registry.prepare(&root.id, PlanSource::Organize, operations, impacts, created, LIFETIME).unwrap();
@@ -907,12 +917,13 @@ mod tests {
         let fact = id_of(&root, "research/review-reminders.md");
         fs::write(folder.path().join("research/review-reminders.md"), "# Review reminders\n\nSubmit by October 20.\n").unwrap();
         scan(&mut conn, &root);
+        let space = test_space(&conn);
         conn.execute(
-            "INSERT INTO relationships (id, source_document_id, target_document_id, relationship_type, evidence_json, provenance, confidence, source_content_hash, target_content_hash, created_at) VALUES ('fact', ?1, ?2, 'sharedFactCandidate', '[]', 'model', 0.7, 'x', 'y', '0')",
-            [&fact, &target],
+            "INSERT INTO relationships (id, source_document_id, target_document_id, relationship_type, evidence_json, provenance, confidence, source_content_hash, target_content_hash, created_at, space_fingerprint, discovery_cosine) VALUES ('fact', ?1, ?2, 'sharedFactCandidate', '[]', 'model', 0.7, 'x', 'y', '0', ?3, 0.9)",
+            params![&fact, &target, &space],
         )
         .unwrap();
-        let impacts = ripple::plan_impacts(&conn, &root, &[edit(&conn, &root, "projects/project-plan.md", "October 20", "October 23")]).unwrap();
+        let impacts = ripple::plan_impacts(&conn, &root, &[edit(&conn, &root, "projects/project-plan.md", "October 20", "October 23")], Some(&space)).unwrap();
         let find = |path: &str| impacts.iter().find(|impact| impact.relative_path == path);
         assert_eq!(find("notes/oktubre.md").unwrap().strength, ImpactStrength::Evidence);
         assert!(find("notes/kumperensya.md").is_none(), "October 2026 is not October 20");
@@ -1316,7 +1327,7 @@ mod tests {
         fs::write(folder.path().join("notes/pasahan.md"), "# Pasahan\n\nAng pasahan ay sa May 20. Tingnan ang [plano](../projects/project-plan.md).\n").unwrap();
         scan(&mut conn, &root);
         let target = index::get_document(&conn, &root.id, &id_of(&root, "projects/project-plan.md")).unwrap();
-        let flagged = |phrase: &str| ripple::impacts(&conn, &root.id, &target, phrase).unwrap().into_iter().map(|impact| impact.relative_path).collect::<Vec<_>>();
+        let flagged = |phrase: &str| ripple::impacts(&conn, &root.id, &target, phrase, None).unwrap().into_iter().map(|impact| impact.relative_path).collect::<Vec<_>>();
         let may = flagged("May 20");
         assert!(may.contains(&"notes/pasahan.md".to_owned()));
         assert!(!may.contains(&"notes/klase.md".to_owned()), "\"may 20 estudyante\" means there are 20 students");
@@ -1427,7 +1438,10 @@ mod tests {
     }
 
     fn links(conn: &Connection, root: &ScopedRoot) -> Vec<(String, String)> {
-        index::list_relationships(conn, &root.id).unwrap().into_iter().map(|link| (link.source_id, link.target_id)).collect()
+        index::list_relationships(conn, &root.id, None).unwrap().into_iter().filter_map(|link| match link {
+            index::Relationship::ExplicitReference(link) => Some((link.source_id, link.target_id)),
+            _ => None,
+        }).collect()
     }
 
     #[test]
@@ -1584,6 +1598,35 @@ mod tests {
     }
 
     #[test]
+    fn a_pdf_can_be_renamed_and_the_rename_undone_with_its_bytes_untouched() {
+        let (folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let pdf = "research/consent-form-guide.pdf";
+        let renamed = "research/pahintulot-guide.pdf";
+        let original = fs::read(folder.path().join(pdf)).unwrap();
+        let operation = relocate(&conn, &root, pdf, renamed, true);
+        let report = apply_with(&mut conn, &root, vec![operation], &RealFileSystem);
+        assert_eq!(statuses(&report), vec![OperationStatus::Succeeded]);
+        assert!(!folder.path().join(pdf).exists());
+        assert_eq!(fs::read(folder.path().join(renamed)).unwrap(), original);
+        let rescan = scan(&mut conn, &root);
+        assert_eq!(rescan.added + rescan.updated + rescan.removed, 0, "the index already followed the rename");
+        undo_all(&mut conn, &root, &report.batch.plan_id, &RealFileSystem).unwrap();
+        assert_eq!(fs::read(folder.path().join(pdf)).unwrap(), original);
+        assert!(!folder.path().join(renamed).exists());
+    }
+
+    #[test]
+    fn a_rename_cannot_change_a_pdf_into_another_type() {
+        let (_folder, mut conn, root) = fixture_workspace();
+        scan(&mut conn, &root);
+        let operation = relocate(&conn, &root, "research/consent-form-guide.pdf", "research/consent-form-guide.md", true);
+        let mut registry = PlanRegistry::new();
+        let plan = registry.prepare(&root.id, PlanSource::Organize, vec![operation], Vec::new(), NOW, LIFETIME).unwrap();
+        assert_eq!(plan::preflight_plan(&root.path, &plan, NOW + 1).unwrap_err().code, ErrorCode::OperationUnsupported);
+    }
+
+    #[test]
     fn a_pdf_is_never_deleted() {
         let (folder, mut conn, root) = fixture_workspace();
         scan(&mut conn, &root);
@@ -1662,19 +1705,20 @@ mod tests {
         let fact_passage = index::passage(&budget.id, &budget.content_hash, start, start + line.len(), line, None);
         let target_passage = index::passage(&target.id, &target.content_hash, 0, 28, "# Community Learning Project", None);
         let evidence = serde_json::json!({ "sourceEvidence": [fact_passage], "targetEvidence": [target_passage] }).to_string();
+        let space = test_space(&conn);
         conn.execute(
-            "INSERT INTO relationships (id, source_document_id, target_document_id, relationship_type, evidence_json, provenance, confidence, source_content_hash, target_content_hash, created_at) VALUES ('fact', ?1, ?2, 'sharedFactCandidate', ?3, 'model', 0.6, ?4, ?5, '0')",
-            params![budget.id, target.id, evidence, budget.content_hash, target.content_hash],
+            "INSERT INTO relationships (id, source_document_id, target_document_id, relationship_type, evidence_json, provenance, confidence, source_content_hash, target_content_hash, created_at, space_fingerprint, discovery_cosine) VALUES ('fact', ?1, ?2, 'sharedFactCandidate', ?3, 'model', 0.6, ?4, ?5, '0', ?6, 0.9)",
+            params![budget.id, target.id, evidence, budget.content_hash, target.content_hash, space],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO relationships (id, source_document_id, target_document_id, relationship_type, evidence_json, provenance, confidence, source_content_hash, target_content_hash, created_at) VALUES ('similar', ?1, ?2, 'similarity', '{}', 'embedding', NULL, ?3, ?4, '0')",
-            params![target.id, math.id, target.content_hash, math.content_hash],
+            "INSERT INTO relationships (id, source_document_id, target_document_id, relationship_type, evidence_json, provenance, confidence, source_content_hash, target_content_hash, created_at, space_fingerprint, score, discovery_cosine) VALUES ('similar', ?1, ?2, 'similarity', '{}', 'embedding', NULL, ?3, ?4, '0', ?5, 0.9, 0.9)",
+            params![target.id, math.id, target.content_hash, math.content_hash, space],
         )
         .unwrap();
         let untouched = hash_all(folder.path());
         let mut registry = PlanRegistry::new();
-        let (plan, _) = approved(&conn, &root, &mut registry, vec![remove(&conn, &root, "projects/project-plan.md")]);
+        let (plan, _) = approved_in(&conn, &root, &mut registry, vec![remove(&conn, &root, "projects/project-plan.md")], Some(&space));
         assert_eq!(hash_all(folder.path()), untouched, "computing impacts writes nothing");
         assert_eq!(plan.operations.len(), 1, "candidates never become operations");
 
@@ -1713,14 +1757,14 @@ mod tests {
         assert!(plan.impacts.iter().all(|impact| impact.provenance != Some(P::Model) || impact.relationship_type == Some(K::SharedFactCandidate)), "only the stored model relation is labelled as model-found");
 
         // A file the deleted one only links to keeps working, so it is not listed.
-        let outgoing = ripple::plan_impacts(&conn, &root, &[remove(&conn, &root, "notes/paalala.md")]).unwrap();
+        let outgoing = ripple::plan_impacts(&conn, &root, &[remove(&conn, &root, "notes/paalala.md")], Some(&space)).unwrap();
         assert!(outgoing.is_empty(), "{outgoing:?}");
 
         for number in 0..30 {
             fs::write(folder.path().join(format!("notes/link-{number:02}.md")), "See the [plan](../projects/project-plan.md).\n").unwrap();
         }
         scan(&mut conn, &root);
-        let capped = ripple::plan_impacts(&conn, &root, &[remove(&conn, &root, "projects/project-plan.md")]).unwrap();
+        let capped = ripple::plan_impacts(&conn, &root, &[remove(&conn, &root, "projects/project-plan.md")], Some(&space)).unwrap();
         assert_eq!(capped.len(), 25);
         assert!(capped.iter().all(|impact| impact.strength == ImpactStrength::Evidence));
     }

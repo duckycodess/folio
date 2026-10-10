@@ -6,13 +6,13 @@
   --brand-ivory: #fffcf3;
   --brand-charcoal: #20231f;
 
-  --color-bg: #ffffff;
+  --color-bg: #faf9f5;
   --color-surface: #ffffff;
   --color-surface-muted: #faf7ee;
   --color-selected: #fff6d6;
-  --color-border: #ece8dc;
+  --color-border: #e8e9e2;
   --color-border-strong: #8a8c86;
-  --color-text: #20231f;
+  --color-text: #232620;
   --color-text-secondary: #5c5f59;
   --color-text-tertiary: #6b6e68;
   --color-text-on-gold: #20231f;
@@ -51,9 +51,9 @@
   --font-sans:
     "DM Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-heading: "Manrope", var(--font-sans);
-  --text-display: 700 2rem/2.5rem var(--font-heading);
-  --text-title: 600 1.25rem/1.75rem var(--font-heading);
-  --text-heading: 600 1rem/1.5rem var(--font-heading);
+  --text-display: 800 2.125rem/2.5rem var(--font-heading);
+  --text-title: 700 1.25rem/1.75rem var(--font-heading);
+  --text-heading: 700 1rem/1.5rem var(--font-heading);
   --text-body: 400 0.875rem/1.25rem var(--font-sans);
   --text-label: 500 0.875rem/1.25rem var(--font-sans);
   --text-small: 400 0.75rem/1rem var(--font-sans);
@@ -74,9 +74,14 @@
   --radius-xl: 18px;
   --radius-pill: 999px;
 
+  --topbar-height: 68px;
+  --content-max-width: 1080px;
+  --launcher-clearance: 184px;
+  --page-gutter: 36px;
+
   --shadow-float: 0 8px 24px rgb(32 35 31 / 0.12);
 
-  --sidebar-width: 240px;
+  --sidebar-width: 222px;
   --sidebar-rail-width: 64px;
   --detail-width: 380px;
 

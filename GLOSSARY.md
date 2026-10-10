@@ -28,6 +28,16 @@ _Avoid_: A whole-file summary or an implication that unread sections were covere
 **Project Summary**: A summary of an explicitly identified group of documents, with its coverage stated.
 _Avoid_: A claim to cover every file when only retrieved excerpts were inspected.
 
+**Relationship Summary**: A generated account of how the selected documents
+connect and where they sit, citing the connection evidence it was given and
+stating how many connections and files it was based on.
+_Avoid_: A Project Summary, a claim to cover connections that were not
+supplied, or an unreviewed summary presented as checked fact.
+
+**Relationship Coverage**: How much of the workspace Folio has compared for AI
+connections in the current search model's index.
+_Avoid_: Treating a partial result as "no connections".
+
 **Relationship**: An evidenced connection between two documents with a stated type and provenance.
 _Avoid_: Dependency as a generic name for all connections.
 

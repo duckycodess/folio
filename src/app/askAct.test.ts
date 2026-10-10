@@ -7,6 +7,7 @@ import {
   MAX_TURNS,
   matchReason,
   methodLabel,
+  namedFiles,
   summaryTarget,
   targetsChosenFile,
   updateTurn,
@@ -176,5 +177,103 @@ describe("the file the user chose", () => {
         "workspace:projects/plan.md",
       ),
     ).toBe(true);
+  });
+});
+
+describe("namedFiles", () => {
+  function doc(relativePath: string): DocumentRecord {
+    return {
+      id: relativePath,
+      relativePath,
+      name: relativePath.split("/").at(-1)!,
+    } as DocumentRecord;
+  }
+  const documents = [
+    doc("career/Sample_Resume.pdf"),
+    doc("career/cover-letter.md"),
+    doc("notes/resume-tips.md"),
+    doc("notes/budget.txt"),
+  ];
+
+  it("finds a file by the name written in the request, whatever else it says", () => {
+    const { named, exact } = namedFiles(
+      documents,
+      "Sample_Resume.pdf fine files",
+    );
+    expect(named.map((each) => each.document.relativePath)).toEqual([
+      "career/Sample_Resume.pdf",
+    ]);
+    expect(exact.map((each) => each.relativePath)).toEqual([
+      "career/Sample_Resume.pdf",
+    ]);
+  });
+
+  it("names a file without its extension or case, but only exact names are written out", () => {
+    const { named, exact } = namedFiles(documents, "find sample resume");
+    expect(named.map((each) => each.document.name)).toEqual([
+      "Sample_Resume.pdf",
+    ]);
+    expect(exact).toEqual([]);
+  });
+
+  it("keeps a generic one-word name after the index's results", () => {
+    const files = [doc("a/notes.md"), doc("b/notes.md"), doc("c/to-do.md")];
+    const found = namedFiles(files, "find notes about the budget");
+    expect(found.named).toEqual([]);
+    expect(found.partial.map((each) => each.document.relativePath)).toEqual([
+      "a/notes.md",
+      "b/notes.md",
+    ]);
+    // Two short words aren't distinctive either.
+    expect(namedFiles(files, "what do I need to do").named).toEqual([]);
+    // Written out in full, a one-word name is still named.
+    expect(
+      namedFiles(files, "summarize a/notes.md").named.length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("matches names regardless of accents, like the index", () => {
+    const files = [doc("reports/Niño_report.md")];
+    expect(
+      namedFiles(files, "find the nino report").named.map(
+        (each) => each.document.name,
+      ),
+    ).toEqual(["Niño_report.md"]);
+  });
+
+  it("writes out a file name only as a whole name", () => {
+    const files = [doc("a/notes.md"), doc("a/old-notes.md")];
+    const { exact } = namedFiles(files, "summarize old-notes.md please");
+    expect(exact.map((each) => each.name)).toEqual(["old-notes.md"]);
+    // Sentence punctuation after a name still counts as writing it out.
+    expect(
+      namedFiles(files, "Summarize notes.md.").exact.map((each) => each.name),
+    ).toEqual(["notes.md"]);
+  });
+
+  it("lists files sharing a word with the request after named ones", () => {
+    const { named, partial } = namedFiles(documents, "my resume");
+    expect(named).toEqual([]);
+    expect(partial.map((each) => each.document.name)).toEqual([
+      "Sample_Resume.pdf",
+      "resume-tips.md",
+    ]);
+    expect(partial.every((each) => each.method === "keyword")).toBe(true);
+  });
+
+  it("ignores short shared words", () => {
+    expect(namedFiles([doc("a/to-do.md")], "go to the store").partial).toEqual(
+      [],
+    );
+  });
+});
+
+describe("summaryTarget with a file written out by name", () => {
+  it("uses the one exact name even among several candidates", () => {
+    const candidates = [result("a.md", "hybrid"), result("b.md", "hybrid")];
+    expect(summaryTarget(candidates, [candidates[1].document])?.id).toBe(
+      "b.md",
+    );
+    expect(summaryTarget(candidates, [])).toBeNull();
   });
 });

@@ -152,3 +152,32 @@ describe("browser practice mode", () => {
     expect(simulationFrom("", false)).toBeUndefined();
   });
 });
+
+describe("a busy local model", () => {
+  it("names what is running and offers to stop it", () => {
+    const recovery = recoveryFor({
+      code: "providerBusy",
+      details: { holder: "summary" },
+    });
+    expect(recovery.title).toBe("Folio is writing a summary");
+    expect(recovery.action).toEqual({
+      kind: "stopAndRetry",
+      label: "Stop it and try again",
+    });
+  });
+
+  it("names Organize's suggestions when they hold the model", () => {
+    expect(
+      recoveryFor({
+        code: "providerBusy",
+        details: { holder: "organizeSuggestions" },
+      }).title,
+    ).toBe("Folio is naming suggestions in Organize");
+  });
+
+  it("keeps the plain retry when the holder is unknown", () => {
+    const recovery = recoveryFor({ code: "providerBusy" });
+    expect(recovery.title).toBe("Folio is still working on another request");
+    expect(recovery.action?.kind).toBe("retry");
+  });
+});

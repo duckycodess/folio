@@ -1,4 +1,4 @@
-//! Optional online generation through Groq (ADR 0017).
+//! Optional online generation through Groq (ADR 0018).
 //!
 //! This is the only provider that leaves the device, and only when the user
 //! turned it on with their own key. It writes summaries and answers through

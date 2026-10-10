@@ -24,7 +24,7 @@ export interface OnlineGenerationController {
 }
 
 /**
- * Optional online generation for summaries and answers (ADR 0017). Off until
+ * Optional online generation for summaries and answers (ADR 0018). Off until
  * the user saves a Groq key and turns it on; every change goes through the
  * native core, which owns the key.
  */

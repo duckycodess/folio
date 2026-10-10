@@ -2,7 +2,7 @@ import type { GroundedAnswer } from "../domain/contracts";
 
 type Provenance = Pick<GroundedAnswer, "modelId" | "revision" | "origin">;
 
-/** Online generation (ADR 0017) wrote it, not the model on this computer. */
+/** Online generation (ADR 0018) wrote it, not the model on this computer. */
 export function isOnline(result: Provenance): boolean {
   return result.origin === "groq";
 }

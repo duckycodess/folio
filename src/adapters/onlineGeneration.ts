@@ -3,7 +3,7 @@ import type { OnlineGenerationStatus } from "../domain/contracts";
 import { folioError, toFolioError } from "../domain/errors";
 
 /**
- * Optional online generation through Groq (ADR 0017). The key goes to the
+ * Optional online generation through Groq (ADR 0018). The key goes to the
  * native core once, which checks it with Groq and keeps it in the system
  * keychain; it never comes back to the webview.
  */

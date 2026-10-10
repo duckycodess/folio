@@ -153,7 +153,12 @@ export function TurnBody({
     return (
       <RecoveryNotice
         error={turn.error}
-        actions={{ retry: onRetry, openModelLab: () => onNavigate("modelLab") }}
+        actions={{
+          retry: onRetry,
+          // The native core waits briefly for the stopped work to finish.
+          stopAndRetry: () => void ask.stopRunning().then(onRetry),
+          openModelLab: () => onNavigate("modelLab"),
+        }}
       />
     );
 
@@ -164,6 +169,12 @@ export function TurnBody({
     case "results":
       return outcome.results.length ? (
         <>
+          {outcome.namesOnly && (
+            <Notice tone="info">
+              Searched file names only: the local search model isn't set up yet,
+              so the files' text wasn't searched.
+            </Notice>
+          )}
           <p className="muted">
             {outcome.results.length}{" "}
             {outcome.results.length === 1 ? "file" : "files"} found. Excerpts
