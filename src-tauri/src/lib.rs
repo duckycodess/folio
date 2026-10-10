@@ -1250,7 +1250,8 @@ async fn refresh_local_ai_index(
         let mut conn = db::open(&index_path)?;
         let stopped_early = embedding.as_ref().is_some_and(|summary| summary.cancelled);
         let Some(active_space) = active_relationship_space(&app, &conn, None)? else {
-            let coverage = ai_discovery::coverage(&conn, &workspace_id, None)?;
+            let selected = selected_embedding_descriptor_lenient(&app);
+            let coverage = selected_model_coverage(&conn, &workspace_id, selected.as_ref())?;
             return Ok(LocalAiRefresh { workspace_id, embedding, discovery: None, ended: None, coverage });
         };
         if stopped_early {
@@ -1325,8 +1326,43 @@ async fn relationship_coverage(
     state.root(&workspace_id)?;
     let selected = selected_embedding_descriptor_lenient(&app);
     let index = state.index()?;
-    let active = active_space::resolve_installed_descriptor(&index, selected.as_ref())?;
-    ai_discovery::coverage(&index, &workspace_id, active.as_deref())
+    selected_model_coverage(&index, &workspace_id, selected.as_ref())
+}
+
+/// Coverage in the selected model's current space. A ready search model whose
+/// current space has no vectors yet is embedding work still to do, not a
+/// missing model: that happens on first use, and after an update changes how
+/// passages are embedded, because older vectors are never compared with new
+/// ones. Continue (a local AI refresh) then re-embeds the folder.
+fn selected_model_coverage(
+    index: &Connection,
+    workspace_id: &str,
+    selected: Option<&ModelDescriptor>,
+) -> Result<ai_discovery::RelationshipCoverage, FolioError> {
+    let active = active_space::resolve_installed_descriptor(index, selected)?;
+    let coverage = ai_discovery::coverage(index, workspace_id, active.as_deref())?;
+    let model_has_space = match selected {
+        Some(descriptor) => active_space::persistent_space_for_descriptor(descriptor)?.is_some(),
+        None => false,
+    };
+    Ok(awaiting_embedding(coverage, active.is_none() && model_has_space))
+}
+
+/// `noActiveSpace` becomes `embeddingIncomplete` when the selected model is
+/// installed but its space isn't built yet, so the UI offers Continue instead
+/// of saying the search model is missing. A folder with nothing indexed keeps
+/// `noActiveSpace`: there is nothing to embed.
+fn awaiting_embedding(
+    mut coverage: ai_discovery::RelationshipCoverage,
+    ready_model_without_space: bool,
+) -> ai_discovery::RelationshipCoverage {
+    if ready_model_without_space
+        && coverage.state == ai_discovery::CoverageState::NoActiveSpace
+        && coverage.indexed_documents > 0
+    {
+        coverage.state = ai_discovery::CoverageState::EmbeddingIncomplete;
+    }
+    coverage
 }
 
 #[tauri::command]
@@ -3451,6 +3487,38 @@ mod tests {
         let unreadable = Err(error(ErrorCode::Internal, "settings.json could not be parsed"));
         assert!(lenient_descriptor(unreadable).is_none());
         assert!(lenient_descriptor(Ok(None)).is_none());
+    }
+
+    fn no_space_coverage(indexed: usize) -> ai_discovery::RelationshipCoverage {
+        ai_discovery::RelationshipCoverage {
+            state: ai_discovery::CoverageState::NoActiveSpace,
+            space_fingerprint: None,
+            eligible_documents: 0,
+            indexed_documents: indexed,
+            pairs_considered: 0,
+            pairs_remaining: 0,
+            overflow_documents: 0,
+        }
+    }
+
+    #[test]
+    fn a_ready_model_with_an_unbuilt_space_asks_to_continue_not_for_a_model() {
+        let coverage = awaiting_embedding(no_space_coverage(20), true);
+        assert_eq!(coverage.state, ai_discovery::CoverageState::EmbeddingIncomplete);
+        assert_eq!((coverage.eligible_documents, coverage.indexed_documents), (0, 20));
+        assert_eq!(coverage.space_fingerprint, None);
+    }
+
+    #[test]
+    fn no_model_or_nothing_indexed_still_means_no_active_space() {
+        assert_eq!(
+            awaiting_embedding(no_space_coverage(20), false).state,
+            ai_discovery::CoverageState::NoActiveSpace
+        );
+        assert_eq!(
+            awaiting_embedding(no_space_coverage(0), true).state,
+            ai_discovery::CoverageState::NoActiveSpace
+        );
     }
 
     #[test]

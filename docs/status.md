@@ -546,6 +546,12 @@ correctness; no real-model acceptance, desktop interaction, packaging, or
 
 ## Verification
 
+### Graph lost its AI connections after the passage-format update (2026-10-10)
+
+After "Embed stored chunks with their title and path words" changed the stored-chunk space, existing vectors (built under the previous format) are correctly no longer compared with new ones. But the native core then reported `noActiveSpace` even with the search model installed and selected. Graph said "AI connections need the search model and its index" and offered nothing to do. In a real index on macOS, the ADI folder's 66 stored similarity connections were hidden this way (stored space `584fff…`, current `44e4e0…`). `relationship_coverage` and a refresh that ends without a space now report `embeddingIncomplete` when the selected model is installed but its current space isn't built yet. Graph then shows "Still preparing the search index (0 of N files ready)" with **Continue**, which re-embeds the folder and recomputes connections. With no model, or nothing indexed, it is still `noActiveSpace`.
+
+Tested: `cargo test --manifest-path src-tauri/Cargo.toml --lib` on macOS (343 passed, including two new tests), plus a temporary test against a copy of a real index (both affected folders change from `noActiveSpace` to `embeddingIncomplete`). Not yet tested: clicking Continue in the Tauri app to watch the folder re-embed and its connections come back.
+
 ### Consistent page typography, widths and buttons (2026-10-10)
 
 Every page title now uses the brandkit's Manrope 800 at 34px. Before, Home had 32px/700 and every other page a "compact" 24px/600 title, so the views didn't match. Taglines are DM Sans without the wide tracking, and panel and section headings are 700. Notices share the 1080px content width, so their right edge lines up with the panels. Primary buttons are 36px like the rest (they were 40px). `.form-actions` gained the missing gap, so two buttons in a Model Lab card no longer touch. Pages leave room at the bottom for the floating Olio, which used to cover Model Lab's last Download button. Radios and checkboxes use the app accent instead of browser blue.
